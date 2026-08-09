@@ -1,10 +1,10 @@
 <h1 align="center">firstmate</h1>
 <p align="center">
   <a
-    href="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue?style=flat-square"
+    href="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20(experimental)-blue?style=flat-square"
     ><img
       alt="Platform"
-      src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue?style=flat-square"
+      src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20(experimental)-blue?style=flat-square"
   /></a>
   <a href="https://x.com/kunchenguid"
     ><img
@@ -64,6 +64,14 @@ Full detail on every feature lives in [docs/architecture.md](docs/architecture.m
 
 The first mate detects and offers to install supported missing tools after you approve.
 Backend-specific setup is linked in [Documentation](#documentation).
+
+#### Windows
+
+Windows (Git Bash) support is experimental and younger than macOS and Linux.
+Clone with `git clone -c core.autocrlf=false https://github.com/kunchenguid/firstmate`, then run `bash bin/fm-windows-setup.sh` once.
+That repair is required: a default Windows clone materializes firstmate's two tracked symlinks as plain text files, so the operating contract and the bundled skills silently fail to load.
+The session backend on Windows is Herdr rather than the tmux default, since tmux has no native Windows build.
+[docs/windows.md](docs/windows.md) covers setup, the backend route, and the known degradations.
 
 ### Recommended harnesses
 
@@ -198,6 +206,7 @@ Firstmate's skills live in two separate places with different audiences:
 
 - [docs/architecture.md](docs/architecture.md) - maintainer architecture for the crew, supervision, worktrees, secondmates, and project modes.
 - [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional X mode, the files you set, and harness support.
+- [docs/windows.md](docs/windows.md) - Windows (Git Bash) setup, session backend route, and known degradations.
 - [docs/calm.md](docs/calm.md) - current Pi `/calm` behavior and supported presentation limits.
 - [docs/wedge-alarm.md](docs/wedge-alarm.md) - configure the active alert for an away-mode escalation delivery that gets stuck.
 - [docs/tmux-backend.md](docs/tmux-backend.md) - current setup and limits for the tmux reference backend.
