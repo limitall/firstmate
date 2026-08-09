@@ -109,6 +109,74 @@ path_mode() {
   fi
 }
 
+# Whether this filesystem can express POSIX modes at all. Git Bash mounts its
+# drives and /tmp noacl (chmod accepted but inert, every path reads the mount
+# default), so byte-exact private-mode assertions and wrong-mode-rejection
+# scenarios are only meaningful where a chmod actually sticks. Production
+# handles the same reality through the inert-chmod acceptance in
+# bin/fm-x-lib.sh (fmx_mode_enforcement_inert); these test-side equivalents
+# keep every OTHER property (existence, content, single-link temps) asserted
+# everywhere.
+MODES_ENFORCED=yes
+_mode_probe=$(mktemp "${TMPDIR:-/tmp}/.fmx-test-modeprobe.XXXXXX")
+chmod 0 "$_mode_probe" 2>/dev/null
+case "$(path_mode "$_mode_probe")" in
+  0|00|000) MODES_ENFORCED=yes ;;
+  *) MODES_ENFORCED=no ;;
+esac
+rm -f "$_mode_probe"
+unset _mode_probe
+
+# expect_private_mode <path> <mode> <msg>: byte-exact where modes are real;
+# existence-only where chmod is provably inert.
+expect_private_mode() {
+  if [ "$MODES_ENFORCED" = yes ]; then
+    [ "$(path_mode "$1")" = "$2" ] || fail "$3"
+  else
+    [ -e "$1" ] || fail "$3 (missing path on inert-chmod filesystem)"
+  fi
+}
+
+# Symlink capability for this suite's adversarial link fixtures. Stock Git
+# Bash (no Developer Mode) silently COPIES on `ln -s`, which would turn every
+# link-rejection scenario into a false failure: the production refusal is
+# correct, the fixture just never existed. Windows can still express a real
+# DIRECTORY link without Developer Mode through an NTFS junction (MSYS
+# reports junctions as symlinks, so [ -L ] and production's own link checks
+# see the real thing); FILE links have no such fallback, so scenarios that
+# need one are gated on SYMLINK_FILE_FIXTURES below.
+SYMLINK_FILE_FIXTURES=yes
+_link_probe_target=$(mktemp "${TMPDIR:-/tmp}/.fmx-linkprobe-t.XXXXXX")
+_link_probe="${_link_probe_target}.lnk"
+ln -s "$_link_probe_target" "$_link_probe" 2>/dev/null
+[ -L "$_link_probe" ] || SYMLINK_FILE_FIXTURES=no
+rm -f "$_link_probe" "$_link_probe_target"
+unset _link_probe _link_probe_target
+
+# fixture_symlink <target> <link>: a REAL link or a loud failure - never a
+# silent copy. Directories fall back to a junction where ln -s cannot link.
+fixture_symlink() {
+  local target=$1 link=$2
+  ln -s "$target" "$link" 2>/dev/null
+  [ -L "$link" ] && return 0
+  rm -rf "$link" 2>/dev/null
+  if command -v cygpath >/dev/null 2>&1; then
+    # A junction cannot dangle, so a fixture whose Linux form is a dangling
+    # directory link gets its target materialized first: every scenario here
+    # triggers production's refusal on the LINK-ness of the path (lstat),
+    # not on whether the target resolves, so the intent is preserved.
+    [ -e "$target" ] || mkdir -p "$target" 2>/dev/null
+    if [ -d "$target" ]; then
+      # //J (doubled) survives MSYS argument conversion; a single /J is
+      # rewritten into a path and cmd rejects it as an invalid switch.
+      cmd //c mklink //J "$(cygpath -w "$link")" "$(cygpath -w "$target")" >/dev/null 2>&1
+      [ -L "$link" ] && return 0
+      rm -rf "$link" 2>/dev/null
+    fi
+  fi
+  fail "cannot create a real link fixture ($link -> $target) on this host"
+}
+
 assert_no_private_artifact_temps() {
   local dir=$1 leftovers
   [ -d "$dir" ] || return 0
@@ -203,8 +271,8 @@ test_poll_auth_error_reports_once() {
   [ "$out" = "x-mode-error relay returned HTTP 401" ] \
     || fail "poll auth error must emit one visible diagnostic (got: $out)"
   assert_present "$home/state/x-poll.error" "poll auth error must write a dedupe marker"
-  [ "$(path_mode "$home/state")" = 700 ] || fail "poll auth error must create private state"
-  [ "$(path_mode "$home/state/x-poll.error")" = 600 ] || fail "poll auth error marker must be private"
+  expect_private_mode "$home/state" 700 "poll auth error must create private state"
+  expect_private_mode "$home/state/x-poll.error" 600 "poll auth error marker must be private"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
     FAKE_POLL_CODE=401 \
     "$ROOT/bin/fm-x-poll.sh"); rc=$?
@@ -224,7 +292,7 @@ test_poll_error_private_publication_rejects_unsafe_paths() {
 
   home="$TMP_ROOT/poll-error-linked-state"; mkdir -p "$home/external-state"
   fakebin=$(make_fake_curl "$home")
-  ln -s "$home/external-state" "$home/state"
+  fixture_symlink "$home/external-state" "$home/state"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
     FMX_PAIRING_TOKEN=tok-linked-state FAKE_POLL_CODE=401 \
     "$ROOT/bin/fm-x-poll.sh"); rc=$?
@@ -234,6 +302,8 @@ test_poll_error_private_publication_rejects_unsafe_paths() {
   assert_absent "$home/external-state/x-poll.error" "poll must not write the diagnostic through a linked state directory"
   [ -L "$home/state" ] || fail "poll must leave a rejected linked state directory in place"
 
+  # Linked-FILE fixture: only expressible with real file symlinks.
+  if [ "$SYMLINK_FILE_FIXTURES" = yes ]; then
   home="$TMP_ROOT/poll-error-linked-marker"; mkdir -p "$home/state"
   fakebin=$(make_fake_curl "$home")
   chmod 700 "$home/state"
@@ -249,6 +319,7 @@ test_poll_error_private_publication_rejects_unsafe_paths() {
   [ "$(cat "$target")" = "relay returned HTTP 401" ] \
     || fail "poll must not write through a linked diagnostic marker"
   [ -L "$home/state/x-poll.error" ] || fail "poll must not replace a rejected linked diagnostic marker"
+  fi
 
   home="$TMP_ROOT/poll-error-hardlink-marker"; mkdir -p "$home/state"
   fakebin=$(make_fake_curl "$home")
@@ -335,8 +406,8 @@ test_poll_mentions_wake_once_per_durable_offer() {
   [ "$out" = "x-mention req-new" ] \
     || fail "a genuinely new request_id must wake once (got: $out)"
   marker="$home/state/x-context/req-new.offered.json"
-  [ "$(path_mode "$marker")" = 600 ] \
-    || fail "the durable offer marker must be a private file"
+  expect_private_mode "$marker" 600 \
+    "the durable offer marker must be a private file"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_NOW_OVERRIDE=1700604921 \
     FMX_RELAY_URL="https://relay.test" FAKE_POLL_CODE=200 FAKE_POLL_BODY="$body" \
     "$ROOT/bin/fm-x-poll.sh"); rc=$?
@@ -351,7 +422,7 @@ test_poll_offer_claim_failure_reports_once() {
   home="$TMP_ROOT/poll-offer-claim-failure"; mkdir -p "$home/state" "$home/external-context"
   fakebin=$(make_fake_curl "$home")
   chmod 700 "$home/state"
-  ln -s "$home/external-context" "$home/state/x-context"
+  fixture_symlink "$home/external-context" "$home/state/x-context"
   body='{"request_id":"req-claim-failure","text":"status?"}'
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
     FMX_PAIRING_TOKEN=tok-claim-failure FAKE_POLL_CODE=200 FAKE_POLL_BODY="$body" \
@@ -472,7 +543,7 @@ test_poll_inbox_private_publication_rejects_unsafe_paths() {
 
   home="$TMP_ROOT/poll-inbox-linked-dir"; mkdir -p "$home/state" "$home/external"
   fakebin=$(make_fake_curl "$home")
-  ln -s "$home/external" "$home/state/x-inbox"
+  fixture_symlink "$home/external" "$home/state/x-inbox"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
     FMX_PAIRING_TOKEN=tok-linked FAKE_POLL_CODE=200 FAKE_POLL_BODY="$body" \
     "$ROOT/bin/fm-x-poll.sh"); rc=$?
@@ -494,6 +565,8 @@ test_poll_inbox_private_publication_rejects_unsafe_paths() {
   assert_absent "$home/state/x-inbox/req-x.json" "poll must not publish into a nonprivate inbox directory"
   assert_no_private_artifact_temps "$home/state/x-inbox"
 
+  # Linked-FILE fixture: only expressible with real file symlinks.
+  if [ "$SYMLINK_FILE_FIXTURES" = yes ]; then
   home="$TMP_ROOT/poll-inbox-linked-dest"; mkdir -p "$home/state/x-inbox"
   fakebin=$(make_fake_curl "$home")
   chmod 700 "$home/state/x-inbox"
@@ -509,6 +582,7 @@ test_poll_inbox_private_publication_rejects_unsafe_paths() {
   [ "$(cat "$target")" = "external sentinel" ] || fail "poll must not write through a linked inbox destination"
   [ -L "$home/state/x-inbox/req-x.json" ] || fail "poll must not replace a rejected linked destination"
   assert_no_private_artifact_temps "$home/state/x-inbox"
+  fi
 
   home="$TMP_ROOT/poll-inbox-hardlink-dest"; mkdir -p "$home/state/x-inbox"
   fakebin=$(make_fake_curl "$home")
@@ -536,8 +610,8 @@ test_poll_inbox_private_publication_rejects_unsafe_paths() {
   expect_code 0 "$rc" "poll private inbox success exit"
   [ "$out" = "x-mention req-x" ] || fail "poll must still emit a wake after private publication (got: $out)"
   dir="$home/state/x-inbox"
-  [ "$(path_mode "$dir")" = 700 ] || fail "poll must create the inbox directory as private"
-  [ "$(path_mode "$dir/req-x.json")" = 600 ] || fail "poll must publish the inbox file as private"
+  expect_private_mode "$dir" 700 "poll must create the inbox directory as private"
+  expect_private_mode "$dir/req-x.json" 600 "poll must publish the inbox file as private"
   assert_no_private_artifact_temps "$dir"
   pass "fm-x-poll publishes inbox records only through private guarded artifacts"
 }
@@ -724,7 +798,7 @@ test_bootstrap_reports_missing_x_dependency() {
   fm_fake_exit0 "$fakebin" tmux node no-mistakes gh-axi chrome-devtools-axi lavish-axi curl
   for tool in dirname grep tail; do
     tool_path=$(command -v "$tool") || fail "test host must provide $tool"
-    ln -s "$tool_path" "$fakebin/$tool"
+    fm_fakebin_tool "$fakebin" "$tool" "$tool_path"
   done
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -769,6 +843,13 @@ test_bootstrap_does_not_announce_when_arm_fails() {
 
 test_bootstrap_does_not_follow_x_artifact_symlinks() {
   local home shim_target cadence_target out
+  # FILE symlinks cannot exist on this host (no Developer Mode): the linked
+  # shim/cadence fixtures below would silently become copies and assert the
+  # wrong premise. See SYMLINK_FILE_FIXTURES.
+  if [ "$SYMLINK_FILE_FIXTURES" != yes ]; then
+    echo "note: skipping linked-artifact bootstrap scenario (file symlinks unavailable)" >&2
+    return 0
+  fi
   home="$TMP_ROOT/boot-linked-artifacts"
   mkdir -p "$home/state" "$home/config" "$home/external-quarantine"
   printf 'FMX_PAIRING_TOKEN=tok-linked\n' > "$home/.env"
@@ -791,10 +872,10 @@ test_bootstrap_does_not_follow_x_artifact_symlinks() {
     || fail "bootstrap changed the linked shim target"
   [ "$(cat "$cadence_target")" = 'external cadence sentinel' ] \
     || fail "bootstrap changed the linked cadence target"
-  [ "$(path_mode "$shim_target")" = 640 ] \
-    || fail "bootstrap changed the linked shim target mode"
-  [ "$(path_mode "$cadence_target")" = 640 ] \
-    || fail "bootstrap changed the linked cadence target mode"
+  expect_private_mode "$shim_target" 640 \
+    "bootstrap changed the linked shim target mode"
+  expect_private_mode "$cadence_target" 640 \
+    "bootstrap changed the linked cadence target mode"
   assert_absent "$home/state/x-watch.check.sh" "bootstrap must remove the rejected shim link"
   assert_absent "$home/config/x-mode.env" "bootstrap must remove the rejected cadence link"
   pass "bootstrap rejects linked X artifacts without touching their targets"
@@ -1004,13 +1085,15 @@ test_reply_dry_run_outbox_private_publication_rejects_unsafe_paths() {
 
   home="$TMP_ROOT/reply-outbox-linked-dir"; mkdir -p "$home/state" "$home/external"
   err="$home/err.txt"
-  ln -s "$home/external" "$home/state/x-outbox"
+  fixture_symlink "$home/external" "$home/state/x-outbox"
   out=$(FM_HOME="$home" FMX_DRY_RUN=1 "$ROOT/bin/fm-x-reply.sh" req-x "preview text" 2>"$err"); rc=$?
   [ "$rc" -ne 0 ] || fail "reply dry-run must reject a linked outbox directory"
   [ -z "$out" ] || fail "rejected linked outbox must not echo the request_id (got: $out)"
   assert_grep "cannot write dry-run outbox" "$err" "reply dry-run must report the linked outbox write failure"
   assert_absent "$home/external/req-x.json" "reply dry-run must not write through a linked outbox directory"
 
+  # Linked-FILE fixture: only expressible with real file symlinks.
+  if [ "$SYMLINK_FILE_FIXTURES" = yes ]; then
   home="$TMP_ROOT/reply-outbox-linked-dest"; mkdir -p "$home/state/x-outbox"
   err="$home/err.txt"
   chmod 700 "$home/state/x-outbox"
@@ -1022,6 +1105,7 @@ test_reply_dry_run_outbox_private_publication_rejects_unsafe_paths() {
   [ "$(cat "$target")" = "external sentinel" ] || fail "reply dry-run must not write through a linked outbox destination"
   [ -L "$home/state/x-outbox/req-x.json" ] || fail "reply dry-run must not replace a rejected linked destination"
   assert_no_private_artifact_temps "$home/state/x-outbox"
+  fi
 
   home="$TMP_ROOT/reply-outbox-hardlink-dest"; mkdir -p "$home/state/x-outbox"
   err="$home/err.txt"
@@ -1037,24 +1121,30 @@ test_reply_dry_run_outbox_private_publication_rejects_unsafe_paths() {
   [ "$(jq -r .text "$hardlink")" = "old" ] || fail "reply dry-run must preserve the hardlink peer"
   assert_no_private_artifact_temps "$home/state/x-outbox"
 
-  home="$TMP_ROOT/reply-outbox-wrong-mode-dest"; mkdir -p "$home/state/x-outbox"
-  err="$home/err.txt"
-  chmod 700 "$home/state/x-outbox"
-  dest="$home/state/x-outbox/req-x.json"
-  printf '{"request_id":"req-x","text":"old"}\n' > "$dest"
-  chmod 644 "$dest"
-  out=$(FM_HOME="$home" FMX_DRY_RUN=1 "$ROOT/bin/fm-x-reply.sh" req-x "preview text" 2>"$err"); rc=$?
-  [ "$rc" -ne 0 ] || fail "reply dry-run must reject a wrong-mode outbox destination"
-  [ "$(jq -r .text "$dest")" = "old" ] || fail "reply dry-run must preserve a rejected wrong-mode destination"
-  [ "$(path_mode "$dest")" = 644 ] || fail "reply dry-run must leave a rejected wrong-mode destination unchanged"
-  assert_no_private_artifact_temps "$home/state/x-outbox"
+  # A "wrong mode" fixture can only exist where chmod is real: on an
+  # inert-chmod filesystem production deliberately accepts owner-held files
+  # regardless of mode bits (bin/fm-x-lib.sh), so this rejection scenario has
+  # no expressible premise there.
+  if [ "$MODES_ENFORCED" = yes ]; then
+    home="$TMP_ROOT/reply-outbox-wrong-mode-dest"; mkdir -p "$home/state/x-outbox"
+    err="$home/err.txt"
+    chmod 700 "$home/state/x-outbox"
+    dest="$home/state/x-outbox/req-x.json"
+    printf '{"request_id":"req-x","text":"old"}\n' > "$dest"
+    chmod 644 "$dest"
+    out=$(FM_HOME="$home" FMX_DRY_RUN=1 "$ROOT/bin/fm-x-reply.sh" req-x "preview text" 2>"$err"); rc=$?
+    [ "$rc" -ne 0 ] || fail "reply dry-run must reject a wrong-mode outbox destination"
+    [ "$(jq -r .text "$dest")" = "old" ] || fail "reply dry-run must preserve a rejected wrong-mode destination"
+    expect_private_mode "$dest" 644 "reply dry-run must leave a rejected wrong-mode destination unchanged"
+    assert_no_private_artifact_temps "$home/state/x-outbox"
+  fi
 
   home="$TMP_ROOT/reply-outbox-private-success"; mkdir -p "$home"
   out=$(FM_HOME="$home" FMX_DRY_RUN=1 "$ROOT/bin/fm-x-reply.sh" req-x "preview text" 2>/dev/null); rc=$?
   expect_code 0 "$rc" "reply private outbox success exit"
   [ "$out" = "req-x" ] || fail "reply dry-run must still echo the request_id after private publication (got: $out)"
-  [ "$(path_mode "$home/state/x-outbox")" = 700 ] || fail "reply dry-run must create the outbox directory as private"
-  [ "$(path_mode "$home/state/x-outbox/req-x.json")" = 600 ] || fail "reply dry-run must publish the outbox file as private"
+  expect_private_mode "$home/state/x-outbox" 700 "reply dry-run must create the outbox directory as private"
+  expect_private_mode "$home/state/x-outbox/req-x.json" 600 "reply dry-run must publish the outbox file as private"
   assert_no_private_artifact_temps "$home/state/x-outbox"
   pass "fm-x-reply dry-run publishes outbox records only through private guarded artifacts"
 }
@@ -1199,12 +1289,14 @@ test_reply_rejects_unsafe_inbox_context_reads() {
   jq -cn '{request_id:"req-linked-dir",platform:"discord",reply_max_chars:1900,text:"question"}' \
     > "$home/external-inbox/req-linked-dir.json"
   chmod 600 "$home/external-inbox/req-linked-dir.json"
-  ln -s "$home/external-inbox" "$home/state/x-inbox"
+  fixture_symlink "$home/external-inbox" "$home/state/x-inbox"
   out=$(FM_HOME="$home" FMX_DRY_RUN=1 "$ROOT/bin/fm-x-reply.sh" req-linked-dir "$reply" 2>/dev/null); rc=$?
   expect_code 0 "$rc" "reply linked inbox dir read exit"
   jq -e '.texts and (.texts|length>1)' "$home/state/x-outbox/req-linked-dir.json" >/dev/null \
     || fail "reply must not trust a linked inbox directory for Discord budget context"
 
+  # Linked-FILE fixture: only expressible with real file symlinks.
+  if [ "$SYMLINK_FILE_FIXTURES" = yes ]; then
   home="$TMP_ROOT/reply-inbox-linked-file"; private_artifact_dir "$home/state/x-inbox"
   target="$home/external-inbox-record.json"
   jq -cn '{request_id:"req-linked-file",platform:"discord",reply_max_chars:1900,text:"question"}' > "$target"
@@ -1213,6 +1305,7 @@ test_reply_rejects_unsafe_inbox_context_reads() {
   expect_code 0 "$rc" "reply linked inbox file read exit"
   jq -e '.texts and (.texts|length>1)' "$home/state/x-outbox/req-linked-file.json" >/dev/null \
     || fail "reply must not trust a linked inbox file for Discord budget context"
+  fi
 
   home="$TMP_ROOT/reply-inbox-hardlink-file"; private_artifact_dir "$home/state/x-inbox"
   dest="$home/state/x-inbox/req-hardlink.json"
@@ -1626,7 +1719,7 @@ test_context_registry_private_publication_rejects_unsafe_paths() {
   . "$ROOT/bin/fm-x-lib.sh"
 
   home="$TMP_ROOT/context-linked-dir"; mkdir -p "$home/state" "$home/external"
-  ln -s "$home/external" "$home/state/x-context"
+  fixture_symlink "$home/external" "$home/state/x-context"
   fmx_context_registry_set "$home/state" req-x x 280; rc=$?
   [ "$rc" -ne 0 ] || fail "context registry must reject a linked context directory"
   assert_absent "$home/external/req-x.json" "context registry must not write through a linked context directory"
@@ -1639,6 +1732,8 @@ test_context_registry_private_publication_rejects_unsafe_paths() {
   assert_absent "$home/state/x-context/req-x.json" "context registry must not publish into a nonprivate context directory"
   assert_no_private_artifact_temps "$home/state/x-context"
 
+  # Linked-FILE fixture: only expressible with real file symlinks.
+  if [ "$SYMLINK_FILE_FIXTURES" = yes ]; then
   home="$TMP_ROOT/context-linked-dest"; mkdir -p "$home/state/x-context"
   chmod 700 "$home/state/x-context"
   target="$home/external-target.json"
@@ -1649,6 +1744,7 @@ test_context_registry_private_publication_rejects_unsafe_paths() {
   [ "$(cat "$target")" = "external sentinel" ] || fail "context registry must not write through a linked destination"
   [ -L "$home/state/x-context/req-x.json" ] || fail "context registry must not replace a rejected linked destination"
   assert_no_private_artifact_temps "$home/state/x-context"
+  fi
 
   home="$TMP_ROOT/context-hardlink-dest"; mkdir -p "$home/state/x-context"
   chmod 700 "$home/state/x-context"
@@ -1663,24 +1759,27 @@ test_context_registry_private_publication_rejects_unsafe_paths() {
   [ "$(jq -r .platform "$hardlink")" = "x" ] || fail "context registry must preserve the hardlink peer"
   assert_no_private_artifact_temps "$home/state/x-context"
 
-  home="$TMP_ROOT/context-wrong-mode-dest"; mkdir -p "$home/state/x-context"
-  chmod 700 "$home/state/x-context"
-  dest="$home/state/x-context/req-x.json"
-  jq -cn '{request_id:"req-x",platform:"x",reply_max_chars:"280",recorded_at:1700000000}' > "$dest"
-  chmod 644 "$dest"
-  fmx_context_registry_set "$home/state" req-x discord 1900; rc=$?
-  [ "$rc" -ne 0 ] || fail "context registry must reject a wrong-mode destination"
-  [ "$(jq -r .platform "$dest")" = "x" ] || fail "context registry must preserve a rejected wrong-mode destination"
-  [ "$(path_mode "$dest")" = 644 ] || fail "context registry must leave a rejected wrong-mode destination unchanged"
-  assert_no_private_artifact_temps "$home/state/x-context"
+  # Same inert-chmod gating as the reply-outbox wrong-mode scenario above.
+  if [ "$MODES_ENFORCED" = yes ]; then
+    home="$TMP_ROOT/context-wrong-mode-dest"; mkdir -p "$home/state/x-context"
+    chmod 700 "$home/state/x-context"
+    dest="$home/state/x-context/req-x.json"
+    jq -cn '{request_id:"req-x",platform:"x",reply_max_chars:"280",recorded_at:1700000000}' > "$dest"
+    chmod 644 "$dest"
+    fmx_context_registry_set "$home/state" req-x discord 1900; rc=$?
+    [ "$rc" -ne 0 ] || fail "context registry must reject a wrong-mode destination"
+    [ "$(jq -r .platform "$dest")" = "x" ] || fail "context registry must preserve a rejected wrong-mode destination"
+    expect_private_mode "$dest" 644 "context registry must leave a rejected wrong-mode destination unchanged"
+    assert_no_private_artifact_temps "$home/state/x-context"
+  fi
 
   home="$TMP_ROOT/context-private-success"; mkdir -p "$home"
   out=$(FMX_NOW_OVERRIDE=1700000000 bash -c '. "$1/bin/fm-x-lib.sh"; fmx_context_registry_set "$2/state" req-x x 280' _ "$ROOT" "$home")
   rc=$?
   expect_code 0 "$rc" "context private publication success"
   [ -z "$out" ] || fail "context registry setter must stay silent on success"
-  [ "$(path_mode "$home/state/x-context")" = 700 ] || fail "context registry must create the context directory as private"
-  [ "$(path_mode "$home/state/x-context/req-x.json")" = 600 ] || fail "context registry must publish the context file as private"
+  expect_private_mode "$home/state/x-context" 700 "context registry must create the context directory as private"
+  expect_private_mode "$home/state/x-context/req-x.json" 600 "context registry must publish the context file as private"
   assert_no_private_artifact_temps "$home/state/x-context"
   pass "context registry publishes records only through private guarded artifacts"
 }
@@ -1694,11 +1793,13 @@ test_context_registry_rejects_unsafe_reads() {
   jq -cn '{request_id:"req-linked-dir",platform:"discord",reply_max_chars:"1900",recorded_at:1700000000}' \
     > "$home/external-context/req-linked-dir.json"
   chmod 600 "$home/external-context/req-linked-dir.json"
-  ln -s "$home/external-context" "$home/state/x-context"
+  fixture_symlink "$home/external-context" "$home/state/x-context"
   out=$(fmx_context_registry_get "$home/state" req-linked-dir)
   [ "$(printf '%s' "$out" | jq -r .platform)" = "" ] \
     || fail "context registry must not read through a linked context directory"
 
+  # Linked-FILE fixture: only expressible with real file symlinks.
+  if [ "$SYMLINK_FILE_FIXTURES" = yes ]; then
   home="$TMP_ROOT/context-read-linked-file"; private_artifact_dir "$home/state/x-context"
   target="$home/external-context-record.json"
   jq -cn '{request_id:"req-linked-file",platform:"discord",reply_max_chars:"1900",recorded_at:1700000000}' > "$target"
@@ -1708,6 +1809,7 @@ test_context_registry_rejects_unsafe_reads() {
     || fail "context registry must not read through a linked context file"
   [ -L "$home/state/x-context/req-linked-file.json" ] \
     || fail "context registry must not replace a rejected linked context file"
+  fi
 
   home="$TMP_ROOT/context-read-hardlink-file"; private_artifact_dir "$home/state/x-context"
   dest="$home/state/x-context/req-hardlink.json"
@@ -1741,8 +1843,8 @@ test_private_artifact_publisher_runs_under_system_bash() {
   expect_code 0 "$rc" "private artifact publisher under /bin/bash"
   [ -z "$out" ] || fail "private artifact publisher must stay silent under /bin/bash"
   assert_present "$home/state/x-outbox/req-bash.json" "private artifact publisher must create the artifact under /bin/bash"
-  [ "$(path_mode "$home/state/x-outbox/req-bash.json")" = 600 ] \
-    || fail "private artifact publisher must preserve private file mode under /bin/bash"
+  expect_private_mode "$home/state/x-outbox/req-bash.json" 600 \
+    "private artifact publisher must preserve private file mode under /bin/bash"
   pass "private artifact publisher is compatible with the system bash path"
 }
 
@@ -2117,13 +2219,15 @@ test_dismiss_dry_run_outbox_private_publication_rejects_unsafe_paths() {
 
   home="$TMP_ROOT/dismiss-outbox-linked-dir"; mkdir -p "$home/state" "$home/external"
   err="$home/err.txt"
-  ln -s "$home/external" "$home/state/x-outbox"
+  fixture_symlink "$home/external" "$home/state/x-outbox"
   out=$(FM_HOME="$home" FMX_DRY_RUN=1 "$ROOT/bin/fm-x-dismiss.sh" req-x 2>"$err"); rc=$?
   [ "$rc" -ne 0 ] || fail "dismiss dry-run must reject a linked outbox directory"
   [ -z "$out" ] || fail "rejected dismiss outbox must not echo the request_id (got: $out)"
   assert_grep "cannot write dry-run outbox" "$err" "dismiss dry-run must report the linked outbox write failure"
   assert_absent "$home/external/req-x.json" "dismiss dry-run must not write through a linked outbox directory"
 
+  # Linked-FILE fixture: only expressible with real file symlinks.
+  if [ "$SYMLINK_FILE_FIXTURES" = yes ]; then
   home="$TMP_ROOT/dismiss-outbox-linked-dest"; mkdir -p "$home/state/x-outbox"
   err="$home/err.txt"
   chmod 700 "$home/state/x-outbox"
@@ -2135,13 +2239,14 @@ test_dismiss_dry_run_outbox_private_publication_rejects_unsafe_paths() {
   [ "$(cat "$target")" = "external sentinel" ] || fail "dismiss dry-run must not write through a linked outbox destination"
   [ -L "$home/state/x-outbox/req-x.json" ] || fail "dismiss dry-run must not replace a rejected linked destination"
   assert_no_private_artifact_temps "$home/state/x-outbox"
+  fi
 
   home="$TMP_ROOT/dismiss-outbox-private-success"; mkdir -p "$home"
   out=$(FM_HOME="$home" FMX_DRY_RUN=1 "$ROOT/bin/fm-x-dismiss.sh" req-x 2>/dev/null); rc=$?
   expect_code 0 "$rc" "dismiss private outbox success exit"
   [ "$out" = "req-x" ] || fail "dismiss dry-run must still echo the request_id after private publication (got: $out)"
-  [ "$(path_mode "$home/state/x-outbox")" = 700 ] || fail "dismiss dry-run must create the outbox directory as private"
-  [ "$(path_mode "$home/state/x-outbox/req-x.json")" = 600 ] || fail "dismiss dry-run must publish the outbox file as private"
+  expect_private_mode "$home/state/x-outbox" 700 "dismiss dry-run must create the outbox directory as private"
+  expect_private_mode "$home/state/x-outbox/req-x.json" 600 "dismiss dry-run must publish the outbox file as private"
   assert_no_private_artifact_temps "$home/state/x-outbox"
   pass "fm-x-dismiss dry-run publishes outbox records only through private guarded artifacts"
 }

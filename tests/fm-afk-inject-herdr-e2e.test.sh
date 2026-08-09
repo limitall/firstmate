@@ -364,11 +364,22 @@ test_scenario_a() {
   fm_backend_herdr_send_key "$SUPERVISOR_TARGET" Enter
   sleep 0.5
 
-  sleep 8
+  # The post-idle injection is polled, not slept for once: a daemon poll cycle
+  # on Windows (herdr CLI + capture + jq at ~0.4s per process spawn) can
+  # exceed a fixed 8s window while remaining perfectly healthy, and the
+  # negative no-premature-injection window above already proved the gating.
+  injected=false
+  for _ in $(seq 1 60); do
+    if grep -q 'Supervisor escalate' "$LOG_FILE"; then
+      injected=true
+      break
+    fi
+    sleep 1
+  done
 
   grep -q 'human draft text' "$LOG_FILE" \
     || fail "Scenario A: human text not in log after submit"
-  grep -q 'Supervisor escalate' "$LOG_FILE" \
+  [ "$injected" = true ] \
     || fail "Scenario A: digest not injected after the pane went idle"
   if grep -q 'human draft text.*Supervisor escalate' "$LOG_FILE" || \
      grep -q 'Supervisor escalate.*human draft text' "$LOG_FILE"; then
@@ -405,9 +416,16 @@ test_scenario_b() {
 
   echo "done: PR https://example.test/pr/200" > "$STATE_DIR/fake-c1.status"
 
-  sleep 10
-
+  # Poll for the first marker (Windows daemon cycles can outlast a fixed
+  # window - see Scenario A), then hold a short settle so the exactly-one
+  # duplicate check still means something.
   local marker_count
+  for _ in $(seq 1 60); do
+    marker_count=$(awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE")
+    [ "$marker_count" -ge 1 ] && break
+    sleep 1
+  done
+  sleep 3
   marker_count=$(awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE")
   [ "$marker_count" -eq 1 ] \
     || fail "Scenario B: expected exactly 1 U+2063 marker, got $marker_count (duplicate or lost)"
@@ -437,9 +455,15 @@ test_scenario_c() {
   start_daemon
 
   echo "done: PR https://example.test/pr/300" > "$STATE_DIR/fake-c1.status"
-  sleep 8
 
+  # Same poll-then-settle shape as Scenario B for the same Windows reason.
   local marker_count
+  for _ in $(seq 1 60); do
+    marker_count=$(awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE")
+    [ "$marker_count" -ge 1 ] && break
+    sleep 1
+  done
+  sleep 3
   marker_count=$(awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE")
   [ "$marker_count" -eq 1 ] \
     || fail "Scenario C: expected exactly 1 U+2063 marker, got $marker_count"

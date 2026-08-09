@@ -24,6 +24,13 @@ herdr_forget_inherited_pane
 
 TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-tests)
 export FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0
+# This suite fakes the herdr CLI with NUMBERED response fixtures: any extra
+# CLI call the adapter makes on a real Windows pane (the PowerShell->bash
+# bootstrap, the async close-confirmation poll) would consume fixtures
+# scripted for later calls and derail the conversation. Declare the CLI
+# scripted here (and only here - the real-herdr suites exercise those paths
+# for real; see fm_backend_herdr_pane_posixify).
+export FM_BACKEND_HERDR_SCRIPTED_CLI=1
 
 # make_herdr_fakebin: a `herdr` stub that logs every invocation (one line,
 # unit-separated args, to $FM_HERDR_LOG) and returns the canned response for

@@ -528,7 +528,7 @@ test_hook_silent_without_jq() {
   fakebin=$(fm_fakebin "$TMP_ROOT/hook-nojq-fake")
   for tool in bash sh git cat printf date uname stat mkdir dirname; do
     tool_path=$(command -v "$tool") || fail "test host must provide $tool"
-    ln -s "$tool_path" "$fakebin/$tool"
+    fm_fakebin_tool "$fakebin" "$tool" "$tool_path"
   done
   out=$(printf '{"stop_hook_active":false}' | PATH="$fakebin" bash "$dir/bin/fm-turnend-guard.sh" 2>&1)
   status=$?
@@ -690,7 +690,7 @@ test_grok_adapter_missing_jq_and_no_supervision_allow() {
   log="$TMP_ROOT/grok-nojq.log"
   for tool in bash cat printf; do
     tool_path=$(command -v "$tool") || fail "test host must provide $tool"
-    ln -s "$tool_path" "$fakebin/$tool"
+    fm_fakebin_tool "$fakebin" "$tool" "$tool_path"
   done
   printf '#!/usr/bin/env bash\nprintf called >> %q\n' "$log" > "$fakebin/grok"
   chmod +x "$fakebin/grok"

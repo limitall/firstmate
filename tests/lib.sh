@@ -39,6 +39,28 @@ export FM_GATE_REFUSE_BYPASS=1
 # shellcheck disable=SC2034
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Pin line-ending behavior for every git the tests run, including inside the
+# throwaway fixture repos they create: a host-level core.autocrlf=true (the
+# git-for-Windows installer default) would otherwise materialize CRLF working
+# trees in those fixtures and break byte-exact assertions. Environment-level
+# config injection scopes the pin to test processes without ever touching the
+# user's real git configuration; explicit GIT_CONFIG_* set by a caller wins.
+if [ -z "${GIT_CONFIG_COUNT:-}" ]; then
+  export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.autocrlf GIT_CONFIG_VALUE_0=false
+fi
+
+# Suites that pin a minimal reproducible tool PATH default it through
+# FM_TEST_BASE_PATH. Git Bash keeps git and the rest of the MinGW toolchain
+# in /mingw64/bin - outside the POSIX base dirs those pins reproduce - so an
+# unset override on this platform must include it, or every pinned scenario
+# loses git (observed live as a spurious "MISSING: git" and dark git-backed
+# checks). A caller's own FM_TEST_BASE_PATH always wins untouched.
+case "${OSTYPE:-}" in
+  msys*|mingw*|cygwin*)
+    export FM_TEST_BASE_PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/mingw64/bin}"
+    ;;
+esac
+
 # --- reporters --------------------------------------------------------------
 
 fail() {
@@ -57,24 +79,54 @@ pass() {
 # extra teardown (e.g. killing a daemon) should define its own EXIT trap and
 # call fm_test_cleanup from inside it so registered dirs are still removed.
 
+# Registration is split between an in-memory array and an on-disk registry
+# because fm_test_tmproot is called as `T=$(fm_test_tmproot foo)` - a COMMAND
+# SUBSTITUTION, which runs the whole function body in a subshell. Everything
+# that function used to do was therefore subshell-local, with two consequences
+# that stood for a long time:
+#
+#   1. The EXIT trap it registered fired when that subshell exited - moments
+#      later - and deleted the directory it had just returned. Callers received
+#      a path to a directory that no longer existed, and only kept working
+#      because they immediately re-created subpaths with `mkdir -p`.
+#   2. The parent shell never learned about the directory at all, so real
+#      cleanup never ran. (Evidence when this was found: 214 leaked temp roots
+#      on one developer machine.)
+#
+# The registry FILE crosses the subshell boundary, and the trap below is
+# registered at SOURCE time - in the caller's own shell - so it fires once, at
+# the end of the real test process. The array is retained because several
+# suites append to it directly from parent scope, and both sources are drained.
 FM_TEST_CLEANUP_DIRS=()
+FM_TEST_CLEANUP_OWNER_PID=${BASHPID:-$$}
+FM_TEST_CLEANUP_REGISTRY="${TMPDIR:-/tmp}/.fm-test-cleanup.$FM_TEST_CLEANUP_OWNER_PID.$$"
 
 fm_test_cleanup() {
   local d
+  # A subshell inherits this trap; only the shell that registered it may act,
+  # or a scoped `( ... )` block would tear down the whole run's fixtures.
+  [ "${BASHPID:-$$}" = "$FM_TEST_CLEANUP_OWNER_PID" ] || return 0
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     [ -n "$d" ] && rm -rf "$d"
   done
+  if [ -f "$FM_TEST_CLEANUP_REGISTRY" ]; then
+    while IFS= read -r d; do
+      [ -n "$d" ] && rm -rf "$d"
+    done < "$FM_TEST_CLEANUP_REGISTRY"
+    rm -f "$FM_TEST_CLEANUP_REGISTRY"
+  fi
 }
 
 fm_test_tmproot() {
   local prefix=${1:-fm-test} root
-  root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX")
-  if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then
-    trap fm_test_cleanup EXIT
-  fi
-  FM_TEST_CLEANUP_DIRS+=("$root")
+  root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX") || return 1
+  # Recorded on disk so the registration survives the command-substitution
+  # subshell this function almost always runs inside.
+  printf '%s\n' "$root" >> "$FM_TEST_CLEANUP_REGISTRY" 2>/dev/null || true
   printf '%s\n' "$root"
 }
+
+trap fm_test_cleanup EXIT
 
 # --- fakebin / PATH shims ---------------------------------------------------
 #
@@ -98,6 +150,55 @@ exit 0
 SH
     chmod +x "$fakebin/$tool"
   done
+}
+
+# fm_test_native_path <path>: the platform-native spelling of <path>, for
+# handing to a NATIVE (non-MSYS) tool.
+#
+# Git Bash paths (/f/proj/x, /tmp/y) are an MSYS fiction: native Windows
+# programs cannot resolve them. Node rejects one with "On Windows, absolute
+# paths must be valid file:// URLs", and .NET silently reads /tmp/x as
+# C:\tmp\x - both observed live in this repo. Any test that passes a path to
+# node, pwsh, herdr, jq, or another native binary must convert first. A no-op
+# on macOS/Linux, where cygpath does not exist and paths are already native.
+fm_test_native_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+# fm_test_file_url <path>: <path> as a file:// URL, for a native tool that
+# demands URL form (Node's ESM loader being the motivating case).
+fm_test_file_url() {
+  local native
+  native=$(fm_test_native_path "$1")
+  # Windows drive paths need the extra slash and forward separators; a POSIX
+  # path is already URL-shaped after the scheme.
+  case "$native" in
+    [A-Za-z]:*) printf 'file:///%s' "$(printf '%s' "$native" | tr '\\' '/')" ;;
+    *) printf 'file://%s' "$native" ;;
+  esac
+}
+
+# fm_fakebin_tool <fakebin> <tool> [real-path]: expose a REAL tool inside a
+# restricted-PATH fakebin. A symlink is the natural spelling, but stock Git
+# Bash silently COPIES on `ln -s`, and a Windows .exe copied away from its
+# install directory loses the DLLs that live beside it (a copied git.exe
+# reports "command not found"). A two-line exec wrapper behaves identically
+# on every platform, so it is the portable spelling for every suite. A tool
+# that resolves to a bash builtin (e.g. printf) has no file to expose and is
+# skipped - the builtin serves the fixture regardless.
+fm_fakebin_tool() {
+  local fakebin=$1 tool=$2 real=${3:-}
+  [ -n "$real" ] || real=$(command -v "$tool") || return 0
+  case "$real" in
+    /*) ;;
+    *) return 0 ;;
+  esac
+  printf '#!/bin/bash\nexec "%s" "$@"\n' "$real" > "$fakebin/$tool"
+  chmod +x "$fakebin/$tool"
 }
 
 # --- deterministic git identity and fixtures --------------------------------

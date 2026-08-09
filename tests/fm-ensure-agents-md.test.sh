@@ -7,6 +7,44 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-ensure-agents-md)
 
+# Windows Git Bash without Developer Mode cannot create symlinks at all: `ln -s`
+# silently COPIES and reports success, so the probe has to create a link and
+# check it rather than trust an exit status. Where that is the case
+# fm-ensure-agents-md.sh writes Claude Code's `@AGENTS.md` import file instead,
+# and these assertions have to accept it. Everywhere a symlink IS possible they
+# still demand a real one, so the Unix contract is not weakened.
+SYMLINKS_WORK=no
+symlink_probe="$TMP_ROOT/symlink-probe"
+mkdir -p "$symlink_probe"
+printf 'probe\n' > "$symlink_probe/target"
+if ln -s target "$symlink_probe/link" 2>/dev/null && [ -L "$symlink_probe/link" ]; then
+  SYMLINKS_WORK=yes
+fi
+rm -rf "$symlink_probe"
+
+# make_claude_alias <repo>: build the CLAUDE.md alias in the same form the
+# script itself would produce here, so hand-built fixtures match a real project.
+make_claude_alias() {
+  local repo=$1
+  if [ "$SYMLINKS_WORK" = yes ]; then
+    ln -s AGENTS.md "$repo/CLAUDE.md"
+  else
+    printf '@AGENTS.md\n' > "$repo/CLAUDE.md"
+  fi
+}
+
+# assert_claude_alias <repo> <msg>: CLAUDE.md must be a working alias for
+# AGENTS.md - a real symlink wherever symlinks are creatable, and otherwise the
+# @AGENTS.md import file.
+assert_claude_alias() {
+  local repo=$1 msg=$2
+  [ -L "$repo/CLAUDE.md" ] && return 0
+  [ "$SYMLINKS_WORK" = no ] || fail "$msg (not a symlink, on a platform where symlinks work)"
+  [ -f "$repo/CLAUDE.md" ] || fail "$msg (no CLAUDE.md alias of any form)"
+  [ "$(cat "$repo/CLAUDE.md")" = "@AGENTS.md" ] \
+    || fail "$msg (CLAUDE.md is neither a symlink nor the @AGENTS.md import)"
+}
+
 test_created_agents_md_includes_self_governance() {
   local repo agents
   repo="$TMP_ROOT/new-project"
@@ -14,8 +52,8 @@ test_created_agents_md_includes_self_governance() {
   "$ROOT/bin/fm-ensure-agents-md.sh" "$repo" >/dev/null 2>&1 || fail "fm-ensure-agents-md.sh failed for empty project"
   agents="$repo/AGENTS.md"
   assert_present "$agents" "AGENTS.md was not created"
-  assert_present "$repo/CLAUDE.md" "CLAUDE.md symlink was not created"
-  [ -L "$repo/CLAUDE.md" ] || fail "CLAUDE.md is not a symlink"
+  assert_present "$repo/CLAUDE.md" "CLAUDE.md alias was not created"
+  assert_claude_alias "$repo" "CLAUDE.md is not a working alias for AGENTS.md"
   assert_grep "## Maintaining this file" "$agents" "self-governance section heading missing"
   assert_grep "Keep this file for knowledge useful to almost every future agent session in this project." "$agents" \
     "self-governance section lost the future-session bar"
@@ -40,7 +78,7 @@ EOF
   "$ROOT/bin/fm-ensure-agents-md.sh" "$repo" >/dev/null 2>&1 || fail "fm-ensure-agents-md.sh failed for CLAUDE.md promotion"
   agents="$repo/AGENTS.md"
   assert_present "$agents" "AGENTS.md was not created during promotion"
-  [ -L "$repo/CLAUDE.md" ] || fail "CLAUDE.md is not a symlink after promotion"
+  assert_claude_alias "$repo" "CLAUDE.md is not a working alias after promotion"
   assert_grep "Run tests with \`make test\`." "$agents" \
     "promotion lost existing CLAUDE.md content"
   count=$(grep -Fc "## Maintaining this file" "$agents")
@@ -71,7 +109,7 @@ test_existing_agents_md_with_symlink_gains_self_governance() {
   repo="$TMP_ROOT/existing-symlinked-project"
   mkdir -p "$repo"
   printf '# Existing agent memory\n\nBuild with make.\n' > "$repo/AGENTS.md"
-  ln -s AGENTS.md "$repo/CLAUDE.md"
+  make_claude_alias "$repo"
   agents="$repo/AGENTS.md"
   out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
     || fail "fm-ensure-agents-md.sh failed for existing AGENTS.md with symlink"
@@ -80,7 +118,7 @@ test_existing_agents_md_with_symlink_gains_self_governance() {
   assert_grep "## Maintaining this file" "$agents" "existing AGENTS.md did not gain the self-governance section"
   count=$(grep -Fc "## Maintaining this file" "$agents")
   [ "$count" -eq 1 ] || fail "injection wrote $count self-governance sections"
-  [ -L "$repo/CLAUDE.md" ] || fail "CLAUDE.md is no longer a symlink after injection"
+  assert_claude_alias "$repo" "CLAUDE.md is no longer a working alias after injection"
   # Re-run must be a byte-exact no-op reporting unchanged.
   cp "$agents" "$repo/.after-first"
   out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
@@ -100,7 +138,7 @@ test_existing_agents_md_without_claude_gains_section_and_symlink() {
   out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
     || fail "fm-ensure-agents-md.sh failed for existing AGENTS.md without CLAUDE.md"
   assert_contains "$out" "updated:" "injection without CLAUDE.md did not report an update"
-  [ -L "$repo/CLAUDE.md" ] || fail "CLAUDE.md symlink was not created"
+  assert_claude_alias "$repo" "CLAUDE.md alias was not created"
   assert_grep "Deploy with kubectl." "$agents" "injection dropped existing AGENTS.md content"
   count=$(grep -Fc "## Maintaining this file" "$agents")
   [ "$count" -eq 1 ] || fail "injection wrote $count self-governance sections"
@@ -137,7 +175,7 @@ test_existing_crlf_agents_md_with_section_stays_unchanged() {
     'Do not repeat what the codebase already shows; point to the authoritative file or command instead.' \
     'Prefer rewriting or pruning existing entries over appending new ones.' \
     'When updating this file, preserve this bar for all agents and keep entries concise.' > "$repo/AGENTS.md"
-  ln -s AGENTS.md "$repo/CLAUDE.md"
+  make_claude_alias "$repo"
   agents="$repo/AGENTS.md"
   cp "$agents" "$repo/.before"
   out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
@@ -158,7 +196,7 @@ test_existing_crlf_agents_md_without_section_preserves_crlf() {
     '# Existing agent memory' \
     '' \
     'Run tests with make test.' > "$repo/AGENTS.md"
-  ln -s AGENTS.md "$repo/CLAUDE.md"
+  make_claude_alias "$repo"
   agents="$repo/AGENTS.md"
   out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
     || fail "fm-ensure-agents-md.sh failed injecting into CRLF AGENTS.md"

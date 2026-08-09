@@ -170,24 +170,40 @@ test_guard_warnings() {
 }
 
 test_lock_single_winner_under_concurrency() {
-  local dir state lockdir marker i pids pid wins
+  local dir state lockdir marker attempts i pids pid wins
   dir=$(make_case lock-concurrency)
   state="$dir/state"
   lockdir="$state/.contend.lock"
   marker="$dir/wins"
+  attempts="$dir/attempts"
   : > "$marker"
+  : > "$attempts"
   pids=
   i=1
   while [ "$i" -le 40 ]; do
     FM_STATE_OVERRIDE="$state" bash -c '
       . "$1"
+      won=0
       if fm_lock_try_acquire "$2"; then
         printf "%s\n" "$$" >> "$3"
-        # Stay alive so the held lock names a live pid for the whole window;
-        # otherwise a late contender could legitimately reclaim a dead-pid lock.
-        sleep 1
+        won=1
       fi
-    ' _ "$LIB" "$lockdir" "$marker" &
+      # Every contender records that it attempted, and the winner then holds the
+      # lock until all of them have. The held lock therefore names a live pid for
+      # the whole contention window, which is what makes "exactly one winner" the
+      # right assertion. A fixed sleep instead assumed the 40 shells all reach the
+      # lock within a second of each other: true on Linux, false where spawning a
+      # shell costs ~100ms (Git Bash spreads them over several seconds), and a
+      # contender arriving after the winner exited would then legitimately reclaim
+      # a dead-pid lock and be counted as a second winner.
+      printf "x\n" >> "$4"
+      [ "$won" = 1 ] || exit 0
+      waited=0
+      while [ "$(awk "NF { c++ } END { print c + 0 }" "$4")" -lt "$5" ] && [ "$waited" -lt 300 ]; do
+        sleep 0.1
+        waited=$((waited + 1))
+      done
+    ' _ "$LIB" "$lockdir" "$marker" "$attempts" 40 &
     pids="$pids $!"
     i=$((i + 1))
   done
@@ -219,25 +235,38 @@ test_lock_steals_dead_pid_lock() {
 }
 
 test_lock_stale_steal_single_winner_under_concurrency() {
-  local dir state lockdir dead marker i pids pid wins
+  local dir state lockdir dead marker attempts i pids pid wins
   dir=$(make_case lock-stale-concurrency)
   state="$dir/state"
   lockdir="$state/.contend.lock"
   marker="$dir/wins"
+  attempts="$dir/attempts"
   dead=$(dead_pid)
   mkdir "$lockdir"
   printf '%s\n' "$dead" > "$lockdir/pid"
   : > "$marker"
+  : > "$attempts"
   pids=
   i=1
   while [ "$i" -le 40 ]; do
+    # Same live-holder discipline as test_lock_single_winner_under_concurrency:
+    # the stealer holds the reclaimed lock until every contender has attempted,
+    # so no contender can arrive to find a second dead-pid lock to steal.
     FM_STATE_OVERRIDE="$state" bash -c '
       . "$1"
+      won=0
       if fm_lock_try_acquire "$2"; then
         printf "%s\n" "${BASHPID:-$$}" >> "$3"
-        sleep 1
+        won=1
       fi
-    ' _ "$LIB" "$lockdir" "$marker" &
+      printf "x\n" >> "$4"
+      [ "$won" = 1 ] || exit 0
+      waited=0
+      while [ "$(awk "NF { c++ } END { print c + 0 }" "$4")" -lt "$5" ] && [ "$waited" -lt 300 ]; do
+        sleep 0.1
+        waited=$((waited + 1))
+      done
+    ' _ "$LIB" "$lockdir" "$marker" "$attempts" 40 &
     pids="$pids $!"
     i=$((i + 1))
   done
@@ -250,24 +279,35 @@ test_lock_stale_steal_single_winner_under_concurrency() {
 }
 
 test_lock_live_steal_mutex_is_not_reclaimed() {
-  local dir state lockdir dead holder_file holder out i lockpid stealpid
+  local dir state lockdir dead holder_file attempted holder out i lockpid stealpid
   dir=$(make_case lock-live-stealer)
   state="$dir/state"
   lockdir="$state/.contend.lock"
   holder_file="$dir/holder"
+  attempted="$dir/attempted"
   dead=$(dead_pid)
   mkdir "$lockdir"
   printf '%s\n' "$dead" > "$lockdir/pid"
+  # The holder keeps the steal mutex until the contender has actually attempted,
+  # rather than for a fixed two seconds. The property only exists while the mutex
+  # is genuinely held, and a contender needs a fresh shell plus a source of this
+  # library to get that far - measured at ~7s on a loaded Git Bash host, where a
+  # two-second hold lapses long before the contender reaches the lock and its
+  # legitimate reclaim of a dead-pid lock then reads as a stolen live mutex.
   FM_STATE_OVERRIDE="$state" bash -c '
     . "$1"
     fm_lock_try_acquire "$2.steal" || exit 7
     printf "%s\n" "${BASHPID:-$$}" > "$3"
-    sleep 2
+    i=0
+    while [ ! -s "$4" ] && [ "$i" -lt 600 ]; do
+      sleep 0.1
+      i=$((i + 1))
+    done
     fm_lock_release "$2.steal"
-  ' _ "$LIB" "$lockdir" "$holder_file" &
+  ' _ "$LIB" "$lockdir" "$holder_file" "$attempted" &
   holder=$!
   i=0
-  while [ "$i" -lt 50 ] && [ ! -s "$holder_file" ]; do
+  while [ "$i" -lt 300 ] && [ ! -s "$holder_file" ]; do
     sleep 0.1
     i=$((i + 1))
   done
@@ -276,7 +316,8 @@ test_lock_live_steal_mutex_is_not_reclaimed() {
     . "$1"
     if fm_lock_try_acquire "$2"; then rc=0; else rc=1; fi
     printf "rc=%s held=%s lockpid=%s stealpid=%s\n" "$rc" "${FM_LOCK_HELD_PID:-}" "$(cat "$2/pid" 2>/dev/null || true)" "$(cat "$2.steal/pid" 2>/dev/null || true)"
-  ' _ "$LIB" "$lockdir")
+    printf "done\n" > "$3"
+  ' _ "$LIB" "$lockdir" "$attempted")
   wait "$holder" || fail "live steal mutex holder failed"
   case "$out" in
     *"rc=1"*) ;;
@@ -319,23 +360,70 @@ test_lock_does_not_steal_live_lock() {
 }
 
 test_lock_empty_pid_uses_minimum_grace() {
-  local dir state lockdir out
+  local dir state lockdir out age
   dir=$(make_case lock-empty-grace)
   state="$dir/state"
   lockdir="$state/.contend.lock"
-  mkdir "$lockdir"
+  # Create the mid-acquire lock inside the contender, after the shell is up and
+  # this library is sourced. The grace being asserted is only two seconds wide,
+  # and a shell that needs longer than that just to start (measured ~7s on a
+  # loaded Git Bash host) would age the lock past its own grace before ever
+  # attempting, turning a legitimate stale reclaim into a spurious failure. The
+  # warm-up acquire on a throwaway path pays the fork costs of the acquire path
+  # before the clock that matters starts.
   out=$(FM_LOCK_STALE_AFTER=0 FM_STATE_OVERRIDE="$state" bash -c '
     . "$1"
+    fm_lock_try_acquire "$2.warmup" >/dev/null 2>&1 && fm_lock_release "$2.warmup"
+    mkdir "$2" || exit 20
     if fm_lock_try_acquire "$2"; then rc=0; else rc=1; fi
-    printf "rc=%s held=%s\n" "$rc" "${FM_LOCK_HELD_PID:-}"
+    printf "rc=%s held=%s age=%s\n" "$rc" "${FM_LOCK_HELD_PID:-}" "$(fm_path_age "$2")"
+  ' _ "$LIB" "$lockdir")
+  age=${out#*age=}; age=${age%% *}
+  case "$out" in
+    *"rc=1"*)
+      [ -d "$lockdir" ] || fail "empty mid-acquire lock dir was removed during grace"
+      [ ! -e "$lockdir/pid" ] || fail "empty mid-acquire lock gained a pid during grace"
+      pass "empty mid-acquire lock keeps a minimum grace"
+      return
+      ;;
+  esac
+  # The reclaim is only legitimate if the lock had already outlived the grace by
+  # the time the acquire path reached its freshness check. On a loaded Git Bash
+  # host that path costs more seconds than the two-second grace it is meant to
+  # observe, so the end-to-end window is not demonstrable here - but the invariant
+  # it protects is, directly and without depending on fork latency. Anything else
+  # is a genuine steal inside the grace.
+  case "$age" in
+    ''|*[!0-9]*) fail "mid-acquire acquire did not report a lock age: $out" ;;
+  esac
+  [ "$age" -ge 2 ] || fail "empty mid-acquire lock was stolen inside its grace (age ${age}s): $out"
+  out=$(FM_LOCK_STALE_AFTER=0 FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    probe="$2.grace"
+    mkdir -p "$probe"
+    # mtime now: with FM_LOCK_STALE_AFTER=0 and no minimum, age 0 is already
+    # stale, so "fresh" here can only come from the two-second clamp.
+    touch "$probe"
+    if fm_lock_mid_acquire_is_fresh "$probe" ""; then now=fresh; else now=stale; fi
+    touch -t 200001010000 "$probe"
+    if fm_lock_mid_acquire_is_fresh "$probe" ""; then old=fresh; else old=stale; fi
+    touch "$probe"
+    if fm_lock_mid_acquire_is_fresh "$probe" 12345; then numeric=fresh; else numeric=stale; fi
+    printf "now=%s old=%s numeric=%s\n" "$now" "$old" "$numeric"
   ' _ "$LIB" "$lockdir")
   case "$out" in
-    *"rc=1"*) ;;
-    *) fail "empty mid-acquire lock was stolen with zero stale threshold: $out" ;;
+    *"now=fresh"*) ;;
+    *) fail "empty-pid lock lost its minimum grace with a zero stale threshold: $out" ;;
   esac
-  [ -d "$lockdir" ] || fail "empty mid-acquire lock dir was removed during grace"
-  [ ! -e "$lockdir/pid" ] || fail "empty mid-acquire lock gained a pid during grace"
-  pass "empty mid-acquire lock keeps a minimum grace"
+  case "$out" in
+    *"old=stale"*) ;;
+    *) fail "empty-pid lock stayed fresh long past its grace: $out" ;;
+  esac
+  case "$out" in
+    *"numeric=stale"*) ;;
+    *) fail "a lock naming a pid was treated as mid-acquire: $out" ;;
+  esac
+  pass "empty mid-acquire lock keeps a minimum grace (asserted directly: acquire path outruns the grace on this host)"
 }
 
 test_lock_late_claim_loses_after_recreate() {
@@ -343,16 +431,21 @@ test_lock_late_claim_loses_after_recreate() {
   dir=$(make_case lock-late-claim)
   state="$dir/state"
   lockdir="$state/.contend.lock"
+  # Seed and read the stale lock through the library's own publisher/reader
+  # instead of ln -s + readlink: the lock is a symlink only where symlinks work,
+  # and on a host where ln -s copies, a raw ln -s here would seed a fixture the
+  # protocol never produces. fm_lock_publish_link IS ln -s wherever symlinks
+  # work, so this stays the identical fixture on macOS/Linux.
   out=$(FM_LOCK_STALE_AFTER=0 FM_STATE_OVERRIDE="$state" bash -c '
     . "$1"
     owner1=$(fm_lock_owner_dir "$2") || exit 20
-    ln -s "$owner1" "$2" || exit 21
+    fm_lock_publish_link "$2" "$owner1" || exit 21
     touch -h -t 200001010000 "$2" 2>/dev/null || sleep 2
     if ! fm_lock_try_acquire "$2"; then exit 22; fi
     before=$(cat "$2/pid" 2>/dev/null || true)
     if fm_lock_claim "$2" "$owner1"; then late=won; else late=lost; fi
     after=$(cat "$2/pid" 2>/dev/null || true)
-    current_owner=$(readlink "$2" 2>/dev/null || true)
+    current_owner=$(fm_lock_link_owner "$2" 2>/dev/null || true)
     printf "late=%s before=%s after=%s owner_changed=%s\n" "$late" "$before" "$after" "$([ "$current_owner" != "$owner1" ] && echo yes || echo no)"
   ' _ "$LIB" "$lockdir")
   case "$out" in
@@ -378,7 +471,7 @@ test_lock_paused_mid_acquire_claim_fails_during_steal() {
   out=$(FM_LOCK_STALE_AFTER=0 FM_STATE_OVERRIDE="$state" bash -c '
     . "$1"
     owner=$(fm_lock_owner_dir "$2") || exit 20
-    ln -s "$owner" "$2" || exit 21
+    fm_lock_publish_link "$2" "$owner" || exit 21
     fm_lock_try_acquire "$2.steal" || exit 22
     steal_owner=${FM_LOCK_OWNER_DIR:-}
     if fm_lock_claim "$2" "$owner"; then late=won; else late=lost; fi
@@ -397,6 +490,49 @@ test_lock_paused_mid_acquire_claim_fails_during_steal() {
   pid=${out#*pid=}; pid=${pid%% *}
   [ -n "$pid" ] || fail "stealer claim did not record a pid: $out"
   pass "paused mid-acquire claimant backs off to active stealer"
+}
+
+test_lock_recovers_from_self_owned_leftover() {
+  # Where the lock is a directory rather than a symlink, a removal that is
+  # interrupted - or that Windows refuses part way through - can leave a lock
+  # directory whose pid file names a live process that has already moved on: the
+  # acquiring process itself. The normal stale path can never reclaim that shape,
+  # because fm_pid_alive keeps answering "held", so fm_lock_acquire_wait waits on
+  # itself for the life of the process. Observed in practice as a wake queue that
+  # stopped draining for over an hour. A symlink host cannot produce the shape (a
+  # lock is a symlink or it is nothing), so recovery is asserted only where the
+  # fallback representation is actually in use; there the assertion is that a lock
+  # naming a live pid is still honored, which is the property that must not
+  # regress while making self-owned leftovers recoverable.
+  local dir state lockdir dead out mode self steal_left
+  dir=$(make_case lock-self-leftover)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  dead=$(dead_pid)
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    if fm_lock_symlinks_work "$2"; then mode=symlink; else mode=fallback; fi
+    # A leftover steal mutex naming this very shell, over a stale primary lock.
+    mkdir -p "$2.steal"
+    printf "%s\n" "${BASHPID:-$$}" > "$2.steal/pid"
+    mkdir -p "$2"
+    printf "%s\n" "$3" > "$2/pid"
+    touch -t 200001010000 "$2" 2>/dev/null || true
+    if fm_lock_try_acquire "$2"; then self=recovered; else self=wedged; fi
+    printf "mode=%s self=%s steal_left=%s\n" "$mode" "$self" \
+      "$([ -e "$2.steal" ] && echo yes || echo no)"
+  ' _ "$LIB" "$lockdir" "$dead")
+  mode=${out#*mode=}; mode=${mode%% *}
+  self=${out#*self=}; self=${self%% *}
+  steal_left=${out#*steal_left=}; steal_left=${steal_left%% *}
+  if [ "$mode" = fallback ]; then
+    [ "$self" = recovered ] || fail "fallback lock deadlocked on its own leftover steal mutex: $out"
+    [ "$steal_left" = no ] || fail "recovered acquire left its steal mutex behind: $out"
+    pass "fallback lock recovers from a self-owned leftover instead of waiting on itself"
+  else
+    [ "$self" = wedged ] || fail "symlink-mode lock naming a live pid was acquired anyway: $out"
+    pass "symlink-mode lock naming a live pid is still honored (self-leftover shape is unreachable)"
+  fi
 }
 
 test_watch_restart_rejects_reused_pid() {
@@ -1026,6 +1162,7 @@ test_lock_does_not_steal_live_lock
 test_lock_empty_pid_uses_minimum_grace
 test_lock_late_claim_loses_after_recreate
 test_lock_paused_mid_acquire_claim_fails_during_steal
+test_lock_recovers_from_self_owned_leftover
 test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
