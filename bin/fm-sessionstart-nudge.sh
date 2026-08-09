@@ -16,6 +16,10 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
 # shellcheck source=bin/fm-operational-input.sh
 . "$SCRIPT_DIR/fm-operational-input.sh"
+# shellcheck source=bin/fm-psproc-lib.sh
+. "$SCRIPT_DIR/fm-psproc-lib.sh"
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 fm_is_gate_agent "$FM_ROOT" && exit 0
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
@@ -30,13 +34,22 @@ lock_is_in_ancestry() {
   kill -0 "$lock_pid" 2>/dev/null || return 1
   for _ in 1 2 3 4 5 6 7 8; do
     [ "$pid" = "$lock_pid" ] && return 0
-    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    pid=$(fm_proc_ppid "$pid" 2>/dev/null | tr -d ' ')
     [ -n "$pid" ] && [ "$pid" -gt 1 ] || return 1
   done
   return 1
 }
 
+# The raw walk answers "did MY session acquire the lock" only where the harness
+# is reachable as an ancestor and visible to kill -0. On Git Bash/MSYS neither
+# holds - a bash under the native Windows harness reports PPID=1, and the
+# harness pid the lock records has no MSYS presence at all - so an already
+# locked session would be nudged to lock again on every SessionStart. Fall back
+# to the shared owner of that decision, which resolves the same identity the
+# lock was written with. Where the walk works it still answers first, so no
+# platform pays for a second resolution it does not need.
 lock_is_in_ancestry && exit 0
+fm_session_lock_owned_by_self "$STATE" && exit 0
 nudge=
 fm_operational_input_encode session-start \
   "Run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions." \

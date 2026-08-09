@@ -54,6 +54,12 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-${FM_ROOT:-$FM_BACKEND_DEFAULT_ROOT}}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 FM_BACKEND_CONFIG_DIR="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
+# Ancestry queries in fm_backend_detect_cmux_app_is_ancestor go through the
+# shared portable process primitives; they run the same `ps -o <field>=` form
+# used here before and fall back only when it fails.
+# shellcheck source=bin/fm-psproc-lib.sh
+. "$FM_BACKEND_LIB_DIR/fm-psproc-lib.sh"
+
 # Verified backend adapters. Extend only after a backend gets its own
 # bin/backends/<name>.sh and empirical verification, mirroring AGENTS.md
 # section 4's harness-verification discipline. herdr is EXPERIMENTAL (P2;
@@ -211,14 +217,14 @@ fm_backend_detect_cmux_app_is_ancestor() {
     if [ -n "$cmux_pid" ] && [ "$pid" = "$cmux_pid" ]; then
       return 0
     fi
-    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || comm=""
+    comm=$(fm_proc_comm "$pid" 2>/dev/null) || comm=""
     comm="${comm#"${comm%%[![:space:]]*}"}"
     comm="${comm%"${comm##*[![:space:]]}"}"
     [ -n "$comm" ] || return 1
     case "$comm" in
       */cmux.app/Contents/MacOS/cmux) return 0 ;;
     esac
-    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    ppid=$(fm_proc_ppid "$pid" 2>/dev/null | tr -d '[:space:]')
     case "$ppid" in ''|*[!0-9]*) return 1 ;; esac
     [ "$ppid" -gt 1 ] || return 1
     pid=$ppid

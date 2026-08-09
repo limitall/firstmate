@@ -263,10 +263,52 @@ fm_pr_sha256() {
   fi
 }
 
+# fm_pr_mode_enforcement_inert <dir>: capability probe for filesystems where
+# chmod is accepted but provably changes nothing - Git Bash mounts drives and
+# /tmp noacl, so every strict private-mode gate in this lib is unsatisfiable
+# there while those locations are already private to the user at the Windows
+# ACL layer. Same probe/acceptance design and full reasoning as
+# fmx_mode_enforcement_inert in bin/fm-x-lib.sh (each lib stays self-contained
+# the same way the Darwin stat forks are duplicated per lib). Runs only after
+# a mode gate has already failed, so mode-honoring hosts keep exact behavior.
+FM_PR_MODE_INERT_DIR=
+FM_PR_MODE_INERT_VERDICT=
+fm_pr_mode_enforcement_inert() {
+  local dir=$1 probe mode
+  [ -d "$dir" ] || return 1
+  if [ "$dir" = "$FM_PR_MODE_INERT_DIR" ] && [ -n "$FM_PR_MODE_INERT_VERDICT" ]; then
+    return "$FM_PR_MODE_INERT_VERDICT"
+  fi
+  FM_PR_MODE_INERT_DIR=$dir
+  FM_PR_MODE_INERT_VERDICT=1
+  probe=$(umask 077; mktemp "$dir/.fm-pr-modeprobe.XXXXXX" 2>/dev/null) || return 1
+  chmod 0 "$probe" 2>/dev/null
+  mode=$(fm_pr_file_mode "$probe")
+  rm -f -- "$probe" 2>/dev/null
+  case "$mode" in
+    0|00|000|'') FM_PR_MODE_INERT_VERDICT=1 ;;
+    *) FM_PR_MODE_INERT_VERDICT=0 ;;
+  esac
+  return "$FM_PR_MODE_INERT_VERDICT"
+}
+
+fm_pr_file_owner() {
+  if [ "$(uname)" = Darwin ]; then
+    stat -f %u "$1" 2>/dev/null
+  else
+    stat -c %u "$1" 2>/dev/null
+  fi
+}
+
 fm_pr_private_file_valid() {
   local path=$1 mode=$2 device=$3
   [ -f "$path" ] && [ ! -L "$path" ] || return 1
-  [ "$(fm_pr_file_mode "$path")" = "$mode" ] || return 1
+  if [ "$(fm_pr_file_mode "$path")" != "$mode" ]; then
+    # Inert-chmod filesystems cannot express the mode bit; require ownership
+    # instead there (see fm_pr_mode_enforcement_inert).
+    fm_pr_mode_enforcement_inert "$(dirname "$path")" || return 1
+    [ "$(fm_pr_file_owner "$path")" = "$(id -u 2>/dev/null)" ] || return 1
+  fi
   [ "$(fm_pr_file_device "$path")" = "$device" ] || return 1
   [ "$(fm_pr_file_link_count "$path")" = 1 ]
 }

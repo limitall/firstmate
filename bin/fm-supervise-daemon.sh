@@ -107,11 +107,13 @@
 #                                   alarm fires (default 300; 0 disables)
 #          FM_WEDGE_ALARM_CHANNEL   override config/wedge-alarm with a single
 #                                   active-alert directive for that wedge alarm
-#                                   (off|auto|osascript|herdr|command:<cmd>). An
-#                                   absent file/var means auto: on macOS that is
-#                                   an OS-level notification, so the alarm is
-#                                   never silent. See wedge_alarm_notify below
-#                                   and docs/configuration.md.
+#                                   (off|auto|osascript|powershell|herdr|
+#                                   command:<cmd>). An absent file/var means
+#                                   auto: on macOS that is an OS-level
+#                                   notification and on Windows a desktop toast,
+#                                   so the alarm is never silent. See
+#                                   wedge_alarm_notify below and
+#                                   docs/configuration.md.
 #          FM_WEDGE_ALARM_EXEC      notifier seam: when set, every notifier
 #                                   channel routes through this command as
 #                                   `<cmd> <channel> <summary>` instead of
@@ -672,13 +674,16 @@ escalate_flush() {  # <state>
 # single directive. Directives:
 #   off              disable the active alert entirely, regardless of position
 #                    (marker + flash remain)
-#   auto | default   platform default: macOS -> osascript; otherwise none
+#   auto | default   platform default: macOS -> osascript, Windows -> powershell;
+#                    otherwise none
 #   osascript        macOS Notification Center banner (backend-independent)
+#   powershell       Windows desktop toast, msg.exe as the fallback transport
+#                    (backend-independent)
 #   herdr            herdr UI notification (herdr notification show)
 #   command:<cmd>    run <cmd> via `sh -c`, summary on $1 and on stdin
-# An absent config means auto, i.e. default-ON on macOS: the alarm's whole
-# purpose is to never be silent, so the reachable OS channel fires unless the
-# captain explicitly disables it.
+# An absent config means auto, i.e. default-ON on macOS and Windows: the alarm's
+# whole purpose is to never be silent, so the reachable OS channel fires unless
+# the captain explicitly disables it.
 
 # Print the configured channel directives, one per line. FM_WEDGE_ALARM_CHANNEL
 # wins (a single directive); else each non-empty, non-comment line of
@@ -703,13 +708,28 @@ wedge_alarm_configured_channels() {
   [ -n "$found" ] || printf 'auto\n'
 }
 
+# Windows has no single always-present notifier binary the way macOS has
+# osascript: wedge_alarm_via_powershell can deliver through either transport, so
+# `auto` resolves as long as one of them is reachable.
+wedge_alarm_windows_notifier_available() {
+  command -v powershell.exe >/dev/null 2>&1 && return 0
+  command -v msg.exe >/dev/null 2>&1 && return 0
+  return 1
+}
+
 # Resolve the platform's default OS-level channel for `auto`. macOS reaches the
-# captain via an osascript Notification Center banner; other platforms have no
-# built-in OS channel (the captain wires a command: directive), so this prints
-# nothing and wedge_alarm_notify logs that the marker is the only signal.
+# captain via an osascript Notification Center banner and Windows via a desktop
+# toast; other platforms have no built-in OS channel (the captain wires a
+# command: directive), so this prints nothing and wedge_alarm_notify logs that
+# the marker is the only signal. Windows is recognized from `uname`'s *_NT-*
+# forms rather than $OSTYPE so that the platform arm stays decided by the same
+# input as the Darwin arm: a Linux-targeted case cannot be hijacked by a Windows
+# host, and the suite's fake uname keeps controlling both.
 wedge_alarm_platform_default() {
   case "$(uname)" in
     Darwin) command -v osascript >/dev/null 2>&1 && printf 'osascript' ;;
+    MINGW*|MSYS*|CYGWIN*)
+      wedge_alarm_windows_notifier_available && printf 'powershell' ;;
     *) : ;;
   esac
 }
@@ -802,6 +822,68 @@ wedge_alarm_via_osascript() {  # <summary>
   return 1
 }
 
+# The toast script, as ONE PowerShell line: a newline inside a single argv item
+# does not reliably survive the MSYS -> Win32 command-line conversion, so the
+# statements are joined with `;` instead. Uses only stock Windows.UI.Notifications
+# (BurntToast and other modules are not assumed). A toast whose notifier is not
+# `Enabled` would be posted and never seen, so that case exits non-zero and lets
+# the msg.exe transport below take over rather than reporting a false success.
+WEDGE_ALARM_PS_TOAST='$ErrorActionPreference = "Stop"; '\
+'try { '\
+'$body = $env:FM_WEDGE_ALARM_SUMMARY; if (-not $body) { $body = "(no detail)" }; '\
+'[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]; '\
+'[void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom,ContentType=WindowsRuntime]; '\
+'$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('\
+'"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"); '\
+'if ($notifier.Setting -ne "Enabled") { exit 3 }; '\
+'$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent('\
+'[Windows.UI.Notifications.ToastTemplateType]::ToastText02); '\
+'$text = $xml.GetElementsByTagName("text"); '\
+'[void]$text.Item(0).AppendChild($xml.CreateTextNode("firstmate: away-mode escalations WEDGED")); '\
+'[void]$text.Item(1).AppendChild($xml.CreateTextNode($body)); '\
+'$notifier.Show((New-Object Windows.UI.Notifications.ToastNotification $xml)); '\
+'exit 0 } catch { exit 4 }'
+
+# Post a Windows desktop notification. Like osascript on macOS this is OS-level
+# and independent of any terminal pane or multiplexer status-line, so it reaches
+# a captain whose wedged primary is a non-tmux backend. Two stock-only transports
+# are tried in order, each through the same bounded watchdog every other channel
+# uses (so the worst case for this channel is two FM_WEDGE_ALARM_TIMEOUT_SECS
+# windows, never an unbounded block of the daemon loop):
+#   1. a Windows.UI.Notifications toast via powershell.exe, which also lands in
+#      the Action Center and so survives an unattended desktop;
+#   2. msg.exe, which ships on Pro/Workstation editions, when the toast could not
+#      be delivered at all.
+# The summary crosses into PowerShell through the ENVIRONMENT and is never
+# interpolated into the script source - the same property that makes the
+# osascript channel's argv item safe, and the stronger choice here because MSYS
+# rewrites Win32 argv. MSYS2_ARG_CONV_EXCL keeps that rewriting off the script
+# text itself. Best-effort: logs and returns 1 when no transport delivered.
+wedge_alarm_via_powershell() {  # <summary>
+  local summary=$1 rc
+  wedge_alarm_os_notifier_override powershell "$summary"
+  rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+  esac
+  if command -v powershell.exe >/dev/null 2>&1; then
+    wedge_alarm_run_bounded powershell \
+      env MSYS2_ARG_CONV_EXCL='*' FM_WEDGE_ALARM_SUMMARY="$summary" \
+      powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden \
+      -Command "$WEDGE_ALARM_PS_TOAST" >/dev/null 2>&1 && return 0
+    log "wedge alarm: powershell toast not delivered; trying msg.exe"
+  fi
+  if command -v msg.exe >/dev/null 2>&1; then
+    wedge_alarm_run_bounded powershell msg.exe "${USERNAME:-${USER:-*}}" /TIME:60 \
+      "firstmate: away-mode escalations WEDGED - $summary" >/dev/null 2>&1 && return 0
+    log "wedge alarm: msg.exe notification failed"
+    return 1
+  fi
+  log "wedge alarm: neither powershell.exe nor msg.exe found; cannot post a Windows notification"
+  return 1
+}
+
 # Post a herdr UI notification - herdr's own surface, separate from the pane and
 # its status-line. Best-effort: logs and returns 1 on failure.
 wedge_alarm_via_herdr() {  # <summary>
@@ -852,6 +934,7 @@ wedge_alarm_emit() {  # <channel> <summary>
   esac
   case "$channel" in
     osascript) wedge_alarm_via_osascript "$summary" ;;
+    powershell) wedge_alarm_via_powershell "$summary" ;;
     herdr) wedge_alarm_via_herdr "$summary" ;;
     command) wedge_alarm_via_command "$cmd" "$summary" ;;
   esac
@@ -876,7 +959,7 @@ wedge_alarm_notify() {  # <summary> <marker>
     case "$ch" in auto|default) ch=$(wedge_alarm_platform_default) ;; esac
     case "$ch" in
       '') log "wedge alarm: no OS-level alert channel on $(uname); durable marker $marker is the only signal - set config/wedge-alarm (e.g. a command: directive)" ;;
-      osascript|herdr) wedge_alarm_emit "$ch" "$summary" || true ;;
+      osascript|powershell|herdr) wedge_alarm_emit "$ch" "$summary" || true ;;
       command:*) wedge_alarm_emit command "$summary" "${ch#command:}" || true ;;
       *) log "wedge alarm: unrecognized active-alert channel directive (redacted); marker still written" ;;
     esac

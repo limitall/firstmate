@@ -17,7 +17,19 @@
 #                 "NUDGE_SECONDMATES: secondmate <id>: send failed: <reason>",
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
+#                 "WINDOWS_SETUP: <remediation>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
+#          On Windows (Git Bash/MSYS2/Cygwin) the MISSING: remedy text switches
+#          to the platform-native route for the tools that have one - winget for
+#          jq/node/gh/curl - and tmux, which has no Windows build, reports
+#          MISSING_MANUAL against docs/windows.md instead. Line shapes and every
+#          other platform's remedy text are unchanged.
+#          A WINDOWS_SETUP line means firstmate's two tracked symlinks
+#          (CLAUDE.md, .claude/skills) were checked out as plain stub files by a
+#          Git for Windows clone without symlink support, so the agent's
+#          instruction surface is silently absent; it is detect-only and names
+#          bin/fm-windows-setup.sh as the repair. Windows-only and never printed
+#          on any other platform.
 #          When a RUNNING secondmate worktree is fast-forwarded to firstmate's
 #          own current default-branch commit (a purely LOCAL fast-forward, never
 #          an origin fetch) AND its loaded instruction surface (AGENTS.md, bin/,
@@ -494,7 +506,46 @@ secondmate_liveness_sweep() {
   return 0
 }
 
+# Windows (Git Bash/MSYS2/Cygwin) remedy routing. A brew or apt hint is not
+# actionable there, so the tools below report their platform-native route
+# instead. Every emitted line keeps its exact existing shape - only the human
+# remedy text changes - and every other platform is untouched, because this
+# predicate is false everywhere else (guard precedent: bin/fm-watch-arm.sh).
+fm_windows_host() {
+  case "${OSTYPE:-}" in
+    msys*|mingw*|cygwin*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# winget package IDs, each verified against the live winget source on Windows 11.
+# Only tools that can genuinely be absent from a Git Bash host are routed here:
+# git is deliberately omitted because Git Bash cannot run without it, and the
+# npm and curl installers below already work unchanged under Git Bash.
+winget_install_cmd() {
+  local id
+  case "$1" in
+    jq) id=jqlang.jq ;;
+    node) id=OpenJS.NodeJS.LTS ;;
+    gh) id=GitHub.cli ;;
+    curl) id=cURL.cURL ;;
+    *) return 1 ;;
+  esac
+  echo "winget install --id $id -e --accept-source-agreements --accept-package-agreements"
+}
+
 install_cmd() {
+  local winget_cmd
+  # A tool routed to manual instructions has no runnable install command, so
+  # `fm-bootstrap.sh install <tool>` refuses with those instructions instead of
+  # evaluating a package-manager command that cannot work on this platform.
+  # No-op off Windows, where herdr is the only manual tool and it already had no
+  # entry below.
+  manual_install_url "$1" >/dev/null && return 1
+  if fm_windows_host && winget_cmd=$(winget_install_cmd "$1"); then
+    echo "$winget_cmd"
+    return 0
+  fi
   case "$1" in
     tmux|node|git|gh|curl|jq|orca|zellij) echo "brew install $1  # or the platform's package manager" ;;
     cmux) echo "brew install --cask cmux  # or see https://cmux.com" ;;
@@ -509,6 +560,15 @@ install_cmd() {
 manual_install_url() {
   case "$1" in
     herdr) echo "https://herdr.dev" ;;
+    tmux)
+      # tmux has no native Windows build and no winget package: on Git Bash it
+      # comes from an MSYS2 installation, which docs/windows.md owns. Reporting
+      # it as MANUAL also keeps `fm-bootstrap.sh install tmux` from running a
+      # brew command that cannot work there. Every other platform keeps the
+      # package-manager route above.
+      fm_windows_host || return 1
+      echo "docs/windows.md"
+      ;;
     *) return 1 ;;
   esac
 }
@@ -818,6 +878,34 @@ crew_dispatch_validate() {
   fi
 }
 
+# Windows checkout integrity - DETECT ONLY, on Windows only.
+# firstmate tracks two load-bearing symlinks: CLAUDE.md -> AGENTS.md and
+# .claude/skills -> ../.agents/skills. Git for Windows refuses symlink checkout
+# unless the clone has the privilege for it, and writes a regular STUB file
+# whose entire content is the link target instead. Nothing errors: the harness
+# just reads a 9-byte CLAUDE.md, finds no skills, and the whole instruction
+# surface is silently absent. bin/fm-windows-setup.sh owns the classification
+# and both repair modes; bootstrap only reports it, because a repair writes to
+# the working tree and belongs behind captain consent like every install.
+windows_symlink_stub_check() {
+  fm_windows_host || return 0
+  local broken=""
+  # Git writes the stub with no trailing newline; `$(head -c ...)` drops one
+  # anyway, so a stub an editor merely re-saved still classifies as a stub.
+  # bin/fm-windows-setup.sh's is_stub_file uses the identical comparison.
+  if [ -f "$FM_ROOT/CLAUDE.md" ] && [ ! -L "$FM_ROOT/CLAUDE.md" ] \
+    && [ "$(head -c 4096 "$FM_ROOT/CLAUDE.md" 2>/dev/null | tr -d '\r')" = AGENTS.md ]; then
+    broken="CLAUDE.md"
+  fi
+  # A regular FILE where the skills directory belongs is unambiguous: a real
+  # symlink, a directory junction, and a plain copied directory are all -d.
+  if [ -f "$FM_ROOT/.claude/skills" ] && [ ! -L "$FM_ROOT/.claude/skills" ]; then
+    broken="${broken:+$broken, }.claude/skills"
+  fi
+  [ -n "$broken" ] || return 0
+  echo "WINDOWS_SETUP: tracked symlinks are checked out as plain stub files ($broken); the agent instruction surface will not load until they are materialized - repair with: bash bin/fm-windows-setup.sh"
+}
+
 startup_memory_budget_setup() {
   # Primary bootstrap owns default publication. A secondmate is deliberately
   # passive here because its setting must converge from the primary through the
@@ -894,6 +982,7 @@ if [ -n "$tangle_branch" ]; then
     echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - restore the primary with: git -C $FM_ROOT checkout $tangle_default, then re-validate the branch in a proper worktree"
   fi
 fi
+windows_symlink_stub_check
 crew=
 [ -f "$CONFIG/crew-harness" ] && crew=$(tr -d '[:space:]' < "$CONFIG/crew-harness" || true)
 if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] && [ -n "$crew" ] && [ "$crew" != "default" ]; then

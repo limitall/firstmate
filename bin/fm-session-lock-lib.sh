@@ -8,6 +8,14 @@
 # lock-owning primary session before it may arm or rewake.
 # This file is sourced by scripts and has no side effects on source.
 
+# Process queries go through the shared portable primitives so this file states
+# the identity contract once and never re-states how a platform answers "what
+# is that pid?". Each primitive runs the same `ps -o <field>=` form this file
+# used inline before, and falls back only when it fails.
+_FM_SESSION_LOCK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-psproc-lib.sh
+. "$_FM_SESSION_LOCK_LIB_DIR/fm-psproc-lib.sh"
+
 # Known harness command names; extend when a new adapter is verified.
 FM_HARNESS_RE='claude|codex|opencode|grok|kimi|^pi$|^pi-signed$'
 
@@ -26,11 +34,14 @@ FM_HARNESS_RE='claude|codex|opencode|grok|kimi|^pi$|^pi-signed$'
 # session that launched a test as its own subprocess). The harness pid lives
 # as long as the session, unlike the transient subshell pid of any one tool
 # call.
+# When the walk finds nothing at all, fm_harness_native_session_pid gets the
+# last word, for the one platform where "nothing in the ancestry" does not mean
+# "no harness above us" - see its comment.
 fm_harness_ancestry_pid() {
   local pid=$$ comm args best='' bc extending=0 hit=0 is_claude=0
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
-    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || break
-    args=$(ps -o args= -p "$pid" 2>/dev/null)
+    comm=$(fm_proc_comm "$pid") || break
+    args=$(fm_proc_args "$pid" 2>/dev/null) || args=''
     bc=$(basename -- "$comm")
     hit=0; is_claude=0
     if printf '%s' "$bc" | grep -qE "$FM_HARNESS_RE"; then
@@ -57,24 +68,92 @@ fm_harness_ancestry_pid() {
     elif [ "$extending" -eq 1 ]; then
       break
     fi
-    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    pid=$(fm_proc_ppid "$pid" 2>/dev/null | tr -d ' ')
     [ -n "$pid" ] && [ "$pid" -gt 1 ] || break
   done
   [ -n "$best" ] && { echo "$best"; return 0; }
-  return 1
+  fm_harness_native_session_pid
+}
+
+# True when a NATIVE Windows process image looks like a verified harness. Same
+# two-layer rule the ancestry walk applies to comm/args - the image name itself,
+# or a bare interpreter carrying the harness name - except that the native
+# process table exposes only the executable path, never the arguments. A harness
+# launched as `node <somewhere>/claude/cli.js` is therefore recognizable only
+# when the harness name is in the interpreter's own path; that gap is why the
+# caller decides how much to trust a bare interpreter (see the two call sites).
+fm_harness_native_image_matches() {  # <image-name> <image-path>
+  local image=$1 path=$2
+  if printf '%s' "$image" | grep -qE "$FM_HARNESS_RE"; then
+    return 0
+  fi
+  fm_harness_native_image_is_interpreter "$image" || return 1
+  printf '%s' "$path" | grep -qE "$FM_HARNESS_RE"
+}
+
+# True when a native image is a bare interpreter that a harness may run under.
+fm_harness_native_image_is_interpreter() {  # <image-name>
+  case "$1" in
+    node|node.exe|python|python.exe|python3|python3.exe|py|py.exe) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Post-walk fallback for an ancestry chain that is SEVERED, not merely unmatched.
+#
+# On Git Bash/MSYS the harness is a native Windows process, and a bash whose
+# parent is native reports PPID=1: the MSYS process table holds no edge back to
+# it, and the harness pid has no /proc entry and is invisible to `kill -0`. The
+# walk above therefore stops at its first hop having found nothing, and no
+# amount of ps portability can change that - the harness is not IN the ancestry
+# as MSYS reports it.
+#
+# Claude Code does export CLAUDE_PID (its own Windows pid) into every process it
+# launches, hooks included, so the SAME value is visible to the bin/fm-lock.sh
+# writer and to every later checker in that session. Resolving to it keeps
+# fm_session_lock_owned_by_self a real identity test rather than a tautology: a
+# concurrent Claude session in the same home carries a DIFFERENT CLAUDE_PID and
+# correctly fails the match, and a session that has exited leaves a pid that
+# fm_native_pid_info reports dead. The value is trusted because the harness
+# itself published it into this environment - so unlike the lock-file pid that
+# fm_harness_pid_alive inspects, a bare `node` image is accepted here without a
+# harness-shaped path, which is the only way a node-launched Claude install can
+# resolve at all. The image check that remains is a pid-reuse guard.
+#
+# Everywhere else this is a no-op: CLAUDE_PID is unset, and fm_native_pid_info
+# returns non-zero off Windows without forking anything.
+fm_harness_native_session_pid() {
+  case "${CLAUDE_PID:-}" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  fm_native_pid_info "$CLAUDE_PID" >/dev/null || return 1
+  fm_harness_native_image_matches "$FM_NATIVE_PID_IMAGE" "$FM_NATIVE_PID_PATH" ||
+    fm_harness_native_image_is_interpreter "$FM_NATIVE_PID_IMAGE" || return 1
+  printf '%s\n' "$CLAUDE_PID"
 }
 
 # True if $1 is a live process that looks like a verified harness.
 fm_harness_pid_alive() {
   local pid=$1 comm args
-  kill -0 "$pid" 2>/dev/null || return 1
-  comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
+  if ! kill -0 "$pid" 2>/dev/null; then
+    # A native Windows harness pid - what fm_harness_native_session_pid records
+    # in the lock - is invisible to kill -0 and to /proc from Git Bash, so the
+    # native process table is the only observer that can tell "still running"
+    # from "gone". This pid comes from the lock FILE and may belong to another
+    # session, so it gets the strict image rule: a bare interpreter must also
+    # carry a harness-shaped path, or a recycled pid running some unrelated
+    # node.exe would keep a dead session's lock alive forever.
+    fm_native_pid_info "$pid" >/dev/null || return 1
+    fm_harness_native_image_matches "$FM_NATIVE_PID_IMAGE" "$FM_NATIVE_PID_PATH"
+    return
+  fi
+  comm=$(fm_proc_comm "$pid") || return 1
   if printf '%s' "$(basename -- "$comm")" | grep -qE "$FM_HARNESS_RE"; then
     return 0
   fi
   case "$comm" in
     *node*|*python*)
-      args=$(ps -o args= -p "$pid" 2>/dev/null)
+      args=$(fm_proc_args "$pid" 2>/dev/null) || args=''
       printf '%s' "$args" | grep -qE "$FM_HARNESS_RE"
       ;;
     *) return 1 ;;

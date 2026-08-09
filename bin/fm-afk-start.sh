@@ -41,6 +41,8 @@ FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$FM_AFK_START_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-psproc-lib.sh
+. "$FM_AFK_START_DIR/fm-psproc-lib.sh"
 
 fm_afk_start_usage() {
   sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -89,7 +91,9 @@ daemon_pid_matches() {
     [ "$current" = "$identity" ]
     return
   fi
-  command=$(ps -p "$pid" -o command= 2>/dev/null || true)
+  # The identity file is the primary evidence; this is the pre-identity
+  # fallback, matching the daemon by the script path in its argument vector.
+  command=$(fm_proc_args "$pid" 2>/dev/null || true)
   case "$command" in
     *"$FM_AFK_DAEMON"*|*"fm-supervise-daemon.sh"*) return 0 ;;
   esac

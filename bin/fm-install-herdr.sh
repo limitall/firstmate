@@ -49,6 +49,17 @@ case "${os}-${arch}" in
     ASSET=herdr-macos-x86_64
     SHA256=ddf430133352e1712413d5d865b34a485546f4658893fc89986257d65a7585a8
     ;;
+  # Windows (Git Bash/MSYS2/Cygwin). No STABLE release carries a Windows asset
+  # yet - neither the pinned v0.7.4 nor the current v0.7.5 - so this pinned CI
+  # installer has nothing to fetch and refuses here, before any download, rather
+  # than 404 mid-install on an asset URL that cannot exist.
+  # Windows builds DO exist in PREVIEW releases, and docs/windows.md owns that
+  # install route. Pinning one here is an open decision rather than an
+  # oversight: a preview pin needs its own verified version and SHA-256, so it
+  # belongs as another "${os}-${arch}" arm above, replacing this refusal.
+  MINGW*|MSYS*|CYGWIN*)
+    die "no stable Herdr release carries a Windows asset yet (the pinned v${FM_HERDR_CI_VERSION} is linux/macos only), so this pinned CI installer cannot run on ${os}; Windows builds ship in preview releases (tag preview-2026-07-29-44b3adb12552, asset herdr-windows-x86_64.zip) - see docs/windows.md for the Windows install route"
+    ;;
   *)
     die "unsupported platform ${os}-${arch}; official Herdr assets are linux/macos x86_64 and aarch64"
     ;;

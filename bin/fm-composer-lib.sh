@@ -206,10 +206,20 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
   if fm_composer_idle_matches "$content" "$idle_re" "$idle_case"; then
     printf 'empty'; return 0
   fi
-  # Strip a leading prompt glyph, then re-judge the remainder.
+  # Strip a leading prompt glyph, then re-judge the remainder. The multibyte
+  # glyphs are stripped as LITERAL prefixes, never with ?-counting: under a
+  # C/POSIX locale (Git Bash ships with LANG unset) ${content#??} counts
+  # BYTES, so it would eat only 2 of UTF-8 "❯ "'s 4 bytes and leave a mangled
+  # tail that misses the idle-placeholder match (verified live: the grok
+  # placeholder read 'pending' instead of 'empty'). Literal-prefix removal is
+  # locale-independent; the single-byte ASCII arms keep the ?-form.
   case "$content" in
-    '❯ '*|'› '*|'> '*|'$ '*|'% '*|'# '*) content=${content#??} ;;
-    '❯'*|'›'*|'>'*|'$'*|'%'*|'#'*) content=${content#?} ;;
+    '❯ '*) content=${content#'❯ '} ;;
+    '› '*) content=${content#'› '} ;;
+    '> '*|'$ '*|'% '*|'# '*) content=${content#??} ;;
+    '❯'*) content=${content#'❯'} ;;
+    '›'*) content=${content#'›'} ;;
+    '>'*|'$'*|'%'*|'#'*) content=${content#?} ;;
   esac
   content="${content#"${content%%[![:space:]]*}"}"
   content="${content%"${content##*[![:space:]]}"}"

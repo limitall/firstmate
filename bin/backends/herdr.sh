@@ -462,7 +462,19 @@ fm_backend_herdr_presentation_lock_namespace_valid() {
   expected_uid=$(id -u 2>/dev/null) || return 1
   owner=$(fm_backend_herdr_presentation_lock_namespace_uid "$dir") || return 1
   mode=$(fm_backend_herdr_presentation_lock_namespace_mode "$dir") || return 1
-  [ "$owner" = "$expected_uid" ] && [ "$mode" = 700 ]
+  [ "$owner" = "$expected_uid" ] || return 1
+  [ "$mode" = 700 ] && return 0
+  # Windows Git Bash: /tmp is mounted noacl,posix=0,usertemp (verified live),
+  # so mkdir -m 700 and chmod are no-ops and every directory reads 755 - the
+  # 0700 gate is unsatisfiable. It is also unnecessary there: that mount IS
+  # the per-user AppData\Local\Temp, already private to this user at the NTFS
+  # ACL layer, so the shared-/tmp squatter threat the mode gate defends
+  # against cannot arise. Ownership and the non-symlink shape above still
+  # must hold.
+  case "${OSTYPE:-}" in
+    msys*|mingw*|cygwin*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Resolve the one verified running named-session socket path as an absolute
@@ -480,6 +492,11 @@ fm_backend_herdr_presentation_lock_namespace_valid() {
 fm_backend_herdr_canonical_socket_path() {  # <socket-path>
   local socket=$1 sock_dir sock_base
   [ -n "$socket" ] || return 1
+  # Windows herdr reports its socket as a drive path (C:\...\herdr.sock);
+  # translate to MSYS form first so the absolute-path guard and the physical
+  # canonicalization below treat it like any other absolute path. Unix socket
+  # paths never look like drive paths, so this is a pass-through elsewhere.
+  socket=$(fm_backend_herdr_normalize_host_path "$socket")
   case "$socket" in
     /*) ;;
     *) return 1 ;;
@@ -995,19 +1012,42 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
   shell_name=${name##*/}
   argv0=${argv0#-}
   argv0=${argv0##*/}
+  # Windows argv0 arrives as a full BACKSLASH path (verified live:
+  # "C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe"), which the
+  # forward-slash basename strip above never touches; peel that separator too.
+  shell_name=${shell_name##*\\}
+  argv0=${argv0##*\\}
+  # Windows executables carry an .exe suffix and arbitrary case; normalize
+  # both sides so "PowerShell.EXE" and "powershell" agree. No-op elsewhere.
+  shell_name=$(printf '%s' "$shell_name" | tr '[:upper:]' '[:lower:]'); shell_name=${shell_name%.exe}
+  argv0=$(printf '%s' "$argv0" | tr '[:upper:]' '[:lower:]'); argv0=${argv0%.exe}
   [ "$argv0" = "$shell_name" ] || return 1
-  case "$shell_name" in sh|bash|zsh|dash|ksh|fish) ;; *) return 1 ;; esac
+  # powershell/pwsh: herdr's Windows panes start (and restore husks) in
+  # PowerShell, which IS the bare idle pane shell there - excluding it would
+  # make the idle-shell proof unsatisfiable and every gentle close/cleanup
+  # path spin its full retry budget on Windows (verified live: the
+  # session-cleanup e2e sat in this loop for minutes).
+  case "$shell_name" in sh|bash|zsh|dash|ksh|fish|powershell|pwsh) ;; *) return 1 ;; esac
 
   ps_bin=${FM_HERDR_PS_BIN:-ps}
   command -v "$ps_bin" >/dev/null 2>&1 || return 1
-  rows=$("$ps_bin" -axo pid=,ppid= 2>/dev/null) || return 1
-  printf '%s\n' "$rows" | awk -v shell="$shell_pid" '
-    $1 == shell { found++ }
-    $2 == shell { child++ }
-    END { exit(found == 1 && child == 0 ? 0 : 1) }
-  ' || return 1
-  stat=$("$ps_bin" -p "$shell_pid" -o stat= 2>/dev/null | tr -d '[:space:]') || return 1
-  case "$stat" in S*|I*) ;; *) return 1 ;; esac
+  if rows=$("$ps_bin" -axo pid=,ppid= 2>/dev/null); then
+    printf '%s\n' "$rows" | awk -v shell="$shell_pid" '
+      $1 == shell { found++ }
+      $2 == shell { child++ }
+      END { exit(found == 1 && child == 0 ? 0 : 1) }
+    ' || return 1
+    stat=$("$ps_bin" -p "$shell_pid" -o stat= 2>/dev/null | tr -d '[:space:]') || return 1
+    case "$stat" in S*|I*) ;; *) return 1 ;; esac
+  else
+    # Cygwin ps (Git Bash) supports neither -axo nor -o stat=, and the pane
+    # shell is a NATIVE Windows process invisible to it anyway. The proof
+    # keeps herdr's own strict evidence above (exact pane binding, shell_pid
+    # == sole foreground process == foreground pgid, recognized bare shell)
+    # and forgoes only the OS-table no-child/sleep-state cross-check, which
+    # this platform cannot express through any ps this lib may rely on.
+    :
+  fi
   printf '%s\n' "$shell_pid"
 }
 
@@ -1610,10 +1650,26 @@ fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
 # fm_backend_herdr_explicit_close_pane_confirmed: issue one explicit close and
 # succeed only when a structured follow-up proves the exact pane is gone.
 fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 presence
+  local session=$1 pane_id=$2 presence attempt=0 max_attempts
   fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || return 1
-  presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
-  [ "$presence" = dead ]
+  # Confirmation is polled, not read once: an accepted `pane close` tears the
+  # pane down asynchronously on Windows (ConPTY unwind - verified live: the
+  # close returns ok while an immediate presence read still says present), and
+  # a single instant read would report a successful close as failed. The poll
+  # budget mirrors fm_backend_herdr_death_close_pane's confirmation loops; the
+  # first read still short-circuits on already-dead panes everywhere else.
+  # Under the scripted-CLI test seam (see fm_backend_herdr_pane_posixify) the
+  # poll collapses to the original single read: every extra read would consume
+  # a response fixture scripted for a later call.
+  max_attempts=${FM_BACKEND_HERDR_DEATH_CLOSE_POLLS:-40}
+  [ "${FM_BACKEND_HERDR_SCRIPTED_CLI:-}" = 1 ] && max_attempts=1
+  while :; do
+    presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
+    [ "$presence" = dead ] && return 0
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt "$max_attempts" ] || return 1
+    sleep 0.05
+  done
 }
 
 # fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
@@ -1708,6 +1764,76 @@ fm_backend_herdr_agent_alive() {  # <target>
   esac
 }
 
+# fm_backend_herdr_pane_posixify: WINDOWS-ONLY pane bootstrap. Herdr's Windows
+# build starts every new pane in PowerShell (no --command/--shell option on
+# `tab create` as of 0.7.5-preview), but everything firstmate types into a task
+# pane afterwards - `treehouse get`, the GOTMPDIR export, the harness launch -
+# is POSIX shell syntax. So on msys/mingw/cygwin hosts this types one Git-bash
+# invocation into the fresh PowerShell pane, then polls a marker probe until a
+# POSIX shell actually answers. Verified live: `& '<git>\usr\bin\bash.exe' -i`
+# keeps the pane's cwd (PowerShell's Windows cwd maps to the same directory in
+# MSYS form) and has git on PATH.
+#
+# The bash path is resolved through cygpath from this script's own /usr/bin
+# rather than typed as a bare `bash`, because inside PowerShell a bare `bash`
+# resolves to the WSL launcher (System32\bash.exe) - a different machine
+# entirely - whenever WSL is installed.
+#
+# The readiness marker is assembled by printf from two halves, so neither the
+# echoed probe command nor a PowerShell command-not-found error (both contain
+# only the unjoined halves) can satisfy the check; only a POSIX printf that
+# actually ran can join them. A pane that never answers is a loud failure:
+# typing POSIX commands into PowerShell would corrupt the spawn, so the caller
+# must stop rather than proceed. On non-Windows hosts this is a no-op, keeping
+# macOS/Linux behavior byte-identical.
+FM_BACKEND_HERDR_POSIX_BASH_WIN=
+fm_backend_herdr_pane_posixify() {  # <session> <pane>
+  # Test seam: the mocked contract suite (tests/fm-backend-herdr.test.sh)
+  # replaces the herdr CLI with NUMBERED response fixtures, so no real pane
+  # shell exists for this bootstrap to converse with - and every extra CLI
+  # call this function makes would consume a fixture scripted for a later
+  # call, derailing the whole scripted conversation. Only that suite sets
+  # this; production and the real-herdr suites never do, keeping the loud
+  # bootstrap-failure contract intact where a real pane is on the other end.
+  case "${FM_BACKEND_HERDR_SCRIPTED_CLI:-}" in
+    1) return 0 ;;
+  esac
+  case "${OSTYPE:-}" in
+    msys*|mingw*|cygwin*) ;;
+    *) return 0 ;;
+  esac
+  local session=$1 pane=$2 i out
+  if [ -z "$FM_BACKEND_HERDR_POSIX_BASH_WIN" ]; then
+    FM_BACKEND_HERDR_POSIX_BASH_WIN=$(cygpath -w /usr/bin/bash 2>/dev/null) || FM_BACKEND_HERDR_POSIX_BASH_WIN=
+  fi
+  if [ -z "$FM_BACKEND_HERDR_POSIX_BASH_WIN" ]; then
+    echo "error: cannot resolve a Windows path for Git bash; herdr task panes need it to run POSIX spawn commands" >&2
+    return 1
+  fi
+  # --login is load-bearing: a plain interactive bash inherits PowerShell's
+  # Windows PATH, which has git.exe but NOT the MSYS /usr/bin - builtins like
+  # printf work there while sh, date, sleep, and every coreutil a brief or
+  # treehouse relies on are missing (verified live: `sh: command not found`).
+  # The login profile is what prepends /usr/bin; Git for Windows' profile does
+  # not change the working directory, so the pane stays in its tab cwd.
+  fm_backend_herdr_cli "$session" pane run "$pane" \
+    "& '$FM_BACKEND_HERDR_POSIX_BASH_WIN' --login -i" >/dev/null 2>&1 || return 1
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    sleep 0.5
+    # The readiness marker only prints when a NON-builtin resolves, so a bare
+    # bash without /usr/bin on PATH can never satisfy the probe.
+    fm_backend_herdr_cli "$session" pane run "$pane" \
+      'command -v sh >/dev/null 2>&1 && printf '\''__FM_%sPOSIX__ok\n'\'' HERDR_' >/dev/null 2>&1 || continue
+    sleep 0.3
+    out=$(fm_backend_herdr_cli "$session" pane read "$pane" --source recent --lines 200 2>/dev/null) || out=
+    case "$out" in
+      *__FM_HERDR_POSIX__ok*) return 0 ;;
+    esac
+  done
+  echo "error: herdr pane $pane did not reach a POSIX shell after the Git-bash bootstrap; refusing to type POSIX spawn commands into PowerShell" >&2
+  return 1
+}
+
 # fm_backend_herdr_create_task: create the task's tab (one pane) in
 # <container> ("session:workspace_id"). Herdr does NOT enforce label
 # uniqueness itself (verified: two tabs can share a label), so the duplicate
@@ -1781,6 +1907,10 @@ EOF
     echo "error: could not parse tab/pane id from herdr tab create output" >&2
     return 1
   fi
+  # Windows: convert the fresh PowerShell pane to Git bash before any caller
+  # types POSIX spawn commands into it (no-op elsewhere). Loud failure keeps
+  # the tab in place for inspection, matching the parse-failure convention.
+  fm_backend_herdr_pane_posixify "$session" "$pane_id" || return 1
   [ -z "$seeded_tab_id" ] || fm_backend_herdr_workspace_prune_seeded_default_tab "$session" "$wsid" "$seeded_tab_id"
   if [ -n "$dup_tab_ids" ]; then
     while IFS= read -r dup; do
@@ -1886,6 +2016,13 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
     echo "error: herdr presentation task-tab create returned incomplete IDs; leaving its journal quarantined" >&2
     return 1
   fi
+  # Windows: the projected task pane receives the same typed POSIX spawn
+  # sequence as a flat pane, so it needs the same Git-bash bootstrap before
+  # the cleanup gate opens (no-op elsewhere).
+  fm_backend_herdr_pane_posixify "$session" "$FM_BACKEND_HERDR_PROJECTION_PANE_ID" || {
+    echo "error: herdr presentation task pane never reached a POSIX shell; leaving its journal quarantined" >&2
+    return 1
+  }
   # shellcheck disable=SC2034  # caller consumes the same-process cleanup gate
   FM_BACKEND_HERDR_PROJECTION_CLEANUP_SAFE=1
   focus_before=$(fm_backend_herdr_projection_focus_snapshot "$session") || {
@@ -2120,6 +2257,16 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
     echo "warning: herdr presentation reclaim for $id could not verify its replacement pane; spawning flat" >&2
     return 2
   fi
+  # Windows: bootstrap the replacement pane to Git bash BEFORE the old husk is
+  # touched - past this point a failure could no longer roll back cleanly, and
+  # the replacement pane is about to receive typed POSIX commands (no-op
+  # elsewhere). Failure follows the sibling verify steps: exact rollback, then
+  # flat fallback.
+  fm_backend_herdr_pane_posixify "$session" "$new_pane" || {
+    fm_backend_herdr_projection_reclaim_rollback "$session" "$new_pane" || return 1
+    echo "warning: herdr presentation reclaim replacement pane for $id never reached a POSIX shell; spawning flat" >&2
+    return 2
+  }
   state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane")
   case "$state" in
     no-agent) ;;
@@ -2273,6 +2420,74 @@ fm_backend_herdr_target_ready() {  # <target>
   fm_backend_herdr_server_ensure "$FM_BACKEND_HERDR_SESSION" || return 1
 }
 
+# fm_backend_herdr_normalize_host_path: translate a host-native path reported
+# by herdr into the path form this shell compares against. Herdr's Windows
+# build reports Windows drive paths (e.g. "F:\proj\x" or "F:/proj/x"), while
+# fm-spawn.sh compares pane paths against MSYS-form absolutes ("/f/proj/x");
+# cygpath bridges the two. Unix herdr never reports a drive-letter path, so
+# the pattern guard keeps this a byte-identical pass-through off Windows.
+fm_backend_herdr_normalize_host_path() {  # <path>
+  case "$1" in
+    [A-Za-z]:\\*|[A-Za-z]:/*)
+      cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1"
+      ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+# fm_backend_herdr_current_path_probe: WINDOWS-ONLY fallback for a herdr build
+# whose `pane get` carries no foreground_cwd (the 0.7.5 Windows previews return
+# null - reading another process's live cwd needs a PEB read the port does not
+# do yet). Asks the pane's own shell instead: `pane run` types and submits one
+# printf that echoes $PWD behind a marker, then a bounded `pane read` poll
+# extracts the LAST marker line. The marker is assembled by printf from two
+# halves so the echoed COMMAND line can never match the anchored grep - only
+# the executed output can.
+#
+# SAFETY CONTRACT: this types into the pane, so it is only safe while the pane
+# runs a bare shell. fm-spawn.sh's worktree-discovery poll - the single caller
+# of current_path across the tree - runs strictly before the harness launch,
+# so injection is safe by construction there. Do NOT reuse current_path on a
+# pane after its harness is live on Windows: the probe would type into the
+# agent's composer.
+fm_backend_herdr_current_path_probe() {
+  local i drop token path
+  # The pane's shell drops its cwd into a token-named file instead of echoing
+  # it: pane text capture line-wraps at the terminal width, which would
+  # truncate long worktree paths, while a file round-trip is exact. The drop
+  # lands in the one directory both worlds share - Git Bash's /tmp IS
+  # PowerShell's $env:TEMP on a Git-for-Windows host (verified live: a pane
+  # created with --cwd /tmp shows PS C:\Users\<u>\AppData\Local\Temp).
+  #
+  # Two probes, one per shell family the pane can be running. A freshly
+  # posixified pane answers the POSIX printf; a pane that reverted to
+  # PowerShell (herdr's Windows default - seen live on session restore, which
+  # restores every pane into a fresh PowerShell) answers the Set-Content
+  # variant instead, and the foreign shell's command just errors harmlessly.
+  # The token is fresh per call, so a stale drop from an earlier probe can
+  # never satisfy this one.
+  token="${BASHPID:-$$}$RANDOM$RANDOM"
+  drop="/tmp/.fm-herdr-cwd-$token"
+  # shellcheck disable=SC2016 # $PWD must expand in the PANE's shell, not here.
+  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane run "$FM_BACKEND_HERDR_PANE" \
+    'printf '\''%s'\'' "$PWD" > /tmp/.fm-herdr-cwd-'"$token" >/dev/null 2>&1 || return 0
+  # shellcheck disable=SC2016 # $env:TEMP/$PWD are PowerShell-side expansions.
+  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane run "$FM_BACKEND_HERDR_PANE" \
+    'Set-Content -LiteralPath "$env:TEMP/.fm-herdr-cwd-'"$token"'" -NoNewline -Value ([string]$PWD)' >/dev/null 2>&1 || true
+  for i in 1 2 3 4 5 6 7 8; do
+    sleep 0.2
+    if [ -s "$drop" ]; then
+      path=$(cat "$drop" 2>/dev/null) || path=
+      rm -f "$drop" 2>/dev/null || true
+      [ -n "$path" ] || return 0
+      fm_backend_herdr_normalize_host_path "$path"
+      return 0
+    fi
+  done
+  rm -f "$drop" 2>/dev/null || true
+  return 0
+}
+
 # fm_backend_herdr_current_path: the live FOREGROUND process's cwd, or empty on
 # any error. Mirrors tmux's pane_current_path poll used for worktree-path
 # discovery after `treehouse get`.
@@ -2285,10 +2500,28 @@ fm_backend_herdr_target_ready() {  # <target>
 # `.result.pane.foreground_cwd` tracks the ACTUALLY RUNNING foreground
 # process's cwd instead, which is what changes when `treehouse get` enters its
 # worktree subshell - confirmed live against a real treehouse acquisition.
+#
+# Windows (verified live against herdr 0.7.5-preview on Git Bash): the same
+# `pane get` succeeds but foreground_cwd is null, so the read below comes back
+# empty; the injection probe above is the fallback, and any non-empty result
+# is normalized because this build reports Windows drive paths. Newer Windows
+# builds that learn foreground_cwd win automatically - the probe only fires
+# while the field stays empty on an msys/mingw/cygwin host.
 fm_backend_herdr_current_path() {  # <target>
   fm_backend_herdr_target_ready "$1" || return 0
-  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane get "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
-    | jq -r '.result.pane.foreground_cwd // empty' 2>/dev/null
+  local path
+  path=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane get "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
+    | jq -r '.result.pane.foreground_cwd // empty' 2>/dev/null)
+  if [ -n "$path" ]; then
+    fm_backend_herdr_normalize_host_path "$path"
+    return 0
+  fi
+  # The injection probe below adds CLI calls a scripted fixture set has no
+  # responses for (see fm_backend_herdr_pane_posixify's seam comment).
+  [ "${FM_BACKEND_HERDR_SCRIPTED_CLI:-}" = 1 ] && return 0
+  case "${OSTYPE:-}" in
+    msys*|mingw*|cygwin*) fm_backend_herdr_current_path_probe ;;
+  esac
 }
 
 # fm_backend_herdr_send_text_line: send one line of TEXT then submit,
