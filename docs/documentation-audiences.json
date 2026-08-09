@@ -277,6 +277,14 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/powershell-port-inventory.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/powershell-port.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/remote-secondmates.md",
       "audience": "operator-current"
     },
@@ -369,12 +377,24 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/windows.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/zellij-backend.md",
       "audience": "operator-current"
     },
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": "tools/selftest/fixtures/home/seed/nested/keep.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "tools/selftest/fixtures/home/seed/notes.txt",
+      "audience": "maintainer-verification"
     }
   ]
 }
