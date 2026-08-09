@@ -193,9 +193,25 @@ fm_native_pid_info() {  # <windows-pid>
   # only when no WINPID row exists, so an MSYS process whose synthetic PID
   # happens to equal the queried Windows pid can never shadow the real one.
   path=$(ps -W 2>/dev/null | awk -v pid="$pid" '
-    function image_path(   out, i) {
-      out = $8
-      for (i = 9; i <= NF; i++) out = out " " $i
+    function image_path(   out, i, start) {
+      # The image is NOT at a fixed column. ps -W prints STIME as one field for
+      # a process started today ("10:23:45") but as TWO ("Aug  8") for anything
+      # older, which shifts the path right by one and glues the day number onto
+      # the front of it. Scan for where the image actually begins instead - a
+      # drive-letter path, or the *** unknown *** Cygwin prints - so the column
+      # stops mattering. A path containing spaces is still joined to the end.
+      # Spelled with substr, not a bracket regex: this program is nested in a
+      # single-quoted shell string and a backslash class does not survive both
+      # layers intact (verified on gawk 5.3 on this host - it silently fails to
+      # match, which is worse than erroring).
+      start = 0
+      for (i = 8; i <= NF; i++) {
+        if ((substr($i, 2, 1) == ":" && substr($i, 1, 1) ~ /^[A-Za-z]$/) ||
+            substr($i, 1, 3) == "***") { start = i; break }
+      }
+      if (start == 0) start = 8
+      out = $start
+      for (i = start + 1; i <= NF; i++) out = out " " $i
       return out
     }
     $4 == pid && win == "" { win = image_path() }

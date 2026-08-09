@@ -300,14 +300,14 @@ Invoke-FmMain -UnexpectedCode 70 {
     }
 
     function Get-ObligationName([string[]]$Kinds) {
-        if (-not (Test-Present $quarantine)) { return @() }
+        if (-not (Test-Present $quarantine)) { return , @() }
         $out = [System.Collections.Generic.List[string]]::new()
         foreach ($name in (Get-DirEntry $quarantine)) {
             foreach ($kind in $Kinds) {
                 if ($name.EndsWith(".diagnostic.$kind", $ord)) { $out.Add($name); break }
             }
         }
-        return @($out)
+        return , @($out)
     }
 
     function Test-MigrationComplete {

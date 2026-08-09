@@ -105,8 +105,8 @@ Invoke-FmMain -UnexpectedCode 70 {
     }
     function Get-JqList($Node, [string]$Key) {
         $value = Get-JqNode $Node $Key
-        if ($null -eq $value) { return @() }
-        return @($value)
+        if ($null -eq $value) { return , @() }
+        return , @($value)
     }
     # `a // b`: null and false fall through, an empty string does NOT.
     function Get-JqAlt($Primary, $Fallback) {

@@ -463,13 +463,16 @@ function Get-FmFileLines {
     [OutputType([string[]])]
     param([Parameter(Mandatory, Position = 0)][string]$Path)
     $text = Get-FmFileText $Path
-    if ($text -eq '') { return @() }
+    # `,` is load-bearing: a bare `return @()` unrolls on the way out, so an
+    # empty result reaches the caller as $null and .Count throws under strict
+    # mode, while a one-element result arrives as the bare element.
+    if ($text -eq '') { return , @() }
     $text = $text -replace "`r`n", "`n" -replace "`r", "`n"
     $lines = $text -split "`n"
     if ($lines.Length -gt 0 -and $lines[-1] -eq '') {
         $lines = $lines[0..($lines.Length - 2)]
     }
-    return @($lines)
+    return , @($lines)
 }
 
 <#
