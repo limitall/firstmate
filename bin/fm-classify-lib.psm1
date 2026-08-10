@@ -24,7 +24,14 @@
 #   status_line_note                    Get-FmStatusLineNote             yes
 #   _fm_decision_key                    Get-FmStatusDecisionKey          yes
 #   _fm_decision_drop                   (deleted - see THE FOLD below)
+#   _fm_decision_key_transition_allowed Test-FmDecisionKeyTransitionAllowed yes
+#   _fm_decision_fold_line              Get-FmClassifyFoldSet            no (internal)
 #   status_open_decisions               Get-FmStatusOpenDecisions        yes
+#   scan_open_decisions                 Get-FmOpenDecisionsScan          yes
+#   status_open_decisions_incremental   Get-FmStatusOpenDecisionsIncremental yes
+#   scan_open_decisions_incremental     Get-FmOpenDecisionsScanIncremental   yes
+#   _fm_open_decisions_cursor_path      Get-FmOpenDecisionsCursorPath    yes
+#   _fm_open_decisions_file_ident       Get-FmOpenDecisionsFileIdent     yes
 #   _fm_status_open_activities_stream   Get-FmStatusOpenActivityText     no (internal)
 #   status_open_activities              Get-FmStatusOpenActivities       yes
 #   window_to_task                      Get-FmWindowTask                 yes
@@ -40,10 +47,12 @@
 #   FM_CLASSIFY_RESOLVE_VERB_DEFAULT    Get-FmClassifyResolveVerb        yes
 #   FM_CLASSIFY_CAPTAIN_HELD_VERB_DEF   Get-FmClassifyCaptainHeldVerb    yes
 #   FM_PAUSE_RESURFACE_SECS_DEFAULT     Get-FmClassifyPauseResurfaceInterval yes
+#   FM_CLASSIFY_RESERVED_KEY_PREFIXES_D Get-FmClassifyReservedKeyPrefix  yes
+#   FM_OPEN_DECISIONS_FOLD_VERSION      Get-FmOpenDecisionsFoldVersion   yes
 #   FM_CREW_STATE_BIN                   Get-FmCrewStateLine              no (internal)
 #   (no twin - PowerShell only)         Get-FmClassifySpaceSet           yes
 #
-# The five bash constants become RESOLVER FUNCTIONS rather than exported
+# The bash constants become RESOLVER FUNCTIONS rather than exported
 # variables, and that is a deliberate upgrade of the same contract. Each bash
 # consumer writes `${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}`
 # at its own call site, so the `:-` fallback is re-typed everywhere it is used
@@ -78,17 +87,54 @@
 #    unchanged and is what the differential asserts: one record per key,
 #    most-recently-opened LAST, `<key>\t<verb>\t<note>` per line.
 #
-# 3. THE ABSORB CLASSIFICATION IS NOT A PURE READ, and that exception is
-#    inherited exactly. Get-FmCrewAbsorbClass shells out to fm-crew-state, which
-#    may make a bounded no-mistakes call, to decide whether a crew that just
-#    stopped its turn or went stale is working, deliberately paused, or neither.
-#    Callers run it ONLY on no-verb signal handling and first sighting of a
-#    stale hash, never on every wake, so the per-wake triage stays cheap. That
-#    call goes through Invoke-FmScript, which prefers bin/fm-crew-state.ps1 when
-#    it exists and otherwise runs bin/fm-crew-state.sh under Git Bash, so this
-#    module is correct on either side of that sibling conversion.
+#    THE TWO FOLDS TERMINATE DIFFERENTLY, and that asymmetry is the ORACLE's,
+#    not a slip here. The decisions fold drives each event through
+#    `open=$(_fm_decision_fold_line ...)`, and command substitution EATS the
+#    trailing newline, so `status_open_decisions` (and the cursor-backed
+#    incremental sibling, and therefore the persisted open set inside a cursor
+#    file) emit records JOINED by newlines with NO terminator. The activity
+#    fold mutates its accumulator in place and never launders it through `$( )`,
+#    so `status_open_activities` stays newline-TERMINATED - which matters
+#    because fm-fleet-snapshot.sh pipes it straight into jq. Both shapes are
+#    reproduced exactly; Format-FmClassifyFoldSet -Terminated is the switch.
 #
-# 4. [[:space:]] IS LOCALE-DEPENDENT, AND STAYS THAT WAY. Three separate places
+# 3. RESERVED DECISION-KEY NAMESPACES. A key like `pending-reply-<id>` names a
+#    decision one library raises and is the only thing that ever closes it, yet
+#    every writer - a local mate appending directly, a remote mate's lines
+#    mirrored in verbatim - reaches the same stream. Without a rule, any writer
+#    could claim a reserved key with an unrelated note and either permanently
+#    block the owner's close or clear the owner's decision with a bare
+#    resolution. The rule is deliberately generic, so the fold needs no
+#    knowledge of any particular owner: a reserved key may only be opened or
+#    closed by a line whose note begins with a `<namespace>...:` token. A line
+#    failing that is not a decision transition at all and is folded as ordinary
+#    status. Consumer-side on purpose - it protects local and remote writers
+#    identically and can never wedge a stream the way a writer-side rejection
+#    would. It applies to the DECISIONS fold only; the activity fold has no
+#    reserved namespaces, exactly as in bash.
+#
+# 4. TWO IMPURE FUNCTIONS, BOTH INHERITED EXACTLY. Get-FmCrewAbsorbClass shells
+#    out to fm-crew-state, which may make a bounded no-mistakes call, to decide
+#    whether a crew that just stopped its turn or went stale is working,
+#    deliberately paused, or neither. Callers run it ONLY on no-verb signal
+#    handling and first sighting of a stale hash, never on every wake, so the
+#    per-wake triage stays cheap. That call goes through Invoke-FmScript, which
+#    prefers bin/fm-crew-state.ps1 when it exists and otherwise runs
+#    bin/fm-crew-state.sh under Git Bash, so this module is correct on either
+#    side of that sibling conversion.
+#
+#    Get-FmStatusOpenDecisionsIncremental is the second: it WRITES a sibling
+#    cursor file (state/.<task>.open-decisions-cursor) recording a byte offset
+#    and the folded open set, so a per-drain fleet-wide scan costs only the
+#    bytes appended since the last drain instead of every task's whole lifetime
+#    log. The correctness invariant is the whole-file fold's: an open decision
+#    is dropped ONLY by an explicit resolved/captain-held line for its exact
+#    key - never by cursor advancement, age, or being buried under later
+#    appends. Any staleness signal (fold-version mismatch, a shrink, a changed
+#    file identity) falls back to a full re-fold from byte 0, which is byte for
+#    byte what Get-FmStatusOpenDecisions itself would compute.
+#
+# 5. [[:space:]] IS LOCALE-DEPENDENT, AND STAYS THAT WAY. Three separate places
 #    in the bash twin test whitespace - grep's `^[[:space:]]*$` blank filter in
 #    last_status_line, and bash's own `${line//[[:space:]]/}` and trim
 #    expansions in the folds and the verb parser - and ALL THREE resolve the
@@ -101,7 +147,7 @@
 #    exactly .NET Char.IsWhiteSpace MINUS U+0085, which is why String.Trim()
 #    with no arguments would be wrong by exactly one code point.
 #
-# 5. ORDINAL COMPARISON, EVERYWHERE. bash compares BYTES. PowerShell's -eq,
+# 6. ORDINAL COMPARISON, EVERYWHERE. bash compares BYTES. PowerShell's -eq,
 #    -ceq, switch and .NET's default StartsWith/IndexOf(String) are
 #    culture-sensitive, and that makes zero-width characters IGNORABLE:
 #    verified on this host, (([char]0x200B) + 'done') -ceq 'done' is True. A
@@ -136,6 +182,40 @@
 #      RETURNING NON-ZERO, which every caller turns into `continue`.
 #      Get-FmStatusDecisionKey returns $null for the same inputs, and each
 #      caller skips the line on $null.
+#
+#   e. THE CURSOR'S FILE-IDENTITY TOKEN. `_fm_open_decisions_file_ident` shells
+#      `stat -c '%d:%i'` (or the BSD spelling) for a device+inode pair. .NET
+#      exposes no managed equivalent - the NTFS file index needs
+#      GetFileInformationByHandle, i.e. a P/Invoke whose Add-Type compile would
+#      be paid by every consumer of this module - so the twin publishes
+#      `ps:<CreationTimeUtc ticks>`, which answers the SAME question (is the
+#      file at this path a different file than before?) because a recreated
+#      file gets a new creation timestamp while an append never changes one.
+#
+#      The `ps:` marker is deliberate: it guarantees a token written by one
+#      tree can never compare equal to the other tree's, so a cursor written by
+#      bash is REBUILT from byte 0 by PowerShell and vice versa. That is the
+#      safe direction and costs exactly what the whole-file fold always cost -
+#      never a dropped decision - and it self-heals on the next call, which is
+#      why cross-tree compatibility here is a performance property rather than
+#      a correctness one (contract 2 still holds: each tree READS the other's
+#      cursor without error and rewrites it in the same format).
+#
+#      Two consequences of the timestamp basis, stated rather than discovered:
+#      the bash comment already accepts a same-inode/same-size in-place edit as
+#      undetected, and this adds a delete+recreate inside Windows' file-system
+#      TUNNELING window (~15s), which restores the original creation time. The
+#      shrink check still catches the truncation-shaped subset, and no code
+#      path in this repo replaces or rewrites a status file at all.
+#
+#   f. NO CHUNK TEMP FILE. bash spills the newly-appended byte range through
+#      `tail -c "+N" > "$cf.read.$$"` because it has no other way to hand a
+#      byte range to a `read` loop; the PS twin seeks and reads the range
+#      in-process (a Windows-native win, docs/powershell-port.md). Observable
+#      only in one direction: a state directory that could not be WRITTEN but
+#      could still be read would make bash return the persisted set unchanged
+#      while this folds normally and then fails, harmlessly, at the cursor
+#      write. Unreachable under the noacl file gates this tree keeps.
 #
 # Import with:
 #   Import-Module (Join-Path $PSScriptRoot 'fm-classify-lib.psm1') -Force
@@ -185,6 +265,16 @@ $script:FmClassifyCaptainHeldVerbDefault = 'captain-held'
 # avoids nagging a deliberate wait while ensuring a forgotten hold cannot rot
 # invisibly - it re-surfaces once for a recheck every window.
 $script:FmClassifyPauseResurfaceSecsDefault = 3600
+
+# Reserved decision-key namespaces - see note 3 in the file header for WHY the
+# rule exists and why it lives on the consumer side. FM_CLASSIFY_RESERVED_KEY_-
+# PREFIXES overrides the whole list.
+$script:FmClassifyReservedKeyPrefixesDefault = 'pending-reply-'
+
+# Bumped whenever the per-line fold semantics change, so a cursor persisted
+# under an older interpretation is discarded and rebuilt from byte 0 rather
+# than trusted.
+$script:FmOpenDecisionsFoldVersion = '2'
 
 <#
 .SYNOPSIS
@@ -248,6 +338,59 @@ function Get-FmClassifyPauseResurfaceInterval {
     [OutputType([string])]
     param()
     return (Get-FmEnv -Name 'FM_PAUSE_RESURFACE_SECS' -Default ([string]$script:FmClassifyPauseResurfaceSecsDefault))
+}
+
+<#
+.SYNOPSIS
+The reserved decision-key prefixes in force, honoring
+FM_CLASSIFY_RESERVED_KEY_PREFIXES.
+.DESCRIPTION
+Twin of the bash expansion
+
+    for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$DEFAULT}; do
+
+which is UNQUOTED on purpose: bash word-splits it on IFS, so the knob carries a
+whitespace-separated LIST and an all-whitespace value legitimately yields no
+prefixes at all (every key is then ordinary). `:-` semantics, so an empty value
+falls back to the default rather than disabling the rule.
+
+`[char[]]@(...)` is not decoration: `.Split(@(' ', "`t"), [StringSplitOptions])`
+binds the object[] overload, which silently does not split at all.
+
+One bash behavior deliberately NOT reproduced: an unquoted expansion also
+undergoes pathname expansion, so a value containing a glob metacharacter could
+expand against the current directory. That is a bash accident rather than a
+contract, no caller relies on it, and reproducing it would make the rule depend
+on the process's working directory.
+#>
+function Get-FmClassifyReservedKeyPrefix {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+
+    $raw = Get-FmEnv -Name 'FM_CLASSIFY_RESERVED_KEY_PREFIXES' `
+        -Default $script:FmClassifyReservedKeyPrefixesDefault
+    $parts = $raw.Split([char[]]@(' ', "`t", "`n"),
+        [System.StringSplitOptions]::RemoveEmptyEntries)
+    # `,` so an empty list survives the return as an empty ARRAY rather than
+    # unrolling to $null. Callers must NOT re-wrap the result in @().
+    return , ([string[]]$parts)
+}
+
+<#
+.SYNOPSIS
+The open-decisions fold version stamped into, and demanded from, a cursor file.
+.DESCRIPTION
+Twin of FM_OPEN_DECISIONS_FOLD_VERSION. Returned as a STRING because the cursor
+records it verbatim and the comparison against a persisted value is textual on
+both sides - parsing it here would make a malformed persisted value compare
+equal after repair, which is the opposite of what the version exists to do.
+#>
+function Get-FmOpenDecisionsFoldVersion {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+    return $script:FmOpenDecisionsFoldVersion
 }
 
 # --- the locale-dependent [[:space:]] set ------------------------------------
@@ -576,29 +719,138 @@ function Test-FmStatusCaptainRelevant {
 
 # --- durable keyed folds -----------------------------------------------------
 
-# Render a fold set the way both bash folds print it: one
-# "<key>\t<verb>\t<note>" line per still-open record, newline-TERMINATED, and
-# '' when nothing is open. The trailing newline is part of the contract: most
-# consumers capture through `$( )` and never see it, but fm-fleet-snapshot.sh
-# PIPES status_open_activities straight into jq.
+<#
+.SYNOPSIS
+True when <key> is not reserved, or is reserved and <note> speaks its own
+namespace vocabulary.
+.DESCRIPTION
+Twin of _fm_decision_key_transition_allowed, and the whole of the reserved-key
+rule described in note 3 of the file header. A reserved key may only be opened
+or closed by a line whose note begins with that namespace's own
+`<namespace>...:` token; a line failing the test is not a decision transition
+at all and is folded as ordinary status.
+
+Two details of the bash `case` that are contract rather than accident:
+  - the FIRST matching prefix decides. Both arms of the inner case return, so a
+    later prefix in the list never gets a second opinion on the same key;
+  - the note test is `"$prefix"*:*`, which is "starts with the prefix AND
+    carries a ':' somewhere at or after the prefix" - not "contains a colon
+    anywhere", which a bare IndexOf would have given.
+#>
+function Test-FmDecisionKeyTransitionAllowed {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory, Position = 0)][AllowEmptyString()][AllowNull()][string]$Key,
+        [Parameter(Mandatory, Position = 1)][AllowEmptyString()][AllowNull()][string]$Note
+    )
+
+    if ($null -eq $Key) { $Key = '' }
+    if ($null -eq $Note) { $Note = '' }
+    foreach ($prefix in (Get-FmClassifyReservedKeyPrefix)) {
+        if (-not $Key.StartsWith($prefix, $script:FmOrdinal)) { continue }
+        if (-not $Note.StartsWith($prefix, $script:FmOrdinal)) { return $false }
+        return ($Note.IndexOf([string]':', [int]$prefix.Length, $script:FmOrdinal) -ge 0)
+    }
+    return $true
+}
+
+# The `while IFS= read -r line || [ -n "$line" ]` twin over a STRING rather than
+# a file: split on LF after the same CR normalization Get-FmFileLines applies,
+# and drop the phantom empty element a trailing terminator leaves behind - while
+# still processing a final UNTERMINATED line, which is exactly what the `|| [ -n
+# "$line" ]` half of that loop condition exists for.
+function Split-FmClassifyText {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory)][AllowEmptyString()][AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) { return , ([string[]]@()) }
+    $body = $Text -replace "`r`n", "`n" -replace "`r", "`n"
+    $lines = $body.Split("`n")
+    if ($lines.Length -gt 0 -and $lines[$lines.Length - 1] -ceq '') {
+        if ($lines.Length -eq 1) { return , ([string[]]@()) }
+        $lines = $lines[0..($lines.Length - 2)]
+    }
+    return , ([string[]]$lines)
+}
+
+# Parse a persisted "<key>\t<verb>\t<note>" set back into fold entries, so the
+# cursor-backed fold can RESUME from what an earlier call folded. Each entry
+# carries its record verbatim, not a re-rendered key/verb/note triple, because
+# the bash set is a plain string that is only ever prefix-matched and re-emitted
+# - a parse-and-reformat round trip would silently rewrite a record the oracle
+# passes through untouched.
+function ConvertTo-FmClassifyFoldSet {
+    [CmdletBinding()]
+    [OutputType([System.Collections.Generic.List[hashtable]])]
+    param([Parameter(Mandatory)][AllowEmptyString()][AllowNull()][string]$Text)
+
+    $open = [System.Collections.Generic.List[hashtable]]::new()
+    if ([string]::IsNullOrEmpty($Text)) { return , $open }
+    foreach ($record in $Text.Split("`n")) {
+        # `[ -n "$line" ] || continue`, the empty-record skip _fm_decision_drop
+        # applies while re-reading the set.
+        if ($record -ceq '') { continue }
+        # A record with no TAB can never match bash's `"$key"$'\t'*` drop
+        # pattern, so nothing can ever remove it. $null as its key reproduces
+        # that exactly - no real key is ever $null, because the parser answers
+        # 'default' or a legal slug and the fold skips a refusal.
+        $key = $null
+        $tab = $record.IndexOf("`t", $script:FmOrdinal)
+        if ($tab -ge 0) { $key = $record.Substring(0, $tab) }
+        $open.Add(@{ Key = $key; Text = $record })
+    }
+    return , $open
+}
+
+# Render a fold set the way the bash folds print it: one "<key>\t<verb>\t<note>"
+# record per still-open entry, '' when nothing is open.
+#
+# -Terminated selects WHICH of the two shapes the oracle produces (header note
+# 2). The activity fold mutates its accumulator in place, so it keeps its
+# trailing newline - and that terminator is contract, because
+# fm-fleet-snapshot.sh PIPES status_open_activities straight into jq. The
+# decisions fold launders every event through `$( )`, which EATS the trailing
+# newline, so its records come out newline-JOINED with no terminator. Passing
+# the wrong one is invisible to a `$( )`-capturing caller and very visible to a
+# byte comparison.
 function Format-FmClassifyFoldSet {
     [CmdletBinding()]
     [OutputType([string])]
-    param([Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[hashtable]]$Open)
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[hashtable]]$Open,
+        [switch]$Terminated
+    )
 
     if ($Open.Count -eq 0) { return '' }
     $sb = [System.Text.StringBuilder]::new()
+    $first = $true
     foreach ($entry in $Open) {
-        [void]$sb.Append($entry.Key).Append("`t").Append($entry.Verb).Append("`t").Append($entry.Note).Append("`n")
+        if (-not $first) { [void]$sb.Append("`n") }
+        [void]$sb.Append($entry.Text)
+        $first = $false
     }
+    if ($Terminated) { [void]$sb.Append("`n") }
     return $sb.ToString()
 }
 
-# The shared event walk behind both folds. -OpenVerbs open or replace a keyed
-# record; -CloseVerbs drop one. A verb in neither list leaves the set alone.
-function Get-FmClassifyFoldText {
+# The shared event walk behind every fold, and the twin of both the bash
+# per-line rule (_fm_decision_fold_line) and the activity stream's inline
+# equivalent. -OpenVerb opens or replaces a keyed record; -CloseVerb drops one;
+# a verb in neither list leaves the set alone.
+#
+# -Seed resumes from an already-folded set, which is what makes the
+# cursor-backed sibling able to fold only newly-appended bytes and still carry
+# every still-open key forward.
+#
+# -ReservedKeyRule applies the reserved-namespace check. It is a switch and not
+# unconditional because the oracle applies that rule to the DECISIONS fold only:
+# _fm_status_open_activities_stream has no reserved namespaces, and folding one
+# in here would silently drop routed-work phases the bash tree keeps.
+function Get-FmClassifyFoldSet {
     [CmdletBinding()]
-    [OutputType([string])]
+    [OutputType([System.Collections.Generic.List[hashtable]])]
     # All three Allow* attributes are load-bearing, and each covers a DIFFERENT
     # way this parameter legitimately arrives empty - the bash twin folds an
     # absent or empty log to nothing, so none of these may throw:
@@ -616,17 +868,27 @@ function Get-FmClassifyFoldText {
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][AllowNull()][AllowEmptyString()][string[]]$Line,
         [Parameter(Mandatory)][string[]]$OpenVerb,
-        [Parameter(Mandatory)][string[]]$CloseVerb
+        [Parameter(Mandatory)][string[]]$CloseVerb,
+        [Parameter()][AllowNull()][System.Collections.Generic.List[hashtable]]$Seed = $null,
+        [switch]$ReservedKeyRule
     )
 
     if ($null -eq $Line) { $Line = @() }
 
+    # Copied rather than mutated in place: bash hands the set around as a VALUE,
+    # so a caller that still holds the seed must not watch it change underneath.
     $open = [System.Collections.Generic.List[hashtable]]::new()
+    if ($null -ne $Seed) { foreach ($entry in $Seed) { $open.Add($entry) } }
+
     foreach ($text in $Line) {
         if (Test-FmClassifyBlankLine -Line $text) { continue }
         $verb = Get-FmStatusLineVerb -Line $text
         $key = Get-FmStatusDecisionKey -Line $text
         if ($null -eq $key) { continue }
+        if ($ReservedKeyRule -and
+            -not (Test-FmDecisionKeyTransitionAllowed -Key $key -Note (Get-FmStatusLineNote -Line $text))) {
+            continue
+        }
 
         $isOpen = $false
         foreach ($v in $OpenVerb) { if ([string]::Equals($verb, $v, $script:FmOrdinal)) { $isOpen = $true; break } }
@@ -646,10 +908,13 @@ function Get-FmClassifyFoldText {
             if ([string]::Equals($open[$i].Key, $key, $script:FmOrdinal)) { $open.RemoveAt($i) }
         }
         if ($isOpen) {
-            $open.Add(@{ Key = $key; Verb = $verb; Note = (Get-FmStatusLineNote -Line $text) })
+            $note = Get-FmStatusLineNote -Line $text
+            $open.Add(@{ Key = $key; Text = "$key`t$verb`t$note" })
         }
     }
-    return (Format-FmClassifyFoldSet -Open $open)
+    # `,` so an empty set survives the return as an empty LIST rather than
+    # unrolling to $null. Callers must NOT re-wrap the result in @().
+    return , $open
 }
 
 <#
@@ -663,8 +928,18 @@ key CLOSES it. A later unrelated terminal line never clears an open captain
 decision - which is exactly what reading the log last-event-wins would do.
 
 Prints one TAB-separated "<key>\t<verb>\t<summary>" line per still-open decision
-in most-recently-opened-last order, newline-terminated; '' when none are open.
-A missing file is '' with no error.
+in most-recently-opened-last order, records JOINED by newlines with NO trailing
+terminator (header note 2); '' when none are open. A missing file, an unreadable
+one, and a status file that is itself a SYMLINK are all '' with no error.
+
+That last refusal is the reason the guard is a plain link test rather than the
+O_NOFOLLOW subprocess read fm_wake_latest_event uses: the scan wrapper below
+enumerates a whole directory rather than a caller-chosen path, so a status file
+that links out of the state directory must be rejected outright, and a cheap
+builtin-equivalent test is the right tool for a directory-local glob.
+Readability is not probed separately - on Windows every path reads 644/755 under
+the noacl gates this tree deliberately keeps, and a genuine read failure already
+folds to '' through Get-FmFileLines.
 
 This is the durable open-set the fleet snapshot and any point-in-time consumer
 must use instead of trusting the last status line.
@@ -677,33 +952,417 @@ function Get-FmStatusOpenDecisions {
     param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Path)
 
     if ([string]::IsNullOrEmpty($Path)) { return '' }
-    return (Get-FmClassifyFoldText `
+    # `[ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ]`. -f FOLLOWS the link, so a
+    # symlink to a regular file passes the first test and is caught by the third.
+    $native = ConvertTo-FmNativePath $Path
+    if (-not [System.IO.File]::Exists($native)) { return '' }
+    if (Test-FmSymlink -Path $Path) { return '' }
+
+    return (Format-FmClassifyFoldSet -Open (Get-FmClassifyFoldSet `
         -Line (Get-FmFileLines -Path $Path) `
         -OpenVerb @('needs-decision', 'blocked') `
-        -CloseVerb @((Get-FmClassifyResolveVerb), (Get-FmClassifyCaptainHeldVerb)))
+        -CloseVerb @((Get-FmClassifyResolveVerb), (Get-FmClassifyCaptainHeldVerb)) `
+        -ReservedKeyRule))
+}
+
+# --- incremental (cursor-backed) open-decisions fold -------------------------
+#
+# Get-FmStatusOpenDecisions re-reads and re-folds a status file's ENTIRE
+# lifetime on every call, so its cost grows with total log size. A per-drain
+# fleet-wide scan using it would pay that cost for every task on every wake,
+# unbounded as tasks run longer. Get-FmStatusOpenDecisionsIncremental and
+# Get-FmOpenDecisionsScanIncremental are the bounded-cost siblings for that
+# path: each call reads only the bytes appended since its own last call (a
+# persisted per-file byte cursor) and folds just those new lines into a
+# persisted running open-set, through the exact same Get-FmClassifyFoldSet rule
+# the whole-file fold uses - so the two strategies can never disagree on what is
+# open.
+#
+# Correctness invariant, unchanged from the whole-file fold: an open decision is
+# dropped ONLY by an explicit resolved/captain-held line for its exact key,
+# never by cursor advancement, age, or being buried under later appends.
+#
+# Cursor invalidation is deliberately minimal, matching how status files are
+# ACTUALLY used in this repo: every one is created once and only ever appended
+# to - never replaced, renamed, or rewritten in place. So a cursor goes stale
+# only through a fold-version mismatch, a shrink, or the file at this path being
+# a different file than before. Any signal falls back to a full re-fold from
+# byte 0 - byte for byte what Get-FmStatusOpenDecisions would compute - and
+# rewrites the cursor from that clean baseline.
+#
+# The other real failure mode is OUR OWN read failing, not a malformed writer:
+# every such read is checked, and on failure this reports the already-trusted
+# persisted set UNCHANGED rather than risking a silent invalidation that would
+# wipe it - never a bare '' as if nothing were open.
+
+# The `${x%%$'\n'*}` twin: everything before the first newline, or the whole
+# string when there is none.
+function Get-FmClassifyFirstLine {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    $at = $Text.IndexOf("`n", $script:FmOrdinal)
+    if ($at -lt 0) { return $Text }
+    return $Text.Substring(0, $at)
+}
+
+# The `${x#*$'\n'}` twin, INCLUDING the half that looks like a mistake and is
+# load-bearing: when there is no newline the pattern does not match and bash
+# leaves the value UNCHANGED, which is what makes a one-line cursor fall through
+# to the `offset=` test and invalidate rather than silently reading as valid.
+function Get-FmClassifyAfterFirstLine {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    $at = $Text.IndexOf("`n", $script:FmOrdinal)
+    if ($at -lt 0) { return $Text }
+    return $Text.Substring($at + 1)
+}
+
+<#
+.SYNOPSIS
+The cursor file that carries a status log's persisted fold state.
+.DESCRIPTION
+Twin of _fm_open_decisions_cursor_path: `<dir>/.<task>.open-decisions-cursor`,
+beside the status file and DOT-PREFIXED, which is what keeps it invisible to
+every `*.status` / `*.meta` glob in this tree.
+
+dirname/basename are done on the string AS GIVEN rather than on a normalized
+native path, because [System.IO.Path]::GetDirectoryName rewrites a POSIX path's
+separators on Windows and the cursor must land beside the status file in
+whatever spelling the caller used.
+#>
+function Get-FmOpenDecisionsCursorPath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Path)
+
+    $sep = [System.Math]::Max($Path.LastIndexOf([char]'/'), $Path.LastIndexOf([char]'\'))
+    $dir = '.'
+    $base = $Path
+    if ($sep -eq 0) {
+        # `dirname /a.status` is `/`, and bash's printf then yields `//.a...`.
+        $dir = $Path.Substring(0, 1)
+        $base = $Path.Substring(1)
+    } elseif ($sep -gt 0) {
+        $dir = $Path.Substring(0, $sep)
+        $base = $Path.Substring($sep + 1)
+    }
+    if ($base.EndsWith('.status', $script:FmOrdinal)) {
+        $base = $base.Substring(0, $base.Length - '.status'.Length)
+    }
+    return "$dir/.$base.open-decisions-cursor"
+}
+
+<#
+.SYNOPSIS
+A stable identity token for the file at a path, or '' when it cannot be read.
+.DESCRIPTION
+Stands in for _fm_open_decisions_file_ident's `stat -c '%d:%i'`. See divergence
+(e) in the file header for why this is a creation-timestamp token rather than a
+device+inode pair, and why the deliberate `ps:` marker means a cursor written by
+one tree is always rebuilt by the other rather than mistakenly trusted.
+#>
+function Get-FmOpenDecisionsFileIdent {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrEmpty($Path)) { return '' }
+    try {
+        $info = [System.IO.FileInfo]::new((ConvertTo-FmNativePath $Path))
+        if (-not $info.Exists) { return '' }
+        return ('ps:{0}' -f $info.CreationTimeUtc.Ticks)
+    } catch {
+        return ''
+    }
+}
+
+<#
+.SYNOPSIS
+Fold a status stream into the set of decisions still open, reading only the
+bytes appended since the last call.
+.DESCRIPTION
+Twin of status_open_decisions_incremental, and the second of this library's two
+documented exceptions to the pure-read rule: it WRITES the sibling cursor file
+(state/.<task>.open-decisions-cursor) as a side effect. The write is atomic
+(temp file plus rename), so a crash between calls leaves either the prior cursor
+or the new one, never a partial one - and bin/fm-wake-drain calls this only
+after releasing the wake-queue lock, so a race between two overlapping drains
+can at worst redo a little folding twice, never drop an open decision, because a
+losing writer's offset can only be at or behind an already-recorded position.
+
+Output is identical in shape to Get-FmStatusOpenDecisions: records JOINED by
+newlines with no terminator, '' when nothing is open.
+
+The cursor format is `version`, `offset`, `ident`, then the folded open set.
+Get-FmOpenDecisionsFoldVersion must be bumped whenever Get-FmClassifyFoldSet's
+semantics change, so state persisted under an older interpretation is discarded
+and rebuilt from byte 0.
+#>
+function Get-FmStatusOpenDecisionsIncremental {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+        Justification = 'The plural is deliberate and matches both the return shape and the bash name this must stay greppable against: the result is the SET of every decision still open, not one decision.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'The cursor write is an internal memoization of a read, not a user-facing state change, and the name must stay greppable against the bash twin status_open_decisions_incremental. A -WhatIf surface here would also break the drain path, whose whole contract is that this call always leaves a usable cursor behind.')]
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrEmpty($Path)) { return '' }
+    $native = ConvertTo-FmNativePath $Path
+    if (-not [System.IO.File]::Exists($native)) { return '' }
+    if (Test-FmSymlink -Path $Path) { return '' }
+
+    $cursorPath = Get-FmOpenDecisionsCursorPath -Path $Path
+    $cursorNative = ConvertTo-FmNativePath $cursorPath
+
+    $version = ''
+    $ident = ''
+    $offset = [long]0
+    $openText = ''
+    $trustedOpen = ''
+
+    if ([System.IO.File]::Exists($cursorNative) -and -not (Test-FmSymlink -Path $cursorPath)) {
+        $cursorData = $null
+        try { $cursorData = [System.IO.File]::ReadAllText($cursorNative) } catch { $cursorData = $null }
+        if ($null -ne $cursorData) {
+            # `$(cat "$cf")` strips trailing newlines, so the persisted open set
+            # comes back in exactly the newline-JOINED shape the fold uses.
+            $cursorData = $cursorData.TrimEnd([char[]]@("`n"))
+            $first = Get-FmClassifyFirstLine -Text $cursorData
+            if ($first.StartsWith('version=', $script:FmOrdinal)) {
+                $version = $first.Substring('version='.Length)
+                if (-not [string]::Equals($version, (Get-FmOpenDecisionsFoldVersion), $script:FmOrdinal)) {
+                    $version = ''
+                }
+                $rest = Get-FmClassifyAfterFirstLine -Text $cursorData
+                $offsetLine = Get-FmClassifyFirstLine -Text $rest
+                $offsetText = ''
+                if ($offsetLine.StartsWith('offset=', $script:FmOrdinal)) {
+                    $offsetText = $offsetLine.Substring('offset='.Length)
+                } else {
+                    $version = ''
+                }
+                # `case "$offset" in ''|*[!0-9]*)`: an empty value or ANY
+                # non-digit invalidates - which also rejects a signed or padded
+                # number that Int64.TryParse would happily have accepted.
+                $digits = -not [string]::IsNullOrEmpty($offsetText)
+                if ($digits) {
+                    foreach ($ch in $offsetText.ToCharArray()) {
+                        if ($ch -lt '0' -or $ch -gt '9') { $digits = $false; break }
+                    }
+                }
+                $parsed = [long]0
+                if ($digits -and -not [System.Int64]::TryParse($offsetText, [ref]$parsed)) {
+                    # A digit string too large to be a file position cannot
+                    # describe one; rebuild, the same safe direction every other
+                    # staleness signal takes. (bash's `[ ... -gt ... ]` reports
+                    # its own error there and folds nothing; both refuse to
+                    # trust the value, which is the property that matters.)
+                    $digits = $false
+                }
+                if (-not $digits) {
+                    $offset = [long]0
+                    $version = ''
+                } else {
+                    $offset = $parsed
+                    if ($rest.IndexOf("`n", $script:FmOrdinal) -ge 0) {
+                        $rest = Get-FmClassifyAfterFirstLine -Text $rest
+                        $identLine = Get-FmClassifyFirstLine -Text $rest
+                        if ($identLine.StartsWith('ident=', $script:FmOrdinal)) {
+                            $ident = $identLine.Substring('ident='.Length)
+                            if ($rest.IndexOf("`n", $script:FmOrdinal) -ge 0) {
+                                $openText = Get-FmClassifyAfterFirstLine -Text $rest
+                            }
+                            if (-not [string]::IsNullOrEmpty($version) -and
+                                -not [string]::IsNullOrEmpty($ident)) {
+                                $trustedOpen = $openText
+                            }
+                        } else {
+                            $offset = [long]0
+                            $version = ''
+                        }
+                    } else {
+                        $offset = [long]0
+                        $version = ''
+                    }
+                }
+            }
+        }
+    }
+
+    # An identity or size read that FAILS is a genuine I/O error, not "the file
+    # is empty" - report the already-trusted persisted set unchanged rather than
+    # risking a silent invalidation that would wipe it.
+    $curIdent = Get-FmOpenDecisionsFileIdent -Path $Path
+    if ([string]::IsNullOrEmpty($curIdent)) { return $trustedOpen }
+    $size = [long]0
+    try {
+        $info = [System.IO.FileInfo]::new($native)
+        if (-not $info.Exists) { return $trustedOpen }
+        $size = [long]$info.Length
+    } catch {
+        return $trustedOpen
+    }
+
+    $cursorDirty = $false
+    if ([string]::IsNullOrEmpty($version) -or [string]::IsNullOrEmpty($ident) -or
+        (-not [string]::Equals($ident, $curIdent, $script:FmOrdinal)) -or ($offset -gt $size)) {
+        $offset = [long]0
+        $openText = ''
+        $trustedOpen = ''
+        $cursorDirty = $true
+    }
+
+    $open = ConvertTo-FmClassifyFoldSet -Text $openText
+
+    if ($offset -lt $size) {
+        # bash spills this byte range through `tail -c "+N" > tmp`; seeking and
+        # reading it in-process is the Windows-native equivalent (divergence
+        # (f)). Read to CURRENT end-of-file, not to the $size measured above, so
+        # a concurrent append is folded now exactly as `tail` would fold it -
+        # the offset still advances only to $size, so an overlap is re-folded on
+        # the next call, and re-folding an open or close line is idempotent.
+        $chunkBytes = $null
+        try {
+            $stream = [System.IO.File]::Open($native, [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try {
+                [void]$stream.Seek($offset, [System.IO.SeekOrigin]::Begin)
+                $buffer = [System.IO.MemoryStream]::new()
+                try {
+                    $stream.CopyTo($buffer)
+                    $chunkBytes = $buffer.ToArray()
+                } finally { $buffer.Dispose() }
+            } finally { $stream.Dispose() }
+        } catch {
+            return $trustedOpen
+        }
+
+        # Test-only observability seam (off by default, no production behavior
+        # change): when set, records exactly how many bytes THIS call folded, so
+        # a test can assert the incremental path stays bounded by new appends
+        # rather than re-reading the whole file, without relying on timing or
+        # source text. A failed append is swallowed, as bash's unchecked `>>` is.
+        $probe = Get-FmEnv -Name 'FM_OPEN_DECISIONS_READ_PROBE'
+        if (-not [string]::IsNullOrEmpty($probe)) {
+            try { Add-FmFileLine -Path $probe -Line ("{0}`t{1}" -f $Path, $chunkBytes.Length) }
+            catch { $null = $_ }
+        }
+
+        $open = Get-FmClassifyFoldSet `
+            -Line (Split-FmClassifyText -Text ([System.Text.Encoding]::UTF8.GetString($chunkBytes))) `
+            -OpenVerb @('needs-decision', 'blocked') `
+            -CloseVerb @((Get-FmClassifyResolveVerb), (Get-FmClassifyCaptainHeldVerb)) `
+            -Seed $open `
+            -ReservedKeyRule
+        $offset = $size
+        $cursorDirty = $true
+    }
+
+    $result = Format-FmClassifyFoldSet -Open $open
+
+    if ($cursorDirty) {
+        # bash publishes through `> "$cf.tmp.$$" && mv -f`, and a FAILED write
+        # there is deliberately not fatal: the group's status is dropped and the
+        # folded set still prints. Same here - the next call simply re-derives
+        # from whatever offset actually landed on disk.
+        $body = "version={0}`noffset={1}`nident={2}`n{3}" -f `
+            (Get-FmOpenDecisionsFoldVersion), $offset, $curIdent, $result
+        try { $null = Set-FmFileTextAtomic -Path $cursorPath -Text $body -NoNewline }
+        catch { $null = $_ }
+    }
+    return $result
+}
+
+# --- fleet-wide scans over the decision fold ---------------------------------
+
+# The shared directory walk behind both scan wrappers: every task's status log
+# under <state>, each still-open decision prefixed with its owning task id, in
+# glob (task id) order. A thin scan only - the fold remains the ONE place the
+# open/resolved semantics are decided.
+function Get-FmOpenDecisionsScanText {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$State,
+        [switch]$Incremental
+    )
+
+    $sb = [System.Text.StringBuilder]::new()
+    foreach ($name in @(Get-FmClassifyGlobName -Directory $State -Suffix '.status')) {
+        $file = "$State/$name"
+        $task = $name.Substring(0, $name.Length - '.status'.Length)
+        $open = ''
+        if ($Incremental) {
+            $open = Get-FmStatusOpenDecisionsIncremental -Path $file
+        } else {
+            $open = Get-FmStatusOpenDecisions -Path $file
+        }
+        if ([string]::IsNullOrEmpty($open)) { continue }
+        foreach ($line in $open.Split("`n")) {
+            if ($line -ceq '') { continue }
+            [void]$sb.Append($task).Append("`t").Append($line).Append("`n")
+        }
+    }
+    return $sb.ToString()
+}
+
+<#
+.SYNOPSIS
+Every still-open decision across a state directory, as
+"<task>\t<key>\t<verb>\t<note>" records.
+.DESCRIPTION
+Twin of scan_open_decisions: a fleet-wide wrapper around Get-FmStatusOpenDecisions
+so a per-wake or per-session surface can print the consolidated open set without
+re-walking the fold itself. Newline-TERMINATED records (the bash here-doc puts
+the terminator back that the fold itself does not emit); '' when none are open.
+#>
+function Get-FmOpenDecisionsScan {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$State)
+    return (Get-FmOpenDecisionsScanText -State $State)
+}
+
+<#
+.SYNOPSIS
+The cursor-backed sibling of Get-FmOpenDecisionsScan.
+.DESCRIPTION
+Twin of scan_open_decisions_incremental: same fleet-wide walk and same output
+shape, but folds each task's log through Get-FmStatusOpenDecisionsIncremental,
+so a per-drain scan stays bounded by bytes appended since the last drain rather
+than by total lifetime log size across every task. Writes a cursor per task as
+a side effect; the cursors are dot-prefixed and therefore invisible to this
+scan's own glob.
+#>
+function Get-FmOpenDecisionsScanIncremental {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'The per-task cursor write is an internal memoization of a read, not a user-facing state change, and the name must stay greppable against the bash twin scan_open_decisions_incremental.')]
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$State)
+    return (Get-FmOpenDecisionsScanText -State $State -Incremental)
 }
 
 # The `-` (stdin) form of the activity fold, factored out so both entry points
-# share one walk exactly as the bash twin does.
+# share one walk exactly as the bash twin does. -Terminated, and no
+# -ReservedKeyRule: _fm_status_open_activities_stream keeps its trailing newline
+# and has no reserved namespaces.
 function Get-FmStatusOpenActivityText {
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)][AllowEmptyString()][AllowNull()][string]$Text)
 
-    if ($null -eq $Text) { $Text = '' }
-    $body = $Text -replace "`r`n", "`n" -replace "`r", "`n"
-    $lines = @($body.Split("`n"))
-    # `while IFS= read -r line || [ -n "$line" ]` processes a final unterminated
-    # line but not a phantom one after the terminator.
-    if ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') {
-        $lines = @($lines[0..($lines.Count - 2)])
-    }
     $pause = Get-FmClassifyPausedVerb
-    return (Get-FmClassifyFoldText `
-        -Line $lines `
+    return (Format-FmClassifyFoldSet -Terminated -Open (Get-FmClassifyFoldSet `
+        -Line (Split-FmClassifyText -Text $Text) `
         -OpenVerb @('working', $pause) `
         -CloseVerb @('done', 'failed', 'needs-decision', 'blocked',
-                     (Get-FmClassifyResolveVerb), (Get-FmClassifyCaptainHeldVerb)))
+                     (Get-FmClassifyResolveVerb), (Get-FmClassifyCaptainHeldVerb))))
 }
 
 <#
@@ -1108,11 +1767,15 @@ Export-ModuleMember -Function @(
     'Get-FmClassifyCaptainRegex', 'Get-FmClassifyPausedVerb',
     'Get-FmClassifyResolveVerb', 'Get-FmClassifyCaptainHeldVerb',
     'Get-FmClassifyPauseResurfaceInterval', 'Get-FmClassifySpaceSet',
+    'Get-FmClassifyReservedKeyPrefix', 'Get-FmOpenDecisionsFoldVersion',
     'Get-FmLastStatusLine', 'Get-FmStatusLineVerb', 'Get-FmStatusLineNote',
-    'Get-FmStatusDecisionKey',
+    'Get-FmStatusDecisionKey', 'Test-FmDecisionKeyTransitionAllowed',
     'Test-FmStatusTerminalVerb', 'Test-FmStatusCaptainRelevant',
     'Test-FmStatusPaused', 'Test-FmStatusPausedOrHeld',
-    'Get-FmStatusOpenDecisions', 'Get-FmStatusOpenActivities',
+    'Get-FmStatusOpenDecisions', 'Get-FmStatusOpenDecisionsIncremental',
+    'Get-FmOpenDecisionsScan', 'Get-FmOpenDecisionsScanIncremental',
+    'Get-FmOpenDecisionsCursorPath', 'Get-FmOpenDecisionsFileIdent',
+    'Get-FmStatusOpenActivities',
     'Get-FmWindowTask', 'Get-FmCaptainRelevantStatus',
     'Test-FmSignalActionable', 'Test-FmSignalCrewProvablyWorking',
     'Get-FmCrewAbsorbClass', 'Test-FmCrewProvablyWorking', 'Test-FmCrewPaused',

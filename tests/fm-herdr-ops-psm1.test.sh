@@ -356,6 +356,14 @@ compare_case() { # <label>
   read_file shrc "$OUT/$1.sh.rc"; read_file psrc "$OUT/$1.ps.rc"
   read_file shout "$OUT/$1.sh.out"; read_file psout "$OUT/$1.ps.out"
   read_file sherr "$OUT/$1.sh.err"; read_file pserr "$OUT/$1.ps.err"
+  # The two worlds run in SEPARATE scratch directories (.../sh vs .../ps) so
+  # they cannot interfere, and @W@ expands to each world's own. A message that
+  # reports the path it just wrote therefore differs by that segment ALONE.
+  # Fold both back to the placeholder so the assertion tests the message, not
+  # the directory the case happened to run in. Anything else that differs -
+  # including a path the twin got genuinely wrong - still fails.
+  shout=${shout//$B_SH/@W@}; psout=${psout//$B_PS/@W@}
+  sherr=${sherr//$B_SH/@W@}; pserr=${pserr//$B_PS/@W@}
   assert_eq "$psrc" "$shrc" "$1: exit code differs"
   assert_eq "$psout" "$shout" "$1: stdout differs"
   assert_eq "$pserr" "$sherr" "$1: stderr differs"
