@@ -154,7 +154,14 @@ $script:FmSharedCaptainRel = 'data/captain-shared.md'
 $script:FmSharedCaptainMode = '444'
 
 $script:FmInheritableConfigDefault =
-'crew-dispatch.json crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget'
+'crew-dispatch.json crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context'
+
+# Session-scoped inherited material: copied at the LAUNCH convergence point,
+# where the primary also hands the new process its frozen on/off decision, and
+# left untouched by LIVE convergence into an already-running home whose
+# decision is frozen for its current session (bin/fm-trace-context-lib.sh).
+# Pushing it live would change a running home's tracing decision underneath it.
+$script:FmSessionScopedInheritableConfig = 'trace-context'
 
 # Relative prefix of per-home instruction files written after a successful config
 # push so the live secondmate can re-read exact post-write bytes. Kept under
@@ -1254,6 +1261,15 @@ function Sync-FmInheritableConfig {
             return $false
         }
 
+        # Live convergence into an already-running home leaves session-scoped
+        # material alone: that home's decision is frozen for its session, so a
+        # push here would change it underneath the running process.
+        if ((Get-FmEnv -Name 'FM_CONFIG_INHERIT_LIVE' -Default '0') -ceq '1' -and
+            (Test-FmConfigInheritItemSessionScoped -Item $item)) {
+            Write-FmInheritableConfigResult -Item $item -Status 'unchanged' -Reason 'session-scoped'
+            continue
+        }
+
         $src = Join-Path $srcConfig $item
         $dest = Join-Path $destConfig $item
 
@@ -1387,6 +1403,27 @@ function Get-FmConfigRereadChangedItem {
         }
     }
     return @($changed)
+}
+
+<#
+.SYNOPSIS
+True when <Item> is session-scoped inherited material.
+.DESCRIPTION
+Twin of fm_config_inherit_item_session_scoped. Split on the C-locale
+whitespace set rather than .NET's `\s`, and compared case-SENSITIVELY, so an
+item differing only by case or an invisible separator is not silently treated
+as the session-scoped one.
+#>
+function Test-FmConfigInheritItemSessionScoped {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Item)
+
+    if ($Item -eq '') { return $false }
+    $scoped = $script:FmSessionScopedInheritableConfig.Split(
+        [char[]]@(' ', "`t", "`n", "`v", "`f", "`r"),
+        [System.StringSplitOptions]::RemoveEmptyEntries)
+    return ($scoped -ccontains $Item)
 }
 
 function Get-FmConfigInheritLockPath {
@@ -2468,7 +2505,8 @@ Export-ModuleMember -Function @(
     'Copy-FmSharedCaptainFile', 'Sync-FmSharedCaptainPreference',
     'Sync-FmSecondmateInheritance', 'Sync-FmInheritableConfig',
     'Test-FmConfigRereadAllowlistedItem', 'Get-FmConfigRereadChangedItem',
-    'Get-FmConfigInheritLockPath', 'Get-FmConfigRereadRetryDirectory',
+    'Get-FmConfigInheritLockPath',
+    'Test-FmConfigInheritItemSessionScoped', 'Get-FmConfigRereadRetryDirectory',
     'Get-FmConfigRereadPendingStage', 'Get-FmConfigRereadPendingReport',
     'Test-FmConfigRereadStaged', 'Test-FmConfigRereadRetryQueueFull',
     'Invoke-FmConfigRereadRetryPending', 'New-FmConfigRereadRetryStagePath',

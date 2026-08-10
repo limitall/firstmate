@@ -204,7 +204,7 @@ Invoke-FmMain -UnexpectedCode 70 {
         if ($xMode -eq 1) { $prefix = "${prefix}source $xModeEnvSh first, then " }
         switch -CaseSensitive ($harness) {
             'claude' {
-                Write-FmOut ($prefix + 'repair missing watcher supervision with bin/fm-watch-arm.sh as its own Claude Code background task, never shell &.')
+                Write-FmOut ($prefix + 'watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.')
             }
             'codex' {
                 Write-FmOut ($prefix + 'repair missing watcher supervision with a foreground checkpoint: bin/fm-watch-checkpoint.sh --seconds ' + $checkpointSeconds + '.')
