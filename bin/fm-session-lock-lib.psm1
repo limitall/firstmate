@@ -133,6 +133,13 @@ $script:FmLockOrdinal = [System.StringComparison]::Ordinal
 # reading as the Pi harness. .NET and POSIX ERE agree on every construct used.
 $script:FmHarnessRegex = 'claude|codex|opencode|grok|kimi|^pi$|^pi-signed$'
 
+# The same harnesses as EXACT executable names, the FM_HARNESS_NAMES twin. Kept
+# in sync with the pattern above and used only for the stricter path evidence,
+# where the loose pattern would also match ordinary firstmate paths such as
+# bin/fm-claude-stop-autoarm.sh. Order matters: pi-signed precedes pi so the
+# longer name wins when a path carries both components.
+$script:FmHarnessNames = [string[]]@('claude', 'codex', 'opencode', 'grok', 'kimi', 'pi-signed', 'pi')
+
 <#
 .SYNOPSIS
 The verified-harness command-name pattern (FM_HARNESS_RE).
@@ -154,6 +161,30 @@ function Test-FmHarnessMatch {
 
     if ([string]::IsNullOrEmpty($Text)) { return $false }
     return [regex]::IsMatch($Text, $script:FmHarnessRegex)
+}
+
+<#
+.SYNOPSIS
+The exact harness name carried by a path - its basename or ANY directory
+component - or '' when the path carries none.
+.DESCRIPTION
+Twin of fm_harness_path_name. The bash tests `case "/$path/" in */"$name"/*`,
+which matches whole PATH COMPONENTS only: a path containing "claudette" never
+answers "claude". Both separators are accepted because a Windows-spelled path
+reaches this through the same callers, and the comparison is ordinal so a
+differently-cased component cannot pass where bash refuses.
+#>
+function Get-FmHarnessPathName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$Path)
+
+    if ([string]::IsNullOrEmpty($Path)) { return '' }
+    $padded = '/' + ($Path -replace '\\', '/') + '/'
+    foreach ($name in $script:FmHarnessNames) {
+        if ($padded.Contains('/' + $name + '/', $script:FmLockOrdinal)) { return $name }
+    }
+    return ''
 }
 
 <#
@@ -399,7 +430,8 @@ function Test-FmSessionLockOwnedBySelf {
 }
 
 Export-ModuleMember -Function @(
-    'Get-FmHarnessRegex', 'Test-FmHarnessMatch',
+    'Get-FmHarnessRegex',
+    'Get-FmHarnessPathName', 'Test-FmHarnessMatch',
     'Test-FmHarnessNativeInterpreter', 'Test-FmHarnessNativeImage',
     'Get-FmHarnessNativeSessionPid', 'Get-FmHarnessAncestryPid',
     'Test-FmHarnessPidAlive', 'Test-FmSessionLockOwnedBySelf'

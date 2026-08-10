@@ -576,11 +576,11 @@ test_project_mode_missing_argument() {
   assert_eq "$(<"$OUT/pm-noarg.ps.out")" "$(<"$OUT/pm-noarg.sh.out")" "pm-noarg: stdout differs"
   # Divergence of record: bash prefixes its own "<script>: line N: 1: ".
   case "$sherr" in
-    *"usage: fm-project-mode.sh <project-name>") ASSERTIONS=$((ASSERTIONS + 1)) ;;
+    *"usage: fm-project-mode.sh [--raw] <project-name>") ASSERTIONS=$((ASSERTIONS + 1)) ;;
     *) fail "pm-noarg: bash oracle did not end with the usage text (got: $sherr)" ;;
   esac
   case "$pserr" in
-    *"usage: fm-project-mode.sh <project-name>") ASSERTIONS=$((ASSERTIONS + 1)) ;;
+    *"usage: fm-project-mode.sh [--raw] <project-name>") ASSERTIONS=$((ASSERTIONS + 1)) ;;
     *) fail "pm-noarg: PowerShell twin did not end with the usage text (got: $pserr)" ;;
   esac
   pass "fm-project-mode.ps1: a missing project name refuses with the same code and usage text"

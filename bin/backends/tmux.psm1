@@ -94,6 +94,9 @@ $ErrorActionPreference = 'Stop'
 # imported (verified live; bin/fm-composer-lib.psm1 carries the same note).
 Import-Module (Join-Path $PSScriptRoot '..' 'fm-common.psm1')
 Import-Module (Join-Path $PSScriptRoot '..' 'fm-tmux-lib.psm1')
+# Supplies Get-FmHarnessPathName, the path-COMPONENT harness evidence the
+# classifier falls back to. NO -Force, per the note above.
+Import-Module (Join-Path $PSScriptRoot '..' 'fm-session-lock-lib.psm1')
 
 $script:FmBackendTmuxOrdinal = [System.StringComparison]::Ordinal
 
@@ -526,6 +529,177 @@ A malformed target - no colon, an empty half, or a second colon - is
 `unreadable` rather than `missing`, because an unparseable record proves nothing
 about the endpoint.
 #>
+<#
+.SYNOPSIS
+Classify one process name as agent, shell, or other.
+.DESCRIPTION
+Twin of fm_backend_tmux_classify_process_name, arm for arm and in the bash case
+order. <Path> is a command name or full path; <Argv0> is the optional argv[0]
+evidence the caller may also hold.
+
+muse is ANCHORED rather than globbed like its neighbours: its installed binary
+is muse-bin-<version> (the launcher execs it, so the version is the live process
+name and changes on every auto-update), and unlike claude or codex the substring
+"muse" is a common English fragment - a *muse* glob would classify musescore or
+amuse as a live agent pane. Its install path carries no `muse` COMPONENT either,
+so the path-name fallback never fires for it.
+#>
+function Get-FmBackendTmuxProcessClass {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$Path = '',
+        [Parameter(Position = 1)][AllowEmptyString()][AllowNull()][string]$Argv0 = ''
+    )
+
+    if ($null -eq $Path) { $Path = '' }
+    if ($null -eq $Argv0) { $Argv0 = '' }
+    # `${path##*/}` then `${base#-}`: basename, then the login-shell dash.
+    $base = $Path
+    $cut = $base.LastIndexOf('/')
+    if ($cut -ge 0) { $base = $base.Substring($cut + 1) }
+    if ($base.StartsWith('-', $script:FmBackendTmuxOrdinal)) { $base = $base.Substring(1) }
+
+    foreach ($prefix in $script:FmBackendTmuxAgentPrefix) {
+        if ($base.StartsWith($prefix, $script:FmBackendTmuxOrdinal)) { return 'agent' }
+    }
+    if ([Array]::IndexOf($script:FmBackendTmuxAgentExact, $base) -ge 0) { return 'agent' }
+    foreach ($needle in $script:FmBackendTmuxAgentSubstring) {
+        if ($base.Contains($needle, $script:FmBackendTmuxOrdinal)) { return 'agent' }
+    }
+    if ([Array]::IndexOf($script:FmBackendTmuxShellExact, $base) -ge 0) { return 'shell' }
+    if ((Get-FmHarnessPathName $Path) -ne '' -or (Get-FmHarnessPathName $Argv0) -ne '') { return 'agent' }
+    return 'other'
+}
+
+<#
+.SYNOPSIS
+The pane's tty with any /dev/ prefix removed, or '' when it cannot be read.
+.DESCRIPTION
+A RAW pane read, like Get-FmBackendTmuxCurrentCommand: tmux answers an absent
+target from the client's ACTIVE window rather than failing, so callers must
+confirm exact window membership first or they will describe another pane.
+#>
+function Get-FmBackendTmuxPaneTty {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$Target = '')
+
+    $read = Invoke-FmTmuxCommand @('display-message', '-p', '-t', $Target, '#{pane_tty}')
+    if (-not $read.Ok) { return '' }
+    $tty = $read.StdOut.TrimEnd([char]10)
+    if ([string]::IsNullOrEmpty($tty)) { return '' }
+    if ($tty.StartsWith('/dev/', $script:FmBackendTmuxOrdinal)) { $tty = $tty.Substring(5) }
+    return $tty
+}
+
+<#
+.SYNOPSIS
+Every process in the pane's FOREGROUND process group, as pid + comm.
+.DESCRIPTION
+Shared engine for the two foreground probes. Scoping to the foreground group
+rather than to the pane's descendants keeps the probe honest in both
+directions: a harness-named process left running in the BACKGROUND of an
+otherwise idle pane is deliberately not reported, so a genuinely agent-free
+pane still classifies dead - while every member of a multi-process launcher IS
+reported, so no launcher needs its own special case.
+
+`pgid == tpgid` is the foreground test, read exactly as the bash reads it.
+#>
+function Get-FmBackendTmuxForegroundEntry {
+    [CmdletBinding()]
+    [OutputType([psobject[]])]
+    param([Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$Target = '')
+
+    $entries = [System.Collections.Generic.List[psobject]]::new()
+    $tty = Get-FmBackendTmuxPaneTty $Target
+    if ($tty -eq '') { return , $entries.ToArray() }
+
+    $psTool = Get-Command 'ps' -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $psTool) { return , $entries.ToArray() }
+
+    $listed = $null
+    $hadLcAll = [Environment]::GetEnvironmentVariable('LC_ALL')
+    try {
+        $env:LC_ALL = 'C'
+        $listed = Invoke-FmTool -FilePath $psTool.Source `
+            -Arguments @('-t', $tty, '-o', 'pid=,pgid=,tpgid=,comm=')
+    } catch {
+        $listed = $null
+    } finally {
+        if ($null -eq $hadLcAll) { Remove-Item -LiteralPath 'Env:LC_ALL' -ErrorAction SilentlyContinue }
+        else { $env:LC_ALL = $hadLcAll }
+    }
+    if ($null -eq $listed -or -not $listed.Ok) { return , $entries.ToArray() }
+
+    foreach ($line in $listed.StdOut.Split([char]10)) {
+        # `read -r pid pgid tpgid comm` splits on IFS whitespace RUNS. The
+        # [char[]] separator overload is load-bearing (docs/powershell-port.md).
+        $f = $line.Split([char[]]@(' ', "`t", "`r"),
+            [System.StringSplitOptions]::RemoveEmptyEntries)
+        if ($f.Length -lt 4) { continue }
+        if ($f[1] -cne $f[2]) { continue }
+        $entries.Add([pscustomobject]@{ ProcessId = $f[0]; Comm = $f[3] })
+    }
+    return , $entries.ToArray()
+}
+
+<#
+.SYNOPSIS
+The comm of every process in the pane's foreground group.
+#>
+function Get-FmBackendTmuxForegroundComm {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$Target = '')
+
+    $out = [System.Collections.Generic.List[string]]::new()
+    foreach ($entry in (Get-FmBackendTmuxForegroundEntry $Target)) { $out.Add($entry.Comm) }
+    return , [string[]]$out.ToArray()
+}
+
+<#
+.SYNOPSIS
+The argv[0] of every process in the pane's foreground group.
+.DESCRIPTION
+The second, INDEPENDENT name source: a process whose title has been rewritten
+still carries its real argv[0], and the bash consults both before deciding.
+#>
+function Get-FmBackendTmuxForegroundArgv0 {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$Target = '')
+
+    $out = [System.Collections.Generic.List[string]]::new()
+    $entries = Get-FmBackendTmuxForegroundEntry $Target
+    if ($entries.Count -eq 0) { return , [string[]]$out.ToArray() }
+    $psTool = Get-Command 'ps' -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $psTool) { return , [string[]]$out.ToArray() }
+
+    foreach ($entry in $entries) {
+        $read = $null
+        $hadLcAll = [Environment]::GetEnvironmentVariable('LC_ALL')
+        try {
+            $env:LC_ALL = 'C'
+            $read = Invoke-FmTool -FilePath $psTool.Source -Arguments @('-p', $entry.ProcessId, '-o', 'args=')
+        } catch {
+            $read = $null
+        } finally {
+            if ($null -eq $hadLcAll) { Remove-Item -LiteralPath 'Env:LC_ALL' -ErrorAction SilentlyContinue }
+            else { $env:LC_ALL = $hadLcAll }
+        }
+        if ($null -eq $read -or -not $read.Ok) { continue }
+        # Leading-whitespace strip, then the first token: `${args%%[[:space:]]*}`.
+        $argsText = $read.StdOut.TrimEnd([char]10)
+        $split = $argsText.Split([char[]]@(' ', "`t"),
+            [System.StringSplitOptions]::RemoveEmptyEntries)
+        if ($split.Length -ge 1 -and $split[0] -ne '') { $out.Add($split[0]) }
+    }
+    return , [string[]]$out.ToArray()
+}
+
 function Get-FmBackendTmuxAgentState {
     [CmdletBinding()]
     [OutputType([string])]
@@ -570,21 +744,44 @@ function Get-FmBackendTmuxAgentState {
     }
     if (-not $found) { return 'missing' }
 
+    # The verdict combines two INDEPENDENT name sources rather than trusting
+    # either alone. Either source naming a verified harness is enough for
+    # `alive`, because a false `dead` is the one outcome that can launch a
+    # duplicate agent onto a live worktree - while the foreground process
+    # group, WHEN READABLE, is authoritative for the negative verdicts, since
+    # it is the only source that distinguishes a truly idle pane from a
+    # rewritten process title.
+    $fgSeen = $false
+    $fgShell = $false
+    $fgOther = $false
+    foreach ($name in (Get-FmBackendTmuxForegroundComm $Target)) {
+        if ([string]::IsNullOrEmpty($name)) { continue }
+        $fgSeen = $true
+        switch (Get-FmBackendTmuxProcessClass $name) {
+            'agent' { return 'alive' }
+            'shell' { $fgShell = $true }
+            default { $fgOther = $true }
+        }
+    }
+
+    foreach ($name in (Get-FmBackendTmuxForegroundArgv0 $Target)) {
+        if ([string]::IsNullOrEmpty($name)) { continue }
+        if ((Get-FmBackendTmuxProcessClass '' $name) -ceq 'agent') { return 'alive' }
+    }
+
     $comm = Get-FmBackendTmuxCurrentCommand $Target
     if ($null -eq $comm) { return 'unreadable' }
-    # `${comm#-}`: a login shell is reported as "-bash".
-    if ($comm.StartsWith('-', $script:FmBackendTmuxOrdinal)) { $comm = $comm.Substring(1) }
+    if ((Get-FmBackendTmuxProcessClass $comm) -ceq 'agent') { return 'alive' }
 
-    # muse's anchored arm comes first, matching the bash `case` order.
-    foreach ($prefix in $script:FmBackendTmuxAgentPrefix) {
-        if ($comm.StartsWith($prefix, $script:FmBackendTmuxOrdinal)) { return 'alive' }
+    # A readable foreground group settles the negative verdicts: only a group
+    # that is nothing but shells is confidently agent-free.
+    if ($fgSeen) {
+        if ((-not $fgOther) -and $fgShell) { return 'dead' }
+        return 'ambiguous'
     }
-    foreach ($needle in $script:FmBackendTmuxAgentSubstring) {
-        if ($comm.Contains($needle, $script:FmBackendTmuxOrdinal)) { return 'alive' }
-    }
-    if ([Array]::IndexOf($script:FmBackendTmuxAgentExact, $comm) -ge 0) { return 'alive' }
-    if ([Array]::IndexOf($script:FmBackendTmuxShellExact, $comm) -ge 0) { return 'dead' }
+
     if ([string]::IsNullOrEmpty($comm)) { return 'unreadable' }
+    if ((Get-FmBackendTmuxProcessClass $comm) -ceq 'shell') { return 'dead' }
     return 'ambiguous'
 }
 
@@ -615,5 +812,7 @@ Export-ModuleMember -Function @(
     'Send-FmBackendTmuxKey', 'Send-FmBackendTmuxTextLine', 'Send-FmBackendTmuxLiteral',
     'Send-FmBackendTmuxTextSubmit',
     'Initialize-FmBackendTmuxContainer', 'New-FmBackendTmuxTask', 'Remove-FmBackendTmuxTarget',
-    'Get-FmBackendTmuxAgentState', 'Get-FmBackendTmuxAgentAlive'
+    'Get-FmBackendTmuxAgentState', 'Get-FmBackendTmuxAgentAlive',
+    'Get-FmBackendTmuxProcessClass', 'Get-FmBackendTmuxPaneTty',
+    'Get-FmBackendTmuxForegroundComm', 'Get-FmBackendTmuxForegroundArgv0'
 )

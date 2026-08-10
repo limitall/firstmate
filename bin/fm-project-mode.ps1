@@ -11,6 +11,9 @@
 #   - <name> [<mode>] - <desc> (added <date>)          -> <mode> off
 #   - <name> [<mode> +yolo] - <desc> (added <date>)    -> <mode> on
 #
+# --raw prints the registered annotation unmapped, so a caller that must tell a
+# conditional policy apart from a flat mode sees "no-mistakes-prod-only" itself.
+#
 # An unknown/missing project or unknown mode falls back to "no-mistakes off" and
 # warns to stderr, so a typo never silently drops the gate.
 #
@@ -69,9 +72,23 @@ Import-Module (Join-Path $PSScriptRoot 'fm-common.psm1') -Force
 $fmArgv = @($args)
 
 Invoke-FmMain -UnexpectedCode 70 {
-    $name = if ($fmArgv.Count -ge 1) { [string]$fmArgv[0] } else { '' }
+    # `if [ "${1:-}" = "--raw" ]; then RAW=1; shift; fi` - an EXACT first-argument
+    # match, not a general flag parser: a later --raw is a project name, and so
+    # is a second one, exactly as the bash reads them.
+    $argv = @($fmArgv)
+    $raw = $false
+    if ($argv.Count -ge 1 -and ([string]$argv[0]) -ceq '--raw') {
+        $raw = $true
+        # Plain if/else STATEMENTS, not `$x = if (...) {...}`: an if used as an
+        # expression writes through the output stream, which unrolls a
+        # one-element array to the bare element and an empty one to $null - so
+        # the .Count read below would fail even with @() around the slice.
+        # Assigning inside each branch keeps the array intact.
+        if ($argv.Count -gt 1) { $argv = @($argv[1..($argv.Count - 1)]) } else { $argv = @() }
+    }
+    $name = if ($argv.Count -ge 1) { [string]$argv[0] } else { '' }
     if ([string]::IsNullOrEmpty($name)) {
-        Write-FmErr 'usage: fm-project-mode.sh <project-name>'
+        Write-FmErr 'usage: fm-project-mode.sh [--raw] <project-name>'
         Exit-FmScript 1
     }
 
@@ -138,12 +155,17 @@ Invoke-FmMain -UnexpectedCode 70 {
         Exit-FmScript 0
     }
 
-    if ($mode -cne 'no-mistakes' -and $mode -cne 'direct-PR' -and $mode -cne 'local-only') {
+    if ($mode -cne 'no-mistakes' -and $mode -cne 'direct-PR' -and
+        $mode -cne 'local-only' -and $mode -cne 'no-mistakes-prod-only') {
         Write-FmErr "warn: unknown mode `"$mode`" for $name; defaulting to no-mistakes off"
         $mode = 'no-mistakes'
         $yolo = 'off'
     }
     if ($yolo -cne 'on' -and $yolo -cne 'off') { $yolo = 'off' }
+    # A conditional policy is not a task mode. Mechanical callers get its most
+    # rigorous leg; --raw callers get the annotation itself, so a caller that
+    # must tell a conditional policy apart from a flat mode can.
+    if ((-not $raw) -and $mode -ceq 'no-mistakes-prod-only') { $mode = 'no-mistakes' }
 
     Write-FmOut "$mode $yolo"
     Exit-FmScript 0

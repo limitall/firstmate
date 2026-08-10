@@ -207,6 +207,25 @@ So a suite that STUBS a probed capability must declare it `function global:`,
 or the probe will correctly report the capability as absent and the test will
 exercise the wrong branch.
 
+### `$x = if (...) { @(...) }` unrolls the array
+
+The array-preserving return contract has a second face that is easy to miss.
+An `if` used as an EXPRESSION writes its branch value through the output
+stream, and the stream unrolls: a one-element array arrives as the bare
+element and an empty one as `$null`. So this looks careful and is not:
+
+    $argv = if ($n -gt 1) { @($argv[1..($n - 1)]) } else { @() }   # WRONG
+
+`@()` around the slice does not save it - the unroll happens at the `if`, after
+the wrap. A later `$argv.Count` then throws under strict mode. Assign inside
+each branch instead:
+
+    if ($n -gt 1) { $argv = @($argv[1..($n - 1)]) } else { $argv = @() }
+
+Same rule for `switch`, and for any statement used as an expression. Bitten
+for real in fm-project-mode while porting `--raw`, one hour after the
+consumer-shape sweep that documented the plain-return form of this trap.
+
 ### MSYS rewrites pwsh argv, and only in SOME shells
 
 `pwsh.exe` is a native binary, so when a bash test invokes it with a
