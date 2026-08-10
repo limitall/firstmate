@@ -104,6 +104,7 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'fm-common.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'fm-gate-refuse-lib.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'fm-backend.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'fm-control-lib.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'fm-marker-lib.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'fm-pending-reply-lib.psm1') -Force
 
@@ -212,51 +213,25 @@ Invoke-FmMain -UnexpectedCode 70 {
     # sent. A failed clear is LOUD rather than silent, because the alternative is
     # a corrupted steer.
     #
-    # DIVERGENCE FROM THE BASH TWIN, stated rather than hidden: bash reads WHICH
-    # adapters need that clear, and which key clears them, from the one
-    # control-plane capability table (bin/fm-control-lib.sh) rather than keeping a
-    # second copy here. That library has no PowerShell twin yet, so the two
-    # lookups it owns are reproduced below, arm for arm against its `case`
-    # statements. When bin/fm-control-lib.psm1 lands, these two functions must be
-    # DELETED and replaced by calls into it - keeping the copy is exactly the
-    # drift the bash comment exists to prevent.
-    function Get-FmSendHarnessFamily {
-        param([AllowEmptyString()][AllowNull()][string]$Harness = '')
-        if ($null -eq $Harness) { $Harness = '' }
-        # A task launched from a raw command records that command's BASENAME
-        # (fm-spawn derives harness= that way), which is why most arms are
-        # prefixes. `pi` and `pi-signed` are exact, because a `pi*` prefix would
-        # swallow the signed adapter. An unrecognized value yields '' - bash's
-        # nonzero return, which the caller treats as "no clear needed" rather
-        # than guessing a family.
-        if ($Harness -ceq 'pi') { return 'pi' }
-        if ($Harness -ceq 'pi-signed') { return 'pi-signed' }
-        if ($Harness -clike 'claude*') { return 'claude' }
-        if ($Harness -clike 'codex*') { return 'codex' }
-        if ($Harness -clike 'opencode*') { return 'opencode' }
-        if ($Harness -clike 'grok*') { return 'grok' }
-        if ($Harness -clike 'kimi*') { return 'kimi' }
-        if ($Harness -clike 'muse*') { return 'muse' }
-        return ''
-    }
-
-    # The key that must follow the interrupt key to leave the composer empty, or
-    # '' when the adapter needs none. muse is the one verified adapter that
-    # restores the cancelled prompt as real bright text. bash distinguishes "no
-    # clear key" from "unknown harness" by exit status; both mean "nothing more to
-    # send" at the single call site, so both are '' here.
-    function Get-FmSendInterruptClearKey {
-        param([AllowEmptyString()][AllowNull()][string]$Family = '')
-        if ($Family -ceq 'muse') { return 'C-u' }
-        return ''
-    }
-
+    # WHICH adapters need that clear, and which key clears them, comes from the
+    # one control-plane capability table (bin/fm-control-lib.psm1) rather than a
+    # second copy here - the same table bin/fm-control.ps1's interrupt verb
+    # reads, and the exact seam the bash twin uses. Two copies WOULD drift, and
+    # the drift would be silent: a steer typed onto the end of a restored prompt
+    # is delivered, just garbled.
+    #
+    # The two lookups answer on one channel each, where bash answered on two
+    # (docs at bin/fm-control-lib.psm1): an unrecognized harness yields $null
+    # from the family lookup and a verified adapter that needs no clear yields
+    # ''. bash's `family=$(...) || return 0` and `[ -n "$clear" ] || return 0`
+    # collapse both to "nothing more to send", which is what the two
+    # IsNullOrEmpty guards below do.
     function Invoke-FmSendComposerClear {
         param([string]$Key, [string]$Target)
         if ($Key -cne 'Escape') { return $true }
-        $family = Get-FmSendHarnessFamily $script:TargetHarness
+        $family = Get-FmControlHarnessFamily $script:TargetHarness
         if ([string]::IsNullOrEmpty($family)) { return $true }
-        $clear = Get-FmSendInterruptClearKey $family
+        $clear = Get-FmControlInterruptClearKey $family
         if ([string]::IsNullOrEmpty($clear)) { return $true }
         if ($script:TargetBackend -ceq 'remote') { return $true }
         if (Send-FmBackendKey -Backend $script:TargetBackend -Target $Target -Key $clear `
