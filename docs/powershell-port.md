@@ -207,6 +207,24 @@ So a suite that STUBS a probed capability must declare it `function global:`,
 or the probe will correctly report the capability as absent and the test will
 exercise the wrong branch.
 
+### MSYS rewrites pwsh argv, and only in SOME shells
+
+`pwsh.exe` is a native binary, so when a bash test invokes it with a
+POSIX-looking argument (`/f/x/y`), MSYS path conversion rewrites that argument
+to mixed form (`F:/x/y`) on the way in — **unless** the ambient environment
+disables conversion (`MSYS_NO_PATHCONV=1`, common in interactive debugging
+shells). The probe's argv spelling therefore silently depends on which shell
+launched the suite: the same test can pass interactively and fail in a
+background run, which looks exactly like flakiness. It bit for real in
+fm-small-libs: the hometag twin hashes an unresolvable root VERBATIM, and the
+two worlds were handed different verbatims of the same path.
+
+Rule: a suite passes pwsh arguments with `MSYS2_ARG_CONV_EXCL='*'` scoped to
+the invocation, converting any path that must be native explicitly with
+`fm_test_native_path`. Scope it to the pwsh call only — a BLANKET export would
+break the `//FI`-style doubled-slash idiom that tasklist/taskkill calls rely
+on elsewhere.
+
 ### The one rule that decides whether a suite finishes: batch pwsh
 
 Measured on the reference Windows host: **bare `pwsh -NoProfile -Command "exit 0"`

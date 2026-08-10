@@ -2,10 +2,19 @@
 # Twin: bin/fm-tasks-axi-lib.sh
 #
 # Shared by bootstrap, teardown, and secondmate backlog handoff. Compatible
-# means tasks-axi --version reports 0.1.1 or newer, `tasks-axi update --help`
-# exposes --archive-body for recoverable note rewrites, and `tasks-axi mv
-# --help` exposes [<id>...] for the atomic multi-ID moves secondmate handoffs
-# require (introduced in tasks-axi 0.2.2).
+# means tasks-axi --version reports FM_TASKS_AXI_MIN or newer, `tasks-axi
+# update --help` exposes --archive-body for recoverable note rewrites, and
+# `tasks-axi mv --help` exposes [<id>...] for the atomic multi-ID moves needed
+# by secondmate handoffs. FM_TASKS_AXI_MIN follows the axi-family floor policy
+# owned beside the floor constants in bin/fm-bootstrap.sh; this file is its
+# single owner in both worlds. The feature probes stay as defense in depth for
+# stripped or forked builds that advertise a current version without them.
+#
+# COMPATIBILITY VERDICT REUSE, the bash contract ported intact: the verdict is
+# memoised within a process, and across ONE process hop a parent that already
+# holds it passes FM_TASKS_AXI_COMPATIBLE=0|1. IMPORTING this module CONSUMES
+# that variable (reads it into the memo and unsets it), so it cannot leak into
+# grandchildren and pin a stale verdict after the tool is upgraded mid-flight.
 #
 # `config/backlog-backend=manual` opts out of tasks-axi for routine firstmate
 # backlog mutations, but validated secondmate handoffs always use `tasks-axi
@@ -15,6 +24,7 @@
 # bash -> PowerShell:
 #   fm_tasks_axi_version_parts           -> Get-FmTasksAxiVersionPart
 #   fm_tasks_axi_compatible              -> Test-FmTasksAxiCompatible
+#   fm_tasks_axi_compatible_probe        -> Test-FmTasksAxiCompatibleProbe
 #   fm_tasks_axi_update_has_archive_body -> Test-FmTasksAxiUpdateHasArchiveBody
 #   fm_tasks_axi_mv_has_multi_id         -> Test-FmTasksAxiMvHasMultiId
 #   fm_backlog_backend_value             -> Get-FmBacklogBackendValue
@@ -44,6 +54,19 @@ Import-Module (Join-Path $PSScriptRoot 'fm-common.psm1')
 # Compiled once at import rather than per call; a bootstrap run probes this
 # more than once and the pattern never changes.
 $script:FmTasksAxiVersionRe = [regex]::new('.*([0-9][0-9]*)\.([0-9][0-9]*)\.([0-9][0-9]*)')
+
+# The single owner of the version floor, the FM_TASKS_AXI_MIN twin.
+$script:FmTasksAxiMin = '0.2.4'
+
+# The cross-process memo: consume FM_TASKS_AXI_COMPATIBLE on import exactly as
+# sourcing the bash lib does. Only literal 0/1 count; anything else is noise.
+$script:FmTasksAxiCompatibleMemo = ''
+if ($null -ne $env:FM_TASKS_AXI_COMPATIBLE) {
+    if ($env:FM_TASKS_AXI_COMPATIBLE -cin @('0', '1')) {
+        $script:FmTasksAxiCompatibleMemo = $env:FM_TASKS_AXI_COMPATIBLE
+    }
+    Remove-Item Env:FM_TASKS_AXI_COMPATIBLE -ErrorAction SilentlyContinue
+}
 
 <#
 .SYNOPSIS
@@ -169,6 +192,31 @@ function Test-FmTasksAxiCompatible {
     [OutputType([bool])]
     param()
 
+    switch ($script:FmTasksAxiCompatibleMemo) {
+        '1' { return $true }
+        '0' { return $false }
+    }
+    if (Test-FmTasksAxiCompatibleProbe) {
+        $script:FmTasksAxiCompatibleMemo = '1'
+        return $true
+    }
+    $script:FmTasksAxiCompatibleMemo = '0'
+    return $false
+}
+
+<#
+.SYNOPSIS
+The unmemoised compatibility probe, fm_tasks_axi_compatible_probe's twin.
+.DESCRIPTION
+The floor is compared from $script:FmTasksAxiMin so bumping it needs one edit,
+and a floor string that does not parse into exactly three integers fails the
+probe rather than passing everything - same refusal shape as the version side.
+#>
+function Test-FmTasksAxiCompatibleProbe {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+
     $parts = Get-FmTasksAxiVersionPart
     if ([string]::IsNullOrEmpty($parts)) { return $false }
 
@@ -179,9 +227,16 @@ function Test-FmTasksAxiCompatible {
     if (-not [long]::TryParse($fields[1], [ref]$minor)) { return $false }
     if (-not [long]::TryParse($fields[2], [ref]$patch)) { return $false }
 
-    $meetsFloor = ($major -gt 0) -or
-                  ($major -eq 0 -and $minor -gt 1) -or
-                  ($major -eq 0 -and $minor -eq 1 -and $patch -ge 1)
+    $minFields = $script:FmTasksAxiMin.Split('.')
+    if ($minFields.Length -ne 3) { return $false }
+    [long]$minMajor = 0; [long]$minMinor = 0; [long]$minPatch = 0
+    if (-not [long]::TryParse($minFields[0], [ref]$minMajor)) { return $false }
+    if (-not [long]::TryParse($minFields[1], [ref]$minMinor)) { return $false }
+    if (-not [long]::TryParse($minFields[2], [ref]$minPatch)) { return $false }
+
+    $meetsFloor = ($major -gt $minMajor) -or
+                  ($major -eq $minMajor -and $minor -gt $minMinor) -or
+                  ($major -eq $minMajor -and $minor -eq $minMinor -and $patch -ge $minPatch)
     if (-not $meetsFloor) { return $false }
 
     return ((Test-FmTasksAxiUpdateHasArchiveBody) -and (Test-FmTasksAxiMvHasMultiId))
@@ -246,6 +301,7 @@ function Test-FmTasksAxiBackendAvailable {
 Export-ModuleMember -Function @(
     'Get-FmTasksAxiVersionPart',
     'Test-FmTasksAxiCompatible',
+    'Test-FmTasksAxiCompatibleProbe',
     'Test-FmTasksAxiUpdateHasArchiveBody',
     'Test-FmTasksAxiMvHasMultiId',
     'Get-FmBacklogBackendValue',

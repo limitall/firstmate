@@ -117,7 +117,16 @@ both_path() {
 
 probe() {  # <name> [args...] - one pwsh launch
   local name=$1; shift
-  pwsh -NoProfile -File "$(fm_test_native_path "$PROBES/$name.ps1")" "$@" 2>&1
+  # MSYS2_ARG_CONV_EXCL: pwsh.exe is a NATIVE binary, so without this MSYS
+  # rewrites any POSIX-looking argument (/f/...) into mixed form (F:/...) on
+  # the way in - but only when the ambient environment has path conversion
+  # enabled, so the probe's argv SPELLING silently depends on the caller's
+  # shell. That is exactly how tag (badroot) failed in one shell and passed in
+  # another: the twin hashes an unresolvable root VERBATIM, and the two worlds
+  # were handed different verbatims. Every path this suite wants native is
+  # already converted explicitly with fm_test_native_path, so blanket
+  # exclusion pins every argument to the exact bytes written here.
+  MSYS2_ARG_CONV_EXCL='*' pwsh -NoProfile -File "$(fm_test_native_path "$PROBES/$name.ps1")" "$@" 2>&1
 }
 oracle() {  # <name> [args...] - one bash launch
   local name=$1; shift
@@ -197,10 +206,10 @@ SH
 }
 
 TA="$FIX/tasksaxi"; mkdir -p "$TA"
-mk_fake_tasks_axi "$TA/good"      'tasks-axi 0.2.2' yes yes
+mk_fake_tasks_axi "$TA/good"      'tasks-axi 0.2.4' yes yes
 mk_fake_tasks_axi "$TA/oldver"    'tasks-axi 0.1.0' yes yes
-mk_fake_tasks_axi "$TA/noarchive" 'tasks-axi 0.2.2' no  yes
-mk_fake_tasks_axi "$TA/nomulti"   'tasks-axi 0.2.2' yes no
+mk_fake_tasks_axi "$TA/noarchive" 'tasks-axi 0.2.4' no  yes
+mk_fake_tasks_axi "$TA/nomulti"   'tasks-axi 0.2.4' yes no
 # Parse-only scenarios: only the version reader runs for these, because each
 # extra capability probe is another second of process creation on this host.
 mk_fake_tasks_axi "$TA/weird"     'v10.20.30'       yes yes
@@ -253,12 +262,17 @@ function Get-Parts { $v = Get-FmTasksAxiVersionPart; if ($null -eq $v) { '1|' } 
 
 $basePath = $env:PATH
 Emit 'absent.parts' (Get-Parts)
+Import-Module (Join-Path $BinDir 'fm-tasks-axi-lib.psm1') -Force
 Emit 'absent.compatible' ([string](Test-FmTasksAxiCompatible))
 Emit 'absent.archive' ([string](Test-FmTasksAxiUpdateHasArchiveBody))
 Emit 'absent.multi' ([string](Test-FmTasksAxiMvHasMultiId))
 
 foreach ($case in @('good', 'oldver', 'noarchive', 'nomulti')) {
     $env:PATH = (Join-Path $FakeRoot $case) + [System.IO.Path]::PathSeparator + $basePath
+    # Fresh import per case: bash reads each verdict in a $( ) subshell, so its
+    # memo never leaks between cases; reloading the module is that boundary's
+    # twin (import-time env consumption included).
+    Import-Module (Join-Path $BinDir 'fm-tasks-axi-lib.psm1') -Force
     Emit "$case.parts" (Get-Parts)
     Emit "$case.compatible" ([string](Test-FmTasksAxiCompatible))
     Emit "$case.archive" ([string](Test-FmTasksAxiUpdateHasArchiveBody))
@@ -339,7 +353,7 @@ SH
 }
 
 QA="$FIX/quotaaxi"; mkdir -p "$QA"
-mk_fake_quota_axi "$QA/floor"   'quota-axi 0.1.16'
+mk_fake_quota_axi "$QA/floor"   'quota-axi 0.1.17'
 mk_fake_quota_axi "$QA/below"   'quota-axi 0.1.15'
 # 0.1.9 is the string-comparison trap: '9' sorts above '16' lexically, so a
 # twin that compared version fields as strings would wrongly accept it.
@@ -399,7 +413,7 @@ done
 for t in 5 0 abc 3x ''; do
   both "timeout.[$t]" "$B_QA" "$P_QA" "fm-quota-axi-lib: timeout argument [$t]"
 done
-assert_same "fm-quota-axi-lib: 0.1.9 stays below the 0.1.16 floor (numeric, not string, compare)" \
+assert_same "fm-quota-axi-lib: 0.1.9 stays below the 0.1.17 floor (numeric, not string, compare)" \
   "False" "$(ps_get "$P_QA" 'trap.compatible')"
 assert_same "fm-quota-axi-lib: the floor build itself passes" \
   "True" "$(ps_get "$P_QA" 'floor.compatible')"
@@ -832,10 +846,10 @@ done
 # The three multi-entry safety verdicts, asserted literally: these messages
 # reach the captain verbatim through fm-teardown and fm-spawn.
 assert_same "fm-secondmate-registry-lib: the overlap message names both homes" \
-  "False|overlapping secondmate home assignment: /h/a (alpha) contains /h/a/inner (beta)||" \
+  "False|overlapping secondmate home assignment: local:/h/a (alpha) contains local:/h/a/inner (beta)||" \
   "$(ps_get "$P_RG" 'bind.overlap.md..')"
 assert_same "fm-secondmate-registry-lib: the duplicate-home message names both ids" \
-  "False|duplicate secondmate home assignment: /h/a: alpha, beta||" \
+  "False|duplicate secondmate home assignment: local:/h/a: alpha, beta||" \
   "$(ps_get "$P_RG" 'bind.duphome.md..')"
 assert_same "fm-secondmate-registry-lib: an expected home mismatch names both" \
   "False|secondmate alpha is registered at /h/a, not /h/z|/h/a|p1,p2" \

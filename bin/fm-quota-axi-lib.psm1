@@ -2,12 +2,8 @@
 # diagnostic.
 # Twin: bin/fm-quota-axi-lib.sh
 #
-# 0.1.16 is the floor because it is the first build that reports each
-# provider's credential sources independently and exposes Grok
-# `state.authStatus`. Without those fields a dispatch candidate cannot be
-# checked against the authentication surface it actually uses, which is how one
-# harness's expired CLI token used to produce a captain-facing sign-out claim
-# for a candidate that never read it.
+# FM_QUOTA_AXI_MIN follows the axi-family floor policy owned beside the floor
+# constants in bin/fm-bootstrap.sh.
 #
 # This file is the single owner of that version number on the PowerShell side,
 # exactly as its bash twin is on the bash side. bin/fm-bootstrap turns a
@@ -45,7 +41,7 @@ Import-Module (Join-Path $PSScriptRoot 'fm-common.psm1')
 # published accessor rather than a bare global: PSAvoidGlobalVars, and a
 # module-scoped value cannot be silently rewritten by a caller the way an
 # exported shell variable can.
-$script:FmQuotaAxiMin = '0.1.16'
+$script:FmQuotaAxiMin = '0.1.17'
 
 # Same expression as bin/fm-tasks-axi-lib's, and same reason: it is the exact
 # twin of the sed program both bash libs use, greedy leading `.*` included.

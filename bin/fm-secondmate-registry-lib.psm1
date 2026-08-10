@@ -61,9 +61,20 @@ Import-Module (Join-Path $PSScriptRoot 'fm-common.psm1')
 # [[:space:]] in the C locale: space, tab, LF, VT, FF, CR - and nothing else.
 $script:FmRegistrySpace = '[ \t\n\v\f\r]'
 
-# The exact twin of $record_re in bin/fm-secondmate-registry-lib.sh.
-$script:FmRegistryRecordRe = [regex]::new(
+# The exact twins of $local_re and $remote_re in bin/fm-secondmate-registry-lib.sh.
+# A generated local record ends with (home: ...; scope: ...; projects: ...;
+# added ...); a remote record adds its host placement before the existing
+# fields: (host: ...; root: ...; home: ...; ...).
+$script:FmRegistryLocalRe = [regex]::new(
     '^- ([A-Za-z0-9._-]+) - (.+) \(home:' + $script:FmRegistrySpace + '*([^;)]*);' +
+    $script:FmRegistrySpace + '*scope:' + $script:FmRegistrySpace + '*(.*);' +
+    $script:FmRegistrySpace + '*projects:' + $script:FmRegistrySpace + '*([^;)]*);' +
+    $script:FmRegistrySpace + '*added' + $script:FmRegistrySpace + '+([0-9]{4}-[0-9]{2}-[0-9]{2})\)' +
+    $script:FmRegistrySpace + '*$')
+$script:FmRegistryRemoteRe = [regex]::new(
+    '^- ([A-Za-z0-9._-]+) - (.+) \(host:' + $script:FmRegistrySpace + '*([^;)]*);' +
+    $script:FmRegistrySpace + '*root:' + $script:FmRegistrySpace + '*([^;)]*);' +
+    $script:FmRegistrySpace + '*home:' + $script:FmRegistrySpace + '*([^;)]*);' +
     $script:FmRegistrySpace + '*scope:' + $script:FmRegistrySpace + '*(.*);' +
     $script:FmRegistrySpace + '*projects:' + $script:FmRegistrySpace + '*([^;)]*);' +
     $script:FmRegistrySpace + '*added' + $script:FmRegistrySpace + '+([0-9]{4}-[0-9]{2}-[0-9]{2})\)' +
@@ -88,23 +99,49 @@ function ConvertFrom-FmSecondmateRegistryLine {
     [OutputType([psobject])]
     param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Line)
 
-    $m = $script:FmRegistryRecordRe.Match($Line)
-    if (-not $m.Success) { return $null }
-
+    # The legacy local form is tried FIRST so summary prose that happens to
+    # mention remote field names cannot change an existing route's placement
+    # semantics - the bash parses in the same order for the same reason.
+    #
     # Named homeValue, not home: $HOME is a PowerShell automatic variable and
     # assigning it inside a module every script imports is action at a
     # distance (and a PSScriptAnalyzer error).
-    $homeValue = $m.Groups[3].Value
-    $scope = $m.Groups[4].Value
+    $m = $script:FmRegistryLocalRe.Match($Line)
+    if ($m.Success) {
+        $homeValue = $m.Groups[3].Value
+        $scope = $m.Groups[4].Value
+        if ($homeValue -eq '' -or $scope -eq '') { return $null }
+        return [pscustomobject]@{
+            Id       = $m.Groups[1].Value
+            Summary  = $m.Groups[2].Value
+            Host     = ''
+            Root     = ''
+            Home     = $homeValue
+            Scope    = $scope
+            Projects = $m.Groups[5].Value
+            Added    = $m.Groups[6].Value
+            Remote   = 0
+            Line     = $Line
+        }
+    }
+    $m = $script:FmRegistryRemoteRe.Match($Line)
+    if (-not $m.Success) { return $null }
+    $hostAlias = $m.Groups[3].Value
+    $rootValue = $m.Groups[4].Value
+    $homeValue = $m.Groups[5].Value
+    $scope = $m.Groups[6].Value
     if ($homeValue -eq '' -or $scope -eq '') { return $null }
-
+    if ($hostAlias -eq '' -or $rootValue -eq '') { return $null }
     return [pscustomobject]@{
         Id       = $m.Groups[1].Value
         Summary  = $m.Groups[2].Value
+        Host     = $hostAlias
+        Root     = $rootValue
         Home     = $homeValue
         Scope    = $scope
-        Projects = $m.Groups[5].Value
-        Added    = $m.Groups[6].Value
+        Projects = $m.Groups[7].Value
+        Added    = $m.Groups[8].Value
+        Remote   = 1
         Line     = $Line
     }
 }
@@ -113,6 +150,23 @@ function ConvertFrom-FmSecondmateRegistryLine {
 .SYNOPSIS
 True when a string is a syntactically valid secondmate id.
 #>
+function Get-FmSecondmateRegistryLockPath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][string]$Directory)
+    return "$Directory/.secondmate-registry.lock"
+}
+
+function Get-FmSecondmateReplyLifecycleLockPath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Directory,
+        [Parameter(Mandatory, Position = 1)][string]$Id
+    )
+    return "$Directory/.remote-reply-lifecycle-$Id.lock"
+}
+
 function Test-FmSecondmateRegistryId {
     [CmdletBinding()]
     [OutputType([bool])]
@@ -198,7 +252,8 @@ function Get-FmSecondmateRegistryRecord {
 
 <#
 .SYNOPSIS
-One field ('home' or 'projects') of a secondmate's registry record, or $null.
+One field (host, root, home, scope, projects, or remote) of a secondmate's
+registry record, or $null. 'remote' prints 0 or 1 exactly as the bash does.
 .DESCRIPTION
 An EMPTY string is a real answer here, not a failure: `projects` is optional in
 the record shape, so '' means "registered with no projects" while $null means
@@ -217,8 +272,12 @@ function Get-FmSecondmateRegistryField {
     $record = Get-FmSecondmateRegistryRecord -Registry $Registry -Id $Id
     if ($null -eq $record) { return $null }
     switch ($Key) {
+        'host' { return $record.Host }
+        'root' { return $record.Root }
         'home' { return $record.Home }
+        'scope' { return $record.Scope }
         'projects' { return $record.Projects }
+        'remote' { return "$($record.Remote)" }
         default { return $null }
     }
 }
@@ -362,7 +421,11 @@ function Invoke-FmSecondmateHomeResolver {
 Validate every home/id binding in the registry, optionally checking one
 expected secondmate against one expected home.
 .DESCRIPTION
-Returns an object with Ok, Error, MatchHome, MatchHomeKey and MatchProjects.
+Returns an object with Ok, Error, MatchHost, MatchRoot, MatchHome,
+MatchHomeKey, MatchProjects and MatchRemote. Binding keys are route-qualified:
+a resolved local home becomes "local:<physical-path>" and a remote route
+becomes "ssh:<host>:<home>", so a local and a remote home can never collide in
+the duplicate or overlap passes.
 The checks run in the bash's order, and the order is load-bearing: a duplicate
 home is reported before an overlap, so an exact-duplicate pair is never
 described as "contains" itself.
@@ -388,9 +451,12 @@ function Resolve-FmSecondmateRegistryBinding {
     $result = [pscustomobject]@{
         Ok            = $false
         Error         = ''
+        MatchHost     = ''
+        MatchRoot     = ''
         MatchHome     = ''
         MatchHomeKey  = ''
         MatchProjects = ''
+        MatchRemote   = 0
     }
 
     # An EMPTY ExpectedId means "no expected id" and is allowed; only a
@@ -420,6 +486,8 @@ function Resolve-FmSecondmateRegistryBinding {
             return $result
         }
         $id = $record.Id
+        $hostAlias = $record.Host
+        $rootPath = $record.Root
         $homePath = $record.Home
 
         # Stored homes stay POSIX-absolute: this gate governs the durable
@@ -428,23 +496,71 @@ function Resolve-FmSecondmateRegistryBinding {
             $result.Error = "unsafe non-absolute secondmate home for ${id}: $homePath"
             return $result
         }
-        # A TAB would split the binding record's own field boundary.
-        if ($homePath.Contains("`t")) {
-            $result.Error = "unsafe secondmate home for $id"
+        # A TAB would split the binding record's own field boundary; LF and CR
+        # are checked for literal parity with the bash even though this
+        # module's line reader cannot deliver them into a field.
+        $route = "$homePath$hostAlias$rootPath"
+        if ($route.Contains("`t") -or $route.Contains("`n") -or $route.Contains("`r")) {
+            $result.Error = "unsafe secondmate route for $id"
             return $result
         }
 
-        $homeKey = Invoke-FmSecondmateHomeResolver -Resolver $Resolver -HomePath $homePath
-        if ($homeKey -eq '') {
-            $result.Error = "unresolvable secondmate home for ${id}: $homePath"
-            return $result
+        if ($record.Remote -eq 1) {
+            # A remote route is validated STRUCTURALLY, never resolved: the
+            # path lives on another host, so the only checks that mean
+            # anything here are the ones a hostile or mangled record could
+            # fail. Each refusal is byte-identical to the bash twin's.
+            if ($hostAlias -eq '' -or $hostAlias.StartsWith('-') -or
+                $script:FmRegistryBadIdRe.IsMatch($hostAlias)) {
+                $result.Error = "unsafe SSH host alias for ${id}: $hostAlias"
+                return $result
+            }
+            if (-not $rootPath.StartsWith('/')) {
+                $result.Error = "unsafe non-absolute remote root for ${id}: $rootPath"
+                return $result
+            }
+            if ("/$rootPath/".Contains('/../') -or "/$rootPath/".Contains('/./')) {
+                $result.Error = "remote code root contains traversal components for ${id}: $rootPath"
+                return $result
+            }
+            if ("/$homePath/".Contains('/../') -or "/$homePath/".Contains('/./')) {
+                $result.Error = "remote home contains traversal components for ${id}: $homePath"
+                return $result
+            }
+            if (("$rootPath" + "$homePath").Contains('//')) {
+                $result.Error = "remote route contains an empty path component for $id"
+                return $result
+            }
+            if ($rootPath -eq $homePath) {
+                $result.Error = "overlapping remote root and home for ${id}: $rootPath"
+                return $result
+            }
+            if (("$homePath" + '/').StartsWith("$rootPath" + '/')) {
+                $result.Error = "remote home for $id is inside its code root: $homePath"
+                return $result
+            }
+            if (("$rootPath" + '/').StartsWith("$homePath" + '/')) {
+                $result.Error = "remote code root for $id is inside its home: $rootPath"
+                return $result
+            }
+            $homeKey = "ssh:${hostAlias}:$homePath"
+        } else {
+            $homeKey = Invoke-FmSecondmateHomeResolver -Resolver $Resolver -HomePath $homePath
+            if ($homeKey -eq '') {
+                $result.Error = "unresolvable secondmate home for ${id}: $homePath"
+                return $result
+            }
+            $homeKey = "local:$homeKey"
         }
         $bindings.Add([pscustomobject]@{ Key = $homeKey; Id = $id })
 
         if ($ExpectedId -ne '' -and $id -eq $ExpectedId) {
+            $result.MatchHost = $hostAlias
+            $result.MatchRoot = $rootPath
             $result.MatchHome = $homePath
             $result.MatchHomeKey = $homeKey
             $result.MatchProjects = $record.Projects
+            $result.MatchRemote = $record.Remote
         }
     }
 
@@ -505,7 +621,12 @@ function Resolve-FmSecondmateRegistryBinding {
     }
 
     if ($ExpectedHome -ne '') {
-        $expectedKey = Invoke-FmSecondmateHomeResolver -Resolver $Resolver -HomePath $ExpectedHome
+        if ($result.MatchRemote -eq 1) {
+            $expectedKey = "ssh:$($result.MatchHost):$ExpectedHome"
+        } else {
+            $expectedKey = Invoke-FmSecondmateHomeResolver -Resolver $Resolver -HomePath $ExpectedHome
+            if ($expectedKey -ne '') { $expectedKey = "local:$expectedKey" }
+        }
         if ($expectedKey -eq '' -or $expectedKey -ne $result.MatchHomeKey) {
             $result.Error = "secondmate $ExpectedId is registered at $($result.MatchHome), not $ExpectedHome"
             return $result
@@ -519,6 +640,8 @@ function Resolve-FmSecondmateRegistryBinding {
 Export-ModuleMember -Function @(
     'ConvertFrom-FmSecondmateRegistryLine',
     'Test-FmSecondmateRegistryId',
+    'Get-FmSecondmateRegistryLockPath',
+    'Get-FmSecondmateReplyLifecycleLockPath',
     'Get-FmSecondmateRegistryLine',
     'Get-FmSecondmateRegistryRecord',
     'Get-FmSecondmateRegistryField',
