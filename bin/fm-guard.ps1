@@ -154,6 +154,18 @@ function Clear-FmGuardStaleBanner {
 Invoke-FmMain -UnexpectedCode 70 {
     $context = Get-FmContext -ScriptRoot $PSScriptRoot
     $fmRoot = $context.Root
+    # The banner prints the root the way the BASH prints $FM_ROOT, which is the
+    # override verbatim when one is set and otherwise `pwd` - MSYS form. The
+    # context's Root is deliberately NATIVE (the .NET file APIs need it), so a
+    # separate display spelling is kept for anything a human reads or copies:
+    # the remediation line below is meant to be pasted, and docs contract 3
+    # keeps path text in POSIX form through the transition.
+    $rootOverrideRaw = Get-FmEnv -Name 'FM_ROOT_OVERRIDE'
+    $fmRootDisplay = if ([string]::IsNullOrEmpty($rootOverrideRaw)) {
+        ConvertTo-FmPosixPath $fmRoot
+    } else {
+        $rootOverrideRaw
+    }
     $state = $context.State
     $config = $context.Config
     $grace = Get-FmEnv -Name 'FM_GUARD_GRACE' -Default '300'
@@ -191,14 +203,14 @@ Invoke-FmMain -UnexpectedCode 70 {
         }
         Write-FmErr "●$FmGuardRule"
         Write-FmErr '●  WORKTREE TANGLE - PRIMARY CHECKOUT IS ON A FEATURE BRANCH'
-        Write-FmErr "●  $fmRoot is on '$tangleBranch', not its default branch '$tangleDefault'."
+        Write-FmErr "●  $fmRootDisplay is on '$tangleBranch', not its default branch '$tangleDefault'."
         Write-FmErr '●  A crewmate likely branched/committed in the primary instead of its own worktree.'
         Write-FmErr "●  The work is SAFE on the '$tangleBranch' ref."
         if ($readOnly) {
             Write-FmErr '●  This read-only session must leave restore work to a session with verified fleet-lock ownership.'
         } else {
             Write-FmErr "●  Restore the primary to '$tangleDefault':"
-            Write-FmErr "●      git -C $fmRoot checkout $tangleDefault"
+            Write-FmErr "●      git -C $fmRootDisplay checkout $tangleDefault"
             Write-FmErr "●  then re-validate '$tangleBranch' in a proper isolated worktree."
         }
         Write-FmErr "●$FmGuardRule"
@@ -210,7 +222,6 @@ Invoke-FmMain -UnexpectedCode 70 {
     # watcher.
     $status = Get-FmSupervisionStatus -State $state -Grace $grace
     $inFlight = [int]$status.InFlight
-    $watcherFresh = [bool]$status.WatcherFresh
     $beaconDesc = [string]$status.BeaconDescription
 
     if ($inFlight -eq 0) {
@@ -232,8 +243,19 @@ Invoke-FmMain -UnexpectedCode 70 {
     # No fresh watcher with tasks in flight is the dangerous state: emit a
     # prominent, bordered banner FIRST so it reads as an alarm, not a buried
     # stderr line. Later calls in the same episode get a one-line reminder only.
-    if (-not $watcherFresh) {
-        $episodeKey = Get-FmGuardStaleEpisodeKey -State $state
+    # The verdict is MODEL-AWARE, and both halves of it matter here. Beacon
+    # freshness alone is the autoarm rule; under the persistent model a fresh
+    # leftover beacon with NO live watcher is still down, and treating it as
+    # healthy is a false all-clear on every harness except claude.
+    $watchPath = Join-Path $PSScriptRoot 'fm-watch.sh'
+    $verdict = Get-FmWatcherSupervisionVerdict -State $state -WatchPath $watchPath `
+        -Grace $grace -FmHome $($context.Home)
+    if (-not $verdict.Ok) {
+        # Keyed on the qualitative failing CONDITION, never on the beacon
+        # mtime: under autoarm a healthy between-turns watcher advances that
+        # mtime every poll, so a mtime-derived key changes every turn and
+        # re-prints the whole banner forever instead of once per episode.
+        $episodeKey = $verdict.Reason
         $printFullBanner = $false
         if ($readOnly) {
             $printFullBanner = -not (Test-FmGuardStaleBannerSeen -State $state -Key $episodeKey)

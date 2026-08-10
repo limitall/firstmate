@@ -724,6 +724,97 @@ True when a live, identity-matched watcher holds <State> with a fresh beacon.
 Get-FmWatcherHealthyPid returns the confirmed pid afterwards, mirroring the
 bash twin's FM_WATCHER_HEALTHY_PID out-variable.
 #>
+<#
+.SYNOPSIS
+The supervision model for this home: 'autoarm' or 'persistent'.
+.DESCRIPTION
+Twin of fm_supervision_model. An explicit FM_SUPERVISION_MODEL wins when it
+names one of the two models; anything else falls through to the harness, where
+claude is autoarm and every other harness is persistent. A harness that cannot
+be resolved reports 'unknown', which is not claude, so it lands on persistent -
+the STRICTER model, which is the safe direction for a verdict.
+#>
+function Get-FmSupervisionModel {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    $explicit = Get-FmEnv -Name 'FM_SUPERVISION_MODEL'
+    if ($explicit -ceq 'autoarm' -or $explicit -ceq 'persistent') { return $explicit }
+
+    $harness = 'unknown'
+    try {
+        # $PSScriptRoot is the bash's $FM_WAKE_LIB_DIR: the LIBRARY's own
+        # directory, not the caller's, so a script invoked from elsewhere still
+        # resolves the harness resolver beside this file.
+        $result = Invoke-FmScript 'fm-harness' @() -BinDir $PSScriptRoot
+        if ($result.Ok) { $harness = $result.StdOut.Trim() }
+    } catch {
+        $harness = 'unknown'
+    }
+    if ($harness -ceq 'claude') { return 'autoarm' }
+    return 'persistent'
+}
+
+<#
+.SYNOPSIS
+Model-aware "is supervision healthy right now" verdict, with the failing reason.
+.DESCRIPTION
+Twin of fm_watcher_supervision_verdict. Returns an object with Ok and Reason,
+where the bash set two globals. For the pull-warning guard only - NOT the arm
+layer and NOT the turn-end guard.
+
+  autoarm     a fresh beacon within grace is healthy EVEN WITH no live watcher,
+              because that watcher only runs between turns; only a stale beacon
+              is a genuine lapse.
+  persistent  a live identity-matched watcher AND a fresh beacon are required;
+              a fresh leftover beacon with no live watcher is still down.
+
+Reason is the true failing condition, and the guard keys its alarm episode on
+it rather than on the beacon mtime: under autoarm a healthy watcher advances
+that mtime every poll, so a mtime-derived key changes every turn and re-prints
+the full banner forever.
+#>
+function Get-FmWatcherSupervisionVerdict {
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$State,
+        [Parameter(Mandatory, Position = 1)][AllowEmptyString()][string]$WatchPath,
+        [Parameter(Position = 2)][AllowEmptyString()][string]$Grace = '',
+        [string]$FmHome
+    )
+
+    if ([string]::IsNullOrEmpty($Grace)) { $Grace = Get-FmEnv -Name 'FM_GUARD_GRACE' -Default '300' }
+    $graceValue = 300
+    if (-not [int]::TryParse($Grace, [ref]$graceValue)) { $graceValue = 300 }
+
+    # `stale-beacon` is the DEFAULT reason, exactly as the bash initialises it:
+    # an unreadable or absent beacon is a genuine supervision lapse.
+    $ok = $false
+    $reason = 'stale-beacon'
+
+    $fresh = $false
+    $age = Get-FmPathAge -Path "$State/.last-watcher-beat"
+    if ($age -lt $graceValue) { $fresh = $true }
+
+    if ((Get-FmSupervisionModel) -ceq 'autoarm') {
+        if ($fresh) { $ok = $true }
+        return [pscustomobject]@{ Ok = $ok; Reason = $reason }
+    }
+
+    $healthyArgs = @{ State = $State; WatchPath = $WatchPath; Grace = $Grace }
+    if ($PSBoundParameters.ContainsKey('FmHome')) { $healthyArgs['FmHome'] = $FmHome }
+    if (Test-FmWatcherHealthy @healthyArgs) {
+        $ok = $true
+    } elseif ($fresh) {
+        # A fresh beacon with no live watcher: the beacon is not the failure,
+        # the missing watcher is.
+        $reason = 'no-watcher'
+    }
+    return [pscustomobject]@{ Ok = $ok; Reason = $reason }
+}
+
 function Test-FmWatcherHealthy {
     [CmdletBinding()]
     [OutputType([bool])]
@@ -2178,6 +2269,7 @@ Export-ModuleMember -Function @(
     'Get-FmCurrentPid', 'Test-FmPidAlive', 'Test-FmMsysPidAlive', 'Get-FmPidIdentity',
     'Get-FmPathMtime', 'Get-FmPathAge',
     'Test-FmWatcherLockMatchesPid', 'Test-FmWatcherHealthy', 'Get-FmWatcherHealthyPid',
+    'Get-FmSupervisionModel', 'Get-FmWatcherSupervisionVerdict',
     'Get-FmLockPathDir', 'Get-FmLockAbsPath', 'Test-FmLockSymlinksWork',
     'Test-FmLockOwnerShapeOk', 'Get-FmLockFallbackOwner', 'Clear-FmLockKnownFile',
     'Remove-FmLockDir', 'Test-FmLockHolderIsLive', 'New-FmLockOwnerDir',
