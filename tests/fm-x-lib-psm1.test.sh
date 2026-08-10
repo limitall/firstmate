@@ -46,9 +46,22 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (the bash oracle nee
 [ -f "$ROOT/bin/fm-x-lib.psm1" ] || fail "bin/fm-x-lib.psm1 is missing"
 MOD=$(fm_test_native_path "$ROOT/bin/fm-x-lib.psm1")
 
-# The oracle.
+# The oracle, loaded the way its own production callers load it.
+#
+# fm-x-lib.sh's three meta helpers call fm_meta_lock_path, fm_lock_acquire_wait
+# and fm_lock_release WITHOUT sourcing the library that defines them: they rely
+# on the caller having done it, and both callers do (bin/fm-x-link.sh:47 and
+# bin/fm-x-followup.sh:72 each `. fm-wake-lib.sh` right after `. fm-x-lib.sh`).
+# Sourcing only fm-x-lib.sh therefore gives a CRIPPLED oracle - every meta
+# rewrite refuses on a command-not-found rather than on any rule the function
+# actually has - and the interop assertions below already encode the working
+# contract ("the PowerShell reader reads a bash-written meta link" expects a
+# link the crippled oracle never writes). Same two lines, same order, as the
+# callers.
 # shellcheck source=bin/fm-x-lib.sh
 . "$ROOT/bin/fm-x-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$ROOT/bin/fm-wake-lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-x-lib-psm1)
 
@@ -213,6 +226,14 @@ build_tree() {  # <root>
   printf 'window=firstmate:fm-t1\nharness=claude\nx_request=req-old\nx_request_ts=1600000000\nx_followups=1\nx_platform=x\nx_reply_max_chars=280\nyolo=off\n' \
     > "$r/meta/linked.meta"
   printf 'window=firstmate:fm-t2\nharness=codex\n' > "$r/meta/plain.meta"
+  # Two EXISTING files that are not lockable meta records, for the refusal the
+  # three meta helpers inherit from fm_meta_lock_path. Both must get past the
+  # `[ -f "$meta" ]` check that comes FIRST and then be refused on the lock path,
+  # which is the only way to tell the refusal apart from the missing-file one:
+  # a leaf that does not end in .meta, and an id carrying a character outside
+  # [A-Za-z0-9._-]. Neither may be rewritten.
+  printf 'window=firstmate:fm-t3\nharness=claude\n' > "$r/meta/notmeta.txt"
+  printf 'window=firstmate:fm-t4\nharness=claude\n' > "$r/meta/bad id.meta"
 
   # Payload files for the reply-context extractor, covering each inference path
   # and each malformed shape.
@@ -549,6 +570,17 @@ bash_record meta.plain.rc "$(fmx_meta_link_set "$BT/meta/plain.meta" req-p 17000
 bash_record meta.plain.body "$(cat "$BT/meta/plain.meta")"
 bash_record meta.missing.rc "$(fmx_meta_link_set "$BT/meta/absent.meta" req-p 1700000000 >/dev/null 2>&1; echo $?)"
 bash_record meta.clearmissing.rc "$(fmx_meta_link_clear "$BT/meta/absent.meta" >/dev/null 2>&1; echo $?)"
+# The unlockable-path refusal, on files that EXIST so the missing-file check
+# cannot be what answers. Note clear's asymmetry: a missing file is success (0)
+# but an unlockable one is a failure (1), so this is the single case that
+# separates the two exits.
+bash_record meta.notmeta.rc "$(fmx_meta_link_set "$BT/meta/notmeta.txt" req-x 1700000000 >/dev/null 2>&1; echo $?)"
+bash_record meta.notmeta.body "$(cat "$BT/meta/notmeta.txt")"
+bash_record meta.badid.rc "$(fmx_meta_link_set "$BT/meta/bad id.meta" req-x 1700000000 >/dev/null 2>&1; echo $?)"
+bash_record meta.badid.body "$(cat "$BT/meta/bad id.meta")"
+bash_record meta.badid.followups.rc "$(fmx_meta_followups_set "$BT/meta/bad id.meta" 9 >/dev/null 2>&1; echo $?)"
+bash_record meta.badid.clear.rc "$(fmx_meta_link_clear "$BT/meta/bad id.meta" >/dev/null 2>&1; echo $?)"
+bash_record meta.badid.clear.body "$(cat "$BT/meta/bad id.meta")"
 
 # --- phase 2: the PowerShell module, in ONE process ---------------------------
 
@@ -859,6 +891,13 @@ Invoke-Case 'meta.plain.rc'       { Get-Rc (Set-FmxMetaLink -MetaPath "$T/meta/p
 Invoke-Case 'meta.plain.body'     { (Get-FmFileText "$T/meta/plain.meta").TrimEnd("`n") }
 Invoke-Case 'meta.missing.rc'     { Get-Rc (Set-FmxMetaLink -MetaPath "$T/meta/absent.meta" -RequestId 'req-p' -Timestamp '1700000000') }
 Invoke-Case 'meta.clearmissing.rc' { Get-Rc (Clear-FmxMetaLink -MetaPath "$T/meta/absent.meta") }
+Invoke-Case 'meta.notmeta.rc'     { Get-Rc (Set-FmxMetaLink -MetaPath "$T/meta/notmeta.txt" -RequestId 'req-x' -Timestamp '1700000000') }
+Invoke-Case 'meta.notmeta.body'   { (Get-FmFileText "$T/meta/notmeta.txt").TrimEnd("`n") }
+Invoke-Case 'meta.badid.rc'       { Get-Rc (Set-FmxMetaLink -MetaPath "$T/meta/bad id.meta" -RequestId 'req-x' -Timestamp '1700000000') }
+Invoke-Case 'meta.badid.body'     { (Get-FmFileText "$T/meta/bad id.meta").TrimEnd("`n") }
+Invoke-Case 'meta.badid.followups.rc' { Get-Rc (Set-FmxMetaFollowupCount -MetaPath "$T/meta/bad id.meta" -Count '9') }
+Invoke-Case 'meta.badid.clear.rc' { Get-Rc (Clear-FmxMetaLink -MetaPath "$T/meta/bad id.meta") }
+Invoke-Case 'meta.badid.clear.body' { (Get-FmFileText "$T/meta/bad id.meta").TrimEnd("`n") }
 PS1
 
 QUERY_N=$(fm_test_native_path "$QUERY")
@@ -1026,11 +1065,12 @@ fi
 # count is itself asserted. The floor is built from the fixtures that were
 # actually available, which means a fixture that failed to materialize cannot
 # quietly shrink the run into a green one.
-# 129 recorded differential cases, plus the no-throw sweep, the twelve explicit
+# 136 recorded differential cases, plus the no-throw sweep, the twelve explicit
 # cross-world interop assertions, the two device-reality assertions and the
 # import-hygiene one. An EXACT total rather than a loose floor, so dropping a
 # single case fails the run instead of quietly shrinking it.
-MIN_ASSERTIONS=145
+# 129 -> 136 when the seven unlockable-meta-path refusal cases were added.
+MIN_ASSERTIONS=152
 [ "$SYMLINK_FILE_FIXTURES" = yes ] && MIN_ASSERTIONS=$((MIN_ASSERTIONS + 2))
 if [ "$ASSERTIONS" -lt "$MIN_ASSERTIONS" ]; then
   printf 'not ok - only %d assertions ran, expected at least %d\n' \
