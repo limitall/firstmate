@@ -265,6 +265,8 @@ SH
 # Each world owns its own scenario tree, built by the same builder, so the two
 # runs cannot interfere through the fake's counters or state file.
 
+declare -A CASE_SH=()
+declare -A CASE_PS=()
 B_SH=''
 B_PS=''
 B_FB_SH=''
@@ -309,6 +311,13 @@ both() { # <relative path under the world root> <content>   plain LF file
 add_case() {
   local label=$1 sh=$2 ps=$3 pathmode=$4 extra=$5 argspec=$6 rc=0
   local envspec_sh envspec_ps common_sh common_ps
+  # Record THIS case's two world directories. B_SH/B_PS are globals that
+  # new_scenario reassigns, and every comparison runs after ALL cases are
+  # queued - so by then they name whichever scenario was created last, not the
+  # one this case ran in. Keyed per label so compare_case can fold the right
+  # pair back to a placeholder.
+  CASE_SH[$label]=$B_SH
+  CASE_PS[$label]=$B_PS
   common_sh="FM_HERDR_LOG=$B_SH/herdr.log${US}FM_HERDR_RESP=$B_SH/resp${US}FM_HERDR_STATE=$B_SH/fkstate${US}FM_HERDR_LAB_STATE_DIR=$B_SH/tripwires${US}FM_ROOT_OVERRIDE=$B_SH${US}FM_HOME=$B_SH"
   common_ps="FM_HERDR_LOG=$B_PS/herdr.log${US}FM_HERDR_RESP=$B_PS/resp${US}FM_HERDR_STATE=$B_PS/fkstate${US}FM_HERDR_LAB_STATE_DIR=$B_PS/tripwires${US}FM_ROOT_OVERRIDE=$B_PS${US}FM_HOME=$B_PS"
   envspec_sh=$common_sh
@@ -362,8 +371,9 @@ compare_case() { # <label>
   # Fold both back to the placeholder so the assertion tests the message, not
   # the directory the case happened to run in. Anything else that differs -
   # including a path the twin got genuinely wrong - still fails.
-  shout=${shout//$B_SH/@W@}; psout=${psout//$B_PS/@W@}
-  sherr=${sherr//$B_SH/@W@}; pserr=${pserr//$B_PS/@W@}
+  local csh=${CASE_SH[$1]:-$B_SH} cps=${CASE_PS[$1]:-$B_PS}
+  shout=${shout//$csh/@W@}; psout=${psout//$cps/@W@}
+  sherr=${sherr//$csh/@W@}; pserr=${pserr//$cps/@W@}
   assert_eq "$psrc" "$shrc" "$1: exit code differs"
   assert_eq "$psout" "$shout" "$1: stdout differs"
   assert_eq "$pserr" "$sherr" "$1: stderr differs"

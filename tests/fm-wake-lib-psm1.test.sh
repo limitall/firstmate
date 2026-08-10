@@ -381,13 +381,24 @@ PROBE_PS1
 # read during the transition carry it. Only the module PATH itself is native,
 # because Import-Module resolves it before any firstmate code can convert it.
 #
+# MSYS2_ARG_CONV_EXCL is what makes that true rather than merely intended:
+# pwsh.exe is a NATIVE binary, so MSYS rewrites a POSIX-looking ARGUMENT to
+# mixed form (/tmp/x -> C:/Users/.../Temp/x) on the way in. Without the
+# exclusion the PowerShell half was asked about a native path while bash was
+# asked about /tmp - two different questions, and the path-shaped probe keys
+# could never even pair up. Scoped to this invocation only, per
+# docs/powershell-port.md; a blanket export would break the doubled-slash idiom
+# other suites rely on. Environment variables are converted by a different knob
+# and are deliberately left alone, so FM_STATE_OVERRIDE still arrives native and
+# both libraries resolve the same state directory.
+#
 # They also run with the same FM_STATE_OVERRIDE: each library resolves its state
 # directory once, when it is loaded, and the annotation phase reads status files
 # out of it, so a differing STATE would compare two different fixtures.
 FM_STATE_OVERRIDE="$FSTATE" bash "$TMP_ROOT/probe.sh" "$LIB" "$FIX" \
   > "$TMP_ROOT/probe.bash.out" 2>"$TMP_ROOT/probe.bash.err" \
   || fail "bash probe failed: $(cat "$TMP_ROOT/probe.bash.err")"
-FM_STATE_OVERRIDE="$FSTATE" pwsh -NoProfile \
+MSYS2_ARG_CONV_EXCL='*' FM_STATE_OVERRIDE="$FSTATE" pwsh -NoProfile \
   -File "$(fm_test_native_path "$TMP_ROOT/probe.ps1")" "$MOD" "$FIX" \
   > "$TMP_ROOT/probe.pwsh.out" 2>"$TMP_ROOT/probe.pwsh.err" \
   || fail "pwsh probe failed: $(cat "$TMP_ROOT/probe.pwsh.err")"
@@ -556,7 +567,13 @@ PLOCK="$IOP2_STATE/.cross.lock"
 # The holder's stderr is captured rather than discarded: a fixture that dies
 # before publishing its pid would otherwise turn every assertion below into an
 # unexplained failure, and the reason lives on that stream.
-FM_STATE_OVERRIDE="$IOP2_STATE" pwsh -NoProfile -File "$HOLDER_PS1_N" \
+#
+# MSYS2_ARG_CONV_EXCL for the same reason as the probe above, and here it is the
+# assertion itself: the lock path the holder is handed is the path whose FORM
+# the published owner token inherits, so letting MSYS rewrite it to native would
+# have this suite prove that a native-spelled lock publishes a POSIX token -
+# which is not the question. Bash gets /tmp; PowerShell must get /tmp too.
+MSYS2_ARG_CONV_EXCL='*' FM_STATE_OVERRIDE="$IOP2_STATE" pwsh -NoProfile -File "$HOLDER_PS1_N" \
   "$MOD" "$PLOCK" "$IOP2/ps.pid" "$IOP2/release" "$IOP2/ps.done" 2> "$IOP2/holder.err" &
 PS_HOLDER=$!
 if wait_for_file "$IOP2/ps.pid"; then

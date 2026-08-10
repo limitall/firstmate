@@ -27,15 +27,24 @@
 #   The flag must be explicit because {TASK} is filled after scaffolding and the
 #   caller-supplied repo string cannot reliably identify this repo. Briefs made
 #   without it carry a loud declaration so an omitted contract cannot be silent.
-# For ship tasks, the definition of done is shaped by the project's delivery mode
-# (data/projects.md via fm-project-mode.sh; see the project-management skill
-# and AGENTS.md task lifecycle):
-#   no-mistakes  implement -> /no-mistakes pipeline -> PR -> captain merge (default)
-#   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> captain merge
+# For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
+# resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
+# captain's standing posture as context, and this script never reads it:
+#   no-mistakes  implement -> /no-mistakes pipeline -> PR -> configured merge authority
+#   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
-#                captain approves, firstmate merges to local main
+#                the configured merge authority approves, firstmate merges to local main
+# no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
+# the three concrete modes at intake before calling this script.
+# The generated ship brief records the chosen mode as a fixed machine-readable
+# "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
+# to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
+# recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
-# Scout tasks ignore mode - their deliverable is a report, not a merge.
+# --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
+# report rather than a merge, and a charter is not a delivery contract.
+# There is no --yolo flag here. The worker never owns approval decisions, so yolo is
+# a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,

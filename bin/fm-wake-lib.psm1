@@ -128,10 +128,14 @@
 #    Get-FmWakeLatestEvent checks for a reparse point before AND after opening,
 #    which narrows the race rather than closing it.
 # 4. Paths in durable records stay POSIX. The `.fm-lock-owner` token and the
-#    owner directory name follow the FORM of the lock path the caller supplied,
-#    because bash's fm_lock_owner_shape_ok rejects any token that does not
-#    begin with '/'. Readers here accept both forms (the
-#    fm_backend_herdr_normalize_host_path precedent).
+#    owner directory name are ALWAYS written in POSIX form, whichever form the
+#    caller spelled the lock path in, because bash's fm_lock_owner_shape_ok
+#    rejects outright any token that does not begin with '/' - and a PowerShell
+#    home resolves its own state directory natively, so following the caller's
+#    convention would publish a token no bash reader could parse
+#    (docs/powershell-port.md contract 3; Get-FmLockAbsPath owns the rule).
+#    Readers here accept both forms (the fm_backend_herdr_normalize_host_path
+#    precedent).
 #
 # fm-psproc-lib is the repo's owner of portable process queries; this file
 # deliberately does not depend on it, exactly as the bash twin does not, so the
@@ -899,18 +903,76 @@ function Test-FmLockPathEqual {
     return (Test-FmSamePath -Left (ConvertTo-FmWakeNative -Path $Left) -Right (ConvertTo-FmWakeNative -Path $Right))
 }
 
+# `cd "$dir" 2>/dev/null && pwd -P`, answering in POSIX form, or $null where
+# that cd would fail. Both halves are load bearing; see Get-FmLockAbsPath.
+function Resolve-FmLockDirPosix {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Dir)
+
+    # A bare drive ("F:") is drive-RELATIVE to .NET, which would resolve against
+    # a per-drive current directory nothing here ever set. `cd F:/` is what the
+    # caller meant.
+    if ($Dir -match '^[A-Za-z]:$') { $Dir = "$Dir/" }
+
+    if ($Dir.StartsWith('/')) {
+        $posix = $Dir
+    } elseif ([System.IO.Path]::IsPathRooted($Dir)) {
+        $posix = ConvertTo-FmPosixPath $Dir
+    } else {
+        # `cd` on a relative directory resolves against the process's cwd, and
+        # `pwd -P` then prints it in POSIX form.
+        $posix = (ConvertTo-FmPosixPath (Get-Location).Path).TrimEnd('/') + '/' + ($Dir -replace '\\', '/')
+    }
+
+    $segments = [System.Collections.Generic.List[string]]::new()
+    foreach ($part in ($posix -split '/')) {
+        if ($part -eq '' -or $part -eq '.') { continue }
+        if ($part -eq '..') {
+            # bash canonicalizes with PATH_CHECKDOTDOT, so the path BEFORE a
+            # '..' has to exist even when the canonical result does: `cd
+            # <state>/sub/..` FAILS while <state> is present and `sub` is not
+            # (verified against the bash twin on this host). Dropping the check
+            # would hand back an owner handle where bash reported a failure.
+            if (-not (Test-FmWakeDirectory -Path ('/' + ($segments -join '/')))) { return $null }
+            if ($segments.Count -gt 0) { $segments.RemoveAt($segments.Count - 1) }
+            continue
+        }
+        $segments.Add($part)
+    }
+    $resolved = '/' + ($segments -join '/')
+    if (-not (Test-FmWakeDirectory -Path $resolved)) { return $null }
+    return $resolved
+}
+
 <#
 .SYNOPSIS
-The absolute form of a lock path, preserving the caller's path convention.
+The absolute POSIX form of a lock path, or $null when the directory is absent.
 .DESCRIPTION
-The bash twin resolves through `cd "$(dirname)" && pwd -P`, which for an
-absolute POSIX path returns that same POSIX path. Reproducing that FORM matters
-more than reproducing the mechanism: the result becomes the `.fm-lock-owner`
-token, and bash's fm_lock_owner_shape_ok rejects any token that does not start
-with '/'. So a POSIX input is normalized as POSIX text and never round-tripped
-through a native path, which for an MSYS mount such as /tmp would rename the
-location (/tmp/x -> /c/Users/.../Temp/x) and make the token unreadable to the
-bash twin.
+The twin of `dir=$(dirname "$p"); base=$(basename "$p"); dir=$(cd "$dir"
+2>/dev/null && pwd -P) || return 1; printf '%s/%s'`. Three properties of that
+line are reproduced deliberately.
+
+FORM. Under MSYS `pwd -P` prints the POSIX spelling of wherever it landed, so
+the bash twin answers `/f/x/state/.watch.lock` even when it was handed
+`F:/x/state/.watch.lock` (verified on this host). That matters because this
+result becomes the `.fm-lock-owner` TOKEN and the owner directory's own name -
+durable records the bash twins keep reading during the transition - and bash's
+fm_lock_owner_shape_ok rejects outright any token that does not begin with '/'.
+A PowerShell home resolves its state directory natively (`F:\...`, because the
+.NET file APIs need that), so returning the caller's own convention published a
+native token no bash reader could parse: the lock then read as a legacy
+pid-only directory to the other world, which is risk R2 in
+docs/powershell-port-inventory.md. So the answer is ALWAYS POSIX
+(docs/powershell-port.md contract 3), converted through fm-common's
+ConvertTo-FmPosixPath rather than re-derived here.
+
+ONLY THE DIRECTORY IS CANONICALIZED. bash appends the basename verbatim after
+resolving the directory, so a lock at the filesystem root answers `//x.lock`
+and a lock literally named `..` is not collapsed. Reproduced rather than
+tidied.
+
+EXISTENCE. `cd` fails when the directory is not there, which is why a caller
+sees a failure instead of a plausible path - see Resolve-FmLockDirPosix for the
+'..' rule that comes with it.
 
 Symlinks in the directory chain are not resolved here, where `pwd -P` would
 resolve them. On the platform that needs the fallback representation there are
@@ -922,27 +984,29 @@ function Get-FmLockAbsPath {
     [OutputType([string])]
     param([Parameter(Mandatory, Position = 0)][string]$Path)
 
-    if ($Path.StartsWith('/')) {
-        $segments = [System.Collections.Generic.List[string]]::new()
-        foreach ($part in ($Path -split '/')) {
-            if ($part -eq '' -or $part -eq '.') { continue }
-            if ($part -eq '..') {
-                if ($segments.Count -gt 0) { $segments.RemoveAt($segments.Count - 1) }
-                continue
-            }
-            $segments.Add($part)
-        }
-        return '/' + ($segments -join '/')
+    # `dirname` / `basename`, which strip trailing separators first: "<x>/state/"
+    # splits as "<x>" + "state", not as "<x>/state" + "".
+    $trimmed = $Path
+    while ($trimmed.Length -gt 1 -and ($trimmed[-1] -eq '/' -or $trimmed[-1] -eq '\')) {
+        $trimmed = $trimmed.Substring(0, $trimmed.Length - 1)
     }
-    try {
-        $native = ConvertTo-FmWakeNative -Path $Path
-        if (-not [System.IO.Path]::IsPathRooted($native)) {
-            $native = Join-Path (Get-Location).Path $native
-        }
-        return [System.IO.Path]::GetFullPath($native).TrimEnd('\')
-    } catch {
-        return $null
+    $idx = $trimmed.LastIndexOfAny([char[]]@('/', '\'))
+    if ($idx -lt 0) {
+        $dir = '.'
+        $base = $trimmed
+    } elseif ($idx -eq 0) {
+        $dir = '/'
+        $base = $trimmed.Substring(1)
+    } else {
+        $dir = $trimmed.Substring(0, $idx)
+        $base = $trimmed.Substring($idx + 1)
     }
+    # `basename /` is `/` in both worlds; nothing else yields an empty base.
+    if ($base -eq '') { $base = $trimmed }
+
+    $resolved = Resolve-FmLockDirPosix -Dir $dir
+    if ([string]::IsNullOrEmpty($resolved)) { return $null }
+    return "$resolved/$base"
 }
 
 # --- symlink capability probe ------------------------------------------------

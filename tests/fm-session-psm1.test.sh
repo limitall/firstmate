@@ -714,6 +714,12 @@ foreach ($line in [System.IO.File]::ReadAllLines($CaseFile)) {
 PSEOF
 
 PS_ANSWERS="$TMP_ROOT/ps-answers.tsv"
+# run_case restores PATH at the START of each case, not the end, so whatever
+# the LAST case set is still in effect here - and one of them deliberately
+# reduces PATH to a minimal set that excludes pwsh. Restore before driving the
+# PowerShell side, or the whole suite dies with "pwsh: command not found"
+# having tested nothing.
+export PATH="$BASE_PATH"
 pwsh -NoProfile -File "$(to_native "$DRIVER")" >"$TMP_ROOT/driver.log" 2>&1 || {
   printf 'not ok - the PowerShell driver failed to run\n' >&2
   cat "$TMP_ROOT/driver.log" >&2
