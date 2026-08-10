@@ -33,6 +33,9 @@
 #     endpoint.exists is the cheap backend endpoint-presence read.
 #     endpoint.agent_alive is populated for secondmates only, where it is useful
 #     return-channel supervision data; other tasks use "not_checked".
+#     remote is null for a local task and {host,root} for a remote direct report,
+#     whose backend, endpoint and liveness all come from its own remote_* metadata
+#     and a bounded fm-on state read rather than from the local backend.
 #   scout_reports[]: present data/<id>/report.md pointers.
 #   main_inventory, secondmate_current, secondmate_landed, secondmate_guidance:
 #     see the bash twin's header, which owns the prose for each field.
@@ -865,8 +868,21 @@ FM_SNAPSHOT_REGISTRY_TIMEOUT, with unavailability and truncation disclosed.
             $worktree = Get-FmMetaValue $meta 'worktree'
             $homeValue = Get-FmMetaValue $meta 'home'
             $projects = Get-FmMetaValue $meta 'projects'
-            $backend = Get-FmBackendOfMeta $meta
-            $target = Get-FmBackendTargetOfMeta $meta
+            # A remote direct report records its OWN backend and endpoint under
+            # remote_* keys, because the local backend dispatcher can neither see
+            # nor probe an endpoint that lives on another host. An unrecorded
+            # remote backend is "unknown" rather than a local guess.
+            $remoteHost = Get-FmMetaValue $meta 'remote_host'
+            $remoteRoot = Get-FmMetaValue $meta 'remote_root'
+            $remoteHomePresent = $null
+            if ($remoteHost -ne '') {
+                $backend = Get-FmMetaValue $meta 'remote_backend'
+                if ($backend -eq '') { $backend = 'unknown' }
+                $target = Get-FmMetaValue $meta 'remote_target'
+            } else {
+                $backend = Get-FmBackendOfMeta $meta
+                $target = Get-FmBackendTargetOfMeta $meta
+            }
             $statusLog = Join-Path $stateDir "$id.status"
             $reportPath = Join-Path (Join-Path $dataDir $id) 'report.md'
 
@@ -905,20 +921,58 @@ FM_SNAPSHOT_REGISTRY_TIMEOUT, with unavailability and truncation disclosed.
             }
 
             $endpointExists = $null
-            if ($target -ne '') {
-                $endpointExists = [bool](Test-FmBackendTargetExists $backend $target "fm-$id")
-            }
             $agentAlive = 'not_checked'
-            if ($kind -ceq 'secondmate' -and $target -ne '') {
-                $alive = Get-FmBackendAgentAlive $backend $target
-                $agentAlive = if ([string]::IsNullOrEmpty($alive)) { 'unknown' } else { $alive }
+            if ($remoteHost -ne '') {
+                # The remote home owns its own liveness answer, so the primary
+                # ASKS it rather than probing a local backend that knows nothing
+                # about that endpoint. A failed or bounded call leaves both fields
+                # unknown - it is not evidence of absence.
+                $probe = Invoke-FmScript -Name 'fm-on' -BinDir $PSScriptRoot `
+                    -Arguments @($id, 'fm-remote-secondmate-control.sh', 'state', $id) `
+                    -StdIn '' -TimeoutSeconds ([int]$bounds['FM_SNAPSHOT_SECONDMATE_TIMEOUT'])
+                if ($probe.ExitCode -eq 0) {
+                    $remoteHomePresent = $true
+                    # `$(...)` drops the trailing newlines, then `tail -1` keeps
+                    # what is left of the last line - so an empty answer reads as
+                    # the empty string and falls through to unknown.
+                    $remoteState = ([string]$probe.StdOut -replace "`r`n", "`n").TrimEnd("`n")
+                    $lastLf = $remoteState.LastIndexOf("`n")
+                    if ($lastLf -ge 0) { $remoteState = $remoteState.Substring($lastLf + 1) }
+                    if ($remoteState -ceq 'alive') { $endpointExists = $true; $agentAlive = 'alive' }
+                    elseif ($remoteState -ceq 'dead') { $endpointExists = $true; $agentAlive = 'dead' }
+                    elseif ($remoteState -ceq 'missing') { $endpointExists = $false; $agentAlive = 'dead' }
+                    else { $endpointExists = $null; $agentAlive = 'unknown' }
+                } else {
+                    $endpointExists = $null
+                    $agentAlive = 'unknown'
+                }
+            } else {
+                if ($target -ne '') {
+                    $endpointExists = [bool](Test-FmBackendTargetExists $backend $target "fm-$id")
+                }
+                if ($kind -ceq 'secondmate' -and $target -ne '') {
+                    $alive = Get-FmBackendAgentAlive $backend $target
+                    $agentAlive = if ([string]::IsNullOrEmpty($alive)) { 'unknown' } else { $alive }
+                }
             }
 
             $paths = Get-JObject
             $paths['meta'] = Get-PathPresentJson $meta
             $paths['status_log'] = $eventJson
             $paths['worktree'] = if ($worktree -ne '') { Get-PathPresentJson $worktree } else { Get-NullPathJson }
-            $paths['home'] = if ($homeValue -ne '') { Get-PathPresentJson $homeValue } else { Get-NullPathJson }
+            # A remote home is NOT stat-able from here, so its presence is whatever
+            # the remote probe above established: true when the remote answered,
+            # and null - never false - when it did not.
+            if ($homeValue -ne '' -and $remoteHost -ne '') {
+                $remoteHomeJson = Get-JObject
+                $remoteHomeJson['path'] = $homeValue
+                $remoteHomeJson['present'] = $remoteHomePresent
+                $paths['home'] = $remoteHomeJson
+            } elseif ($homeValue -ne '') {
+                $paths['home'] = Get-PathPresentJson $homeValue
+            } else {
+                $paths['home'] = Get-NullPathJson
+            }
             $paths['report'] = Get-PathPresentJson $reportPath
 
             $secondmateProjects = Get-JArray
@@ -974,6 +1028,14 @@ FM_SNAPSHOT_REGISTRY_TIMEOUT, with unavailability and truncation disclosed.
             $t['yolo'] = $yolo
             $t['project'] = $project
             $t['backend'] = $backend
+            if ($remoteHost -eq '') {
+                $t['remote'] = $null
+            } else {
+                $remoteRoute = Get-JObject
+                $remoteRoute['host'] = $remoteHost
+                $remoteRoute['root'] = $remoteRoot
+                $t['remote'] = $remoteRoute
+            }
             $t['paths'] = $paths
             $t['secondmate_projects'] = $secondmateProjects
             $t['current_state'] = $currentOut
@@ -1463,22 +1525,35 @@ FM_SNAPSHOT_REGISTRY_TIMEOUT, with unavailability and truncation disclosed.
                 if (-not $line.StartsWith('- ', [System.StringComparison]::Ordinal)) { continue }
                 $idm = [regex]::Match($line, "^- (?<id>[^$NSP]+)")
                 if (-not $idm.Success) { continue }
-                $hm = [regex]::Match($line,
+                # TWO suffix shapes, and the ORDER of preference is jq's: a remote
+                # route carries host and root ahead of home, a local one does not,
+                # and `($local // $remote)` prefers the local reading whenever it
+                # also matches - so a route is remote only when the local pattern
+                # FAILS and the remote one succeeds.
+                $rm = [regex]::Match($line,
+                    "^.*\(host:$SP*(?<host>[^;)]*);$SP*root:$SP*(?<root>[^;)]*);$SP*home:$SP*(?<home>[^;)]*);$SP*scope:$SP*.*;$SP*projects:$SP*[^;)]*;$SP*added$SP+[0-9]{4}-[0-9]{2}-[0-9]{2}\)$SP*$")
+                $lm = [regex]::Match($line,
                     "^.*\(home:$SP*(?<home>[^;)]*);$SP*scope:$SP*.*;$SP*projects:$SP*[^;)]*;$SP*added$SP+[0-9]{4}-[0-9]{2}-[0-9]{2}\)$SP*$")
-                # A line that does not carry the structured suffix is DROPPED, not
-                # reported. That is jq's `(capture(...)?) as $home | ...`: on no
-                # match `capture` yields NOTHING, so `as` iterates zero times and
-                # the whole record never reaches the object constructor. Verified
-                # against jq on this host, because the alternative reading - bind
-                # null and report "registry entry has no home" - is the obvious one
-                # and is wrong. That message is reachable only through the OTHER
-                # arm: a suffix that matches with an EMPTY home field.
-                if (-not $hm.Success) { continue }
+                # A line with NEITHER suffix is no longer dropped: `[capture(...)?][0]
+                # // null` collects an empty stream into `[]`, whose `[0]` is null, so
+                # `as $route` binds null and iterates ONCE. The record therefore
+                # reaches the constructor with a null home and reports "registry entry
+                # has no home". That is a deliberate change from the earlier
+                # `(capture(...)?) as $home` form, which yielded nothing and dropped
+                # the line silently - verified against jq on this host, because both
+                # readings look plausible and only one matches the oracle.
+                $isRemote = ((-not $lm.Success) -and $rm.Success)
+                if ($lm.Success) { $routeHome = $lm.Groups['home'].Value }
+                elseif ($rm.Success) { $routeHome = $rm.Groups['home'].Value }
+                else { $routeHome = $null }
                 $o = Get-JObject
                 $o['id'] = $idm.Groups['id'].Value
-                $o['home'] = $hm.Groups['home'].Value
+                $o['home'] = $routeHome
+                $o['host'] = if ($isRemote) { $rm.Groups['host'].Value } else { $null }
+                $o['root'] = if ($isRemote) { $rm.Groups['root'].Value } else { $null }
+                $o['remote'] = $isRemote
                 $o['registered'] = $true
-                $o['registry_error'] = if ($hm.Groups['home'].Value.Length -eq 0) {
+                $o['registry_error'] = if ($null -eq $routeHome -or $routeHome.Length -eq 0) {
                     'registry entry has no home'
                 } else { $null }
                 [void]$parsed.Add($o)
@@ -1623,6 +1698,24 @@ FM_SNAPSHOT_REGISTRY_TIMEOUT, with unavailability and truncation disclosed.
         $target = Get-JPath $Task @('endpoint', 'target')
         if ($null -eq $target) { $target = '' }
         $exists = Get-JPath $Task @('endpoint', 'exists')
+        # A remote direct report's terminal lives on another host, so the primary
+        # never captures it - and says so with its OWN provenance rather than
+        # borrowing the local one and reporting a missing endpoint.
+        $remoteHostValue = Get-JPath $Task @('remote', 'host')
+        if (-not [string]::IsNullOrEmpty([string]$remoteHostValue)) {
+            $o = Get-JObject
+            $o['provenance'] = 'remote-direct-report-terminal'
+            $o['trust'] = 'untrusted-supplement'
+            $o['captured'] = $false
+            $o['observed_at'] = $snapshotNow
+            $o['freshness'] = 'not-collected'
+            $o['reason'] = 'remote terminal evidence is not collected by the primary'
+            $o['lines'] = 0
+            $o['bytes'] = 0
+            $o['event_note_seen'] = $false
+            $o['contradiction'] = $false
+            return $o
+        }
         $expected = 'fm-' + [string](Get-JField $Task 'id')
 
         if ([string]::IsNullOrEmpty([string]$target) -or $exists -eq $false) {
@@ -1842,6 +1935,12 @@ FM_SNAPSHOT_REGISTRY_TIMEOUT, with unavailability and truncation disclosed.
             $homeValue = Get-JField $row 'home'
             if ($null -eq $homeValue) { $homeValue = '' }
             $homeValue = [string]$homeValue
+            # `$hostValue`, never `$host`: $Host is a read-only automatic variable
+            # in PowerShell and assigning to it aborts the whole run.
+            $hostValue = Get-JField $row 'host'
+            if ($null -eq $hostValue) { $hostValue = '' }
+            $hostValue = [string]$hostValue
+            $isRemote = ((Get-JField $row 'remote') -eq $true)
             $registered = Get-JField $row 'registered'
             $registryError = Get-JField $row 'registry_error'
             if ($null -eq $registryError) { $registryError = '' }
@@ -1881,37 +1980,69 @@ FM_SNAPSHOT_REGISTRY_TIMEOUT, with unavailability and truncation disclosed.
                 }
             }
             if ($reason -eq '') {
-                $validation = Resolve-FmFfSecondmateHome -Id $id -HomePath $homeValue `
-                    -ActiveHome $fmHome -RepoRoot $fmRoot
-                if (-not $validation.Ok) {
-                    $reason = 'invalid home: ' + $validation.Error
-                } else {
-                    $homeValue = $validation.ValidatedHome
-                    if ($seenHomes.Contains($homeValue)) {
-                        $reason = 'invalid home: duplicate resolved home route'
+                if ($isRemote) {
+                    # A remote home cannot be stat-ed, so the seeded-home boundary
+                    # check does not apply; what IS checked is that the route names
+                    # a host and that no two records claim the same host:home.
+                    # The duplicate test runs even when the host is missing, and its
+                    # message deliberately WINS over the missing-host one - the bash
+                    # assigns unconditionally in that case arm.
+                    if ($hostValue -eq '') { $reason = 'invalid remote route: missing SSH host' }
+                    # The bash key is exactly "<host>:<home>" - no "remote:" prefix -
+                    # so it is spelled the same way here rather than tidied up.
+                    $routeKey = "${hostValue}:$homeValue"
+                    if ($seenHomes.Contains($routeKey)) {
+                        $reason = 'invalid home: duplicate resolved remote route'
                     } else {
-                        $seenHomes.Add($homeValue)
+                        $seenHomes.Add($routeKey)
+                    }
+                } else {
+                    $validation = Resolve-FmFfSecondmateHome -Id $id -HomePath $homeValue `
+                        -ActiveHome $fmHome -RepoRoot $fmRoot
+                    if (-not $validation.Ok) {
+                        $reason = 'invalid home: ' + $validation.Error
+                    } else {
+                        $homeValue = $validation.ValidatedHome
+                        # A local home is keyed "local:<home>" while a remote route
+                        # is keyed "<host>:<home>", which is what keeps the two
+                        # namespaces from colliding - the same two spellings the
+                        # bash uses, transcribed rather than regularized.
+                        if ($seenHomes.Contains("local:$homeValue")) {
+                            $reason = 'invalid home: duplicate resolved home route'
+                        } else {
+                            $seenHomes.Add("local:$homeValue")
+                        }
                     }
                 }
             }
             if ($reason -eq '') {
-                $childEnv = [ordered]@{
-                    FM_ROOT_OVERRIDE                       = $fmRoot
-                    FM_HOME                                = $homeValue
-                    FM_STATE_OVERRIDE                      = (Join-Path $homeValue 'state')
-                    FM_DATA_OVERRIDE                       = (Join-Path $homeValue 'data')
-                    FM_CONFIG_OVERRIDE                     = (Join-Path $homeValue 'config')
-                    FM_PROJECTS_OVERRIDE                   = (Join-Path $homeValue 'projects')
-                    FM_SNAPSHOT_NOW                        = $snapshotNow
-                    FM_SNAPSHOT_NOW_EPOCH                  = [string]$snapshotEpoch
-                    FM_SNAPSHOT_SECONDMATE_CHILDREN        = [string]$bounds['FM_SNAPSHOT_SECONDMATE_CHILDREN']
-                    FM_SNAPSHOT_SECONDMATE_QUEUED          = [string]$bounds['FM_SNAPSHOT_SECONDMATE_QUEUED']
-                    FM_SNAPSHOT_SECONDMATE_DECISIONS       = [string]$bounds['FM_SNAPSHOT_SECONDMATE_DECISIONS']
-                    FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME = [string]$landedPerHome
+                if ($isRemote) {
+                    # The remote home runs its OWN summary and answers over the
+                    # tracked SSH route; no local environment override can reach it,
+                    # so nothing is exported here. stdin is closed the way the bash
+                    # closes it, so ssh can never consume the caller's input.
+                    $child = Invoke-FmScript -Name 'fm-on' -BinDir $PSScriptRoot `
+                        -Arguments @($id, 'fm-fleet-snapshot.sh', '--secondmate-home-summary') `
+                        -StdIn '' -TimeoutSeconds ([int]$bounds['FM_SNAPSHOT_SECONDMATE_TIMEOUT'])
+                } else {
+                    $childEnv = [ordered]@{
+                        FM_ROOT_OVERRIDE                       = $fmRoot
+                        FM_HOME                                = $homeValue
+                        FM_STATE_OVERRIDE                      = (Join-Path $homeValue 'state')
+                        FM_DATA_OVERRIDE                       = (Join-Path $homeValue 'data')
+                        FM_CONFIG_OVERRIDE                     = (Join-Path $homeValue 'config')
+                        FM_PROJECTS_OVERRIDE                   = (Join-Path $homeValue 'projects')
+                        FM_SNAPSHOT_NOW                        = $snapshotNow
+                        FM_SNAPSHOT_NOW_EPOCH                  = [string]$snapshotEpoch
+                        FM_SNAPSHOT_SECONDMATE_CHILDREN        = [string]$bounds['FM_SNAPSHOT_SECONDMATE_CHILDREN']
+                        FM_SNAPSHOT_SECONDMATE_QUEUED          = [string]$bounds['FM_SNAPSHOT_SECONDMATE_QUEUED']
+                        FM_SNAPSHOT_SECONDMATE_DECISIONS       = [string]$bounds['FM_SNAPSHOT_SECONDMATE_DECISIONS']
+                        FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME = [string]$landedPerHome
+                    }
+                    $child = Invoke-ChildWithEnv -Name 'fm-fleet-snapshot' `
+                        -Arguments @('--secondmate-home-summary') -Environment $childEnv `
+                        -TimeoutSeconds ([int]$bounds['FM_SNAPSHOT_SECONDMATE_TIMEOUT'])
                 }
-                $child = Invoke-ChildWithEnv -Name 'fm-fleet-snapshot' `
-                    -Arguments @('--secondmate-home-summary') -Environment $childEnv `
-                    -TimeoutSeconds ([int]$bounds['FM_SNAPSHOT_SECONDMATE_TIMEOUT'])
                 if ($child.ExitCode -ne 0) {
                     $reason = if ($child.ExitCode -eq 124) { 'structured home snapshot timed out' }
                     else { 'structured home snapshot failed' }
@@ -1924,9 +2055,12 @@ FM_SNAPSHOT_REGISTRY_TIMEOUT, with unavailability and truncation disclosed.
                         $ok = $false
                         try { $summary = ConvertFrom-Json $summaryText -AsHashtable; $ok = $true } catch { $ok = $false }
                         if ($ok) {
+                            # The pinned-clock check is skipped for a remote route:
+                            # the remote home stamps its own `generated`, so the
+                            # parent's instant is not the value to compare against.
                             $ok = ((Get-JField $summary 'schema') -ceq 'fm-secondmate-home-summary.v1' -and
                                 (Get-JField $summary 'home') -ceq $homeValue -and
-                                (Get-JField $summary 'generated') -ceq $snapshotNow -and
+                                ($isRemote -or (Get-JField $summary 'generated') -ceq $snapshotNow) -and
                                 (Get-JField $summary 'valid') -is [bool] -and
                                 (Get-JField $summary 'state') -is [string] -and
                                 (Get-JField $summary 'invalidity') -is [System.Collections.IDictionary] -and
@@ -2014,6 +2148,8 @@ FM_SNAPSHOT_REGISTRY_TIMEOUT, with unavailability and truncation disclosed.
                 $record = Get-JObject
                 $record['id'] = $id
                 $record['home'] = $homeValue
+                $record['host'] = if ($hostValue -eq '') { $null } else { $hostValue }
+                $record['remote'] = $isRemote
                 $record['registered'] = $registered
                 $record['current'] = $current
                 $record['invalidity'] = Get-JField $summary 'invalidity'
@@ -2077,6 +2213,8 @@ FM_SNAPSHOT_REGISTRY_TIMEOUT, with unavailability and truncation disclosed.
             $record = Get-JObject
             $record['id'] = $id
             $record['home'] = if ($homeValue -eq '') { $null } else { $homeValue }
+            $record['host'] = if ($hostValue -eq '') { $null } else { $hostValue }
+            $record['remote'] = $isRemote
             $record['registered'] = $registered
             $record['current'] = $current
             $record['invalidity'] = $null

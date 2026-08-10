@@ -609,43 +609,68 @@ fi
 
 if want sync; then
 
-CASE_ENV=("FM_HOME=$TMP_ROOT/sync-bash"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync-ps")
+# fm-fleet-sync runs "$FM_ROOT/bin/fm-guard.sh" and "$FM_ROOT/bin/fm-project-mode.sh"
+# from FM_ROOT, not from its own script dir. Left unset, FM_ROOT is the REAL
+# checkout - so the guard's worktree-tangle banner fires for every case whenever
+# this suite is run from a feature branch, and the phase's result depends on
+# which branch the runner happens to be on. That is a fixture artifact, not a
+# twin difference: both worlds emit the banner identically, they just capture it
+# differently.
+#
+# Same remedy the merge phase already uses: point FM_ROOT_OVERRIDE at a scratch
+# root carrying a SILENT guard stub, so both worlds run the same no-op. The mode
+# resolver is copied in rather than stubbed, because a MISSING one makes bash
+# report "No such file or directory" into the captured answer while the twin
+# returns 127 silently - failing the phase on the fixture instead of on the code.
+SYNC_ROOT="$TMP_ROOT/sync-root"
+mk_sync_root() {
+  mkdir -p "$SYNC_ROOT/bin"
+  printf '#!/usr/bin/env bash
+exit 0
+' > "$SYNC_ROOT/bin/fm-guard.sh"
+  chmod +x "$SYNC_ROOT/bin/fm-guard.sh"
+  cp "$ROOT/bin/fm-project-mode.sh" "$SYNC_ROOT/bin/fm-project-mode.sh"
+  chmod +x "$SYNC_ROOT/bin/fm-project-mode.sh"
+}
+mk_sync_root
+
+CASE_ENV=("FM_HOME=$TMP_ROOT/sync-bash" "FM_ROOT_OVERRIDE=$SYNC_ROOT"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync-ps" "FM_ROOT_OVERRIDE=$SYNC_ROOT")
 run_case sync-help fm-fleet-sync --help
-CASE_ENV=("FM_HOME=$TMP_ROOT/sync-bash"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync-ps")
+CASE_ENV=("FM_HOME=$TMP_ROOT/sync-bash" "FM_ROOT_OVERRIDE=$SYNC_ROOT"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync-ps" "FM_ROOT_OVERRIDE=$SYNC_ROOT")
 run_case sync-too-many fm-fleet-sync a b
 
 # The whole sweep: fast-forward, prune, and every refusal in one ordered listing.
-CASE_ENV=("FM_HOME=$TMP_ROOT/sync-bash"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync-ps")
+CASE_ENV=("FM_HOME=$TMP_ROOT/sync-bash" "FM_ROOT_OVERRIDE=$SYNC_ROOT"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync-ps" "FM_ROOT_OVERRIDE=$SYNC_ROOT")
 run_case sync-sweep fm-fleet-sync
 
 # A second sweep over the SAME (now advanced) clones proves the already-current
 # and no-op-prune arms, which the first sweep cannot reach.
-CASE_ENV=("FM_HOME=$TMP_ROOT/sync-bash"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync-ps")
+CASE_ENV=("FM_HOME=$TMP_ROOT/sync-bash" "FM_ROOT_OVERRIDE=$SYNC_ROOT"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync-ps" "FM_ROOT_OVERRIDE=$SYNC_ROOT")
 run_case sync-sweep-again fm-fleet-sync
 
 # Argument forms, against the untouched second pair. A bare name and the
 # "projects/<name>" form both resolve against this home's projects dir; an
 # unresolvable argument still reaches the "not a directory" skip.
-CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps")
+CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash" "FM_ROOT_OVERRIDE=$SYNC_ROOT"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps" "FM_ROOT_OVERRIDE=$SYNC_ROOT")
 run_case sync-one-bare fm-fleet-sync behind
-CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps")
+CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash" "FM_ROOT_OVERRIDE=$SYNC_ROOT"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps" "FM_ROOT_OVERRIDE=$SYNC_ROOT")
 run_case sync-one-projects fm-fleet-sync projects/stuck
-CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps")
+CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash" "FM_ROOT_OVERRIDE=$SYNC_ROOT"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps" "FM_ROOT_OVERRIDE=$SYNC_ROOT")
 run_case sync-one-missing fm-fleet-sync no-such-project
-CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps")
+CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash" "FM_ROOT_OVERRIDE=$SYNC_ROOT"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps" "FM_ROOT_OVERRIDE=$SYNC_ROOT")
 run_case sync-one-localonly fm-fleet-sync localonly
 
 # FM_FLEET_PRUNE=0 must leave a [gone] branch alone.
-CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash" FM_FLEET_PRUNE=0)
-CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps" FM_FLEET_PRUNE=0)
+CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash" "FM_ROOT_OVERRIDE=$SYNC_ROOT" FM_FLEET_PRUNE=0)
+CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps" "FM_ROOT_OVERRIDE=$SYNC_ROOT" FM_FLEET_PRUNE=0)
 run_case sync-prune-off fm-fleet-sync prune
 # ...and the default must then prune it.
-CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps")
+CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash" "FM_ROOT_OVERRIDE=$SYNC_ROOT"); CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps" "FM_ROOT_OVERRIDE=$SYNC_ROOT")
 run_case sync-prune-on fm-fleet-sync prune
 
 # An invalid retry-wait is reported and defaulted rather than used.
-CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash" FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=abc)
-CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps" FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=abc)
+CASE_ENV=("FM_HOME=$TMP_ROOT/sync1-bash" "FM_ROOT_OVERRIDE=$SYNC_ROOT" FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=abc)
+CASE_PS_ENV=("FM_HOME=$TMP_ROOT/sync1-ps" "FM_ROOT_OVERRIDE=$SYNC_ROOT" FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=abc)
 run_case sync-bad-wait fm-fleet-sync --help
 
 fi
