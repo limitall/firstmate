@@ -467,13 +467,23 @@ function Remove-FmBackendTmuxTarget {
 
 # --- recovery-grade agent state ----------------------------------------------
 
-# Harness signatures, exactly as the bash `case` arms are written: the first four
+# Harness signatures, exactly as the bash `case` arms are written: the first five
 # families match as SUBSTRINGS (so a Windows leaf name like claude.exe still
 # matches, and so does a wrapper such as opencode-tui), while the pi family
 # matches EXACTLY - `pi` is two characters and a substring rule would classify
 # any command containing them as a live agent.
+#
+# muse is ANCHORED rather than globbed like its neighbours, and that is a
+# correctness rule rather than a style choice: its installed binary is
+# muse-bin-<version> (the launcher execs it, so the version IS the live process
+# name and changes on every auto-update), and unlike `claude` or `codex` the
+# substring `muse` is a common English fragment - a *muse* rule would classify
+# musescore or amuse as a live agent pane, i.e. would report a dead pane alive
+# and block the recovery that a real wedge needs. So muse contributes an exact
+# name plus a PREFIX, and never joins the substring list above.
 $script:FmBackendTmuxAgentSubstring = [string[]]@('claude', 'codex', 'opencode', 'grok', 'kimi')
-$script:FmBackendTmuxAgentExact = [string[]]@('pi', 'pi-signed', 'pi-launcher', 'Pi')
+$script:FmBackendTmuxAgentExact = [string[]]@('muse', 'pi', 'pi-signed', 'pi-launcher', 'Pi')
+$script:FmBackendTmuxAgentPrefix = [string[]]@('muse-bin-')
 $script:FmBackendTmuxShellExact = [string[]]@('zsh', 'bash', 'sh', 'dash', 'ash', 'ksh', 'mksh', 'tcsh', 'csh', 'fish')
 
 # The tmux responses that authoritatively mean "the endpoint is not there",
@@ -565,6 +575,10 @@ function Get-FmBackendTmuxAgentState {
     # `${comm#-}`: a login shell is reported as "-bash".
     if ($comm.StartsWith('-', $script:FmBackendTmuxOrdinal)) { $comm = $comm.Substring(1) }
 
+    # muse's anchored arm comes first, matching the bash `case` order.
+    foreach ($prefix in $script:FmBackendTmuxAgentPrefix) {
+        if ($comm.StartsWith($prefix, $script:FmBackendTmuxOrdinal)) { return 'alive' }
+    }
     foreach ($needle in $script:FmBackendTmuxAgentSubstring) {
         if ($comm.Contains($needle, $script:FmBackendTmuxOrdinal)) { return 'alive' }
     }

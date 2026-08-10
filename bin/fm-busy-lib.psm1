@@ -45,9 +45,9 @@
 #   fm-interrupt     a firstmate-controlled interruption of the worker
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
-#   endpoint-gone, herdr-native, grok-regex, missing, malformed,
-#   gen-mismatch, source-mismatch, kimi-unverified, codex-unverified,
-#   capture-failed, no-target
+#   endpoint-gone, herdr-native, grok-regex, muse-session-log, missing,
+#   malformed, gen-mismatch, source-mismatch, kimi-unverified,
+#   codex-unverified, capture-failed, no-target
 #
 # Classification (Get-FmBusyClassification): busy | idle | unknown | dead,
 # always with the producing source as the second token. Precedence:
@@ -56,9 +56,19 @@
 #   3. a valid, gen-matching, source-trusted record -> its state and source
 #   4. no record at all: herdr's native busy verdict is trusted as busy
 #      (generation state is sufficient for busy, not for idle), then the
-#      Grok-only temporary regex fallback classifies a grok task from its
-#      rendered tail, then unknown missing
+#      muse session-log pull source, then the Grok-only temporary regex
+#      fallback classifies a grok task from its rendered tail, then
+#      unknown missing
 #   5. malformed, stale, or untrusted records -> unknown, never a fallback
+#
+# The muse pull source is semantic, not rendered: it folds muse's own durable
+# session event log. It has no writer, no arm, and no gen, because muse's
+# default build ships no hook or plugin surface that could push events (its
+# plugin engine reports "plugins are not available in this build" without
+# MUSE_EXPERIMENTAL_PLUGINS). Nothing is armed for muse for the same reason
+# standalone Kimi is not: a seeded record with no writer could never be cleared.
+# See Get-FmBusyMuseRunState for the fold.
+#
 # The Grok arm is the ONLY rendered-text classification that survives the
 # redesign, because Grok's structured lifecycle was not credited-live-verified
 # in the approved audit; it is scoped to harness=grok and can never classify
@@ -163,6 +173,24 @@
 #   fm_busy_sources_for_harness         Get-FmBusySourcesForHarness         yes
 #   fm_busy_source_trusted              Test-FmBusySourceTrusted            yes
 #   fm_busy_record_read                 Read-FmBusyRecord                   yes
+#   fm_busy_muse_binding_path           Get-FmBusyMuseBindingPath           yes
+#   fm_busy_muse_cache_path             Get-FmBusyMuseCachePath             yes
+#   fm_busy_muse_binding_field          Get-FmBusyMuseBindingField          yes
+#   fm_busy_muse_cache_field            Get-FmBusyMuseCacheField            yes
+#   fm_busy_muse_binding_has_prior_log  Test-FmBusyMuseBindingHasPriorLog   yes
+#   fm_busy_muse_main_log_path_valid    Test-FmBusyMuseMainLogPathValid     yes
+#   fm_busy_muse_matching_logs          Get-FmBusyMuseMatchingLogs          yes
+#   fm_busy_muse_namespace_day          Get-FmBusyMuseNamespaceDay          yes
+#   fm_busy_muse_namespace_signature    Get-FmBusyMuseNamespaceSignature    yes
+#   fm_busy_muse_cached_session_log     Get-FmBusyMuseCachedSessionLog      yes
+#   fm_busy_muse_cache_session_log      Write-FmBusyMuseSessionLogCache     yes
+#   fm_busy_muse_session_log            Get-FmBusyMuseSessionLog            yes
+#   fm_busy_muse_run_events             Get-FmBusyMuseRunEvents             yes
+#   fm_busy_muse_run_state              Get-FmBusyMuseRunState              yes
+#   fm_busy_muse_active_run_id          Get-FmBusyMuseActiveRunId           yes
+#   fm_busy_muse_run_terminal           Get-FmBusyMuseRunTerminal           yes
+#   (none)                              Get-FmBusyPosixCksum                no (cksum core)
+#   (none)                              Get-FmBusyCksumText                 no (cksum core)
 #   fm_busy_grok_tail_busy              Test-FmBusyGrokTail                 yes
 #   fm_busy_classify                    Get-FmBusyClassification            yes
 #   fm_busy_classify_live               Get-FmBusyLiveClassification        yes
@@ -496,9 +524,11 @@ with no verified semantic writer trusts NOTHING, which is what makes an
 untrusted record classify unknown instead of falling back.
 
 The firstmate-owned sources (fm-spawn, fm-interrupt, fm-recovery) are appended
-for every converted adapter. Grok deliberately trusts nothing: it has no
-semantic writer yet, and its temporary rendered-tail fallback lives in the
-classifier, not in records.
+for every converted adapter. Grok and muse deliberately trust nothing: neither
+has a semantic WRITER, so neither is armed, and both read their live source on
+demand in the classifier (grok's rendered tail, muse's session log) rather than
+through a stored record. Listing a source here without a writer that can clear it
+would seed a busy record nothing could ever settle.
 
 Every harness comparison is CASE-SENSITIVE (-clike / -ceq), matching bash `case`,
 which PowerShell's default case-insensitive operators would silently widen. Note
@@ -646,6 +676,817 @@ function Read-FmBusyRecord {
     return @{ Ok = $true; State = $rState; Source = $rSource; Event = $rEvent; Seq = $rSeq; Reason = '' }
 }
 
+# ============================================================================
+# muse session-log busy source
+# ============================================================================
+#
+# muse persists an append-only session event log per session at
+# <sessions-root>/YYYY/MM/DD/<session-uuid>/session.jsonl, and brackets every
+# submitted turn with one run lifecycle pair. Verified live on muse
+# 0.1.0-R708.1 across completed, interrupted, and killed-mid-turn turns:
+#   {"payload":{"kind":"run","run_id":"<uuid>","event":{"kind":"started",...
+#   {"payload":{"kind":"run","run_id":"<uuid>","event":{"kind":"terminal",
+#     "terminal":"completed"|"cancelled",...
+# An Escape interrupt closes its run with terminal=cancelled, so unlike Claude's
+# Stop hook this source covers the interrupt path itself. Any later
+# run_retracted records follow the terminal rather than replacing it.
+#
+# Both halves of the fold are trusted. An open run is positive proof a turn is
+# in flight, and a settled log is idle: the credentialed multi-step smoke showed
+# one run pair spans a whole multi-step turn, including an Escape interrupt that
+# closes the run with terminal=cancelled instead of continuing the turn in
+# another run. This gives the settled log the same idle trust as the Claude and
+# Pi push sources. A version allowlist would be false precision and a maintenance
+# treadmill for an auto-updating vendor binary: busy classification receives only
+# the normalized muse harness identity, while session metadata records semver
+# 0.1.0 plus a build SHA that cannot be matched against it. Resolution failures -
+# no sidecar, no matching log, an unreadable or run-free log - remain unknown
+# because those prove nothing about the turn either way. See
+# docs/verification/muse.md for the evidence.
+#
+# ----------------------------------------------------------------------------
+# THE THREE THINGS THIS CONVERSION HAD TO GET EXACTLY RIGHT
+#
+# 1. THE NAMESPACE SIGNATURE IS CROSS-LANGUAGE DURABLE STATE. The resolution
+#    cache state/<id>.muse-session-current records a POSIX `cksum` of the day
+#    directory's manifest, and a cache written by the bash twin must validate
+#    here (and vice versa) because both trees read the same home - contract 2 in
+#    docs/powershell-port.md. So Get-FmBusyPosixCksum is a real CRC-32/CKSUM
+#    (poly 0x04C11DB7, unreflected, length-suffixed, final complement), NOT
+#    .NET's zlib CRC32 and not a hash of convenience. Getting this subtly wrong
+#    would not fail loudly; it would silently invalidate every cache the other
+#    language wrote, re-scanning the whole namespace on every classification.
+#
+# 2. THE NODE HELPER IS ABSORBED, AND THAT IS THE ONE DELIBERATE DIVERGENCE.
+#    fm_busy_muse_matching_logs shells out to an inline `node` script to scan the
+#    session namespace, and guards it with `command -v node || return 1`. This
+#    twin does the scan in-process (docs/powershell-port.md: helper interpreters
+#    are absorbed natively), so on a host with NO node installed bash resolves no
+#    candidates and classifies `unknown muse-session-log` while this resolves
+#    normally. Every other input produces the same answer. The divergence is in
+#    the safe direction - a real semantic fold instead of a tooling-shaped
+#    unknown - and it is recorded rather than hidden because a differential run
+#    on a node-less host will see it.
+#
+# 3. PATHS KEEP THE ROOT'S OWN SPELLING, JOINED WITH '/'. The bash twin's
+#    resolution turns on STRING prefix arithmetic (Test-FmBusyMuseMainLogPathValid
+#    strips `$root/` off the front and splits the remainder), and the sidecar's
+#    prior_log= lines are compared for exact string equality. So every composed
+#    path here is `<parent>/<child>` against the caller's own root spelling, and
+#    only the filesystem calls go through ConvertTo-FmNativePath. node's
+#    path.join would emit backslashes on Windows and break exactly that
+#    arithmetic.
+
+# `${s%%/*}` - everything before the first '/', or the whole string when there
+# is none. Paired with Get-FmBusyMuseTail below to reproduce bash's path split
+# arm for arm, INCLUDING its degenerate behaviour on a short path (where both
+# yield the whole remaining string, which then fails the leaf check).
+function Get-FmBusyMuseHead {
+    param([Parameter(Position = 0)][AllowEmptyString()][string]$Text = '')
+    $i = $Text.IndexOf('/')
+    if ($i -lt 0) { return $Text }
+    return $Text.Substring(0, $i)
+}
+
+# `${s#*/}` - everything after the first '/', or the whole string when there is
+# none.
+function Get-FmBusyMuseTail {
+    param([Parameter(Position = 0)][AllowEmptyString()][string]$Text = '')
+    $i = $Text.IndexOf('/')
+    if ($i -lt 0) { return $Text }
+    return $Text.Substring($i + 1)
+}
+
+# A 32-bit mask and a top-bit probe, as INT64 literals. The `L` suffix is
+# load-bearing and cost real debugging time: PowerShell parses the bare literal
+# `0xFFFFFFFF` as [int] -1, so `$uint64 -band 0xFFFFFFFF` widens -1 back to
+# 0xFFFFFFFFFFFFFFFF and masks NOTHING - the CRC then silently exceeds 32 bits
+# and the [uint32] cast below throws. Same trap for `0x80000000`, which parses as
+# [int]::MinValue. Never spell either of these without the suffix.
+$script:FmBusyCksumMask = 0xFFFFFFFFL
+$script:FmBusyCksumTopBit = 0x80000000L
+
+# The CRC-32/CKSUM table. Built once at import: 256 entries is cheap, and every
+# namespace signature walks it once per byte of every first line in the day.
+$script:FmBusyCksumTable = $(
+    $table = [uint32[]]::new(256)
+    for ($i = 0; $i -lt 256; $i++) {
+        $c = ([uint64]$i) -shl 24
+        for ($k = 0; $k -lt 8; $k++) {
+            if (($c -band $script:FmBusyCksumTopBit) -ne 0) {
+                $c = (($c -shl 1) -bxor 0x04C11DB7) -band $script:FmBusyCksumMask
+            } else {
+                $c = ($c -shl 1) -band $script:FmBusyCksumMask
+            }
+        }
+        $table[$i] = [uint32]$c
+    }
+    , $table
+)
+
+<#
+.SYNOPSIS
+POSIX `cksum` of a byte sequence, formatted as awk renders it: "<crc>:<bytes>".
+.DESCRIPTION
+The bash twin computes `printf '%s' "$text" | cksum | awk '{ print $1 ":" $2 }'`.
+That is CRC-32/CKSUM: polynomial 0x04C11DB7, init 0, NO input or output
+reflection, the byte LENGTH appended low-octet-first, and a final one's
+complement. It is NOT the reflected zlib CRC32 that most libraries mean by
+"CRC32", so it is implemented rather than delegated - see note 1 in the section
+header for why an approximation here would be silently expensive.
+#>
+function Get-FmBusyPosixCksum {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Position = 0)][AllowNull()][byte[]]$Bytes = $null)
+
+    if ($null -eq $Bytes) { $Bytes = [byte[]]@() }
+    $table = $script:FmBusyCksumTable
+    $mask = $script:FmBusyCksumMask
+    $crc = [uint64]0
+    foreach ($b in $Bytes) {
+        $idx = [int](((($crc -shr 24) -band 0xFF) -bxor $b) -band 0xFF)
+        $crc = ((($crc -shl 8) -band $mask) -bxor $table[$idx])
+    }
+    # The LENGTH is folded in one octet at a time, low octet first - the step
+    # that makes this cksum rather than a plain CRC-32, and the reason two files
+    # differing only in trailing NULs still get different signatures.
+    $len = [uint64]$Bytes.Length
+    while ($len -ne 0) {
+        $idx = [int](((($crc -shr 24) -band 0xFF) -bxor ($len -band 0xFF)) -band 0xFF)
+        $crc = ((($crc -shl 8) -band $mask) -bxor $table[$idx])
+        $len = $len -shr 8
+    }
+    $crc = (-bnot $crc) -band $mask
+    return ('{0}:{1}' -f $crc, $Bytes.Length)
+}
+
+# The exact bytes bash hands `cksum`: UTF-8, no BOM, no added terminator.
+function Get-FmBusyCksumText {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$Text = '')
+
+    if ($null -eq $Text) { $Text = '' }
+    return (Get-FmBusyPosixCksum ([System.Text.UTF8Encoding]::new($false).GetBytes($Text)))
+}
+
+<#
+.SYNOPSIS
+The per-task sidecar fm-spawn writes to bind a pane to its session log.
+.DESCRIPTION
+Twin of fm_busy_muse_binding_path. The sidecar records sessions_root=<abs>,
+workspace_root=<abs>, one binding_id=<token>, and one prior_log=<abs> for each
+matching main log that predates this pane - so the classifier never has to
+re-derive muse's data directory.
+#>
+function Get-FmBusyMuseBindingPath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$StateDir = '',
+        [Parameter(Position = 1)][AllowEmptyString()][string]$Id = ''
+    )
+    return ('{0}/{1}.muse-session' -f $StateDir, $Id)
+}
+
+<#
+.SYNOPSIS
+The per-task session-log resolution cache.
+.DESCRIPTION
+Twin of fm_busy_muse_cache_path.
+#>
+function Get-FmBusyMuseCachePath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$StateDir = '',
+        [Parameter(Position = 1)][AllowEmptyString()][string]$Id = ''
+    )
+    return ('{0}/{1}.muse-session-current' -f $StateDir, $Id)
+}
+
+# The shared `key=`-prefixed field read used by both sidecars: FIRST matching
+# line wins, an EMPTY value is a failure (bash's `[ -n "$line" ] || return 1`),
+# and an absent file or absent key yields $null.
+function Get-FmBusyMuseKeyedField {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$Path = '',
+        [Parameter(Position = 1)][AllowEmptyString()][string]$Key = ''
+    )
+
+    if (-not [System.IO.File]::Exists((ConvertTo-FmNativePath $Path))) { return $null }
+    $prefix = $Key + '='
+    foreach ($line in (Get-FmFileLines $Path)) {
+        if (-not $line.StartsWith($prefix, [System.StringComparison]::Ordinal)) { continue }
+        $value = $line.Substring($prefix.Length)
+        if ([string]::IsNullOrEmpty($value)) { return $null }
+        return $value
+    }
+    return $null
+}
+
+<#
+.SYNOPSIS
+Read one field from the per-task binding sidecar, or $null.
+.DESCRIPTION
+Twin of fm_busy_muse_binding_field. $null is bash's nonzero return.
+#>
+function Get-FmBusyMuseBindingField {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$StateDir = '',
+        [Parameter(Position = 1)][AllowEmptyString()][string]$Id = '',
+        [Parameter(Position = 2)][AllowEmptyString()][string]$Key = ''
+    )
+    return (Get-FmBusyMuseKeyedField (Get-FmBusyMuseBindingPath $StateDir $Id) $Key)
+}
+
+<#
+.SYNOPSIS
+Read one field from the resolution cache, or $null.
+.DESCRIPTION
+Twin of fm_busy_muse_cache_field.
+#>
+function Get-FmBusyMuseCacheField {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$StateDir = '',
+        [Parameter(Position = 1)][AllowEmptyString()][string]$Id = '',
+        [Parameter(Position = 2)][AllowEmptyString()][string]$Key = ''
+    )
+    return (Get-FmBusyMuseKeyedField (Get-FmBusyMuseCachePath $StateDir $Id) $Key)
+}
+
+<#
+.SYNOPSIS
+Does the binding sidecar already list <SessionLog> as pre-existing?
+.DESCRIPTION
+Twin of fm_busy_muse_binding_has_prior_log: an exact whole-line match against
+`prior_log=<path>`. A log the sidecar recorded at spawn time predates this pane
+and can never be its own session.
+#>
+function Test-FmBusyMuseBindingHasPriorLog {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$StateDir = '',
+        [Parameter(Position = 1)][AllowEmptyString()][string]$Id = '',
+        [Parameter(Position = 2)][AllowEmptyString()][string]$SessionLog = ''
+    )
+
+    $path = Get-FmBusyMuseBindingPath $StateDir $Id
+    if (-not [System.IO.File]::Exists((ConvertTo-FmNativePath $path))) { return $false }
+    $wanted = 'prior_log=' + $SessionLog
+    foreach ($line in (Get-FmFileLines $path)) {
+        if ([string]::Equals($line, $wanted, [System.StringComparison]::Ordinal)) { return $true }
+    }
+    return $false
+}
+
+<#
+.SYNOPSIS
+Is <SessionLog> a MAIN session log directly under <SessionsRoot>?
+.DESCRIPTION
+Twin of fm_busy_muse_main_log_path_valid. The shape is
+<root>/YYYY/MM/DD/<session>/session.jsonl with every component non-empty, which
+is exactly what excludes muse's own native sub-agent logs one directory deeper
+under subagent/<child-session-id>/session.jsonl - they carry an INDEPENDENT run
+lifecycle, so folding one would report the parent busy long after the parent's
+turn ended.
+
+A SYMLINK is refused even when it points at a real log, matching the twin's
+`[ -f "$log" ] && [ ! -L "$log" ]`.
+#>
+function Test-FmBusyMuseMainLogPathValid {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$SessionsRoot = '',
+        [Parameter(Position = 1)][AllowEmptyString()][string]$SessionLog = ''
+    )
+
+    # `${1%/}` then the `//` -> `/` collapse loop, in that order.
+    $root = $SessionsRoot
+    if ($root.EndsWith('/', [System.StringComparison]::Ordinal)) {
+        $root = $root.Substring(0, $root.Length - 1)
+    }
+    while ($root.Contains('//', [System.StringComparison]::Ordinal)) {
+        $root = $root.Replace('//', '/')
+    }
+    if ([string]::IsNullOrEmpty($root)) { return $false }
+    $native = ConvertTo-FmNativePath $SessionLog
+    if (-not [System.IO.File]::Exists($native)) { return $false }
+    if (Test-FmSymlink $SessionLog) { return $false }
+
+    $prefix = $root + '/'
+    if (-not $SessionLog.StartsWith($prefix, [System.StringComparison]::Ordinal)) { return $false }
+    $rel = $SessionLog.Substring($prefix.Length)
+
+    $year = Get-FmBusyMuseHead $rel; $rel = Get-FmBusyMuseTail $rel
+    $month = Get-FmBusyMuseHead $rel; $rel = Get-FmBusyMuseTail $rel
+    $day = Get-FmBusyMuseHead $rel; $rel = Get-FmBusyMuseTail $rel
+    $session = Get-FmBusyMuseHead $rel
+    $leaf = Get-FmBusyMuseTail $rel
+
+    if ([string]::IsNullOrEmpty($year) -or [string]::IsNullOrEmpty($month) -or
+        [string]::IsNullOrEmpty($day) -or [string]::IsNullOrEmpty($session)) {
+        return $false
+    }
+    return [string]::Equals($leaf, 'session.jsonl', [System.StringComparison]::Ordinal)
+}
+
+# node's `directories()`: the child directory NAMES of <Parent>, with symlinked
+# directories EXCLUDED (readdirSync's dirent reports a symlink as a symlink, not
+# as a directory) and every error swallowed to an empty list.
+function Get-FmBusyMuseChildDirectoryName {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Position = 0)][AllowEmptyString()][string]$Parent = '')
+
+    $names = [System.Collections.Generic.List[string]]::new()
+    try {
+        $info = [System.IO.DirectoryInfo]::new((ConvertTo-FmNativePath $Parent))
+        foreach ($child in $info.GetDirectories()) {
+            if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+            $names.Add($child.Name)
+        }
+    } catch {
+        return , ([string[]]@())
+    }
+    return , ([string[]]$names.ToArray())
+}
+
+# node's `metadataWorkspace()`: the workspace_root recorded in the log's FIRST
+# line, or $null. Bounded to the first 64 KiB exactly as the twin is - a first
+# line longer than that is treated as unreadable rather than streamed, so one
+# corrupt log cannot make every classification pay for it.
+function Get-FmBusyMuseLogWorkspaceRoot {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Position = 0)][AllowEmptyString()][string]$SessionLog = '')
+
+    $buffer = [byte[]]::new(65536)
+    $length = 0
+    try {
+        $stream = [System.IO.File]::Open((ConvertTo-FmNativePath $SessionLog),
+            [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::ReadWrite)
+        try {
+            while ($length -lt $buffer.Length) {
+                $read = $stream.Read($buffer, $length, $buffer.Length - $length)
+                if ($read -le 0) { break }
+                $length += $read
+            }
+        } finally { $stream.Dispose() }
+    } catch {
+        return $null
+    }
+
+    $newline = [Array]::IndexOf($buffer, [byte]10)
+    if ($newline -lt 0 -or $newline -ge $length) { return $null }
+
+    try {
+        $text = [System.Text.UTF8Encoding]::new($false).GetString($buffer, 0, $newline)
+        $record = $text | ConvertFrom-Json -AsHashtable
+    } catch {
+        return $null
+    }
+    # `record?.payload?.record?.workspace_root ?? null`, one optional hop at a
+    # time so a non-object at any level is $null rather than a strict-mode throw.
+    if ($record -isnot [System.Collections.IDictionary]) { return $null }
+    if (-not $record.Contains('payload')) { return $null }
+    $payload = $record['payload']
+    if ($payload -isnot [System.Collections.IDictionary]) { return $null }
+    if (-not $payload.Contains('record')) { return $null }
+    $inner = $payload['record']
+    if ($inner -isnot [System.Collections.IDictionary]) { return $null }
+    if (-not $inner.Contains('workspace_root')) { return $null }
+    $value = $inner['workspace_root']
+    if ($null -eq $value) { return $null }
+    return [string]$value
+}
+
+<#
+.SYNOPSIS
+Every MAIN session log whose recorded workspace_root is this task's worktree.
+.DESCRIPTION
+Twin of fm_busy_muse_matching_logs, absorbing its inline node helper (see note 2
+in the section header). The DEPTH BOUNDS are the load-bearing part: exactly
+<root>/YYYY/MM/DD/<session>/session.jsonl is scanned, which excludes muse's own
+native sub-agent logs one directory deeper.
+
+Returns the array INTACT (`return , $array`), so an empty namespace arrives as a
+0-element array rather than $null. Enumerate it directly - `foreach ($x in
+(Get-FmBusyMuseMatchingLogs ...))`. Do NOT wrap the call in `@()`: that nests the
+returned array one level deep and every element then reads as "System.String[]"
+(the trap docs/powershell-port.md records, and the one this function was caught
+by while being written).
+#>
+function Get-FmBusyMuseMatchingLogs {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+        Justification = 'The plural matches both the bash twin''s name and the return shape: this yields every matching log, and the singular form would read as get-one-log.')]
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$SessionsRoot = '',
+        [Parameter(Position = 1)][AllowEmptyString()][string]$WorkspaceRoot = ''
+    )
+
+    $found = [System.Collections.Generic.List[string]]::new()
+    if (-not [System.IO.Directory]::Exists((ConvertTo-FmNativePath $SessionsRoot))) {
+        return , ([string[]]@())
+    }
+    foreach ($year in (Get-FmBusyMuseChildDirectoryName $SessionsRoot)) {
+        $yearPath = "$SessionsRoot/$year"
+        foreach ($month in (Get-FmBusyMuseChildDirectoryName $yearPath)) {
+            $monthPath = "$yearPath/$month"
+            foreach ($day in (Get-FmBusyMuseChildDirectoryName $monthPath)) {
+                $dayPath = "$monthPath/$day"
+                foreach ($session in (Get-FmBusyMuseChildDirectoryName $dayPath)) {
+                    $file = "$dayPath/$session/session.jsonl"
+                    $native = ConvertTo-FmNativePath $file
+                    # node's `lstatSync(file).isFile()`: a symlink is NOT a file.
+                    if (-not [System.IO.File]::Exists($native)) { continue }
+                    if (Test-FmSymlink $file) { continue }
+                    $ws = Get-FmBusyMuseLogWorkspaceRoot $file
+                    if ($null -eq $ws) { continue }
+                    if ([string]::Equals($ws, $WorkspaceRoot, [System.StringComparison]::Ordinal)) {
+                        $found.Add($file)
+                    }
+                }
+            }
+        }
+    }
+    return , ([string[]]$found.ToArray())
+}
+
+<#
+.SYNOPSIS
+Today's day directory under <SessionsRoot>.
+.DESCRIPTION
+Twin of fm_busy_muse_namespace_day. LOCAL time and InvariantCulture digits, so
+the day never shifts with the host's calendar or number formatting. Only ONE
+trailing '/' is stripped, exactly as `${1%/}` does.
+#>
+function Get-FmBusyMuseNamespaceDay {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Position = 0)][AllowEmptyString()][string]$SessionsRoot = '')
+
+    $root = $SessionsRoot
+    if ($root.EndsWith('/', [System.StringComparison]::Ordinal)) {
+        $root = $root.Substring(0, $root.Length - 1)
+    }
+    $today = [datetime]::Now.ToString('yyyy/MM/dd', [System.Globalization.CultureInfo]::InvariantCulture)
+    return ('{0}/{1}' -f $root, $today)
+}
+
+<#
+.SYNOPSIS
+A cheap fingerprint of today's session namespace: 'missing', or "<crc>:<bytes>".
+.DESCRIPTION
+Twin of fm_busy_muse_namespace_signature. It is taken BEFORE and AFTER a
+resolution scan, and a change between the two invalidates that scan - a session
+created mid-scan means the "only new log" answer was raced and cannot be trusted.
+It also pins the cache: a cached answer is reused only while the namespace is
+byte-identical.
+
+The manifest is `<path>:<crc>:<bytes>` per session log, one per line INCLUDING a
+trailing newline, over paths sorted ORDINALLY (`LC_ALL=C sort`), each carrying
+the cksum of that log's FIRST LINE. $null is bash's nonzero return.
+#>
+function Get-FmBusyMuseNamespaceSignature {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Position = 0)][AllowEmptyString()][string]$DayDirectory = '')
+
+    if (-not [System.IO.Directory]::Exists((ConvertTo-FmNativePath $DayDirectory))) {
+        return 'missing'
+    }
+
+    # `find "$1" -mindepth 2 -maxdepth 2 -type f -name session.jsonl`: exactly
+    # <day>/<session>/session.jsonl, and -type f is false for a symlink because
+    # find does not follow by default.
+    $paths = [System.Collections.Generic.List[string]]::new()
+    foreach ($session in (Get-FmBusyMuseChildDirectoryName $DayDirectory)) {
+        $file = "$DayDirectory/$session/session.jsonl"
+        $native = ConvertTo-FmNativePath $file
+        if (-not [System.IO.File]::Exists($native)) { continue }
+        if (Test-FmSymlink $file) { continue }
+        $paths.Add($file)
+    }
+    $sorted = $paths.ToArray()
+    [Array]::Sort($sorted, [System.StringComparer]::Ordinal)
+
+    $manifest = [System.Text.StringBuilder]::new()
+    foreach ($path in $sorted) {
+        # `first=$(sed -n '1p' "$path")`: the first line WITHOUT its terminator,
+        # and with any CR kept - $() strips only trailing newlines.
+        $text = Get-FmFileText $path
+        $cut = $text.IndexOf("`n")
+        $first = if ($cut -ge 0) { $text.Substring(0, $cut) } else { $text }
+        [void]$manifest.Append($path).Append(':').Append((Get-FmBusyCksumText $first)).Append("`n")
+    }
+    $signature = Get-FmBusyCksumText $manifest.ToString()
+    if ([string]::IsNullOrEmpty($signature)) { return $null }
+    return $signature
+}
+
+<#
+.SYNOPSIS
+The cached session log, when the cache is still provably this pane's.
+.DESCRIPTION
+Twin of fm_busy_muse_cached_session_log. Every one of the five checks must hold:
+the cache names THIS binding, the log is still a valid main log under the root,
+the log is not one the sidecar recorded as pre-existing, and both the day and its
+namespace signature are unchanged. Any miss yields $null and the caller rescans.
+#>
+function Get-FmBusyMuseCachedSessionLog {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$StateDir = '',
+        [Parameter(Position = 1)][AllowEmptyString()][string]$Id = '',
+        [Parameter(Position = 2)][AllowEmptyString()][string]$SessionsRoot = '',
+        [Parameter(Position = 3)][AllowEmptyString()][AllowNull()][string]$BindingId = ''
+    )
+
+    if ([string]::IsNullOrEmpty($BindingId)) { return $null }
+    $cacheBinding = Get-FmBusyMuseCacheField $StateDir $Id 'binding_id'
+    if ($null -eq $cacheBinding) { return $null }
+    if (-not [string]::Equals($cacheBinding, $BindingId, [System.StringComparison]::Ordinal)) { return $null }
+    $log = Get-FmBusyMuseCacheField $StateDir $Id 'session_log'
+    if ($null -eq $log) { return $null }
+    if (-not (Test-FmBusyMuseMainLogPathValid $SessionsRoot $log)) { return $null }
+    if (Test-FmBusyMuseBindingHasPriorLog $StateDir $Id $log) { return $null }
+    $cacheDay = Get-FmBusyMuseCacheField $StateDir $Id 'namespace_day'
+    if ($null -eq $cacheDay) { return $null }
+    $cacheSignature = Get-FmBusyMuseCacheField $StateDir $Id 'namespace_signature'
+    if ($null -eq $cacheSignature) { return $null }
+    $day = Get-FmBusyMuseNamespaceDay $SessionsRoot
+    if (-not [string]::Equals($cacheDay, $day, [System.StringComparison]::Ordinal)) { return $null }
+    $signature = Get-FmBusyMuseNamespaceSignature $day
+    if ($null -eq $signature) { return $null }
+    if (-not [string]::Equals($cacheSignature, $signature, [System.StringComparison]::Ordinal)) { return $null }
+    return $log
+}
+
+<#
+.SYNOPSIS
+Publish the resolution cache, if the binding still matches.
+.DESCRIPTION
+Twin of fm_busy_muse_cache_session_log. An EMPTY binding id is success without a
+write (bash's `[ -n "$3" ] || return 0`): there is nothing to key a cache on, and
+the caller must still return its freshly resolved log. A binding that has moved
+on since resolution began is a failure, so a cache is never written against a
+relaunched pane's identity.
+#>
+function Write-FmBusyMuseSessionLogCache {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$StateDir = '',
+        [Parameter(Position = 1)][AllowEmptyString()][string]$Id = '',
+        [Parameter(Position = 2)][AllowEmptyString()][AllowNull()][string]$BindingId = '',
+        [Parameter(Position = 3)][AllowEmptyString()][string]$SessionLog = '',
+        [Parameter(Position = 4)][AllowEmptyString()][string]$NamespaceDay = '',
+        [Parameter(Position = 5)][AllowEmptyString()][string]$NamespaceSignature = ''
+    )
+
+    if ([string]::IsNullOrEmpty($BindingId)) { return $true }
+    $current = Get-FmBusyMuseBindingField $StateDir $Id 'binding_id'
+    if ($null -eq $current) { return $false }
+    if (-not [string]::Equals($current, $BindingId, [System.StringComparison]::Ordinal)) { return $false }
+    $body = "binding_id=$BindingId`nsession_log=$SessionLog`n" +
+            "namespace_day=$NamespaceDay`nnamespace_signature=$NamespaceSignature`n"
+    return (Set-FmFileTextAtomic -Path (Get-FmBusyMuseCachePath $StateDir $Id) -Text $body -NoNewline)
+}
+
+<#
+.SYNOPSIS
+The one MAIN session log that did not exist when this pane's binding was created.
+.DESCRIPTION
+Twin of fm_busy_muse_session_log. TWO candidates are AMBIGUOUS and fail closed
+rather than guessing which pane owns either log, and a namespace that changed
+under the scan invalidates the whole answer. $null is bash's nonzero return,
+which the classifier reads as `unknown muse-session-log`.
+#>
+function Get-FmBusyMuseSessionLog {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$StateDir = '',
+        [Parameter(Position = 1)][AllowEmptyString()][string]$Id = ''
+    )
+
+    $root = Get-FmBusyMuseBindingField $StateDir $Id 'sessions_root'
+    if ($null -eq $root) { return $null }
+    $ws = Get-FmBusyMuseBindingField $StateDir $Id 'workspace_root'
+    if ($null -eq $ws) { return $null }
+    # The twin swallows this one's failure (`|| true`), so an absent binding_id
+    # is an empty string here and merely disables the cache.
+    $bindingId = Get-FmBusyMuseBindingField $StateDir $Id 'binding_id'
+    if ($null -eq $bindingId) { $bindingId = '' }
+
+    $cached = Get-FmBusyMuseCachedSessionLog $StateDir $Id $root $bindingId
+    if (-not [string]::IsNullOrEmpty($cached)) { return $cached }
+
+    $cachePath = ConvertTo-FmNativePath (Get-FmBusyMuseCachePath $StateDir $Id)
+    try { [System.IO.File]::Delete($cachePath) } catch { $null = $_ }   # `rm -f`
+
+    $namespaceDay = Get-FmBusyMuseNamespaceDay $root
+    $namespaceBefore = Get-FmBusyMuseNamespaceSignature $namespaceDay
+    if ($null -eq $namespaceBefore) { return $null }
+
+    $selected = ''
+    # NOT `@(...)`: see Get-FmBusyMuseMatchingLogs' return-shape note.
+    foreach ($candidate in (Get-FmBusyMuseMatchingLogs $root $ws)) {
+        if ([string]::IsNullOrEmpty($candidate)) { continue }
+        if (Test-FmBusyMuseBindingHasPriorLog $StateDir $Id $candidate) { continue }
+        if (-not [string]::IsNullOrEmpty($selected)) { return $null }   # ambiguous
+        $selected = $candidate
+    }
+    if ([string]::IsNullOrEmpty($selected)) { return $null }
+
+    $namespaceAfter = Get-FmBusyMuseNamespaceSignature $namespaceDay
+    if ($null -eq $namespaceAfter) { return $null }
+    if (-not [string]::Equals($namespaceBefore, $namespaceAfter, [System.StringComparison]::Ordinal)) {
+        return $null
+    }
+    if (-not (Write-FmBusyMuseSessionLogCache $StateDir $Id $bindingId $selected `
+                $namespaceDay $namespaceAfter)) {
+        return $null
+    }
+    return $selected
+}
+
+<#
+.SYNOPSIS
+The run lifecycle records in one session log, as RunId/Event/Terminal triples.
+.DESCRIPTION
+Twin of fm_busy_muse_run_events. The match is anchored on the EXACT structural
+prefix
+
+    "payload":{"kind":"run","run_id":"<id>","event":{"kind":"<event>"
+
+rather than a bare "kind":"terminal" search, because muse also emits nested
+"record":{"kind":"terminal"} cleanup-effect payloads that are NOT run terminals
+and would otherwise close a run that is still in flight. A line whose bytes do
+not match that shape exactly is skipped, never guessed at.
+
+Returns the array INTACT (`return , $array`), which is what lets a caller tell a
+MISSING log ($null, bash's nonzero return) from a log with no run records (a
+0-element array). Enumerate it directly; wrapping the call in `@()` would nest
+the array one level deep.
+#>
+function Get-FmBusyMuseRunEvents {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+        Justification = 'The plural matches both the bash twin''s name and the return shape: this yields every run lifecycle record in the log.')]
+    [CmdletBinding()]
+    [OutputType([hashtable[]])]
+    param([Parameter(Position = 0)][AllowEmptyString()][string]$SessionLog = '')
+
+    if (-not [System.IO.File]::Exists((ConvertTo-FmNativePath $SessionLog))) { return $null }
+
+    $pre = '"payload":{"kind":"run","run_id":"'
+    $head = '","event":{"kind":"'
+    $marker = '"terminal":"'
+    $ordinal = [System.StringComparison]::Ordinal
+    $events = [System.Collections.Generic.List[hashtable]]::new()
+
+    foreach ($line in (Get-FmFileLines $SessionLog)) {
+        $p = $line.IndexOf($pre, $ordinal)
+        if ($p -lt 0) { continue }
+        $rest = $line.Substring($p + $pre.Length)
+        $q = $rest.IndexOf('"', $ordinal)
+        if ($q -lt 0) { continue }
+        $rid = $rest.Substring(0, $q)
+        $rest = $rest.Substring($q)              # awk's substr(rest, q): AT the quote
+        if (-not $rest.StartsWith($head, $ordinal)) { continue }
+        $rest = $rest.Substring($head.Length)
+        $q = $rest.IndexOf('"', $ordinal)
+        if ($q -lt 0) { continue }
+        $ev = $rest.Substring(0, $q)
+        $terminal = ''
+        if ([string]::Equals($ev, 'terminal', $ordinal)) {
+            $p = $rest.IndexOf($marker, $ordinal)
+            if ($p -ge 0) {
+                $value = $rest.Substring($p + $marker.Length)
+                $q = $value.IndexOf('"', $ordinal)
+                if ($q -ge 0) { $terminal = $value.Substring(0, $q) }
+            }
+        }
+        if ([string]::Equals($ev, 'started', $ordinal) -or [string]::Equals($ev, 'terminal', $ordinal)) {
+            $events.Add(@{ RunId = $rid; Event = $ev; Terminal = $terminal })
+        }
+    }
+    return , ([hashtable[]]$events.ToArray())
+}
+
+<#
+.SYNOPSIS
+Fold one session log to busy|settled|none.
+.DESCRIPTION
+Twin of fm_busy_muse_run_state.
+
+  busy     at least one run started with no matching terminal
+  settled  every started run reached a terminal
+  none     the log holds no run lifecycle records at all
+
+$null when the log does not exist, which the classifier reads as unknown.
+#>
+function Get-FmBusyMuseRunState {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Position = 0)][AllowEmptyString()][string]$SessionLog = '')
+
+    $events = Get-FmBusyMuseRunEvents $SessionLog
+    if ($null -eq $events) { return $null }
+
+    $open = [System.Collections.Generic.Dictionary[string, bool]]::new([System.StringComparer]::Ordinal)
+    $seen = $false
+    foreach ($e in $events) {
+        if ($e.Event -ceq 'started') { $open[$e.RunId] = $true; $seen = $true }
+        elseif ($e.Event -ceq 'terminal') { $open[$e.RunId] = $false }
+    }
+    if (-not $seen) { return 'none' }
+    foreach ($value in $open.Values) { if ($value) { return 'busy' } }
+    return 'settled'
+}
+
+<#
+.SYNOPSIS
+The single open run id, when there is EXACTLY one.
+.DESCRIPTION
+Twin of fm_busy_muse_active_run_id. Zero or two-or-more open runs yield $null
+(bash's `exit 1`), because an interrupt acknowledgement must be attributed to one
+unambiguous run or not at all.
+
+Note the twin's asymmetry, preserved here: a `terminal` for a run never
+`started` in this log still registers that run as not-open, so it is counted in
+the map but never returned.
+#>
+function Get-FmBusyMuseActiveRunId {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Position = 0)][AllowEmptyString()][string]$SessionLog = '')
+
+    $events = Get-FmBusyMuseRunEvents $SessionLog
+    if ($null -eq $events) { return $null }
+
+    $open = [System.Collections.Generic.Dictionary[string, bool]]::new([System.StringComparer]::Ordinal)
+    foreach ($e in $events) {
+        if ($e.Event -ceq 'started') { $open[$e.RunId] = $true }
+        elseif ($e.Event -ceq 'terminal') { $open[$e.RunId] = $false }
+    }
+    $active = ''
+    $count = 0
+    foreach ($pair in $open.GetEnumerator()) {
+        if (-not $pair.Value) { continue }
+        $active = $pair.Key
+        $count++
+    }
+    if ($count -ne 1) { return $null }
+    return $active
+}
+
+<#
+.SYNOPSIS
+The terminal disposition recorded for <RunId>, or $null.
+.DESCRIPTION
+Twin of fm_busy_muse_run_terminal: the LAST non-empty terminal value for that run
+id ("completed", "cancelled", ...). $null when the run has no terminal yet, which
+is how the control plane tells "the interrupt landed" from "the turn is still
+running".
+#>
+function Get-FmBusyMuseRunTerminal {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$SessionLog = '',
+        [Parameter(Position = 1)][AllowEmptyString()][AllowNull()][string]$RunId = ''
+    )
+
+    if ([string]::IsNullOrEmpty($RunId)) { return $null }
+    $events = Get-FmBusyMuseRunEvents $SessionLog
+    if ($null -eq $events) { return $null }
+
+    $terminal = ''
+    foreach ($e in $events) {
+        if ($e.RunId -cne $RunId) { continue }
+        if ($e.Event -cne 'terminal') { continue }
+        if ([string]::IsNullOrEmpty($e.Terminal)) { continue }
+        $terminal = $e.Terminal
+    }
+    if ([string]::IsNullOrEmpty($terminal)) { return $null }
+    return $terminal
+}
+
 <#
 .SYNOPSIS
 The Grok-only temporary rendered-tail fallback.
@@ -775,6 +1616,19 @@ function Get-FmBusyClassification {
             }
             if ($native -ceq 'busy') { return 'busy herdr-native' }
         }
+    }
+
+    if ($Harness -clike 'muse*') {
+        # Semantic, on demand: fold this task's bound session log. An open run is
+        # positive proof of a turn in flight and a settled log is a finished turn.
+        # Every other outcome - no sidecar, no matching log, an unreadable or
+        # run-free log - is unknown, NEVER idle.
+        $log = Get-FmBusyMuseSessionLog $StateDir $Id
+        if ([string]::IsNullOrEmpty($log)) { return 'unknown muse-session-log' }
+        $runState = Get-FmBusyMuseRunState $log
+        if ($runState -ceq 'busy') { return 'busy muse-session-log' }
+        if ($runState -ceq 'settled') { return 'idle muse-session-log' }
+        return 'unknown muse-session-log'
     }
 
     if ($Harness -clike 'grok*') {
@@ -936,6 +1790,14 @@ Export-ModuleMember -Function @(
     'Test-FmBusyToken', 'Get-FmBusyCurrentGen',
     'Get-FmBusySourcesForHarness', 'Test-FmBusySourceTrusted',
     'Read-FmBusyRecord', 'Test-FmBusyGrokTail',
+    'Get-FmBusyMuseBindingPath', 'Get-FmBusyMuseCachePath',
+    'Get-FmBusyMuseBindingField', 'Get-FmBusyMuseCacheField',
+    'Test-FmBusyMuseBindingHasPriorLog', 'Test-FmBusyMuseMainLogPathValid',
+    'Get-FmBusyMuseMatchingLogs', 'Get-FmBusyMuseNamespaceDay',
+    'Get-FmBusyMuseNamespaceSignature', 'Get-FmBusyMuseCachedSessionLog',
+    'Write-FmBusyMuseSessionLogCache', 'Get-FmBusyMuseSessionLog',
+    'Get-FmBusyMuseRunEvents', 'Get-FmBusyMuseRunState',
+    'Get-FmBusyMuseActiveRunId', 'Get-FmBusyMuseRunTerminal',
     'Get-FmBusyClassification', 'Get-FmBusyLiveClassification',
     'Get-FmBusyMetaClassification', 'Test-FmBusy'
 )

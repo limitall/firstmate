@@ -2,7 +2,7 @@
 #
 # Twin: bin/fm-harness.sh
 #
-# Usage: fm-harness.ps1                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|unknown
+# Usage: fm-harness.ps1                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|muse|unknown
 #        fm-harness.ps1 crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.ps1 secondmate       print the harness the PRIMARY uses to launch
@@ -50,8 +50,8 @@
 # `basename -- "$comm"` splits on '/' only; this twin also splits on '\',
 # following bin/fm-session-lock-lib.psm1's precedent, because a native Windows
 # image path uses backslashes and a leaf that keeps the whole path would fail
-# the exact-match cases (`kimi`, `pi`, `pi-signed`) that the substring cases
-# would still catch.
+# the exact-match and anchored-prefix cases (`kimi`, `muse`, `muse-bin-*`, `pi`,
+# `pi-signed`) that the substring cases would still catch.
 
 #Requires -Version 7.0
 
@@ -86,7 +86,7 @@ function Get-FmHarnessOwn {
     # Layer 1: environment markers for verified harnesses.
     # Keep marker detection before ancestry detection as an explicit precedence rule.
     # Only claude, pi, and grok set verified markers of their own; codex, opencode,
-    # and kimi are markerless, so a foreign marker retained in a terminal
+    # kimi, and muse are markerless, so a foreign marker retained in a terminal
     # multiplexer's stored environment can silently misidentify one of them before
     # ancestry is consulted. This is a precedence hazard, not evidence that
     # CLAUDECODE inheritance into a kimi child was observed; it was not observed.
@@ -99,6 +99,13 @@ function Get-FmHarnessOwn {
     # It does NOT set CLAUDECODE despite being Claude-Code-compatible, so this marker
     # is unambiguous when firstmate runs natively on grok.
     if ((Get-FmEnv 'GROK_AGENT' -EmptyIsValue) -ceq '1') { return 'grok' }
+    # muse (Muse Code) publishes no harness-identity marker of its own. The only
+    # MUSE_* variable it is documented to hand a child is MUSE_CURRENT_SESSION_LOG,
+    # a per-session log PATH rather than an identity, and its export to tool
+    # subprocesses is unverified (verified: muse 0.1.0-R708.1), so muse is detected
+    # by ancestry alone below. Do NOT promote MUSE_CURRENT_SESSION_LOG to a marker
+    # without verifying it reaches children AND that it cannot survive in a
+    # multiplexer's stored environment, which is the precedence hazard above.
 
     # Layer 2: walk the parent chain and match the command name.
     $current = [string]$PID
@@ -115,6 +122,14 @@ function Get-FmHarnessOwn {
         elseif ($leaf -clike '*opencode*') { return 'opencode' }
         elseif ($leaf -clike '*grok*') { return 'grok' }
         elseif ($leaf -ceq 'kimi') { return 'kimi' }
+        # muse's installed launcher ~/.local/bin/muse execs ~/.local/bin/muse-bin-<version>
+        # (verified in the published launcher, muse 0.1.0-R708.1), so the live process
+        # name carries the version and CHANGES on every auto-update. Match the stable
+        # prefix rather than any exact name. Deliberately ANCHORED, never '*muse*', so
+        # unrelated commands (musescore, amuse) cannot be misread as this harness -
+        # which is why this arm is a -ceq plus a prefix -clike rather than joining the
+        # substring cases above.
+        elseif (($leaf -ceq 'muse') -or ($leaf -clike 'muse-bin-*')) { return 'muse' }
         elseif ($leaf -ceq 'pi-signed') { return 'pi' }
         elseif ($leaf -ceq 'pi') { return 'pi' }
         elseif (($leaf -clike 'node*') -or ($leaf -clike 'python*')) {

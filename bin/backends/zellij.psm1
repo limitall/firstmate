@@ -843,6 +843,9 @@ function ConvertTo-FmBackendZellijKey {
     if ($Key -cin @('Enter', 'enter')) { return 'Enter' }
     if ($Key -cin @('Escape', 'escape', 'Esc', 'esc')) { return 'Esc' }
     if ($Key -cin @('C-c', 'c-c', 'ctrl+c', 'Ctrl+c', 'Ctrl+C', 'Ctrl c', 'ctrl c')) { return 'Ctrl c' }
+    # C-u clears a composer line. fm-send's muse interrupt path needs it to drop
+    # the prompt muse restores into the composer after Escape.
+    if ($Key -cin @('C-u', 'c-u', 'ctrl+u', 'Ctrl+u', 'Ctrl+U', 'Ctrl u', 'ctrl u')) { return 'Ctrl u' }
     return $Key
 }
 

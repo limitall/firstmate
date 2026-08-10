@@ -328,7 +328,7 @@ function Invoke-FmBootstrapChild {
 
 # --- crew-dispatch validation -------------------------------------------------
 
-$script:FmVerifiedHarness = @('claude', 'codex', 'opencode', 'pi', 'pi-signed', 'grok', 'kimi')
+$script:FmVerifiedHarness = @('claude', 'codex', 'opencode', 'pi', 'pi-signed', 'grok', 'kimi', 'muse')
 
 function Test-FmDispatchEffortOk {
     param(
@@ -344,6 +344,7 @@ function Test-FmDispatchEffortOk {
         { $_ -ceq 'pi' -or $_ -ceq 'pi-signed' } {
             return ([bool](@('low', 'medium', 'high', 'xhigh', 'max') -ccontains $Effort))
         }
+        'muse' { return ([bool](@('low', 'medium', 'high', 'xhigh', 'max') -ccontains $Effort)) }
         { $_ -ceq 'opencode' -or $_ -ceq 'kimi' } { return $false }
         default { return $true }
     }

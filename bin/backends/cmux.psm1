@@ -850,6 +850,9 @@ function ConvertTo-FmBackendCmuxKey {
     if ($Key -cin @('Enter', 'enter')) { return 'enter' }
     if ($Key -cin @('Escape', 'escape', 'Esc', 'esc')) { return 'escape' }
     if ($Key -cin @('C-c', 'c-c', 'ctrl+c', 'Ctrl+c', 'Ctrl+C', 'ctrl-c')) { return 'ctrl-c' }
+    # C-u clears a composer line. fm-send's muse interrupt path needs it to drop
+    # the prompt muse restores into the composer after Escape.
+    if ($Key -cin @('C-u', 'c-u', 'ctrl+u', 'Ctrl+u', 'Ctrl+U', 'ctrl-u')) { return 'ctrl-u' }
     return $Key
 }
 

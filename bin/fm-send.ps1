@@ -189,6 +189,85 @@ Invoke-FmMain -UnexpectedCode 70 {
         [Environment]::SetEnvironmentVariable('FM_GUARD_CONTINUE_LINE', $priorContinue)
     }
 
+    # `fm_send_normalize_key`: collapse the accepted spellings of the cancel key
+    # onto the ONE semantic name the two interrupt follow-ups below branch on, so
+    # `--key esc` gets the same composer clear and the same busy-state record as
+    # `--key Escape`. Every other key passes through untouched, and the RAW key
+    # is still what reaches the backend - only firstmate's own bookkeeping reads
+    # the normalized form.
+    function ConvertTo-FmSendSemanticKey {
+        param([AllowEmptyString()][AllowNull()][string]$Key = '')
+        if ($null -eq $Key) { $Key = '' }
+        if ($Key -cin @('Escape', 'escape', 'Esc', 'esc')) { return 'Escape' }
+        return $Key
+    }
+
+    # `fm_send_clear_after_interrupt`: muse RESTORES the interrupted prompt back
+    # into the composer when Escape cancels a turn, as real BRIGHT text (verified:
+    # fg 38;2;204;211;219, luminance ~210, muse 0.1.0-R708.1), not de-emphasised
+    # ghost text. Classifying that as pending input is correct - the text really
+    # is unsubmitted - but leaving it there means the NEXT steer types onto the
+    # end of it and submits both as one garbled message. Ctrl-U clears the
+    # composer (verified), so the interrupt is not complete until it has been
+    # sent. A failed clear is LOUD rather than silent, because the alternative is
+    # a corrupted steer.
+    #
+    # DIVERGENCE FROM THE BASH TWIN, stated rather than hidden: bash reads WHICH
+    # adapters need that clear, and which key clears them, from the one
+    # control-plane capability table (bin/fm-control-lib.sh) rather than keeping a
+    # second copy here. That library has no PowerShell twin yet, so the two
+    # lookups it owns are reproduced below, arm for arm against its `case`
+    # statements. When bin/fm-control-lib.psm1 lands, these two functions must be
+    # DELETED and replaced by calls into it - keeping the copy is exactly the
+    # drift the bash comment exists to prevent.
+    function Get-FmSendHarnessFamily {
+        param([AllowEmptyString()][AllowNull()][string]$Harness = '')
+        if ($null -eq $Harness) { $Harness = '' }
+        # A task launched from a raw command records that command's BASENAME
+        # (fm-spawn derives harness= that way), which is why most arms are
+        # prefixes. `pi` and `pi-signed` are exact, because a `pi*` prefix would
+        # swallow the signed adapter. An unrecognized value yields '' - bash's
+        # nonzero return, which the caller treats as "no clear needed" rather
+        # than guessing a family.
+        if ($Harness -ceq 'pi') { return 'pi' }
+        if ($Harness -ceq 'pi-signed') { return 'pi-signed' }
+        if ($Harness -clike 'claude*') { return 'claude' }
+        if ($Harness -clike 'codex*') { return 'codex' }
+        if ($Harness -clike 'opencode*') { return 'opencode' }
+        if ($Harness -clike 'grok*') { return 'grok' }
+        if ($Harness -clike 'kimi*') { return 'kimi' }
+        if ($Harness -clike 'muse*') { return 'muse' }
+        return ''
+    }
+
+    # The key that must follow the interrupt key to leave the composer empty, or
+    # '' when the adapter needs none. muse is the one verified adapter that
+    # restores the cancelled prompt as real bright text. bash distinguishes "no
+    # clear key" from "unknown harness" by exit status; both mean "nothing more to
+    # send" at the single call site, so both are '' here.
+    function Get-FmSendInterruptClearKey {
+        param([AllowEmptyString()][AllowNull()][string]$Family = '')
+        if ($Family -ceq 'muse') { return 'C-u' }
+        return ''
+    }
+
+    function Invoke-FmSendComposerClear {
+        param([string]$Key, [string]$Target)
+        if ($Key -cne 'Escape') { return $true }
+        $family = Get-FmSendHarnessFamily $script:TargetHarness
+        if ([string]::IsNullOrEmpty($family)) { return $true }
+        $clear = Get-FmSendInterruptClearKey $family
+        if ([string]::IsNullOrEmpty($clear)) { return $true }
+        if ($script:TargetBackend -ceq 'remote') { return $true }
+        if (Send-FmBackendKey -Backend $script:TargetBackend -Target $Target -Key $clear `
+                -ExpectedLabel $script:ExpectedLabel) {
+            return $true
+        }
+        Write-FmErr ("error: Escape reached $Target, but the $($script:TargetHarness) composer could not " +
+            'be cleared; it still holds the restored prompt. Clear it before sending the next message.')
+        return $false
+    }
+
     # Record a Claude interrupt so the busy fold stops reporting a turn that the
     # Escape just ended. Only Escape, only a claude* harness, only a task with a
     # busy generation recorded.
@@ -343,13 +422,17 @@ Invoke-FmMain -UnexpectedCode 70 {
             Exit-FmScript 1
         }
         $key = [string]$rest[1]
+        # The RAW key is what the backend is asked for; only firstmate's own
+        # follow-ups read the normalized form (see ConvertTo-FmSendSemanticKey).
+        $semanticKey = ConvertTo-FmSendSemanticKey $key
         if (-not (Send-FmBackendKey -Backend $script:TargetBackend -Target $target -Key $key `
                     -ExpectedLabel $script:ExpectedLabel)) {
             Write-FmErr ("error: key '$key' not sent to $target ($($script:TargetBackend) send failed; " +
                 "tried $($script:ResolutionTried))")
             Exit-FmScript 1
         }
-        if (-not (Write-FmSendInterrupt -Key $key -Target $target)) { Exit-FmScript 1 }
+        if (-not (Invoke-FmSendComposerClear -Key $semanticKey -Target $target)) { Exit-FmScript 1 }
+        if (-not (Write-FmSendInterrupt -Key $semanticKey -Target $target)) { Exit-FmScript 1 }
         Exit-FmScript 0
     }
 

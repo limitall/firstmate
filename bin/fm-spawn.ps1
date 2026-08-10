@@ -70,7 +70,7 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. pi-signed launches that exact executable name from PATH and
@@ -113,11 +113,16 @@
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
+#     __MUSEBIN__   absolute path to the resolved muse launcher
+#     __MUSECONFIG__ / __MUSEDATA__  the resolved XDG config/data homes muse runs under
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
+# muse installs no hook at all - its plugin engine is off in the default build - so
+# it writes state/<id>.muse-session to bind the pane to muse's own session event
+# log; muse is crewmate/scout only and is refused for --secondmate.
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> mode=<mode> yolo=<on|off> window=<backend-target> worktree=<path>
 # mode/yolo are resolved per-project from data/projects.md for ship/scout tasks;
 # secondmate spawns record mode=secondmate, yolo=off, home=, and projects=.
@@ -554,6 +559,30 @@ function Get-FmSpawnLaunchTemplate {
         # Its turn-end signal is a globally configured Stop hook plus a guarded
         # per-task worktree token, so no launch placeholder belongs here.
         'kimi' { return '__KIMIBIN__ __MODELFLAG__--auto' }
+        # muse (Muse Code): a positional prompt starts the supervised interactive
+        # session. --yolo is the single flag that makes a crewmate pane viable: muse
+        # ships approval prompts AND a filesystem/network sandbox ON by default
+        # (--sandbox-network defaults to proxy-only, which refuses outright without a
+        # managed proxy), and it gates a fresh workspace behind a trust dialog. One
+        # --yolo disables approval, disables the sandbox so git and network work, and
+        # trusts the workspace for the run, so no dialog appears on the fresh
+        # per-task worktree (verified, muse 0.1.0-R708.1).
+        # MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on is the privacy control:
+        # muse otherwise loads the OPERATOR's foreign personal rules from ~/.claude
+        # into every run and ships them to Meta-hosted inference, even under an
+        # isolated XDG_CONFIG_HOME. exec mode's --no-foreign-personal-context flag is
+        # NOT accepted by the interactive TUI (it exits with "unexpected argument"),
+        # so this env var is the only control that reaches a pane worker. Verified to
+        # drop the foreign rules_file context block while KEEPING the project's own
+        # AGENTS.md rules, which the crewmate contract depends on.
+        # muse's turn-end signal rides neither the launch command nor a hook: its
+        # plugin engine is off in the default build, so firstmate folds muse's own
+        # session event log instead (bin/fm-busy-lib.psm1), bound by the sidecar
+        # written at spawn. Nothing to place in the template for it.
+        # codex, opencode, and kimi are also markerless and share this inherited-marker hazard; changing their verified launch boundaries belongs in follow-up work.
+        'muse' {
+            return 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS XDG_CONFIG_HOME=__MUSECONFIG__ XDG_DATA_HOME=__MUSEDATA__ MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on __MUSEBIN__ --yolo __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        }
         default { return $null }
     }
 }
@@ -570,7 +599,7 @@ function Get-FmSpawnModelFlag {
     )
     if ([string]::IsNullOrEmpty($Model) -or $Model -ceq 'default') { return '' }
     switch -CaseSensitive ($Harness) {
-        { $_ -cin @('claude', 'codex', 'opencode', 'pi', 'pi-signed', 'grok', 'kimi') } {
+        { $_ -cin @('claude', 'codex', 'opencode', 'pi', 'pi-signed', 'grok', 'kimi', 'muse') } {
             return "--model $(ConvertTo-FmSpawnShellQuoted $Model) "
         }
         default { return '' }
@@ -629,6 +658,23 @@ function Get-FmSpawnEffortFlag {
             }
             return ''
         }
+        'muse' {
+            # muse 0.1.0-R708.1 --reasoning-effort accepts none|minimal|low|medium|
+            # high|xhigh|ultra and defaults to high, so low..xhigh map straight across.
+            # ultra is muse's max-CLASS level, so firstmate's max maps onto it - but
+            # only ever as an EXPLICIT captain choice, never as a fallback, because
+            # AGENTS.md section 4 forbids selecting max without captain preference and
+            # the omitted effort here leaves muse on its own high default. muse's extra
+            # none/minimal levels sit below firstmate's shared vocabulary and are
+            # deliberately unreachable rather than remapped onto low.
+            if ($Effort -cin @('low', 'medium', 'high', 'xhigh')) {
+                return "--reasoning-effort $(ConvertTo-FmSpawnShellQuoted $Effort) "
+            }
+            if ($Effort -ceq 'max') {
+                return "--reasoning-effort $(ConvertTo-FmSpawnShellQuoted 'ultra') "
+            }
+            return ''
+        }
         # opencode's interactive `opencode --prompt` launch has a verified --model
         # flag but no verified effort flag. Its `opencode run --variant` flag belongs
         # to a different, non-interactive launch mode, so fm-spawn does not pass it.
@@ -659,6 +705,107 @@ function Resolve-FmSpawnKimiBinary {
     }
     Write-FmErr "error: kimi executable not found; searched PATH for 'kimi' and fallback '$fallback'"
     return $null
+}
+
+<#
+.SYNOPSIS
+Resolve the muse executable to an absolute path, or $null after refusing.
+.DESCRIPTION
+Twin of resolve_muse_binary. Only PATH is searched - there is no documented
+fallback install location the way kimi has one - and the result is made ABSOLUTE
+before it reaches the launch command, because the pane's cwd is the task worktree
+rather than firstmate's.
+
+The resolved path is the LAUNCHER (`muse`), not the versioned `muse-bin-<version>`
+binary it execs. That distinction matters downstream, not here: fm-harness and the
+tmux pane classifier have to recognise the version-suffixed name they see in the
+live process table, which is why both carry an anchored `muse-bin-*` prefix rule.
+#>
+function Resolve-FmSpawnMuseBinary {
+    [OutputType([string])]
+    param()
+    $candidate = Get-Command 'muse' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($candidate -and -not [string]::IsNullOrEmpty($candidate.Source)) {
+        return (ConvertTo-FmPosixPath $candidate.Source)
+    }
+    Write-FmErr 'error: muse executable not found on PATH; install Muse Code or select a different verified harness'
+    return $null
+}
+
+<#
+.SYNOPSIS
+Is META_API_KEY provably present in the BACKEND worker environment?
+.DESCRIPTION
+Twin of muse_worker_meta_api_key_present. Deliberately narrow: only the tmux
+backend publishes a readable per-session environment, so every other backend
+answers "not proven" rather than "absent". Proven is the only answer that may
+license a launch, because the failure mode this preflight exists to prevent is
+silent.
+#>
+function Test-FmSpawnMuseWorkerMetaApiKey {
+    [OutputType([bool])]
+    param([Parameter(Position = 0)][AllowEmptyString()][string]$Backend = '')
+
+    if ($Backend -cne 'tmux') { return $false }
+    $session = ''
+    if (-not [string]::IsNullOrEmpty((Get-FmEnv 'TMUX'))) {
+        $shown = Invoke-FmTool 'tmux' @('display-message', '-p', '#S')
+        if (-not $shown.Ok) { return $false }
+        $session = $shown.StdOut.Trim()
+        if ([string]::IsNullOrEmpty($session)) { return $false }
+    } else {
+        $has = Invoke-FmTool 'tmux' @('has-session', '-t', 'firstmate')
+        if (-not $has.Ok) { return $false }
+        $session = 'firstmate'
+    }
+    # NOT named `$env`: that shadows the Env: drive prefix and is confusing at
+    # best, so the worker environment read gets an unambiguous name.
+    $workerEnv = Invoke-FmTool 'tmux' @('show-environment', '-t', $session, 'META_API_KEY')
+    if (-not $workerEnv.Ok) { return $false }
+    # `META_API_KEY=?*`: the name, an '=', and at least one byte. tmux prints
+    # `-META_API_KEY` for a variable it is told to REMOVE, which must not read as
+    # present.
+    foreach ($line in ($workerEnv.StdOut -split "`n")) {
+        $line = $line.TrimEnd("`r")
+        if ($line.StartsWith('META_API_KEY=', [System.StringComparison]::Ordinal) -and
+            $line.Length -gt 'META_API_KEY='.Length) {
+            return $true
+        }
+    }
+    return $false
+}
+
+<#
+.SYNOPSIS
+Can a launched muse pane reach its provider without an interactive login?
+.DESCRIPTION
+Twin of muse_credential_present. muse offers exactly two credential paths
+(verified, muse 0.1.0-R708.1): the META_API_KEY environment variable, which always
+takes priority, and a stored credential written by `muse auth set` or `muse login`
+into <config>/muse/auth.json.
+
+This is a PREFLIGHT rather than a rendered-screen check because an
+unauthenticated pane does NOT exit - it sits on an OAuth device-code prompt
+("Sign in at this page ... Waiting for approval...") waiting for a human who is
+not there, which supervision would read as a wedged worker rather than as a
+missing credential.
+#>
+function Test-FmSpawnMuseCredential {
+    [OutputType([bool])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][string]$AuthFile = '',
+        [Parameter(Position = 1)][AllowEmptyString()][string]$Backend = ''
+    )
+    # `[ -s "$auth" ]`: present AND non-empty.
+    $native = ConvertTo-FmNativePath $AuthFile
+    if ([System.IO.File]::Exists($native)) {
+        try {
+            if ([System.IO.FileInfo]::new($native).Length -gt 0) { return $true }
+        } catch {
+            $null = $_
+        }
+    }
+    return (Test-FmSpawnMuseWorkerMetaApiKey $Backend)
 }
 
 <#
@@ -1063,7 +1210,7 @@ function Invoke-FmSpawnMain {
     $firstmateHome = ''
     if ($kind -ceq 'secondmate') {
         $pos1 = if ($positional.Count -gt 1) { $positional[1] } else { '' }
-        if ($pos1 -eq '' -or $pos1 -cin @('claude', 'codex', 'opencode', 'pi', 'pi-signed', 'grok', 'kimi')) {
+        if ($pos1 -eq '' -or $pos1 -cin @('claude', 'codex', 'opencode', 'pi', 'pi-signed', 'grok', 'kimi', 'muse')) {
             $arg3 = $pos1
         } elseif ($pos1 -match '\s') {
             # A whitespace-carrying second positional is ambiguous: a raw launch
@@ -1148,6 +1295,17 @@ function Invoke-FmSpawnMain {
         $launch = "FM_PI_HARNESS=$harness $launch"
     }
 
+    # muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
+    # instance, so it needs a primary supervision protocol; muse has none, and its
+    # Claude-compatible hook dialect explicitly rejects the model-reawakening and
+    # asyncRewake handlers that firstmate's primary turn-end supervision is built on
+    # (muse 0.1.0-R708.1). Refusing here keeps that gap loud instead of standing up a
+    # secondmate whose supervision cycle could never be armed.
+    if ($kind -ceq 'secondmate' -and $harness -ceq 'muse') {
+        Write-FmErr 'error: muse is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates.'
+        Exit-FmScript 1
+    }
+
     # pi-signed is an explicitly selected executable identity, not an alias that may
     # silently fall back to pi. Resolve it from PATH before creating an endpoint and
     # retain the literal name in the launch command and task metadata.
@@ -1183,6 +1341,38 @@ function Invoke-FmSpawnMain {
         }
         $script:FmSpawnModel = $model
         $script:FmSpawnEffort = $effort
+    }
+
+    # muse's XDG homes are resolved ONCE here and reused by the session-log
+    # sidecar below, so a later change to XDG_DATA_HOME cannot silently re-point
+    # an already-running task at a different log tree.
+    $museDataHome = ''
+    if ($launch.Contains('__MUSEBIN__')) {
+        $museBin = Resolve-FmSpawnMuseBinary
+        if ($null -eq $museBin) { Exit-FmScript 1 }
+        $xdgConfig = Get-FmEnv 'XDG_CONFIG_HOME'
+        if ([string]::IsNullOrEmpty($xdgConfig)) { $xdgConfig = "$(Get-FmEnv 'HOME')/.config" }
+        $museConfigHome = Resolve-FmSpawnDirectoryInput 'XDG_CONFIG_HOME' $xdgConfig
+        if ($null -eq $museConfigHome) { Exit-FmScript 1 }
+        $xdgData = Get-FmEnv 'XDG_DATA_HOME'
+        if ([string]::IsNullOrEmpty($xdgData)) { $xdgData = "$(Get-FmEnv 'HOME')/.local/share" }
+        $museDataHome = Resolve-FmSpawnDirectoryInput 'XDG_DATA_HOME' $xdgData
+        if ($null -eq $museDataHome) { Exit-FmScript 1 }
+        $museAuthFile = "$museConfigHome/muse/auth.json"
+        if (-not (Test-FmSpawnMuseCredential $museAuthFile $backend)) {
+            # The two messages differ ONLY in what they tell the captain to look
+            # at: a set-but-unreachable META_API_KEY is a different fix from an
+            # absent one. Neither ever copies the secret into the launch command.
+            if (-not [string]::IsNullOrEmpty((Get-FmEnv 'META_API_KEY'))) {
+                Write-FmErr ("error: muse has no worker-reachable credential; META_API_KEY is set for fm-spawn but cannot be proven present in the $backend worker environment. Store the fleet credential at '$museAuthFile' with 'muse login' or 'muse auth set --api-key-stdin'. The secret will not be copied into the launch command.")
+            } else {
+                Write-FmErr ("error: muse has no worker-reachable credential; META_API_KEY cannot be proven present in the $backend worker environment and '$museAuthFile' is absent or empty. Store the fleet credential with 'muse login' or 'muse auth set --api-key-stdin'.")
+            }
+            Exit-FmScript 1
+        }
+        $launch = $launch.Replace('__MUSEBIN__', (ConvertTo-FmSpawnShellQuoted $museBin))
+        $launch = $launch.Replace('__MUSECONFIG__', (ConvertTo-FmSpawnShellQuoted $museConfigHome))
+        $launch = $launch.Replace('__MUSEDATA__', (ConvertTo-FmSpawnShellQuoted $museDataHome))
     }
 
     if ($launch.Contains('__KIMIBIN__')) {
@@ -1746,7 +1936,8 @@ function Invoke-FmSpawnMain {
         }
 
         Write-FmSpawnHarnessHook -Harness $harness -Worktree $wt -FmRoot $fmRoot `
-            -StateReal $stateReal -State $state -Id $id -BusyGen $busyGen -TurnEnd $turnEnd
+            -StateReal $stateReal -State $state -Id $id -BusyGen $busyGen -TurnEnd $turnEnd `
+            -MuseDataHome $museDataHome
     }
 
     # --- delivery mode and metadata -------------------------------------------
@@ -2411,7 +2602,12 @@ function Write-FmSpawnHarnessHook {
         [Parameter(Mandatory)][string]$State,
         [Parameter(Mandatory)][string]$Id,
         [Parameter(Mandatory)][AllowEmptyString()][string]$BusyGen,
-        [Parameter(Mandatory)][string]$TurnEnd
+        [Parameter(Mandatory)][string]$TurnEnd,
+        # The XDG data home already resolved for a __MUSEBIN__ launch, so the
+        # sidecar and the launch command can never disagree about which log tree
+        # this pane writes to. Empty for every other harness, and for a raw
+        # launch command that never went through that resolution.
+        [AllowEmptyString()][string]$MuseDataHome = ''
     )
 
     if ($Harness.StartsWith('claude', [System.StringComparison]::Ordinal)) {
@@ -2594,6 +2790,45 @@ exit 0
             -Text ('{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"' + $hookCommand + '"}]}]}}' + "`n") -NoNewline
         Set-FmFileText -Path "$Worktree/.fm-grok-turnend" -Text "token=$token"
         Add-FmSpawnExcludePath $Worktree '.fm-grok-turnend'
+        return
+    }
+
+    if ($Harness.StartsWith('muse', [System.StringComparison]::Ordinal)) {
+        # muse's turn lifecycle is neither a hook nor a launch flag: its plugin engine
+        # (the only hook surface) is disabled in the default build, so firstmate reads
+        # muse's own durable session event log instead (bin/fm-busy-lib.psm1 owns the
+        # fold). That is a PULL source with no writer, so nothing is armed and no
+        # record is seeded - exactly the reason standalone Kimi is not armed either.
+        # This sidecar is the whole binding: it pins the sessions root, the workspace
+        # root that muse records in each log's metadata, this pane's binding identity,
+        # and every matching main log that predates this pane. The classifier then
+        # accepts only ONE new matching log, so it never guesses between pane
+        # incarnations. Recording the resolved root here also means a later change to
+        # XDG_DATA_HOME cannot silently re-point an already-running task at a different
+        # log tree.
+        $dataHome = $MuseDataHome
+        if ([string]::IsNullOrEmpty($dataHome)) { $dataHome = Get-FmEnv 'XDG_DATA_HOME' }
+        if ([string]::IsNullOrEmpty($dataHome)) { $dataHome = "$(Get-FmEnv 'HOME')/.local/share" }
+        $sessionsRoot = "$dataHome/muse/sessions"
+        # `$$.$RANDOM.$(date +%s)`. $PID is READ here, never assigned - assigning a
+        # PowerShell automatic variable is one of this port's recorded traps.
+        $bindingId = '{0}.{1}.{2}' -f $PID, (Get-Random -Minimum 0 -Maximum 32768),
+            [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        # A stale resolution cache from a previous incarnation must not outlive the
+        # binding it was keyed to.
+        try { [System.IO.File]::Delete((ConvertTo-FmNativePath "$State/$Id.muse-session-current")) } catch { $null = $_ }
+
+        $sb = [System.Text.StringBuilder]::new()
+        [void]$sb.Append("sessions_root=$sessionsRoot`n")
+        [void]$sb.Append("workspace_root=$Worktree`n")
+        [void]$sb.Append("binding_id=$bindingId`n")
+        # NOT `@(...)`: see Get-FmBusyMuseMatchingLogs' return-shape note in
+        # bin/fm-busy-lib.psm1.
+        foreach ($priorLog in (Get-FmBusyMuseMatchingLogs $sessionsRoot $Worktree)) {
+            if ([string]::IsNullOrEmpty($priorLog)) { continue }
+            [void]$sb.Append("prior_log=$priorLog`n")
+        }
+        Set-FmFileText -Path "$State/$Id.muse-session" -Text $sb.ToString() -NoNewline
         return
     }
 

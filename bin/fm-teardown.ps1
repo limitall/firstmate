@@ -1841,7 +1841,11 @@ function Clear-FmTdHomeChildren {
         }
         if ((Invoke-FmTdBusyRetire $subState $childId -Generation $childBusyGen) -ne 0) { return 1 }
 
-        foreach ($suffix in @('status', 'turn-ended', 'meta', 'pi-ext.ts', 'grok-turnend-token', 'kimi-turnend-token')) {
+        # muse-session / muse-session-current are muse's whole wiring footprint: it
+        # installs no hook, so the session-log binding sidecar and its resolution
+        # cache are the only artifacts a retired muse pane leaves behind.
+        foreach ($suffix in @('status', 'turn-ended', 'meta', 'pi-ext.ts', 'grok-turnend-token',
+                'kimi-turnend-token', 'muse-session', 'muse-session-current')) {
             $null = Remove-FmTdFile "$subState/$childId.$suffix"
         }
     }
@@ -2310,7 +2314,10 @@ Invoke-FmMain -UnexpectedCode 70 {
 
         if (-not (Remove-FmTdPrPollArtifacts -StateDir $script:State -TaskId $script:Id)) { Exit-FmScript 1 }
         if ((Invoke-FmTdBusyRetire $script:State $script:Id -Generation $busyGen) -ne 0) { Exit-FmScript 1 }
-        foreach ($suffix in @('status', 'turn-ended', 'meta', 'pi-ext.ts', 'grok-turnend-token', 'kimi-turnend-token')) {
+        # muse leaves no hook behind - only its session-log binding sidecar and the
+        # resolution cache keyed to it, both of which must go with the pane.
+        foreach ($suffix in @('status', 'turn-ended', 'meta', 'pi-ext.ts', 'grok-turnend-token',
+                'kimi-turnend-token', 'muse-session', 'muse-session-current')) {
             $null = Remove-FmTdFile "$($script:State)/$($script:Id).$suffix"
         }
 

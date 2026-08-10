@@ -998,7 +998,11 @@ assert_same "importing the module emits nothing" "" "$import_noise"
 # The module must be importable STANDALONE - no reliance on a caller having
 # imported anything else - and every exported function must be present under the
 # name the mapping table in its header promises (R4's "evidence to demand").
-EXPECTED_EXPORTS='Get-FmBusyClassification Get-FmBusyCurrentGen Get-FmBusyGenPath Get-FmBusyLibVersion Get-FmBusyLiveClassification Get-FmBusyMetaClassification Get-FmBusyRecordPath Get-FmBusySourcesForHarness Read-FmBusyRecord Test-FmBusy Test-FmBusyCodexAppServerObservable Test-FmBusyCodexHooksVerified Test-FmBusyCodexSemanticSource Test-FmBusyGrokTail Test-FmBusyKimiVerified Test-FmBusySourceTrusted Test-FmBusyToken'
+# The Get-FmBusyMuse*/Test-FmBusyMuse*/Write-FmBusyMuse* entries are the muse
+# session-log busy source, whose bash twins (fm_busy_muse_*) are sourced-public
+# in fm-busy-lib.sh and called from bin/fm-spawn and bin/fm-control - so the
+# PowerShell surface has to expose the same set, not a private subset.
+EXPECTED_EXPORTS='Get-FmBusyClassification Get-FmBusyCurrentGen Get-FmBusyGenPath Get-FmBusyLibVersion Get-FmBusyLiveClassification Get-FmBusyMetaClassification Get-FmBusyMuseActiveRunId Get-FmBusyMuseBindingField Get-FmBusyMuseBindingPath Get-FmBusyMuseCachedSessionLog Get-FmBusyMuseCacheField Get-FmBusyMuseCachePath Get-FmBusyMuseMatchingLogs Get-FmBusyMuseNamespaceDay Get-FmBusyMuseNamespaceSignature Get-FmBusyMuseRunEvents Get-FmBusyMuseRunState Get-FmBusyMuseRunTerminal Get-FmBusyMuseSessionLog Get-FmBusyRecordPath Get-FmBusySourcesForHarness Read-FmBusyRecord Test-FmBusy Test-FmBusyCodexAppServerObservable Test-FmBusyCodexHooksVerified Test-FmBusyCodexSemanticSource Test-FmBusyGrokTail Test-FmBusyKimiVerified Test-FmBusyMuseBindingHasPriorLog Test-FmBusyMuseMainLogPathValid Test-FmBusySourceTrusted Test-FmBusyToken Write-FmBusyMuseSessionLogCache'
 actual_exports=$(pwsh -NoProfile -Command "Import-Module '$MOD' -Force; (Get-Command -Module fm-busy-lib | Sort-Object Name | ForEach-Object { \$_.Name }) -join ' '" 2>&1)
 assert_same "exported surface matches the header mapping table" "$EXPECTED_EXPORTS" "$actual_exports"
 

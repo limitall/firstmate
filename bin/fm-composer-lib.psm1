@@ -44,8 +44,14 @@
 # container - a bordered composer box, where the harness draws its own prompt
 # glyph (e.g. claude's older `| > ... |`). On a bare, unstructured row it is a
 # dead-shell prompt and is NEVER "empty"; it classifies as `unknown` (not a safe
-# injection target). The AGENT prompt glyphs U+276F (claude) and U+203A (codex)
-# are a genuine empty agent composer either way, bordered or bare.
+# injection target). The AGENT prompt glyphs U+276F (claude), U+203A (codex) and
+# U+27E9 (muse) are a genuine empty agent composer either way, bordered or bare.
+# Every agent glyph must appear in ALL THREE decisions below - the
+# ghost-stripped-to-empty fallback, the bare-row check, and the leading-glyph
+# strip - because a glyph present in only some of them classifies inconsistently
+# depending on how its harness happens to colour the row. The single
+# $FmComposerAgentGlyphs list is what makes that structurally true here, where the
+# bash twin has to repeat itself across three `case` blocks.
 #
 # GHOST/PLACEHOLDER TEXT is the other half of this owner (task
 # afk-herdr-false-pending): a harness fills an otherwise-empty composer with
@@ -87,7 +93,7 @@
 #    units, so the byte/char confusion cannot happen here - but the same code
 #    must still agree with the FIXED bash for BOTH the single-glyph and
 #    glyph-plus-space forms, so the strip below is written against
-#    `$glyph.Length` rather than a hard-coded 2. Both agent glyphs are BMP
+#    `$glyph.Length` rather than a hard-coded 2. All three agent glyphs are BMP
 #    (one code unit each) today; a future astral glyph would need a surrogate
 #    pair and the Length arithmetic already covers it.
 #
@@ -98,10 +104,10 @@
 #    buys that, and nothing here re-solves it.
 #
 # 4. THE GLYPHS ARE BUILT FROM CODE POINTS, NOT LITERALS. The verdicts turn on
-#    exact equality with U+276F and U+203A. Spelling them as [char] code points
-#    removes any dependency on how this file's bytes are decoded by a host, an
-#    editor, or a patch tool - the one hazard that would silently turn every
-#    "empty agent composer" verdict into "unknown".
+#    exact equality with U+276F, U+203A and U+27E9. Spelling them as [char] code
+#    points removes any dependency on how this file's bytes are decoded by a
+#    host, an editor, or a patch tool - the one hazard that would silently turn
+#    every "empty agent composer" verdict into "unknown".
 #
 # 5. THE WHITESPACE TRIM IS LOCALE-DEPENDENT, AND STAYS THAT WAY. bash resolves
 #    [[:space:]] against LC_CTYPE, so the same composer row trims to nothing
@@ -200,9 +206,23 @@ function Test-FmComposerGlyphIs {
 $script:FmComposerGlyphClaude = [string][char]0x276F
 # U+203A SINGLE RIGHT-POINTING ANGLE QUOTATION MARK - codex's prompt.
 $script:FmComposerGlyphCodex = [string][char]0x203A
+# U+27E9 MATHEMATICAL RIGHT ANGLE BRACKET - muse's prompt. muse draws it in
+# truecolor 38;2;90;160;255, luminance ~149.9 (verified, muse 0.1.0-R708.1) -
+# the tightest margin over the 128 FM_COMPOSER_GHOST_LUMA_MAX default in the
+# fleet. Raise that knob above ~150 and this glyph is stripped as ghost text,
+# which is exactly why the ghost-stripped-to-empty fallback in
+# Get-FmComposerContentState must recognise every agent glyph from the
+# UNSTRIPPED plain row too.
+$script:FmComposerGlyphMuse = [string][char]0x27E9
 # The AGENT glyphs: an empty agent composer bordered or bare. Typed [string[]]
-# so the ordinal [Array]::IndexOf above applies.
-$script:FmComposerAgentGlyphs = [string[]]@($script:FmComposerGlyphClaude, $script:FmComposerGlyphCodex)
+# so the ordinal [Array]::IndexOf above applies. The ORDER matters, because it is
+# also the leading-glyph strip order below: it matches the bash twin's `case` arm
+# order (claude, codex, muse) so the two trees strip the same prefix from a row
+# that could match more than one arm.
+$script:FmComposerAgentGlyphs = [string[]]@(
+    $script:FmComposerGlyphClaude,
+    $script:FmComposerGlyphCodex,
+    $script:FmComposerGlyphMuse)
 # The SHELL glyphs: empty only inside a bordered composer box (see THE SAFETY
 # RULE above); bare, they are a dead shell and never a safe injection target.
 $script:FmComposerShellGlyphs = [string[]]@('>', '$', '%', '#')

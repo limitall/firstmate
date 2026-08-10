@@ -3612,6 +3612,12 @@ function ConvertTo-FmBackendHerdrKey {
         'c-c' { return 'ctrl+c' }
         'ctrl+c' { return 'ctrl+c' }
         'Ctrl+C' { return 'ctrl+c' }
+        # C-u clears a composer line. fm-send's muse interrupt path needs it to
+        # drop the prompt muse restores into the composer after Escape.
+        'C-u' { return 'ctrl+u' }
+        'c-u' { return 'ctrl+u' }
+        'ctrl+u' { return 'ctrl+u' }
+        'Ctrl+U' { return 'ctrl+u' }
         default { return $Key }
     }
 }
