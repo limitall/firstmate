@@ -150,8 +150,12 @@ to_ps() {  # <bash-world path> -> FM_TOPS
 # and returns non-zero at EOF while still assigning, hence the `|| true`.
 FM_SLURP=
 slurp() {  # <path> -> FM_SLURP
-  FM_SLURP=''
+  # An ABSENT file reports '<absent>', not '' - the same spelling the PowerShell
+  # probe uses. Reporting a missing file as empty would let "the edit survives
+  # the refusal" pass vacuously in the world where the file was deleted.
+  FM_SLURP='<absent>'
   [ -f "$1" ] || return 0
+  FM_SLURP=''
   local content=''
   IFS= read -r -d '' content < "$1" || true
   # Command substitution strips TRAILING newlines and nothing else.

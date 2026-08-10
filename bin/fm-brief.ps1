@@ -6,7 +6,8 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> [--scout] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -292,7 +293,8 @@ Never append `working:` merely to acknowledge receipt or announce that a marked 
 When a routed-work phase has a supervisor-actionable material change worth reporting under the rule above, give that reported phase a stable key.
 If its first reportable event is `working [key=<work-slug>]: {material phase}`, use the same key on its later `@@PAUSED@@`, `done`, `failed`, `needs-decision`, or `blocked` event so the earlier working phase is superseded.
 When a keyed phase ends without another reportable state, append `resolved [key=<work-slug>]: {why it is no longer active}`.
-When a decision you escalated is answered or a blocker clears and your domain resumes, append `resolved: {how it was decided or unblocked}` (keyed with `[key=<slug>]` if you opened it with one) so it is durably closed instead of resurfacing behind later unrelated events.
+`resolved` separately closes an escalated decision or blocker, and only a `resolved` line carrying that decision's exact key closes it: a later `done` or `working` event never does, even when the answer is what started that work.
+The main firstmate's answer normally writes that closing line at answer time; when a blocker or wait clears WITHOUT an answer from the main firstmate, append `resolved: {how it cleared}` yourself (keyed with `[key=<slug>]` if you opened it with one) as your domain resumes.
 Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.
 
 # Definition of done
@@ -362,7 +364,8 @@ The report is the only thing that survives, so anything worth keeping must be in
 5. If you hit the same obstacle twice, append `blocked: {why}` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
    append `needs-decision: {summary of options}` and stop. Firstmate will reply with the decision.
-   When firstmate replies or a blocker clears and you resume, append `resolved: {how it was decided or unblocked}` (add the same `[key=<slug>]` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+   A decision or blocker you opened stays open until a `resolved` line carrying its exact key lands; a later `done:` or `working:` line never closes it, even when the answer is what started that work.
+   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append `resolved: {how it cleared}` yourself (same `[key=<slug>]` if you opened it with one) as you resume.
 7. Never stop, restart, or update the shared `no-mistakes` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append `blocked: {the daemon error}` and stop; only firstmate manages the daemon.
@@ -412,7 +415,8 @@ If the top-level path is the primary checkout or not the worktree you were launc
 5. If you hit the same obstacle twice, append `blocked: {why}` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append `needs-decision: {summary of options}` and stop. Firstmate will apply the configured authority and reply with the decision.
-   When firstmate replies or a blocker clears and you resume, append `resolved: {how it was decided or unblocked}` (add the same `[key=<slug>]` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+   A decision or blocker you opened stays open until a `resolved` line carrying its exact key lands; a later `done:` or `working:` line never closes it, even when the answer is what started that work.
+   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append `resolved: {how it cleared}` yourself (same `[key=<slug>]` if you opened it with one) as you resume.
 7. Never stop, restart, or update the shared `no-mistakes` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append `blocked: {the daemon error}` and stop; only firstmate manages the daemon.
@@ -429,7 +433,8 @@ Keep it proportionate: skip `AGENTS.md` edits for trivial tasks that produced no
 
 $fmDodDirectPr = @'
 # Definition of done
-This project ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
+Delivery contract: mode=direct-PR
+This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
@@ -437,7 +442,8 @@ Do NOT run /no-mistakes. The configured merge authority decides whether to merge
 
 $fmDodLocalOnly = @'
 # Definition of done
-This project ships **local-only**: no remote, no PR, no pipeline.
+Delivery contract: mode=local-only
+This task ships **local-only**: no remote, no PR, no pipeline.
 The task is complete only when committed on your branch `fm/@@ID@@`. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if `main` has advanced, rebase onto it so the eventual merge stays a fast-forward.
 When it is implemented and committed, append `done: ready in branch fm/@@ID@@` to the status file and stop.
@@ -446,6 +452,7 @@ The configured merge authority approves the ready branch, then firstmate merges 
 
 $fmDodNoMistakes = @'
 # Definition of done
+Delivery contract: mode=no-mistakes
 The task is complete only when committed on your branch.
 When you believe it is complete, append `done: {summary}` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
@@ -521,18 +528,77 @@ Invoke-FmMain -UnexpectedCode 70 {
     $herdrLab = $false
     $noProjects = $false
     $positional = [System.Collections.Generic.List[string]]::new()
+    $mode = ''
+    $modeSet = $false
+    $wantValue = ''
     foreach ($a in $fmArgv) {
         $arg = [string]$a
-        # No break/continue keywords: the four conditions are distinct literals,
-        # so at most one can match a scalar, and `continue` inside a switch has
-        # loop-vs-switch semantics not worth relying on here.
+        # The bash `want_value` state machine: a separated value must follow its
+        # flag, and a value that itself looks like a flag is an error rather
+        # than a silently swallowed argument.
+        if ($wantValue -ne '') {
+            if ($arg.StartsWith('--', [System.StringComparison]::Ordinal)) {
+                Write-FmErr "error: --$wantValue requires a value"
+                Exit-FmScript 1
+            }
+            if ($wantValue -ceq 'mode') { $mode = $arg; $modeSet = $true }
+            else {
+                Write-FmErr "error: internal parser state for --$wantValue"
+                Exit-FmScript 1
+            }
+            $wantValue = ''
+            continue
+        }
+        # `--mode=<value>` is matched before the literal switch, because a
+        # switch on the whole argument cannot see the prefix form.
+        if ($arg.StartsWith('--mode=', [System.StringComparison]::Ordinal)) {
+            $mode = $arg.Substring(7)
+            $modeSet = $true
+            continue
+        }
+        # yolo never reaches the worker: it is firstmate's approval authority,
+        # not a brief input. Refused loudly so it is never silently dropped
+        # here and then believed to have been recorded.
+        if ($arg -ceq '--yolo' -or $arg.StartsWith('--yolo=', [System.StringComparison]::Ordinal)) {
+            Write-FmErr 'error: --yolo is not a brief input; pass it to bin/fm-spawn.sh, which records the task''s approval posture'
+            Exit-FmScript 1
+        }
+        # No break/continue keywords in the switch: the five conditions are
+        # distinct literals, so at most one can match a scalar, and `continue`
+        # inside a switch has loop-vs-switch semantics not worth relying on.
         switch -CaseSensitive ($arg) {
             '--scout' { $kind = 'scout' }
             '--secondmate' { $kind = 'secondmate' }
             '--herdr-lab' { $herdrLab = $true }
             '--no-projects' { $noProjects = $true }
+            '--mode' { $wantValue = 'mode' }
             default { $positional.Add($arg) }
         }
+    }
+    if ($wantValue -ne '') {
+        Write-FmErr "error: --$wantValue requires a value"
+        Exit-FmScript 1
+    }
+
+    # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7).
+    # A missing or invalid value stops the scaffold rather than silently
+    # defaulting - a silent default is how a task ships through the wrong gate.
+    if ($kind -ceq 'ship') {
+        if (-not $modeSet) {
+            Write-FmErr 'error: ship briefs require --mode <no-mistakes|direct-PR|local-only>; resolve it at intake from the captain''s instruction and the project''s registered posture in data/projects.md'
+            Exit-FmScript 1
+        }
+        if ($mode -ceq 'no-mistakes-prod-only') {
+            Write-FmErr 'error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task''s surface and resolve it to no-mistakes or direct-PR at intake'
+            Exit-FmScript 1
+        }
+        if ($mode -cne 'no-mistakes' -and $mode -cne 'direct-PR' -and $mode -cne 'local-only') {
+            Write-FmErr "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$mode')"
+            Exit-FmScript 1
+        }
+    } elseif ($modeSet) {
+        Write-FmErr 'error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract'
+        Exit-FmScript 1
     }
 
     if ($positional.Count -lt 1) {
@@ -645,21 +711,13 @@ Invoke-FmMain -UnexpectedCode 70 {
     # approval decisions; firstmate applies the authority contract in AGENTS.md
     # section 7, so it is discarded here.
     #
-    # Invoke-FmScript, not a hard-coded extension: the delivery mode resolver is a
-    # separate PROCESS, so it may be on either side of the conversion
-    # (docs/powershell-port.md contract 7). Its warnings are the caller's
-    # responsibility to surface - bash lets the child's stderr through untouched,
-    # so the captured stream is replayed line for line.
-    $modeResult = Invoke-FmScript 'fm-project-mode' @($repo) -BinDir (ConvertTo-FmNativePath "$fmRoot/bin")
-    if (-not [string]::IsNullOrEmpty($modeResult.StdErr)) {
-        foreach ($line in @($modeResult.StdErr -split "`n")) {
-            if ($line -ne '') { Write-FmErr $line }
-        }
-    }
-    $modeLine = @($modeResult.StdOut -split "`n")[0]
-    $mode = @($modeLine -split '\s+' | Where-Object { $_ -ne '' })
-    $mode = if ($mode.Count -ge 1) { $mode[0] } else { '' }
-
+    # The mode is the task's own explicit --mode, validated above. This script
+    # no longer consults the registry: data/projects.md holds the captain's
+    # standing posture as CONTEXT, and firstmate resolves the per-task mode at
+    # intake. The generated definition of done opens with the fixed
+    # machine-readable "Delivery contract: mode=<mode>" line, which
+    # bin/fm-spawn.sh checks against its own explicit --mode before launching,
+    # so an adjusted brief and the recorded task metadata cannot drift apart.
     $dodValues = @{ ID = $id }
     switch -CaseSensitive ($mode) {
         'direct-PR' {
