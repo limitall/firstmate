@@ -194,7 +194,7 @@ printf 'working: rebased onto merged #76\n' > "$STATE/tk4.status"
 {
   printf 'done: an early terminal line\n'
   printf '   \n'
-  printf '\u00a0\n'
+  printf '\xc2\xa0\n'
 } > "$STATE/blank.status"
 
 # Nothing but blank lines: last_status_line is empty under either locale.
@@ -243,17 +243,17 @@ CREW_FAKE="$FIX/fake-crew-state.sh"
 cat > "$CREW_FAKE" <<'SH'
 #!/usr/bin/env bash
 case "$1" in
-  wk)      printf 'state: working \u00b7 source: run-step \u00b7 nm run r1 step running\n' ;;
-  wkpane)  printf 'state: working \u00b7 source: pane \u00b7 busy signature\n' ;;
-  wklog)   printf 'state: working \u00b7 source: status-log \u00b7 last line said working\n' ;;
-  pa)      printf 'state: paused \u00b7 source: status-log \u00b7 waiting on the vendor\n' ;;
-  dn)      printf 'state: done \u00b7 source: run-step \u00b7 passed\n' ;;
+  wk)      printf 'state: working \xc2\xb7 source: run-step \xc2\xb7 nm run r1 step running\n' ;;
+  wkpane)  printf 'state: working \xc2\xb7 source: pane \xc2\xb7 busy signature\n' ;;
+  wklog)   printf 'state: working \xc2\xb7 source: status-log \xc2\xb7 last line said working\n' ;;
+  pa)      printf 'state: paused \xc2\xb7 source: status-log \xc2\xb7 waiting on the vendor\n' ;;
+  dn)      printf 'state: done \xc2\xb7 source: run-step \xc2\xb7 passed\n' ;;
   junk)    printf 'no state prefix at all\n' ;;
-  nospace) printf 'state:working \u00b7 source: run-step \u00b7 no space after the colon\n' ;;
-  nosrc)   printf 'state: working \u00b7 there is no source token here\n' ;;
-  fail)    printf 'state: working \u00b7 source: run-step \u00b7 and then exits non-zero\n'; exit 3 ;;
+  nospace) printf 'state:working \xc2\xb7 source: run-step \xc2\xb7 no space after the colon\n' ;;
+  nosrc)   printf 'state: working \xc2\xb7 there is no source token here\n' ;;
+  fail)    printf 'state: working \xc2\xb7 source: run-step \xc2\xb7 and then exits non-zero\n'; exit 3 ;;
   silent)  : ;;
-  *)       printf 'state: unknown \u00b7 source: none \u00b7 no metadata for %s\n' "$1" ;;
+  *)       printf 'state: unknown \xc2\xb7 source: none \xc2\xb7 no metadata for %s\n' "$1" ;;
 esac
 SH
 chmod +x "$CREW_FAKE"
@@ -293,8 +293,57 @@ STDIN_FIX="$TMP_ROOT/stdin.txt"
   printf 'done [key=one]: closed from standard input\n'
 } > "$STDIN_FIX"
 
-TAB=$(printf '\t')
-NBSP=$(printf '\u00a0')
+TAB=$'\t'
+
+# --- FIXTURE BYTES, NEVER a printf \u code-point escape ----------------------
+#
+# bash's printf \u escape encodes the code point in the CURRENT LOCALE's
+# charset. Under C/POSIX - which is what MSYS2 gives every NON-LOGIN shell,
+# because only a login shell runs /etc/profile.d/lang.sh - it emits a single
+# 8-bit byte for U+0080..U+00FF and passes anything above U+00FF through as the
+# literal six characters of the escape. Every non-ASCII fixture in this file is
+# therefore spelled in UTF-8 BYTES, which are identical in every locale
+# (verified here under C, C.UTF-8, en_GB.UTF-8 and unset). This mattered
+# doubly here, where several cases MEASURE the locale: building the probe
+# characters with the variable under test produced failures that reproduced on
+# commits where the suite passed (2026-08, task ps-port-locale).
+NBSP=$'\xC2\xA0'
+
+# --- the UTF-8 regime is PINNED, not inherited -------------------------------
+#
+# Section I asserts BOTH [[:space:]] regimes. The C half is set explicitly; the
+# UTF-8 half used to ride on "the ambient locale", which on this platform is
+# UTF-8 only when a login shell exported LANG. Left inherited, a non-login run
+# asserts the C rules twice and never exercises the UTF-8 class at all - a
+# coverage hole the differential cannot see, because both sides still agree.
+#
+# The name is PROBED rather than assumed: bash silently degrades an
+# uninstallable locale name to C while the PowerShell twin matches the NAME, so
+# a hard-coded name would turn a missing locale into a differential failure that
+# says nothing about the code.
+fm_test_pick_utf8_locale() {
+  local cand had saved
+  had=${LC_ALL+set}; saved=${LC_ALL-}
+  for cand in C.UTF-8 en_US.UTF-8 en_GB.UTF-8 "${LANG:-}" "${LC_CTYPE:-}"; do
+    [ -n "$cand" ] || continue
+    export LC_ALL="$cand"
+    # All-whitespace under this locale iff the %%-strip removes nothing.
+    if [ "${NBSP%%[![:space:]]*}" = "$NBSP" ]; then
+      if [ -n "$had" ]; then export LC_ALL="$saved"; else unset LC_ALL; fi
+      printf '%s' "$cand"
+      return 0
+    fi
+  done
+  if [ -n "$had" ]; then export LC_ALL="$saved"; else unset LC_ALL; fi
+  return 0
+}
+
+FM_TEST_UTF8_LOCALE=$(fm_test_pick_utf8_locale)
+if [ -n "$FM_TEST_UTF8_LOCALE" ]; then
+  export LC_ALL="$FM_TEST_UTF8_LOCALE"
+else
+  echo "# note: no UTF-8 locale on this host - the UTF-8 [[:space:]] class is NOT exercised"
+fi
 
 # =============================================================================
 # Case list - section A: bin/fm-transition-lib
@@ -648,17 +697,22 @@ add "env: restore the pause re-surface cadence" env.unset FM_PAUSE_RESURFACE_SEC
 # Case list - section I: the locale-dependent [[:space:]] class
 #
 # Measured on this host: grep and bash resolve [[:space:]] against LC_CTYPE and
-# agree with each other exactly, so U+00A0 is whitespace under en_GB.UTF-8 and
-# is NOT under C. Every fixture below was written ONCE, in the ambient locale,
-# so only the CLASSIFIER locale changes here - rebuilding them under C would
-# change the bytes and prove nothing.
+# agree with each other exactly, so U+00A0 is whitespace under a UTF-8 locale
+# and is NOT under C. Every fixture below was written ONCE from FIXED BYTES, so
+# only the CLASSIFIER locale changes here - rebuilding them under C would change
+# the bytes and prove nothing.
+#
+# The UTF-8 side runs under the locale PINNED at the top of this file, not under
+# an inherited ambient one: a non-login MSYS2 shell has no locale set at all, so
+# an inherited "ambient UTF-8" would quietly be C and these cases would restate
+# the C block below while claiming to prove the opposite.
 # =============================================================================
 
-add "classify: a non-breaking space is blank under the ambient UTF-8 locale" \
+add "classify: a non-breaking space is blank under the pinned UTF-8 locale" \
   c.lastline "$STATE/blank.status"
 add "classify: a non-breaking space trims out of a verb under UTF-8" \
   c.verb "${NBSP}done${NBSP}: x"
-add "classify: the space set under the ambient locale" c.spaceset
+add "classify: the space set under the pinned UTF-8 locale" c.spaceset
 
 add "env: narrow the locale to C" env.set LC_ALL C
 add "classify: under C a non-breaking space is NOT blank, so it wins the tail" \
@@ -686,9 +740,16 @@ add "classify: under POSIX a non-breaking space is NOT blank either" \
   c.lastline "$STATE/blank.status"
 add "classify: the space set under POSIX" c.spaceset
 
-add "env: restore the ambient locale" env.unset LC_ALL
-add "classify: restoring the locale restores the UTF-8 blank rule" \
-  c.lastline "$STATE/blank.status"
+# Restore the PINNED locale rather than unsetting LC_ALL: unsetting it would
+# fall through to LC_CTYPE/LANG, which a non-login MSYS2 shell leaves unset too,
+# so "restoring" would land back in C and this case would assert the opposite of
+# what it claims. When the host has no UTF-8 locale at all the pin is empty and
+# the case is skipped rather than quietly inverted.
+if [ -n "$FM_TEST_UTF8_LOCALE" ]; then
+  add "env: restore the pinned UTF-8 locale" env.set LC_ALL "$FM_TEST_UTF8_LOCALE"
+  add "classify: restoring the locale restores the UTF-8 blank rule" \
+    c.lastline "$STATE/blank.status"
+fi
 
 # =============================================================================
 # Case list - section J: bin/fm-supervision-lib
@@ -746,6 +807,15 @@ add "supervision: a missing path has no mtime" s.mtime "$FIX/nosuchfile"
 add "supervision: the beacon description names an age in seconds" \
   s.beacon "$SUP_WORK" ''
 add "supervision: the beacon description of an old beacon" s.beacon "$SUP_STALE" ''
+# Each side's own clock, read in the SAME driver pass and on the very next case,
+# so that `now - age` recovers the mtime that side actually saw. Reading the
+# clock in the PARENT instead (around each driver invocation) silently assumes
+# the driver reaches the beacon case immediately, and the bash driver does not:
+# it is fork-bound here and takes minutes to walk ~250 cases, so the recovered
+# mtimes drifted by the driver's own runtime and a correct twin was reported as
+# broken. The two values are not compared to each other - see the declared
+# normalization below - only used to anchor the beacon ages.
+add "supervision: the clock at the beacon read" s.now
 
 # =============================================================================
 # Case list - section K: the stdin form, LAST because it consumes stdin
@@ -849,10 +919,41 @@ while IFS=$'\001' read -r -u 3 -d $'\002' op a1 a2 a3 a4 a5 a6 a7 a8 a9; do
     c.resurface)  r=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT} ;;
     # The [[:space:]] class, enumerated by asking bash itself which of a fixed
     # code-point list it currently calls whitespace.
+    #
+    # Each character is spelled in UTF-8 BYTES, never with a printf \u escape.
+    # That escape encodes the code point in the CURRENT LOCALE's charset: under
+    # C/POSIX it emits a single 8-bit byte for U+0080..U+00FF and passes
+    # anything above U+00FF through as the literal six characters of the escape,
+    # so this probe would be handed the wrong bytes by exactly the variable it
+    # exists to measure. MSYS2 leaves the locale unset in every NON-LOGIN shell,
+    # which is how that turned into unattributable failures (2026-08, task
+    # ps-port-locale). The \xNN form is byte-identical in every locale.
     c.spaceset)
       r=''
       for cp in 0009 000A 000B 000C 000D 0020 0085 00A0 1680 2000 2003 2007 200A 200B 2028 2029 202F 205F 3000 FEFF; do
-        ch=$(printf "\\u$cp")
+        case $cp in
+          0009) ch=$'\x09' ;;
+          000A) ch=$'\x0A' ;;
+          000B) ch=$'\x0B' ;;
+          000C) ch=$'\x0C' ;;
+          000D) ch=$'\x0D' ;;
+          0020) ch=$'\x20' ;;
+          0085) ch=$'\xC2\x85' ;;
+          00A0) ch=$'\xC2\xA0' ;;
+          1680) ch=$'\xE1\x9A\x80' ;;
+          2000) ch=$'\xE2\x80\x80' ;;
+          2003) ch=$'\xE2\x80\x83' ;;
+          2007) ch=$'\xE2\x80\x87' ;;
+          200A) ch=$'\xE2\x80\x8A' ;;
+          200B) ch=$'\xE2\x80\x8B' ;;
+          2028) ch=$'\xE2\x80\xA8' ;;
+          2029) ch=$'\xE2\x80\xA9' ;;
+          202F) ch=$'\xE2\x80\xAF' ;;
+          205F) ch=$'\xE2\x81\x9F' ;;
+          3000) ch=$'\xE3\x80\x80' ;;
+          FEFF) ch=$'\xEF\xBB\xBF' ;;
+          *)    ch='' ;;
+        esac
         if [ -z "${ch//[[:space:]]/}" ]; then r="$r$cp,"; fi
       done
       ;;
@@ -865,6 +966,9 @@ while IFS=$'\001' read -r -u 3 -d $'\002' op a1 a2 a3 a4 a5 a6 a7 a8 a9; do
     s.needed)     r=$(tf fm_supervision_needed "$a1" "$a2") ;;
     s.unhealthy)  r=$(tf fm_supervision_unhealthy "$a1" "$a2") ;;
     s.mtime)      r=$(fm_sup_stat_mtime "$a1") ;;
+    # This side's own clock, fork-free (bash 5 builtin) so it costs nothing and
+    # is read at the moment the surrounding beacon cases were evaluated.
+    s.now)        r=$EPOCHSECONDS ;;
 
     *) r="UNKNOWN-OP:$op" ;;
   esac
@@ -1039,6 +1143,9 @@ foreach ($record in $text.Split($RS)) {
                 $m = Get-FmSupervisionMtime -Path $a1
                 if ($null -eq $m) { $result = '' } else { $result = [string]$m }
             }
+            # This side's own clock, read in the same pass as the beacon cases
+            # above so `now - age` recovers the mtime this side actually saw.
+            's.now' { $result = [string][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
 
             default { $result = "UNKNOWN-OP:$op" }
         }
@@ -1055,16 +1162,14 @@ PS1
 # Run both sides, once each
 # =============================================================================
 
-# Each side's own clock, captured around ITS OWN run: the beacon assertion
-# below reconstructs the mtime each side saw (now - age), and the two runs can
-# be many minutes apart on a slow host, so one shared timestamp would describe
-# neither of them.
-O_NOW=$(date -u +%s)
+# Each side's clock is read INSIDE its own pass, by the s.now case that sits
+# immediately after the beacon cases - not here. See the beacon-age comparison
+# below for why a timestamp taken around the invocation is not good enough on a
+# host where the driver itself takes minutes.
 FM_TEST_ROOT="$ROOT" FM_TEST_CASES="$CASES" FM_TEST_TMP="$TMP_ROOT" \
   bash "$ORACLE" > "$O_RES" 2> "$O_ERR" < "$STDIN_FIX" \
   || fail "the bash oracle exited non-zero:"$'\n'"$(cat "$O_ERR")"
 
-P_NOW=$(date -u +%s)
 FM_TEST_BIN="$BIN_N" FM_TEST_CASES="$CASES_N" \
   pwsh -NoProfile -File "$PROBE_N" > "$P_RES" 2> "$P_ERR" < "$STDIN_FIX" \
   || fail "the PowerShell probe exited non-zero:"$'\n'"$(cat "$P_ERR")"
@@ -1106,6 +1211,14 @@ while [ "$i" -lt "$CASE_COUNT" ]; do
       case "$ob" in *"s ago") ob='<n>s ago' ;; esac
       case "$pb" in *"s ago") pb='<n>s ago' ;; esac
       ;;
+    "supervision: the clock at the beacon read")
+      # Declared normalization: this case exists only to anchor the beacon ages
+      # below, and two clocks read minutes apart never match. Both sides are
+      # still required to have PRODUCED a plain epoch - a missing or malformed
+      # reading fails here rather than silently disabling the anchor.
+      case "$ob" in ''|*[!0-9]*) ob="not an epoch: [$ob]" ;; *) ob='<epoch>' ;; esac
+      case "$pb" in ''|*[!0-9]*) pb="not an epoch: [$pb]" ;; *) pb='<epoch>' ;; esac
+      ;;
   esac
   if [ "${IS_DIV[$i]}" = 1 ]; then
     assert_same "$label [bash side]" "${DIV_BASH[$i]}" "$ob"
@@ -1130,18 +1243,35 @@ done
 # and a correct twin was reported as drifted. Widening the window instead would
 # have been worse - an hour-wide tolerance cannot detect the local-vs-UTC error
 # this assertion exists to catch, which is exactly one hour.
+#
+# The `now` used for that reconstruction is EACH SIDE'S OWN, read by the s.now
+# case immediately after the beacon case inside the same driver pass. Reading it
+# in the parent around each driver invocation was the remaining flaw: it assumes
+# the driver reaches the beacon case at once, and the fork-bound bash driver
+# takes minutes to get there, so the recovered mtimes drifted by the driver's
+# own runtime (measured here: 255s apart, against a 2s tolerance) and reported a
+# correct twin as broken. Anchoring to an in-pass clock removes the machine's
+# speed from the assertion entirely.
 BEACON_TOLERANCE=2
 beacon_index=-1
+now_index=-1
 i=0
 while [ "$i" -lt "$CASE_COUNT" ]; do
   case "${LABELS[$i]}" in
-    "supervision: the beacon description of an old beacon") beacon_index=$i; break ;;
+    "supervision: the beacon description of an old beacon") beacon_index=$i ;;
+    "supervision: the clock at the beacon read") now_index=$i; break ;;
   esac
   i=$((i + 1))
 done
 [ "$beacon_index" -ge 0 ] || fail "the beacon-age case disappeared from the case list"
+[ "$now_index" -ge 0 ] || fail "the in-pass clock case disappeared from the case list"
 ob=${O_VAL[$beacon_index]-}
 pb=${P_VAL[$beacon_index]-}
+O_NOW=${O_VAL[$now_index]-}
+P_NOW=${P_VAL[$now_index]-}
+case "$O_NOW$P_NOW" in
+  ''|*[!0-9]*) fail "the in-pass clock case returned no epoch: [$O_NOW] [$P_NOW]" ;;
+esac
 o_age=${ob%%s*}
 p_age=${pb%%s*}
 case "$o_age$p_age" in

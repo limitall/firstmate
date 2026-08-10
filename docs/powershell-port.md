@@ -226,11 +226,56 @@ Same rule for `switch`, and for any statement used as an expression. Bitten
 for real in fm-project-mode while porting `--raw`, one hour after the
 consumer-shape sweep that documented the plain-return form of this trap.
 
+### `printf '\uXXXX'` in a suite is locale-dependent, and MSYS2 has no locale
+
+The single most expensive false alarm of the port so far (2026-08). bash's
+`printf` with a `\u` escape encodes the code point in the CURRENT LOCALE's
+charset. Measured on this host:
+
+| locale | `printf '\u00A0'` | `printf '\u276F'` |
+| --- | --- | --- |
+| any `*.UTF-8` | `c2 a0` (correct) | `e2 9d af` (correct) |
+| `C` / `POSIX` / **unset** | `a0` - one byte | the LITERAL six characters `\u276F` |
+
+and MSYS2 leaves `LC_ALL`, `LC_CTYPE` and `LANG` **unset** unless a LOGIN shell
+ran `/etc/profile.d/lang.sh` (which derives `LANG` from the Windows terminal
+charset). So a differential suite that builds fixtures that way builds DIFFERENT
+BYTES depending on whether it was started with `bash -lc` or `bash -c` - and the
+resulting failures are maximally misleading: they reproduce identically on older
+commits where the suite passed, which reads as "the machine changed under us"
+rather than "the fixture is locale-dependent". Three suites lost a combined 17
+assertions to this, all attributed at first to the locale-aware trim sets in
+`fm-composer-lib.psm1` / `fm-classify-lib.psm1`, which turned out to be correct.
+
+Two rules follow, and both are now in force in the composer, classify and
+backend-core suites:
+
+- **Build every non-ASCII fixture from explicit UTF-8 BYTES** - `$'\xE2\x9D\xAF'`,
+  never `printf '\u276F'`. ANSI-C `\xNN` quoting emits the byte verbatim in
+  every locale (verified under `C`, `C.UTF-8`, `en_GB.UTF-8` and unset), costs
+  no fork, and keeps the suite file pure ASCII. This is doubly load-bearing in a
+  suite that MEASURES the locale, where the old form built its probe characters
+  with the very variable under test.
+- **PIN the locale a case asserts under; never inherit it.** A suite that
+  asserts both `[[:space:]]` regimes must name both. Left inherited, the "UTF-8"
+  half silently re-asserts the C rules on a non-login run - a coverage hole the
+  differential cannot see, because both sides still agree. Pick the name by
+  PROBING which candidate bash actually resolves to a UTF-8 class (`C.UTF-8`
+  first), because an uninstallable name degrades to C in bash while the
+  PowerShell twins match the NAME.
+
+Related, and worth knowing before diagnosing a locale-shaped failure: bash's
+trim strips a byte that cannot START a character in the current locale as though
+it were whitespace, so a lone `0xA0` row classifies `empty` - "safe to inject
+into" - under C. .NET cannot hold an unpaired byte, so the PowerShell twins
+answer `pending` there. The twins are the safe side; the divergence is recorded
+in `bin/fm-composer-lib.psm1` (divergence (f)) rather than reproduced.
+
 ### MSYS rewrites pwsh argv, and only in SOME shells
 
 `pwsh.exe` is a native binary, so when a bash test invokes it with a
 POSIX-looking argument (`/f/x/y`), MSYS path conversion rewrites that argument
-to mixed form (`F:/x/y`) on the way in — **unless** the ambient environment
+to mixed form (`F:/x/y`) on the way in - **unless** the ambient environment
 disables conversion (`MSYS_NO_PATHCONV=1`, common in interactive debugging
 shells). The probe's argv spelling therefore silently depends on which shell
 launched the suite: the same test can pass interactively and fail in a
@@ -240,7 +285,7 @@ two worlds were handed different verbatims of the same path.
 
 Rule: a suite passes pwsh arguments with `MSYS2_ARG_CONV_EXCL='*'` scoped to
 the invocation, converting any path that must be native explicitly with
-`fm_test_native_path`. Scope it to the pwsh call only — a BLANKET export would
+`fm_test_native_path`. Scope it to the pwsh call only - a BLANKET export would
 break the `//FI`-style doubled-slash idiom that tasklist/taskkill calls rely
 on elsewhere.
 

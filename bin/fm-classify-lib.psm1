@@ -141,7 +141,15 @@
 #    class against LC_CTYPE. Measured on this host at en_GB.UTF-8, grep and bash
 #    agree exactly: U+00A0, U+1680, U+2000-U+200A, U+2028, U+2029, U+202F,
 #    U+205F and U+3000 are whitespace, while U+0085 NEL, U+200B ZWSP, U+FEFF and
-#    U+180E are not; under LC_ALL=C only the six ASCII members are. Picking one
+#    U+180E are not; under LC_ALL=C only the six ASCII members are. UNSET counts
+#    as C, and that is the case that matters in production: MSYS2 exports no
+#    locale variable unless a LOGIN shell ran /etc/profile.d/lang.sh, and
+#    firstmate's hooks, watcher and supervise daemon are not started from one.
+#    So on this Windows host the shipped behaviour is the SIX-MEMBER set, in
+#    both trees. (Re-measured 2026-08, task ps-port-locale, after a suite failure
+#    was misread as this table having drifted - it had not; what had changed was
+#    which shell launched the suite. See tests/fm-classify-libs-psm1.test.sh.)
+#    Picking one
 #    side would make a status file of exotic spaces classify differently in the
 #    two trees, so Get-FmClassifySpaceSet reproduces the decision. The set is
 #    exactly .NET Char.IsWhiteSpace MINUS U+0085, which is why String.Trim()
