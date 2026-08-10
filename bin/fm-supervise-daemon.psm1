@@ -675,7 +675,12 @@ function Get-FmDaemonStateFileName {
         Justification = 'Matches Get-FmClassifyGlobName, the sibling this mirrors: the plural would read as a set type where this yields one name per pipeline item.')]
     param(
         [Parameter(Mandatory)][string]$State,
-        [Parameter(Mandatory)][string]$Prefix,
+        # AllowEmptyString, not decoration: three call sites pass '' to mean
+        # "every name, filtered only by suffix" (the bash `for f in "$dir"/*.meta`
+        # glob). Without it PowerShell refuses to BIND the parameter, and
+        # Sync-FmDaemonWatcherPauseMarker, Sync-FmDaemonSignalPauseMarker and
+        # Get-FmDaemonWindowForTask all throw instead of enumerating.
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Prefix,
         [Parameter()][AllowEmptyString()][string]$Suffix = ''
     )
     $native = ConvertTo-FmNativePath -Path $State
@@ -1307,8 +1312,15 @@ function Get-FmWedgeAlarmChannel {
 
     $config = (Get-FmDaemonContext).Config
     $channels = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in @(Get-FmFileLines -Path "$config/wedge-alarm")) {
-        $trimmed = $line.Trim()
+    # NOT `@(Get-FmFileLines ...)`. That helper deliberately returns `, @()` so an
+    # empty result survives the pipeline as an ARRAY; wrapping it in @() therefore
+    # yields a one-element array whose element is that empty array, and the loop
+    # below then calls .Trim() on an Object[] and throws. An absent or empty
+    # config/wedge-alarm is the DEFAULT state of a home, so the wrapped form made
+    # the alarm that exists to never be silent throw instead of firing.
+    $lines = Get-FmFileLines -Path "$config/wedge-alarm"
+    foreach ($line in $lines) {
+        $trimmed = ([string]$line).Trim()
         if ($trimmed -eq '') { continue }
         if ($trimmed.StartsWith('#', $script:FmOrdinal)) { continue }
         $channels.Add($trimmed)
