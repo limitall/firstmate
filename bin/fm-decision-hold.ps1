@@ -110,7 +110,7 @@ Invoke-FmMain -UnexpectedCode 70 {
     # comment block IS the usage text, so the two can never drift apart.
     function Get-Usage {
         $out = [System.Collections.Generic.List[string]]::new()
-        foreach ($line in (Get-FmFileLines $fmSelf | Select-Object -Skip 1)) {
+        foreach ($line in ((Get-FmFileLines $fmSelf) | Select-Object -Skip 1)) {
             if (-not $line.StartsWith('#')) { break }
             $out.Add(($line -replace '^# ?', ''))
         }

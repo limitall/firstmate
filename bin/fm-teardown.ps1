@@ -1971,7 +1971,7 @@ Invoke-FmMain -UnexpectedCode 70 {
         $secondMateId = ''
 
         if (Test-FmTdRegularFile "$($script:FmHome)/$($script:SubHomeMarker)") {
-            $markerLines = @(Get-FmFileLines "$($script:FmHome)/$($script:SubHomeMarker)")
+            $markerLines = (Get-FmFileLines "$($script:FmHome)/$($script:SubHomeMarker)")
             $secondMateId = if ($markerLines.Count -ge 1) { $markerLines[0] } else { '' }
             # A marked child only enters the primary-binding path when the
             # authoritative parent relay is active.

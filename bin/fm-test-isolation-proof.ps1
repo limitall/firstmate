@@ -116,7 +116,7 @@ function Write-FmProofLog {
 function Show-FmProofUsage {
     [CmdletBinding()]
     param([Parameter(Position = 0)][AllowEmptyString()][string]$CommandPath)
-    $lines = @(Get-FmFileLines $CommandPath)
+    $lines = (Get-FmFileLines $CommandPath)
     for ($i = 1; $i -lt $lines.Count; $i++) {
         if (-not $lines[$i].StartsWith('#')) { break }
         Write-FmErr ($lines[$i] -replace '^# ?', '')

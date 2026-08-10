@@ -304,7 +304,7 @@ the first line that is not a comment.
 function Get-FmSpawnUsage {
     [OutputType([string[]])]
     param([Parameter(Mandatory, Position = 0)][string]$Path)
-    $lines = @(Get-FmFileLines $Path)
+    $lines = (Get-FmFileLines $Path)
     $out = [System.Collections.Generic.List[string]]::new()
     for ($i = 1; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]

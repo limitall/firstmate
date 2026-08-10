@@ -468,7 +468,7 @@ function Invoke-FmTurnendGuard {
         # `sed -n '1s/^session=//p'` and `sed -n '2s/^count=//p'`: the `p` is
         # attached to the substitution, so a line that does not carry the prefix
         # contributes NOTHING rather than contributing itself.
-        $lines = @(Get-FmFileLines $budgetFile)
+        $lines = (Get-FmFileLines $budgetFile)
         $oldSession = ''
         if ($lines.Count -ge 1 -and $lines[0].StartsWith('session=', [System.StringComparison]::Ordinal)) {
             $oldSession = $lines[0].Substring('session='.Length)

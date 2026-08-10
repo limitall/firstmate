@@ -700,11 +700,11 @@ Invoke-FmMain -UnexpectedCode 70 {
     # decision is only reported when a captain hold actually backs it.
     $secondmateViews = [System.Collections.Generic.List[object]]::new()
     foreach ($mate in $secondmateRecords) {
-        $captainHolds = @(Get-JqList $mate 'decisions_open' | Where-Object {
+        $captainHolds = @((Get-JqList $mate 'decisions_open') | Where-Object {
                 (Get-JqStr (Get-JqNode $_ 'source')) -eq 'backlog' -and
                 (Get-JqStr (Get-JqNode $_ 'verb')) -eq 'captain-hold'
             })
-        $backlogHolds = @(Get-JqList $mate 'holds' | Where-Object {
+        $backlogHolds = @((Get-JqList $mate 'holds') | Where-Object {
                 (Get-JqStr (Get-JqNode $_ 'source')) -eq 'backlog'
             })
         $currentState = Get-JqStr (Get-JqPath $mate @('current', 'state'))
@@ -999,15 +999,15 @@ Invoke-FmMain -UnexpectedCode 70 {
     if (-not $allLanded -and $homeCapDropped -gt 0) {
         Add-Omitted "landed per-home capped at $landedPerHomeN for $homeCapDropped home(s)" '--all-landed'
     }
-    $unreadable = @(Get-JqList $secondmateLanded 'unreadable')
+    $unreadable = (Get-JqList $secondmateLanded 'unreadable')
     if ($unreadable.Count -gt 0) {
         Add-Omitted "secondmate home(s) with unreadable backlog: $($unreadable.Count)" 'inspect the listed secondmate home backlogs'
     }
-    $truncatedLanded = @(Get-JqList $secondmateLanded 'truncated')
+    $truncatedLanded = (Get-JqList $secondmateLanded 'truncated')
     if (-not $allLanded -and $truncatedLanded.Count -gt 0) {
         Add-Omitted "secondmate home Done capped at the snapshot layer for $($truncatedLanded.Count) home(s)" '--all-landed'
     }
-    $orphan = @(Get-JqList $mainInventory 'orphan_in_flight')
+    $orphan = (Get-JqList $mainInventory 'orphan_in_flight')
     if ($orphan.Count -gt 0) {
         Add-Omitted "main in-flight backlog item(s) have no child metadata: $($orphan.Count)" 'inspect main data/backlog.md In flight vs state/*.meta'
     }

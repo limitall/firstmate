@@ -360,7 +360,7 @@ function Limit-FmDaemonLog {
     if ($size -lt $cap) { return }
     $keep = Get-FmDaemonNumber -Text (Get-FmDaemonSetting 'FM_LOG_KEEP_LINES' 'LogKeepLines') `
         -Default ([long](Get-FmDaemonDefault 'LogKeepLines'))
-    $lines = @(Get-FmFileLines -Path $script:FmDaemonLog)
+    $lines = (Get-FmFileLines -Path $script:FmDaemonLog)
     if ($lines.Count -gt $keep) { $lines = $lines[($lines.Count - $keep)..($lines.Count - 1)] }
     $body = if ($lines.Count -eq 0) { '' } else { ($lines -join "`n") + "`n" }
     [void](Set-FmFileTextAtomic -Path $script:FmDaemonLog -Text $body -NoNewline)
@@ -1272,7 +1272,7 @@ function Send-FmDaemonEscalationDigest {
     foreach ($ch in $text.ToCharArray()) { if ($ch -eq "`n") { $count++ } }
     # The awk join keeps EVERY record, including an empty one, so the line list
     # comes from the reader that drops only the trailing-newline artifact.
-    $joined = @(Get-FmFileLines -Path $buffer) -join ' | '
+    $joined = (Get-FmFileLines -Path $buffer) -join ' | '
     $message = "Supervisor escalate ($count event(s)): $joined (pre-read; re-arm not needed " +
         [char]0x2014 + " watcher daemon-managed)"
     if (-not (Send-FmDaemonInjection -Message $message -State $State)) { return $false }
@@ -1312,7 +1312,7 @@ function Get-FmWedgeAlarmChannel {
 
     $config = (Get-FmDaemonContext).Config
     $channels = [System.Collections.Generic.List[string]]::new()
-    # NOT `@(Get-FmFileLines ...)`. That helper deliberately returns `, @()` so an
+    # NOT `(Get-FmFileLines ...)`. That helper deliberately returns `, @()` so an
     # empty result survives the pipeline as an ARRAY; wrapping it in @() therefore
     # yields a one-element array whose element is that empty array, and the loop
     # below then calls .Trim() on an Object[] and throws. An absent or empty

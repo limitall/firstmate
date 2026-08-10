@@ -406,7 +406,7 @@ function Show-FmTestRunUsage {
     if ([string]::IsNullOrEmpty($CommandPath)) {
         $CommandPath = Join-Path $PSScriptRoot 'fm-test-run.ps1'
     }
-    $lines = @(Get-FmFileLines $CommandPath)
+    $lines = (Get-FmFileLines $CommandPath)
     for ($i = 1; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
         if (-not $line.StartsWith('#')) { break }

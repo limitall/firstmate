@@ -112,7 +112,7 @@ Invoke-FmMain -UnexpectedCode 70 {
     }
 
     # grep -qx: whole-line, unanchored to position in the file.
-    $lines = @(Get-FmFileLines $meta)
+    $lines = (Get-FmFileLines $meta)
     $isScout = $false
     foreach ($line in $lines) { if ($line -ceq 'kind=scout') { $isScout = $true } }
     if (-not $isScout) {

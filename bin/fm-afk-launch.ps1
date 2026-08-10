@@ -471,7 +471,7 @@ function Read-FmAfkLaunchRecord {
     $native = ConvertTo-FmNativePath -Path $script:FmLaunchRecord
     if (-not [System.IO.File]::Exists($native)) { return 1 }
 
-    $lines = @(Get-FmFileLines -Path $script:FmLaunchRecord)
+    $lines = (Get-FmFileLines -Path $script:FmLaunchRecord)
     $malformed = $false
     if ($lines.Count -ne 1) { $malformed = $true }
     $field = @()

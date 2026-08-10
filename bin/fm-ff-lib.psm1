@@ -635,7 +635,7 @@ function Get-FmFfLiveSecondmateMetaRecord {
         # `grep -q '^kind=secondmate$'`: an exact line anywhere in the record,
         # not a last-wins key read.
         $isSecondmate = $false
-        foreach ($line in @(Get-FmFileLines $meta)) {
+        foreach ($line in (Get-FmFileLines $meta)) {
             if ($line -ceq 'kind=secondmate') { $isSecondmate = $true; break }
         }
         if (-not $isSecondmate) { continue }

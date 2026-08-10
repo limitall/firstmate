@@ -150,7 +150,7 @@ function Add-FmReturnEvidence {
     # so the collection form threw on the first append to a fresh evidence file,
     # which is the ordinary case.
     $existing = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-    foreach ($known in @(Get-FmFileLines -Path $File)) { [void]$existing.Add($known) }
+    foreach ($known in (Get-FmFileLines -Path $File)) { [void]$existing.Add($known) }
     $body = $Text -replace "`r`n", "`n" -replace "`r", "`n"
     foreach ($line in @($body.Split("`n"))) {
         if ([string]::IsNullOrEmpty($line)) { continue }
@@ -421,7 +421,7 @@ function Invoke-FmReturnReconcile {
 
     $wedgeText = Get-FmFileText -Path "$script:FmReturnState/.subsuper-inject-wedged"
     if (-not [string]::IsNullOrEmpty($wedgeText)) {
-        $lines = @(Get-FmFileLines -Path "$script:FmReturnState/.subsuper-inject-wedged")
+        $lines = (Get-FmFileLines -Path "$script:FmReturnState/.subsuper-inject-wedged")
         $wedge = if ($lines.Count -ge 1) { $lines[0] } else { '' }
         Add-FmReturnEvidence -Kind wedge -Text $wedge -File $evidence
     }
@@ -434,7 +434,7 @@ function Invoke-FmReturnReconcile {
     foreach ($row in $blockerRows) { Add-FmFileLine -Path $blockers -Line $row }
 
     if ((-not $lifecycleOk) -or $blockerRows.Count -gt 0) {
-        $body = @(Get-FmFileLines -Path $evidence) + @(Get-FmFileLines -Path $blockers)
+        $body = (Get-FmFileLines -Path $evidence) + (Get-FmFileLines -Path $blockers)
         if (-not (Write-FmReturnGate -Phase 'blocked' -Body $body)) {
             Remove-FmReturnScratch -Path $evidence
             Remove-FmReturnScratch -Path $blockers

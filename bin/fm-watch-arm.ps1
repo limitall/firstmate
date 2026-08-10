@@ -299,7 +299,7 @@ function Limit-FmArmCycleLog {
         if (-not [System.IO.File]::Exists($native)) { return }
         $size = (Get-Item -LiteralPath $native -Force).Length
         if ($size -lt $FmArmCycleLogMaxBytes) { return }
-        $lines = @(Get-FmFileLines $FmArmCycleLog)
+        $lines = (Get-FmFileLines $FmArmCycleLog)
         if ($lines.Count -gt $FmArmCycleLogKeepLines) {
             $lines = @($lines[($lines.Count - $FmArmCycleLogKeepLines)..($lines.Count - 1)])
         }
@@ -344,7 +344,7 @@ function Update-FmArmPredecessorSuccessor {
     try {
         $target = "arm_pid=$predecessor"
         $replacement = "`tsuccessor=" + (Format-FmArmField $Successor)
-        $lines = @(Get-FmFileLines $FmArmCycleLog)
+        $lines = (Get-FmFileLines $FmArmCycleLog)
         $last = -1
         for ($i = 0; $i -lt $lines.Count; $i++) {
             # Split on TAB with a field-count check, never a regex split: a

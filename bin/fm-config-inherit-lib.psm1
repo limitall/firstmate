@@ -765,7 +765,7 @@ function Test-FmSharedCaptainHeader {
     # Set-StrictMode -Version Latest (verified: "The property 'Count' cannot be
     # found on this object"). A single-line file is exactly the case this gate
     # sees for a truncated or wrong source, so it is not a rare path.
-    $lines = @(Get-FmFileLines $Source)
+    $lines = (Get-FmFileLines $Source)
     if ($lines.Count -eq 0) { return $false }
     $take = [Math]::Min(12, $lines.Count)
     $head = ($lines[0..($take - 1)] -join "`n")
@@ -1377,7 +1377,7 @@ function Get-FmConfigRereadChangedItem {
     $native = ConvertTo-FmNativePath $Report
     if (-not [System.IO.File]::Exists($native)) { return @($changed) }
 
-    $lines = @(Get-FmFileLines $native)
+    $lines = (Get-FmFileLines $native)
     foreach ($item in (Get-FmInheritableConfigItem)) {
         foreach ($line in $lines) {
             $fields = @($line.Split("`t"))

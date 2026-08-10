@@ -340,8 +340,8 @@ function Test-FmPiExtensionLoaded {
     if ([string]::IsNullOrEmpty($ExpectedVersion)) { return $false }
     if (-not [System.IO.File]::Exists((ConvertTo-FmNativePath $Marker))) { return $false }
     if (-not [System.IO.File]::Exists((ConvertTo-FmNativePath $Lock))) { return $false }
-    $markerLines = @(Get-FmFileLines $Marker)
-    $lockLines = @(Get-FmFileLines $Lock)
+    $markerLines = (Get-FmFileLines $Marker)
+    $lockLines = (Get-FmFileLines $Lock)
     # `sed -n '1p'` / `sed -n '2p'` on a short file print nothing.
     $markerVersion = if ($markerLines.Count -ge 1) { $markerLines[0] } else { '' }
     $markerPid = if ($markerLines.Count -ge 2) { $markerLines[1] } else { '' }

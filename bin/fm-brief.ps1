@@ -159,7 +159,7 @@ leading '#' plus at most one space, stop at the first line that is not a comment
 function Get-FmBriefUsage {
     [OutputType([string[]])]
     param([Parameter(Mandatory, Position = 0)][string]$Path)
-    $lines = @(Get-FmFileLines $Path)
+    $lines = (Get-FmFileLines $Path)
     $out = [System.Collections.Generic.List[string]]::new()
     for ($i = 1; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]

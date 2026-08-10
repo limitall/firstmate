@@ -106,7 +106,7 @@ Invoke-FmMain -UnexpectedCode 70 {
     # `sed -n '2,/^set -u$/p' "$0" | sed '$d; s/^# \{0,1\}//'`: the header comment
     # block IS the help text, so the two can never drift apart.
     function Write-Help {
-        foreach ($line in (Get-FmFileLines $fmSelf | Select-Object -Skip 1)) {
+        foreach ($line in ((Get-FmFileLines $fmSelf) | Select-Object -Skip 1)) {
             if (-not $line.StartsWith('#')) { break }
             Write-FmOut ($line -replace '^# ?', '')
         }
