@@ -154,6 +154,7 @@ function Get-FmSupervisionStatus {
     if ([string]::IsNullOrEmpty($Grace)) { $Grace = Get-FmEnv -Name 'FM_GUARD_GRACE' -Default '300' }
 
     $inFlight = 0
+    $sources = 0
     $needed = $false
     $watcherFresh = $false
     $beaconDesc = 'never'
@@ -172,7 +173,23 @@ function Get-FmSupervisionStatus {
         }
     }
 
-    if ($inFlight -gt 0 -or [System.IO.File]::Exists((ConvertTo-FmNativePath "$State/x-watch.check.sh"))) {
+    # Registered process-to-event sources are the third thing that needs a
+    # watcher, alongside in-flight work and an X-mode relay poll. The same
+    # ordinal suffix test as the meta scan above: Windows pattern matching
+    # honours 8.3 short names, so a wildcard can match a longer extension.
+    $nativeProcevent = ConvertTo-FmNativePath "$State/procevent"
+    if (-not [string]::IsNullOrEmpty($State) -and [System.IO.Directory]::Exists($nativeProcevent)) {
+        foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($nativeProcevent)) {
+            $name = [System.IO.Path]::GetFileName($entry)
+            if ($name.StartsWith('.', [System.StringComparison]::Ordinal)) { continue }
+            if (-not $name.EndsWith('.source', [System.StringComparison]::Ordinal)) { continue }
+            $sources++
+        }
+    }
+
+    if ($inFlight -gt 0 -or
+        [System.IO.File]::Exists((ConvertTo-FmNativePath "$State/x-watch.check.sh")) -or
+        $sources -gt 0) {
         $needed = $true
     }
 
@@ -205,6 +222,7 @@ function Get-FmSupervisionStatus {
 
     return @{
         InFlight          = $inFlight
+        Sources           = $sources
         Needed            = $needed
         WatcherFresh      = $watcherFresh
         BeaconDescription = $beaconDesc
@@ -247,8 +265,11 @@ function Test-FmSupervisionUnhealthy {
         [Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$State,
         [Parameter(Position = 1)][AllowEmptyString()][AllowNull()][string]$Grace = ''
     )
+    # NEEDED, not in-flight: an X-only home and a home with registered event
+    # sources both need a watcher while carrying no tasks at all, and reading
+    # in-flight here called those healthy - the twin of the bug upstream fixed.
     $status = Get-FmSupervisionStatus -State $State -Grace $Grace
-    return ($status.InFlight -gt 0 -and -not $status.WatcherFresh)
+    return ($status.Needed -and -not $status.WatcherFresh)
 }
 
 Export-ModuleMember -Function @(
