@@ -1,5 +1,5 @@
 # Send one line of literal text to a crewmate endpoint, then Enter.
-# Usage: fm-send.ps1 <target> <text...>
+# Usage: fm-send.ps1 <target> [--resolve-key <key>]... <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -38,6 +38,26 @@
 # re-sending a recovery request for an already-open expectation so a second
 # record is not created. Direct unmarked captain input never creates one.
 #
+# Decision closure (answerer-closes): pass --resolve-key <key> (repeatable,
+# before the message) when this send answers an open keyed needs-decision: or
+# blocked: record in the target task's state/<id>.status. After the submit is
+# confirmed, fm-send itself appends the closing
+# "resolved [key=<key>]: answered: <capped excerpt>" line to that status file,
+# so the captain-facing OPEN DECISIONS record closes at answer time and never
+# depends on the busy worker writing a matching resolved line. The close is a
+# LOCAL append for every target kind - crewmate, scout and local secondmate
+# alike - because the open-decision ledger fm-wake-drain folds lives in this
+# home's own state dir; only the answer message crosses the backend. Each named
+# key must currently be open in that ledger per Get-FmStatusOpenDecisions
+# (bin/fm-classify-lib.psm1) or fm-send refuses before sending, so a mistyped key
+# cannot deliver an answer while silently orphaning the decision. A failed or
+# unconfirmed send never closes a key; a delivered answer whose closing append
+# fails exits nonzero with the exact manual close command, leaving the decision
+# open to re-surface (the safe direction). A send without the flag never closes
+# anything: a routine steer, working:, or done: event still cannot clear a
+# captain decision. The flag is refused with --key, with an explicit backend
+# target (no task ledger in this home), and with an empty message.
+#
 # After a successful text submit fm-send pauses FM_SEND_SETTLE seconds (default 1,
 # 0 disables) before returning: submit confirmation only proves the text was
 # accepted, but the harness needs a beat to spin up the turn before its busy
@@ -46,7 +66,7 @@
 # which only needs "submitted") does not pay it, and the --key path is unaffected.
 #
 # ---------------------------------------------------------------------------
-# THE FOUR THINGS THIS CONVERSION HAD TO GET EXACTLY RIGHT
+# THE FIVE THINGS THIS CONVERSION HAD TO GET EXACTLY RIGHT
 #
 #   1. THE FM_HOME REFUSAL IS THE FIRST FLEET-SAFETY GATE, and it distinguishes
 #      unset from empty exactly as bash's `${FM_HOME+x}` / `${FM_HOME:-}` pair
@@ -80,6 +100,21 @@
 #      land - it reports "do not resend" and exits non-zero. Exit code 1 covers
 #      both, as in the twin; the two are distinguished by the message only.
 #
+#   5. --resolve-key IS ORDERED AROUND DELIVERY, IN BOTH DIRECTIONS. Every
+#      refusal - malformed key, duplicate key, an explicit backend target with no
+#      ledger here, --key, an empty answer, a key that is not currently open -
+#      happens BEFORE anything is typed, so a mistyped key can never deliver an
+#      answer while orphaning its decision. The closing append happens only after
+#      the submit verdict is exactly `empty` AND the pending-reply delivery
+#      commit succeeded, so a failed, unconfirmed, or uncommitted send leaves the
+#      decision open. The one remaining asymmetry is deliberate: if the append
+#      itself fails after the answer landed, fm-send exits non-zero with the
+#      literal manual close command rather than retrying or swallowing it - the
+#      decision re-surfacing is the safe direction, resending the answer is not.
+#      The open-set test is Get-FmStatusOpenDecisions, the SAME fold
+#      fm-wake-drain's OPEN DECISIONS section uses; a second copy of the
+#      open/resolved rule here would drift and close the wrong things.
+#
 # ---------------------------------------------------------------------------
 # DOCUMENTED DIVERGENCES
 #
@@ -92,6 +127,14 @@
 #   FM_SEND_SETTLE ACCEPTS A NUMBER. `sleep abc` fails in the twin (and, as the
 #   last command under `set -eu`, ends the script non-zero); an unparseable value
 #   is treated as "no settle" here rather than fabricating that failure.
+#
+#   A FAILED CLOSING APPEND PRINTS ONE LINE, NOT TWO. When `>> $status` fails,
+#   the bash twin's SHELL first prints its own redirection diagnostic
+#   ("fm-send.sh: line N: <path>: Permission denied") and fm-send's own refusal
+#   follows it. PowerShell has no shell-level redirection to fail, so this twin
+#   prints only fm-send's refusal. Verified differentially with a read-only
+#   status file: same exit code, same refusal text including the literal manual
+#   close command; the twin simply does not fabricate the shell's line.
 #
 #   MISSING --key ARGUMENT. `fm-send.sh <t> --key` with no key dies on `$2`
 #   under `set -u`; the twin refuses with its own message and the same exit 1.
@@ -107,6 +150,11 @@ Import-Module (Join-Path $PSScriptRoot 'fm-backend.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'fm-control-lib.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'fm-marker-lib.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'fm-pending-reply-lib.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'fm-classify-lib.psm1') -Force
+# NOT -Force: fm-line-cap-lib's own header pins the plain import form. It is a
+# definitions-only module with no import-time side effect, so there is nothing a
+# fresh copy would buy, and the plain form is what every other consumer uses.
+Import-Module (Join-Path $PSScriptRoot 'fm-line-cap-lib.psm1')
 
 # No param() block, and $args captured here: see bin/fm-operational-input.ps1.
 $fmArgv = @($args)
@@ -363,6 +411,72 @@ Invoke-FmMain -UnexpectedCode 70 {
     $target = $script:ResolvedTarget
     $rest = @($fmArgv | Select-Object -Skip 1)
 
+    # Collect --resolve-key flags (answerer-closes; see the header contract).
+    # They must precede --key or the message text; everything after the last flag
+    # is the message exactly as before, so ordinary sends are byte-identical.
+    # The list is mutated in place rather than returned because a PowerShell
+    # function cannot assign to its caller's variable, and returning a rebuilt
+    # array through the output stream would unroll a one-key set to a bare string
+    # (docs/powershell-port.md).
+    function Add-FmSendResolveKey {
+        param(
+            # AllowEmptyCollection is load-bearing, not decoration: a Mandatory
+            # parameter REFUSES an empty collection, and the list is empty on the
+            # very first --resolve-key, so without it every answer send fails to
+            # bind before it can validate anything.
+            [Parameter(Mandatory)][AllowEmptyCollection()]
+            [System.Collections.Generic.List[string]]$Keys,
+            [Parameter(Mandatory)][AllowEmptyString()][string]$Key
+        )
+        # `case "$k" in ''|*[!A-Za-z0-9._-]*)`. \A and \z rather than ^ and $:
+        # .NET's $ also matches BEFORE a trailing newline, so "abc`n" would pass a
+        # ^...$ test that the bash character-class test rejects.
+        if ($Key -cnotmatch '\A[A-Za-z0-9._-]+\z') {
+            Write-FmErr "error: --resolve-key '$Key' is not a valid decision key (allowed: A-Z a-z 0-9 . _ -)"
+            return $false
+        }
+        # List<string>.Contains is ordinal, matching bash's exact `case " $RESOLVE_KEYS "`
+        # membership test (a key can hold no space, so that test is exact too).
+        if ($Keys.Contains($Key)) {
+            Write-FmErr "error: duplicate --resolve-key '$Key'"
+            return $false
+        }
+        $Keys.Add($Key)
+        return $true
+    }
+
+    $resolveKeys = [System.Collections.Generic.List[string]]::new()
+    $consumed = 0
+    while ($consumed -lt $rest.Count) {
+        $flag = [string]$rest[$consumed]
+        if ($flag -ceq '--resolve-key') {
+            if ($consumed + 1 -ge $rest.Count) {
+                Write-FmErr 'error: --resolve-key requires a key'
+                Exit-FmScript 1
+            }
+            if (-not (Add-FmSendResolveKey -Keys $resolveKeys -Key ([string]$rest[$consumed + 1]))) {
+                Exit-FmScript 1
+            }
+            $consumed += 2
+        } elseif ($flag.StartsWith('--resolve-key=', [System.StringComparison]::Ordinal)) {
+            if (-not (Add-FmSendResolveKey -Keys $resolveKeys -Key $flag.Substring('--resolve-key='.Length))) {
+                Exit-FmScript 1
+            }
+            $consumed += 1
+        } else {
+            break
+        }
+    }
+    # `shift`: assigned inside each branch, never as `$rest = if (...) {...}`,
+    # which would unroll a one-element remainder to a bare string.
+    if ($consumed -gt 0) {
+        if ($consumed -ge $rest.Count) {
+            $rest = @()
+        } else {
+            $rest = @($rest[$consumed..($rest.Count - 1)])
+        }
+    }
+
     if (-not (Test-FmBackendValid $script:TargetBackend)) { Exit-FmScript 1 }
 
     # Classify a from-firstmate -> secondmate request. Only a task selector
@@ -381,6 +495,89 @@ Invoke-FmMain -UnexpectedCode 70 {
         $targetTaskId = Get-FmSendIdFromMeta -MetaPath $script:TargetMeta
     }
 
+    # Validate the answerer-closes request before any durable mutation or send:
+    # the target must have a task ledger in THIS home, the send must carry an
+    # answer message, and every named key must be open right now in that ledger
+    # per the ONE authoritative fold (Get-FmStatusOpenDecisions). Refusing here,
+    # before the send, is what keeps a mistyped key loud instead of delivering an
+    # answer that silently leaves its decision open.
+    $resolveStatusFile = ''
+    if ($resolveKeys.Count -gt 0) {
+        if (-not $script:TargetSelector -or [string]::IsNullOrEmpty($script:TargetMeta)) {
+            Write-FmErr ("error: --resolve-key needs a task selector resolved through this home's " +
+                'metadata; an explicit backend target has no decision ledger here')
+            Exit-FmScript 1
+        }
+        if ($rest.Count -ge 1 -and [string]$rest[0] -ceq '--key') {
+            Write-FmErr 'error: --resolve-key cannot accompany --key; answering a decision requires a text answer'
+            Exit-FmScript 1
+        }
+        # `[ -z "$*" ]` - the JOINED remainder, so `""` alone is empty but two
+        # empty words are not (they join to one space).
+        if (($rest -join ' ') -ceq '') {
+            Write-FmErr 'error: --resolve-key requires a nonempty answer message'
+            Exit-FmScript 1
+        }
+        $resolveTaskId = Get-FmSendIdFromMeta -MetaPath $script:TargetMeta
+        # Composed in the caller's path spelling, because it is printed in both
+        # the refusal and the manual close command (note 3 in the header).
+        $resolveStatusFile = "$state/$resolveTaskId.status"
+        $resolveOpenSet = Get-FmStatusOpenDecisions -Path $resolveStatusFile
+        # A missing, unreadable or symlinked ledger folds to '' rather than
+        # throwing; the guard keeps that true under StrictMode if the fold ever
+        # returns $null, so an unreadable ledger refuses every key instead of
+        # crashing mid-validation.
+        if ($null -eq $resolveOpenSet) { $resolveOpenSet = '' }
+        foreach ($resolveKey in $resolveKeys) {
+            # `case "$resolve_open_set" in "$k"$'\t'*|*$'\n'"$k"$'\t'*`: the fold
+            # emits "<key>\t<verb>\t<note>" records joined by LF, so a key is open
+            # only at a record boundary - never as a substring of a note.
+            $needle = "$resolveKey`t"
+            if (-not ($resolveOpenSet.StartsWith($needle, [System.StringComparison]::Ordinal) -or
+                    $resolveOpenSet.Contains("`n$needle", [System.StringComparison]::Ordinal))) {
+                Write-FmErr ("error: --resolve-key '$resolveKey': no open decision or blocker with that key " +
+                    "in $resolveStatusFile (already closed, mistyped, or transferred). Re-check the OPEN " +
+                    'DECISIONS listing, then resend without that key or with the right one; nothing was sent.')
+                Exit-FmScript 1
+            }
+        }
+    }
+
+    # Close each answered decision in this home's ledger, only after delivery is
+    # fully confirmed. An append failure exits nonzero with the manual close
+    # command; the decision then stays open and re-surfaces, never silently lost.
+    function Close-FmSendResolvedKeys {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+            Justification = 'The plural is the contract and keeps the name greppable against its bash twin fm_send_close_resolved_keys: ONE send closes EVERY key it named, all-or-stop, and a singular name would read as close-one-key and hide that the loop is the unit of work.')]
+        [CmdletBinding()]
+        [OutputType([bool])]
+        param(
+            [Parameter(Mandatory)][AllowEmptyCollection()]
+            [System.Collections.Generic.List[string]]$Keys,
+            [Parameter(Mandatory)][string]$StatusFile,
+            [Parameter(Mandatory)][AllowEmptyString()][string]$Answer,
+            [Parameter(Mandatory)][string]$Target
+        )
+        # `tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177'`, in that order: the
+        # three record-breaking whitespace bytes become SPACES (kept), and every
+        # other C0/DEL control byte is DELETED. A status line is one record, so a
+        # raw newline in the answer would forge a second one.
+        $note = $Answer -creplace '[\n\r\t]', ' '
+        $note = $note -creplace '[\x00-\x1f\x7f]', ''
+        foreach ($key in $Keys) {
+            $line = Limit-FmLine -Line "resolved [key=$key]: answered: $note"
+            try {
+                Add-FmFileLine -Path $StatusFile -Line $line
+            } catch {
+                Write-FmErr ("error: the answer was delivered to $Target, but decision key '$key' could not " +
+                    "be closed in $StatusFile. Close it manually with: echo 'resolved [key=$key]: <how it " +
+                    "was answered>' >> $StatusFile - do not resend the answer.")
+                return $false
+            }
+        }
+        return $true
+    }
+
     # The target's harness came from its meta (recorded by fm-spawn), used only to
     # scope the codex `$<skill>` popup-settle below. A task selector carries meta;
     # an explicit backend-target escape hatch has none, so its harness is unknown
@@ -392,6 +589,13 @@ Invoke-FmMain -UnexpectedCode 70 {
     # error with the attempted resolution attached.
 
     if ($rest.Count -ge 1 -and [string]$rest[0] -ceq '--key') {
+        # `case "$*" in *--resolve-key*)`: a substring test over the JOINED
+        # remainder, so a --resolve-key TRAILING the key name is refused too
+        # rather than being silently dropped as message words.
+        if (($rest -join ' ').Contains('--resolve-key', [System.StringComparison]::Ordinal)) {
+            Write-FmErr 'error: --resolve-key cannot accompany --key; answering a decision requires a text answer'
+            Exit-FmScript 1
+        }
         if ($rest.Count -lt 2) {
             Write-FmErr 'error: --key requires a key name'
             Exit-FmScript 1
@@ -413,6 +617,9 @@ Invoke-FmMain -UnexpectedCode 70 {
 
     # `MESSAGE=$*`: the remaining words joined with a single space.
     $message = ($rest -join ' ')
+    # The pre-marker answer text, kept for the closing resolved note so the
+    # durable ledger records the plain answer without marker or corr bytes.
+    $resolveAnswerText = $message
 
     if ($markFromFirstmate) {
         # Reuse an existing correlation id for recovery resends; otherwise create
@@ -507,6 +714,15 @@ Invoke-FmMain -UnexpectedCode 70 {
                 Write-FmErr ("error: text was delivered to $target, but its pending-reply delivery commit " +
                     "and recovery marker both failed. Do not resend; inspect $state manually.")
             }
+            Exit-FmScript 1
+        }
+    }
+
+    # Delivery is fully confirmed: close each answered decision in this home's
+    # ledger (answerer-closes; see the header contract).
+    if ($resolveKeys.Count -gt 0) {
+        if (-not (Close-FmSendResolvedKeys -Keys $resolveKeys -StatusFile $resolveStatusFile `
+                    -Answer $resolveAnswerText -Target $target)) {
             Exit-FmScript 1
         }
     }

@@ -36,6 +36,14 @@
 # dark, so on refusal bootstrap still runs in FM_BOOTSTRAP_DETECT_ONLY=1 mode
 # for its read-only detect lines, and both digests run unconditionally.
 #
+# STATUS TAILS: FM_SESSION_START_STATUS_TAIL bounds how many lines each task's
+# tail prints, and bin/fm-line-cap-lib.psm1 bounds how long each of those lines
+# may be. Both bounds are safe because the section prints every task's full
+# status log path, and AGENTS.md section 8 treats a status line as a wake EVENT
+# rather than current state - bin/fm-crew-state.ps1 owns current state. The cap
+# is imported, never re-typed: the printed header names the same number the cut
+# uses, so the claim in that line cannot drift away from the cut itself.
+#
 # Usage: fm-session-start.ps1
 #   Prints the full ordered digest to stdout and always exits 0: this is a
 #   reporting command, not a gate. A lock refusal is reported as a loud banner
@@ -73,6 +81,7 @@ Import-Module (Join-Path $PSScriptRoot 'fm-common.psm1')
 Import-Module (Join-Path $PSScriptRoot 'fm-backend.psm1')
 Import-Module (Join-Path $PSScriptRoot 'fm-tasks-axi-lib.psm1')
 Import-Module (Join-Path $PSScriptRoot 'fm-public-followup-lib.psm1')
+Import-Module (Join-Path $PSScriptRoot 'fm-line-cap-lib.psm1')
 
 $script:FmRule = '================================================================================'
 $script:FmSubrule = '--------------------------------------------------------------------------------'
@@ -142,9 +151,12 @@ function Write-FmFileOrAbsent {
     }
 }
 
-# `tail -n <n>` on a file whose last line may lack its terminator. Splitting and
-# rejoining would silently ADD one, which would then differ from the bash twin
-# byte-for-byte, so the terminator is carried with each unit.
+# `tail -n <n>` on a file whose last line may lack its terminator. This returns
+# exactly the bytes `tail` would emit - the terminator is carried with each unit
+# rather than re-added on join, so an unterminated last line stays unterminated
+# HERE. Whether the consumer then terminates it is the CONSUMER's contract:
+# Write-FmStatusTail feeds this through the read-loop/fm_cap_line rule, which
+# does terminate it, exactly as the bash twin's pipeline does.
 function Get-FmTailText {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -197,9 +209,29 @@ function Write-FmStatusTail {
         [Parameter(Mandatory)][string]$Count
     )
     # The count is PRINTED as the raw string the environment supplied, exactly
-    # as the bash twin prints "$STATUS_TAIL": a caller who set 05 sees 05.
-    Write-FmOut "status tail (last $Count line(s), wake-EVENT history, not current state; full log: $PrintPath):"
-    Write-FmRaw (Get-FmTailText -Path $Path -Count ([int]$Count))
+    # as the bash twin prints "$STATUS_TAIL": a caller who set 05 sees 05. The
+    # cap is printed as a NUMBER from its one owner, never re-typed here.
+    Write-FmOut ("status tail (last $Count line(s), each capped at $(Get-FmLineCapDefault) characters, " +
+        "wake-EVENT history, not current state; full log: $PrintPath):")
+    # A crewmate writes its own status lines, so their length is unbounded: one
+    # observed line ran 865 characters. Cap each one the way the wake digest's
+    # OPEN DECISIONS section does; the lede carries the state word and the key,
+    # and the full log path above reaches the rest.
+    #
+    # The bash twin feeds `tail` into `while IFS= read -r line || [ -n "$line" ]`
+    # and prints each line through fm_cap_line, which ALWAYS terminates with LF.
+    # So a status file whose last line lacks its terminator gains one here - the
+    # raw tail text is no longer emitted verbatim, and re-splitting it is
+    # therefore correct rather than an added newline. The final empty field a
+    # trailing LF produces is not a line the read loop ever sees.
+    $tail = Get-FmTailText -Path $Path -Count ([int]$Count)
+    if ($tail.Length -eq 0) { return }
+    $lines = @($tail.Split("`n"))
+    $last = $lines.Count - 1
+    for ($i = 0; $i -le $last; $i++) {
+        if ($i -eq $last -and $lines[$i] -ceq '') { break }
+        Write-FmCappedLine -Line $lines[$i]
+    }
 }
 
 function Write-FmBacklogPointer {
