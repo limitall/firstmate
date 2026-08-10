@@ -36,6 +36,9 @@
 #   list_known_lanes               Get-FmTestRunKnownLane
 #   list_proven_isolated           Get-FmTestRunProvenIsolated
 #   list_portable_parallel_1/2     Get-FmTestRunPortableShard -Index 1|2
+#   portable_serial_weight_for     Get-FmTestRunPortableSerialWeight
+#   portable_serial_assignments    Get-FmTestRunPortableSerialAssignment
+#   portable_serial_shard_index    Get-FmTestRunPortableSerialShardIndex
 #   is_proven_isolated_script      Test-FmTestRunProvenIsolated
 #   all_repo_tests                 Get-FmTestRunRepoTest
 #   normalize_script_path          ConvertTo-FmTestRunScriptPath
@@ -297,8 +300,12 @@ $script:FmTestRunKnownFamilies = @(
     'afk', 'snapshot-bearings', 'cmux', 'zellij', 'orca', 'unclassified'
 )
 
+# Not a static list: the twin's list_known_lanes GENERATES the CI serial shard
+# names from PORTABLE_SERIAL_SHARDS, so hard-coding them here would let the
+# advertised lanes and the lanes that actually resolve drift apart the moment
+# that count changes. Get-FmTestRunKnownLane builds them the same way.
 $script:FmTestRunKnownLanes = @(
-    'portable-parallel-1', 'portable-parallel-2', 'portable-serial', 'real-herdr-gated'
+    'portable-parallel-1', 'portable-parallel-2', 'portable-serial'
 )
 
 # Exact proven-isolated candidate set (same paths as
@@ -364,6 +371,96 @@ $script:FmTestRunPortableShard2 = @(
     'tests/fm-ensure-agents-md.test.sh'
     'tests/fm-composer-lib.test.sh'
 )
+
+# How many separate-runner shards the portable serial remainder splits into.
+# One owner: CI lane names carry this count and are refused when they disagree.
+$script:FmTestRunPortableSerialShards = 4
+
+# Balance hint for a portable-serial script with no measured duration, close to
+# the measured per-script mean so a newly added test neither starves nor
+# overloads the shard it lands in.
+$script:FmTestRunPortableSerialDefaultWeightMs = 20000
+
+# Measured portable-serial script durations in milliseconds, from the CI timing
+# artifact recorded in docs/fm-test-portable-shards.md. These are balance hints
+# only: the shard partition stays complete and disjoint whatever they say, so a
+# stale hint costs balance rather than coverage. That doc owns the refresh
+# procedure.
+#
+# A hashtable rather than the twin's here-doc because the bash lookup is a
+# first-match linear scan over a list with no duplicate key, which an ordinal
+# hashtable reproduces exactly and in one step.
+$script:FmTestRunPortableSerialWeightHint = @{
+    'tests/fm-afk-inject-e2e.test.sh'                   = 34019
+    'tests/fm-afk-pi-herdr-return-e2e.test.sh'          = 42
+    'tests/fm-afk-return.test.sh'                       = 1105
+    'tests/fm-ask-user-authority.test.sh'               = 68
+    'tests/fm-backend-cmux-smoke.test.sh'               = 29
+    'tests/fm-backend-cmux.test.sh'                     = 2349
+    'tests/fm-backend-herdr-focus-flash-e2e.test.sh'    = 21
+    'tests/fm-backend-orca.test.sh'                     = 12041
+    'tests/fm-backend-tmux-smoke.test.sh'               = 314
+    'tests/fm-backend-zellij-smoke.test.sh'             = 21
+    'tests/fm-backend-zellij.test.sh'                   = 4225
+    'tests/fm-backend.test.sh'                          = 16370
+    'tests/fm-backlog-handoff.test.sh'                  = 2786
+    'tests/fm-bearings-snapshot.test.sh'                = 60103
+    'tests/fm-bootstrap.test.sh'                        = 21912
+    'tests/fm-busy-adapter-wiring.test.sh'              = 13962
+    'tests/fm-busy-state.test.sh'                       = 607
+    'tests/fm-calm-pi-extension.test.sh'                = 203
+    'tests/fm-claude-stop-autoarm-live-e2e.test.sh'     = 19
+    'tests/fm-claude-stop-autoarm.test.sh'              = 60521
+    'tests/fm-codex-continuity-live-e2e.test.sh'        = 19
+    'tests/fm-daemon.test.sh'                           = 15140
+    'tests/fm-documentation-audiences.test.sh'          = 572
+    'tests/fm-fleet-snapshot-view.test.sh'              = 5902
+    'tests/fm-fleet-sync.test.sh'                       = 16417
+    'tests/fm-gate-refuse.test.sh'                      = 2839
+    'tests/fm-gitignore-config.test.sh'                 = 28
+    'tests/fm-gotmp.test.sh'                            = 308
+    'tests/fm-grok-continuity-live-e2e.test.sh'         = 19
+    'tests/fm-grok-stop-live-e2e.test.sh'               = 19
+    'tests/fm-guard-stale-banner.test.sh'               = 2917
+    'tests/fm-herdr-session-cleanup.test.sh'            = 4802
+    'tests/fm-kimi-harness.test.sh'                     = 12590
+    'tests/fm-opencode-primary-live-e2e.test.sh'        = 18
+    'tests/fm-operational-input.test.sh'                = 184
+    'tests/fm-pending-reply.test.sh'                    = 7328
+    'tests/fm-pi-primary-live-e2e.test.sh'              = 19
+    'tests/fm-pi-watch-extension.test.sh'               = 16386
+    'tests/fm-pr-check-security.test.sh'                = 199573
+    'tests/fm-procevent.test.sh'                        = 42789
+    'tests/fm-public-followup.test.sh'                  = 23365
+    'tests/fm-quota-array-dispatch-live-e2e.test.sh'    = 19
+    'tests/fm-secondmate-harness.test.sh'               = 87895
+    'tests/fm-secondmate-lifecycle-e2e.test.sh'         = 4929
+    'tests/fm-secondmate-liveness.test.sh'              = 12553
+    'tests/fm-secondmate-safety.test.sh'                = 24432
+    'tests/fm-secondmate-sync.test.sh'                  = 12289
+    'tests/fm-send-secondmate-marker-herdr-e2e.test.sh' = 27
+    'tests/fm-send-secondmate-marker.test.sh'           = 2136
+    'tests/fm-session-start.test.sh'                    = 37289
+    'tests/fm-sessionstart-nudge.test.sh'               = 264
+    'tests/fm-shared-captain-inheritance.test.sh'       = 3506
+    'tests/fm-spawn-dispatch-profile.test.sh'           = 41351
+    'tests/fm-spawn-worktree-settle.test.sh'            = 4598
+    'tests/fm-startup-memory-budget.test.sh'            = 4260
+    'tests/fm-subagent-pretool-check.test.sh'           = 901
+    'tests/fm-supervision-events.test.sh'               = 413
+    'tests/fm-tangle-guard.test.sh'                     = 7230
+    'tests/fm-teardown-endpoint-safety.test.sh'         = 1073
+    'tests/fm-teardown.test.sh'                         = 23237
+    'tests/fm-test-isolation-proof.test.sh'             = 326
+    'tests/fm-turnend-guard.test.sh'                    = 5986
+    'tests/fm-update.test.sh'                           = 1894
+    'tests/fm-vendor-auth-probe.test.sh'                = 42796
+    'tests/fm-wake-daemon-lifecycle-e2e.test.sh'        = 4284
+    'tests/fm-wake-queue.test.sh'                       = 22787
+    'tests/fm-watch-checkpoint.test.sh'                 = 3943
+    'tests/fm-watch-triage.test.sh'                     = 113051
+    'tests/fm-watcher-lock.test.sh'                     = 98342
+}
 
 # --- reporters ---------------------------------------------------------------
 
@@ -712,7 +809,28 @@ function Get-FmTestRunKnownLane {
     [CmdletBinding()]
     [OutputType([string[]])]
     param()
-    return @($script:FmTestRunKnownLanes)
+    $list = [System.Collections.Generic.List[string]]::new()
+    foreach ($l in $script:FmTestRunKnownLanes) { $list.Add($l) }
+    for ($i = 1; $i -le $script:FmTestRunPortableSerialShards; $i++) {
+        $list.Add("portable-serial-{0}of{1}" -f $i, $script:FmTestRunPortableSerialShards)
+    }
+    $list.Add('real-herdr-gated')
+    return , $list.ToArray()
+}
+
+<#
+.SYNOPSIS
+The portable_serial_weight_for twin: the measured hint for <Path>, or the
+default weight when the partition has never measured it.
+#>
+function Get-FmTestRunPortableSerialWeight {
+    [CmdletBinding()]
+    [OutputType([int])]
+    param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Path)
+    if ($script:FmTestRunPortableSerialWeightHint.ContainsKey($Path)) {
+        return [int]$script:FmTestRunPortableSerialWeightHint[$Path]
+    }
+    return [int]$script:FmTestRunPortableSerialDefaultWeightMs
 }
 
 function Get-FmTestRunProvenIsolated {
@@ -814,6 +932,113 @@ function Select-FmTestRunFamily {
     if (-not $found) { throw [FmTestRunDie]::new("no tests mapped to family '$Family'") }
 }
 
+<#
+.SYNOPSIS
+The portable_serial_assignments twin: one @{ Shard = <int>; Path = <string> }
+record per portable-serial script, longest-processing-time assigned to the
+configured shard count.
+.DESCRIPTION
+Deterministic in both worlds, which is the whole point - two CI runners must
+partition the same lane the same way from the same source, with no shared state
+between them:
+  - candidates are ordered by hint DESCENDING then path ASCENDING. The twin
+    spells that `sort -t\t -k1,1nr -k2,2` under LC_ALL=C, so the tie-break is an
+    ORDINAL string comparison, not a culture-aware one. It is reproduced as an
+    ordinal sort by path followed by a STABLE numeric sort by weight descending,
+    which yields the same total order without a custom comparer;
+  - ties between equally loaded bins always take the LOWEST bin index, because
+    the bash scan starts at bin 1 and only a STRICTLY smaller load displaces it.
+#>
+function Get-FmTestRunPortableSerialAssignment {
+    [CmdletBinding()]
+    param([Parameter(Mandatory, Position = 0)][hashtable]$Context)
+
+    # list_portable_serial: the complete suite minus the proven-isolated set and
+    # minus the Herdr lane. Same predicate as the 'portable-serial' branch below,
+    # deliberately not routed through Select-FmTestRunLane, which would mutate
+    # the caller's selection.
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($s in (Get-FmTestRunRepoTest $Context['Root'])) {
+        if ($s -eq '') { continue }
+        if ((Get-FmTestRunFamily (Get-FmTestRunBaseName $s)) -eq 'real-herdr-gated') { continue }
+        if (Test-FmTestRunProvenIsolated $s) { continue }
+        $candidates.Add($s)
+    }
+
+    $ordered = @(@(Get-FmTestRunSorted $candidates) |
+        ForEach-Object { [pscustomobject]@{ Weight = (Get-FmTestRunPortableSerialWeight $_); Path = $_ } } |
+        Sort-Object -Property Weight -Descending -Stable)
+
+    $shards = $script:FmTestRunPortableSerialShards
+    # 1-based like the bash array, so index 0 is never read.
+    $loads = [long[]]::new($shards + 1)
+    $out = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($item in $ordered) {
+        $best = 1
+        $bestLoad = $loads[1]
+        for ($i = 2; $i -le $shards; $i++) {
+            if ($loads[$i] -lt $bestLoad) {
+                $bestLoad = $loads[$i]
+                $best = $i
+            }
+        }
+        $loads[$best] = $bestLoad + [long]$item.Weight
+        $out.Add(@{ Shard = $best; Path = [string]$item.Path })
+    }
+    return , $out.ToArray()
+}
+
+<#
+.SYNOPSIS
+The portable_serial_shard_index twin: <k> from a "portable-serial-<k>of<n>"
+lane, as the STRING the twin echoes.
+.DESCRIPTION
+Refuses when <n> disagrees with this runner's configured count, so a CI matrix
+built for a different shard count fails loudly instead of dropping tests.
+
+The value stays a STRING because the twin's caller then compares it to the
+assignment's shard column with `[ "$idx" = "$shard" ]` - a string test. So
+`portable-serial-01of4` passes every numeric check here and then matches no
+assignment, and the lane dies as "selected no tests". That is the twin's exact
+behavior and it is reproduced rather than tidied up.
+
+Splitting is on the FIRST "of": `${spec%%of*}` keeps what precedes it and
+`${spec#*of}` keeps what follows it. The digit tests are the twin's
+`''|*[!0-9]*` - digits only, and a leading zero is not rejected here.
+#>
+function Get-FmTestRunPortableSerialShardIndex {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Lane)
+
+    $shards = $script:FmTestRunPortableSerialShards
+    $unknown = "unknown lane '$Lane' (see --list-lanes)"
+    $spec = $Lane.Substring('portable-serial-'.Length)
+    $at = $spec.IndexOf('of', [System.StringComparison]::Ordinal)
+    if ($at -lt 0) { throw [FmTestRunDie]::new($unknown) }
+    $index = $spec.Substring(0, $at)
+    $count = $spec.Substring($at + 2)
+    foreach ($part in @($index, $count)) {
+        if ($part -eq '') { throw [FmTestRunDie]::new($unknown) }
+        foreach ($c in $part.ToCharArray()) {
+            if ($c -lt '0' -or $c -gt '9') { throw [FmTestRunDie]::new($unknown) }
+        }
+    }
+    # BigInteger rather than [int] so a digit string too long for a machine word
+    # is still COMPARED rather than throwing a conversion error the twin never
+    # produces.
+    $countValue = [System.Numerics.BigInteger]::Parse($count)
+    if ($countValue -ne [System.Numerics.BigInteger]$shards) {
+        throw [FmTestRunDie]::new(
+            "lane '$Lane' asks for $count portable serial shards but this runner is configured for $shards (see --list-lanes)")
+    }
+    $indexValue = [System.Numerics.BigInteger]::Parse($index)
+    if ($indexValue -lt [System.Numerics.BigInteger]1 -or $indexValue -gt [System.Numerics.BigInteger]$shards) {
+        throw [FmTestRunDie]::new("lane '$Lane' shard index is outside 1..$shards (see --list-lanes)")
+    }
+    return $index
+}
+
 function Select-FmTestRunLane {
     [CmdletBinding()]
     param(
@@ -852,7 +1077,26 @@ function Select-FmTestRunLane {
             Select-FmTestRunFamily -Context $Context -Family 'real-herdr-gated'
             $found = $true
         }
-        default { throw [FmTestRunDie]::new("unknown lane '$Lane' (see --list-lanes)") }
+        default {
+            # The twin's `portable-serial-*)` arm, which sits AFTER the exact
+            # `portable-serial)` arm in its case - so the exact names above still
+            # win, and only a shard name reaches here. One separate-runner shard
+            # of the same remainder, still serial in itself.
+            if ($Lane.StartsWith('portable-serial-', [System.StringComparison]::Ordinal)) {
+                $shard = Get-FmTestRunPortableSerialShardIndex -Lane $Lane
+                foreach ($assignment in @(Get-FmTestRunPortableSerialAssignment -Context $Context)) {
+                    $path = [string]$assignment['Path']
+                    if ($path -eq '') { continue }
+                    if ([string]::Equals([string]$assignment['Shard'], $shard,
+                            [System.StringComparison]::Ordinal)) {
+                        Add-FmTestRunScript -Context $Context -Path $path
+                        $found = $true
+                    }
+                }
+            } else {
+                throw [FmTestRunDie]::new("unknown lane '$Lane' (see --list-lanes)")
+            }
+        }
     }
     if (-not $found) { throw [FmTestRunDie]::new("lane '$Lane' selected no tests") }
 }
@@ -1147,13 +1391,16 @@ function Remove-FmTestRunExcludedFamily {
 The run_coverage_guard twin. $true = the FM_TEST_COVERAGE ok line, $false = a
 refusal already reported on stderr.
 .DESCRIPTION
-Four invariants, checked in the bash order because the first failure is the one
+Five invariants, checked in the bash order because the first failure is the one
 a caller sees:
   1. the two portable parallel shards share no script;
   2. their union is exactly the proven-isolated set;
-  3. shards, portable-serial and the Herdr lane are pairwise disjoint and
+  3. the CI serial shards share no script and their union is exactly the
+     portable-serial lane - so no runner repeats work and no script is silently
+     left out of the required lane;
+  4. shards, portable-serial and the Herdr lane are pairwise disjoint and
      contain no duplicate;
-  4. their union is exactly tests/*.test.sh.
+  5. their union is exactly tests/*.test.sh.
 Then, when an isolation-proof twin exists, the embedded proven set must equal
 what that harness lists.
 
@@ -1213,15 +1460,57 @@ function Test-FmTestRunCoverage {
         return $false
     }
 
-    # Serial + Herdr lane listings without disturbing a caller's selection.
+    # Serial (whole lane and each CI shard) + Herdr lane listings without
+    # disturbing a caller's selection.
     $savedScripts = $Context['Scripts']
     $Context['Scripts'] = [System.Collections.Generic.List[string]]::new()
     Select-FmTestRunLane -Context $Context -Lane 'portable-serial'
     $serial = @(Get-FmTestRunSortedUnique $Context['Scripts'])
+    $serialShardsRaw = [System.Collections.Generic.List[string]]::new()
+    for ($shard = 1; $shard -le $script:FmTestRunPortableSerialShards; $shard++) {
+        $Context['Scripts'] = [System.Collections.Generic.List[string]]::new()
+        # An EMPTY shard never reaches the report below, because the twin's
+        # select_lane dies with "selected no tests" (exit 2) first. The check is
+        # kept anyway, exactly as the twin keeps it, so the two guards stay the
+        # same program rather than one of them quietly losing an invariant.
+        Select-FmTestRunLane -Context $Context `
+            -Lane ("portable-serial-{0}of{1}" -f $shard, $script:FmTestRunPortableSerialShards)
+        if ($Context['Scripts'].Count -eq 0) {
+            Write-FmTestRunLog ("coverage guard: portable serial shard {0} of {1} is empty" -f
+                $shard, $script:FmTestRunPortableSerialShards)
+            $Context['Scripts'] = $savedScripts
+            return $false
+        }
+        foreach ($s in $Context['Scripts']) { $serialShardsRaw.Add($s) }
+    }
     $Context['Scripts'] = [System.Collections.Generic.List[string]]::new()
     Select-FmTestRunFamily -Context $Context -Family 'real-herdr-gated'
     $herdr = @(Get-FmTestRunSortedUnique $Context['Scripts'])
     $Context['Scripts'] = $savedScripts
+
+    # Every serial script runs in exactly one CI shard: no duplicate work across
+    # runners, and no script silently left out of the required lane.
+    $serialShardDups = @(Get-FmTestRunSetDuplicate (Get-FmTestRunSorted $serialShardsRaw))
+    if ($serialShardDups.Count -gt 0) {
+        Write-FmTestRunLog 'coverage guard: portable serial shards share scripts:'
+        foreach ($d in $serialShardDups) { Write-FmErr $d }
+        return $false
+    }
+    $serialShards = @(Get-FmTestRunSortedUnique $serialShardsRaw)
+    $missing = @(Get-FmTestRunSetDiff $serial $serialShards)
+    $extra = @(Get-FmTestRunSetDiff $serialShards $serial)
+    if ($missing.Count -gt 0 -or $extra.Count -gt 0) {
+        Write-FmTestRunLog 'coverage guard: portable serial shards must equal the portable serial lane'
+        if ($missing.Count -gt 0) {
+            Write-FmTestRunLog 'missing from serial shards:'
+            foreach ($m in $missing) { Write-FmErr $m }
+        }
+        if ($extra.Count -gt 0) {
+            Write-FmTestRunLog 'extra beyond serial lane:'
+            foreach ($e in $extra) { Write-FmErr $e }
+        }
+        return $false
+    }
 
     foreach ($pair in @(
             @{ A = 'shards_union'; B = 'serial'; Left = $shardsUnion; Right = $serial },
@@ -1278,8 +1567,8 @@ function Test-FmTestRunCoverage {
         }
     }
 
-    Write-FmOut ("FM_TEST_COVERAGE ok total={0} parallel={1} serial={2} herdr={3}" -f
-        $all.Count, $shardsUnion.Count, $serial.Count, $herdr.Count)
+    Write-FmOut ("FM_TEST_COVERAGE ok total={0} parallel={1} serial={2} serial_shards={3} herdr={4}" -f
+        $all.Count, $shardsUnion.Count, $serial.Count, $script:FmTestRunPortableSerialShards, $herdr.Count)
     return $true
 }
 
@@ -2572,6 +2861,8 @@ Export-ModuleMember -Function @(
     'Get-FmTestRunSetIntersect', 'Get-FmTestRunSetDuplicate', 'Get-FmTestRunSetSymmetric',
     'Get-FmTestRunFamily', 'Get-FmTestRunExpectedGateSkip', 'Get-FmTestRunKnownFamily',
     'Get-FmTestRunKnownLane', 'Get-FmTestRunProvenIsolated', 'Get-FmTestRunPortableShard',
+    'Get-FmTestRunPortableSerialWeight', 'Get-FmTestRunPortableSerialAssignment',
+    'Get-FmTestRunPortableSerialShardIndex',
     'Test-FmTestRunProvenIsolated',
     'Get-FmTestRunRepoTest', 'Add-FmTestRunScript', 'Select-FmTestRunAll',
     'Select-FmTestRunProvenIsolated', 'Select-FmTestRunFamily', 'Select-FmTestRunLane',

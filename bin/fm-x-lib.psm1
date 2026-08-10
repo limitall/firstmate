@@ -52,6 +52,7 @@
 #   fmx_post_json                              Send-FmxJson
 #   fmx_meta_get                               Get-FmxMetaValue
 #   fmx_meta_tmp                               (deleted - see note 4)
+#   fm_meta_lock_path (fm-wake-lib.sh)         Get-FmxMetaLockPath (see note 4j)
 #   fmx_meta_link_set                          Set-FmxMetaLink
 #   fmx_meta_followups_set                     Set-FmxMetaFollowupCount
 #   fmx_meta_link_clear                        Clear-FmxMetaLink
@@ -233,6 +234,16 @@
 #      second, and the bash twin spends four to six of them plus a mktemp, a
 #      chmod, a uname and an `id` on every publish.
 #
+#   j. THE META LOCK IS A DECLARED DEPENDENCY, NOT AN AMBIENT ONE. The three
+#      meta helpers serialize their read-modify-write under the per-record lock
+#      state/.meta-<id>.lock, exactly as their bash twins do. bash reaches
+#      fm_meta_lock_path/fm_lock_acquire_wait/fm_lock_release through whatever
+#      the CALLER sourced; this module imports bin/fm-wake-lib.psm1 itself. The
+#      REFUSAL half of fm_meta_lock_path is reproduced in full by
+#      Get-FmxMetaLockPath - a path whose leaf is not <id>.meta, or whose id is
+#      empty or carries anything outside [A-Za-z0-9._-], gets no lock and the
+#      write is refused rather than performed unlocked.
+#
 # Import with:
 #   Import-Module (Join-Path $PSScriptRoot 'fm-x-lib.psm1') -Force
 
@@ -247,6 +258,19 @@ $ErrorActionPreference = 'Stop'
 # Without -Force the loaded instance is reused and everyone keeps their commands.
 # (Same reasoning, same wording, as bin/fm-composer-lib.psm1.)
 Import-Module (Join-Path $PSScriptRoot 'fm-common.psm1')
+# The per-record meta lock the three meta helpers below take. bin/fm-x-lib.sh
+# does NOT source bin/fm-wake-lib.sh - it calls fm_meta_lock_path,
+# fm_lock_acquire_wait and fm_lock_release and relies on its two callers
+# (bin/fm-x-link.sh and bin/fm-x-followup.sh) having sourced it, so an unsourced
+# caller gets a command-not-found and the meta write REFUSES. A PowerShell module
+# has no "sourced into the caller" model to reproduce that with, and reproducing
+# it with a Get-Command probe would make the lock silently optional - one
+# forgotten import in a future entrypoint and every X-mode meta rewrite would go
+# unserialized. The dependency is declared HERE instead, which is what
+# fm-pending-reply-lib.psm1, fm-public-followup-lib.psm1 and
+# fm-push-transition-lib.psm1 already do with the same library. Still no -Force,
+# for the reason above.
+Import-Module (Join-Path $PSScriptRoot 'fm-wake-lib.psm1')
 
 # Every string comparison that decides a gate is ORDINAL. PowerShell's -eq and
 # .NET's default String.Equals are culture-sensitive, which makes zero-width
@@ -2840,6 +2864,68 @@ function Select-FmxMetaLine {
 
 <#
 .SYNOPSIS
+The per-record lock path for a state/<id>.meta file, or '' when the path is not
+a lockable meta record.
+.DESCRIPTION
+Twin of fm_meta_lock_path in bin/fm-wake-lib.sh, which bin/fm-wake-lib.psm1 does
+not export - that module carries the lock PRIMITIVES (Wait-FmLock, Unlock-FmLock)
+but not this path rule, and it is not this package's file to edit. Reproduced
+here arm for arm, the same way bin/fm-promote.ps1 already had to:
+
+    dir=${meta%/*}      -> everything before the LAST '/', '.' when there is none
+    base=${meta##*/}    -> the leaf
+    *.meta              -> required, else refuse
+    id=${base%.meta}    -> non-empty and [A-Za-z0-9._-] only, else refuse
+    "$dir/.meta-$id.lock"
+
+The refusal is load-bearing rather than decorative: bash's `lock=$(...) || return 1`
+turns an unlockable meta path into a REFUSED write, so a caller cannot smuggle a
+rewrite of some other file past the serialization by naming it oddly. '' carries
+that verdict here, and every caller below maps it to the bash return code.
+#>
+function Get-FmxMetaLockPath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$MetaPath)
+
+    if ([string]::IsNullOrEmpty($MetaPath)) { return '' }
+    # Only '/' is a separator for this rule: bash's ${meta%/*} sees nothing else.
+    $slash = $MetaPath.LastIndexOf('/')
+    if ($slash -lt 0) { $dir = '.'; $base = $MetaPath }
+    else { $dir = $MetaPath.Substring(0, $slash); $base = $MetaPath.Substring($slash + 1) }
+    if (-not $base.EndsWith('.meta', $script:FmxOrdinal)) { return '' }
+    $id = $base.Substring(0, $base.Length - 5)
+    if ([string]::IsNullOrEmpty($id)) { return '' }
+    if ($id -notmatch '^[A-Za-z0-9._-]+$') { return '' }
+    return "$dir/.meta-$id.lock"
+}
+
+# Take the per-record meta lock, or report that this path has none to take.
+# fm_lock_acquire_wait BLOCKS until the lock is held, so a $true here means the
+# caller now owns it and MUST release it on every exit path - which is why each
+# caller below wraps the rewrite in try/finally rather than releasing inline the
+# way the bash twin's repeated `{ rm -f "$tmp"; fm_lock_release "$lock"; ... }`
+# does.
+function Request-FmxMetaLock {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$LockPath)
+    if ([string]::IsNullOrEmpty($LockPath)) { return $false }
+    Wait-FmLock -LockPath $LockPath
+    return $true
+}
+
+# fm_lock_release is `|| true` everywhere it appears in the bash twin: a release
+# that cannot complete must never turn a landed rewrite into a reported failure.
+function Unregister-FmxMetaLock {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$LockPath)
+    if ([string]::IsNullOrEmpty($LockPath)) { return }
+    try { Unlock-FmLock -LockPath $LockPath } catch { $null = $_ }
+}
+
+<#
+.SYNOPSIS
 (Re)write the X-request link on a task meta file.
 .DESCRIPTION
 Twin of fmx_meta_link_set. Drops any prior link, preserves every other meta
@@ -2874,17 +2960,32 @@ function Set-FmxMetaLink {
     $native = ConvertTo-FmNativePath $MetaPath
     if (-not [System.IO.File]::Exists($native)) { return $false }
 
-    $lines = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in (Select-FmxMetaLine -MetaPath $native -Drop $script:FmxMetaLinkKeys)) {
-        $lines.Add($line)
-    }
-    $lines.Add("x_request=$RequestId")
-    $lines.Add("x_request_ts=$Timestamp")
-    $lines.Add("x_followups=$Followups")
-    if (-not [string]::IsNullOrEmpty($Platform)) { $lines.Add("x_platform=$Platform") }
-    if ($ReplyMax -match '^[0-9]+$') { $lines.Add("x_reply_max_chars=$ReplyMax") }
+    # The lock path is derived from the CALLER's spelling, not the native one:
+    # the bash twin composes it from the same string it was handed, and both
+    # worlds must land on the same lock file for the serialization to mean
+    # anything across the transition.
+    $lock = Get-FmxMetaLockPath -MetaPath $MetaPath
+    if (-not (Request-FmxMetaLock -LockPath $lock)) { return $false }
+    try {
+        # Re-checked UNDER the lock: between the check above and the claim, a
+        # teardown could have removed the record, and rewriting it would
+        # resurrect a task's meta file after it was retired.
+        if (-not [System.IO.File]::Exists($native)) { return $false }
 
-    return (Set-FmxFileTextAtomic -Path $native -Text (($lines -join "`n") + "`n"))
+        $lines = [System.Collections.Generic.List[string]]::new()
+        foreach ($line in (Select-FmxMetaLine -MetaPath $native -Drop $script:FmxMetaLinkKeys)) {
+            $lines.Add($line)
+        }
+        $lines.Add("x_request=$RequestId")
+        $lines.Add("x_request_ts=$Timestamp")
+        $lines.Add("x_followups=$Followups")
+        if (-not [string]::IsNullOrEmpty($Platform)) { $lines.Add("x_platform=$Platform") }
+        if ($ReplyMax -match '^[0-9]+$') { $lines.Add("x_reply_max_chars=$ReplyMax") }
+
+        return (Set-FmxFileTextAtomic -Path $native -Text (($lines -join "`n") + "`n"))
+    } finally {
+        Unregister-FmxMetaLock -LockPath $lock
+    }
 }
 
 <#
@@ -2908,12 +3009,20 @@ function Set-FmxMetaFollowupCount {
     $native = ConvertTo-FmNativePath $MetaPath
     if (-not [System.IO.File]::Exists($native)) { return $false }
 
-    $lines = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in (Select-FmxMetaLine -MetaPath $native -Drop @('x_followups'))) {
-        $lines.Add($line)
+    $lock = Get-FmxMetaLockPath -MetaPath $MetaPath
+    if (-not (Request-FmxMetaLock -LockPath $lock)) { return $false }
+    try {
+        if (-not [System.IO.File]::Exists($native)) { return $false }
+
+        $lines = [System.Collections.Generic.List[string]]::new()
+        foreach ($line in (Select-FmxMetaLine -MetaPath $native -Drop @('x_followups'))) {
+            $lines.Add($line)
+        }
+        $lines.Add("x_followups=$Count")
+        return (Set-FmxFileTextAtomic -Path $native -Text (($lines -join "`n") + "`n"))
+    } finally {
+        Unregister-FmxMetaLock -LockPath $lock
     }
-    $lines.Add("x_followups=$Count")
-    return (Set-FmxFileTextAtomic -Path $native -Text (($lines -join "`n") + "`n"))
 }
 
 <#
@@ -2932,12 +3041,25 @@ function Clear-FmxMetaLink {
     $native = ConvertTo-FmNativePath $MetaPath
     if (-not [System.IO.File]::Exists($native)) { return $true }
 
-    $lines = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in (Select-FmxMetaLine -MetaPath $native -Drop $script:FmxMetaLinkKeys)) {
-        $lines.Add($line)
+    # An unlockable meta path is the ONE way this function fails without a write
+    # having been attempted, and it is a refusal rather than the no-op success a
+    # missing file gets: bash returns 1 there and 0 for the missing file.
+    $lock = Get-FmxMetaLockPath -MetaPath $MetaPath
+    if (-not (Request-FmxMetaLock -LockPath $lock)) { return $false }
+    try {
+        # Gone under the lock is the idempotent-success case, not a failure -
+        # a teardown that beat this clear already achieved what it wanted.
+        if (-not [System.IO.File]::Exists($native)) { return $true }
+
+        $lines = [System.Collections.Generic.List[string]]::new()
+        foreach ($line in (Select-FmxMetaLine -MetaPath $native -Drop $script:FmxMetaLinkKeys)) {
+            $lines.Add($line)
+        }
+        $text = if ($lines.Count -eq 0) { '' } else { ($lines -join "`n") + "`n" }
+        return (Set-FmxFileTextAtomic -Path $native -Text $text)
+    } finally {
+        Unregister-FmxMetaLock -LockPath $lock
     }
-    $text = if ($lines.Count -eq 0) { '' } else { ($lines -join "`n") + "`n" }
-    return (Set-FmxFileTextAtomic -Path $native -Text $text)
 }
 
 Export-ModuleMember -Function @(

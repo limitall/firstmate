@@ -135,7 +135,8 @@ foreach ($group in @(
         @{ Reason = 'old-vs-new main checkout diff fixture; gray-zone concurrent git/worktree cost'
             Names  = @('fm-backend.test.sh') }
         @{ Reason = 'real isolated git worktrees plus spawn settle loops; gray zone until dedicated proof'
-            Names  = @('fm-spawn-dispatch-profile.test.sh', 'fm-spawn-worktree-settle.test.sh') }
+            Names  = @('fm-spawn-dispatch-profile.test.sh', 'fm-spawn-worktree-settle.test.sh',
+                'fm-trace-context-spawn.test.sh') }
         @{ Reason = 'watcher lock / migration / poll security surface; intentional shared-lock class'
             Names  = @('fm-pr-check-security.test.sh') }
         @{ Reason = 'landed-work + lock-race teardown matrix; keep serial with forge/git stress peers'
@@ -207,6 +208,7 @@ $script:FmProofExclusionReport = @(
     'fm-backend.test.sh'
     'fm-spawn-dispatch-profile.test.sh'
     'fm-spawn-worktree-settle.test.sh'
+    'fm-trace-context-spawn.test.sh'
     'fm-pr-check-security.test.sh'
     'fm-teardown.test.sh'
     'fm-watcher-lock.test.sh'

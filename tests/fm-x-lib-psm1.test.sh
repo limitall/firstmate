@@ -46,9 +46,22 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (the bash oracle nee
 [ -f "$ROOT/bin/fm-x-lib.psm1" ] || fail "bin/fm-x-lib.psm1 is missing"
 MOD=$(fm_test_native_path "$ROOT/bin/fm-x-lib.psm1")
 
-# The oracle.
+# The oracle, loaded the way its own production callers load it.
+#
+# fm-x-lib.sh's three meta helpers call fm_meta_lock_path, fm_lock_acquire_wait
+# and fm_lock_release WITHOUT sourcing the library that defines them: they rely
+# on the caller having done it, and both callers do (bin/fm-x-link.sh:47 and
+# bin/fm-x-followup.sh:72 each `. fm-wake-lib.sh` right after `. fm-x-lib.sh`).
+# Sourcing only fm-x-lib.sh therefore gives a CRIPPLED oracle - every meta
+# rewrite refuses on a command-not-found rather than on any rule the function
+# actually has - and the interop assertions below already encode the working
+# contract ("the PowerShell reader reads a bash-written meta link" expects a
+# link the crippled oracle never writes). Same two lines, same order, as the
+# callers.
 # shellcheck source=bin/fm-x-lib.sh
 . "$ROOT/bin/fm-x-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$ROOT/bin/fm-wake-lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-x-lib-psm1)
 

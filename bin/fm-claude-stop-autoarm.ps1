@@ -29,15 +29,24 @@
 #     hook-owned process tree (never a detached child); Claude owns the process
 #     group, so its timeout/session teardown kills arm and watcher together.
 #   - Translation: while supervision is still needed and AFK remains inactive,
-#     an actionable arm close (signal:/stale:/check:/heartbeat) or a typed
-#     watcher: FAILED prints one rewake banner to stderr and exits 2, which
-#     wakes Claude even while idle ("Stop hook feedback"). A clean close with
-#     no actionable reason and no remaining need exits 0 silently.
+#     an actionable arm close (signal:/stale:/check:/heartbeat) prints one
+#     rewake banner to stderr and exits 2, which wakes Claude even while idle
+#     ("Stop hook feedback"). A close that reports no actionable reason is
+#     benign when a live identity-matched watcher still has a fresh beacon.
+#   - Failure handling: a typed failure is rechecked against the same live,
+#     fresh watcher predicate and retried a bounded number of times in this
+#     hook. Only an exhausted failure with no verified watcher emits one
+#     last-resort notice per failure episode; later consecutive failures still
+#     exit 2 to guarantee the next Stop-owned retry without repeating notice,
+#     until the synchronous guard has consumed its attended fail-open.
 #
 # The epoch ledger state/.claude-autoarm-epoch records the latest claim and
 # outcome so the synchronous Stop guard (bin/fm-turnend-guard --claude) can
 # allow a stop whose recovery this hook already owns, instead of forcing a
-# duplicate continuation for the same event epoch.
+# duplicate continuation for the same event epoch. The failure marker
+# state/.claude-autoarm-failure-notified deduplicates the last-resort notice,
+# and state/.claude-autoarm-failure-alarmed bounds the attended fail-open and
+# suppresses any later automatic continuation in that unresolved episode.
 #
 # This hook never blocks the Stop decision itself and never prints to stdout:
 # exit 0 is always silent, and exit 2 carries the rewake banner on stderr.
@@ -67,6 +76,15 @@
 # differential driver) and because it is the nested-import rule in
 # docs/powershell-port.md.
 #
+# THE LOCK-ROLE AND FAILURE-EPISODE HELPERS ARE LOCAL ON PURPOSE, FOR NOW.
+# fm_lock_set_role, fm_lock_role and fm_failure_episode_reset live in
+# bin/fm-wake-lib.sh, and bin/fm-wake-lib.psm1 has not yet gained their twins.
+# Set-FmHookLockRole / Get-FmHookLockRole / Reset-FmHookFailureEpisode below are
+# byte-faithful ports of those three and are character-identical to the copies
+# in bin/fm-turnend-guard.ps1, the only other caller; they MOVE into
+# fm-wake-lib.psm1 as Set-FmLockRole / Get-FmLockRole / Reset-FmFailureEpisode
+# as soon as that module's owner lands them.
+#
 # DECLARED DIVERGENCE - THE ARM'S OUTPUT FILE IS CONCATENATED, NOT INTERLEAVED.
 # The bash twin runs `fm-watch-arm >"$OUT" 2>&1`, so both streams land in one
 # file in real time order. Invoke-FmScript captures the two streams separately
@@ -74,7 +92,10 @@
 # which would corrupt any parsed field), so this twin writes stdout followed by
 # stderr. Nothing downstream depends on the interleaving: classification is a
 # per-line prefix match, and the banner excerpt is the first eight matching
-# lines, which the arm emits on one stream.
+# lines, which the arm emits on one stream. There is likewise no temp file per
+# attempt - the buffer is in memory - and it is cleared between attempts for the
+# same reason bash removes and re-creates OUT: only the LAST attempt's output
+# may reach a banner.
 #
 # SIGNALS. `trap ... EXIT` becomes try/finally, which covers a normal return
 # and a thrown exception but NOT a hard kill - Windows has no signal to catch
@@ -93,6 +114,170 @@ Import-Module (Join-Path $PSScriptRoot 'fm-primary-scope-lib.psm1')
 Import-Module (Join-Path $PSScriptRoot 'fm-supervision-lib.psm1')
 Import-Module (Join-Path $PSScriptRoot 'fm-wake-lib.psm1')
 Import-Module (Join-Path $PSScriptRoot 'fm-session-lock-lib.psm1')
+
+<#
+.SYNOPSIS
+The `[ -e <path> ]` twin: present as a file OR as a directory.
+#>
+function Test-FmHookPathPresent {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory, Position = 0)][string]$Path)
+
+    $native = ConvertTo-FmNativePath $Path
+    return ([System.IO.File]::Exists($native) -or [System.IO.Directory]::Exists($native))
+}
+
+<#
+.SYNOPSIS
+The watcher script this home's lock would name (the bash twin's WATCH argument).
+.DESCRIPTION
+Same rule bin/fm-turnend-guard.ps1 and bin/fm-watch.psm1 apply: the lock's
+watcher-path field is compared as a RAW STRING, so a hook that spelled it
+differently would never recognize its own watcher.
+#>
+function Get-FmHookWatchPath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][string]$BinDir)
+
+    $ps1 = Join-Path $BinDir 'fm-watch.ps1'
+    if ((Test-Path -LiteralPath $ps1) -and ((Get-Item -LiteralPath $ps1).Length -gt 0)) { return $ps1 }
+    $sh = Join-Path $BinDir 'fm-watch.sh'
+    if (Test-Path -LiteralPath $sh) { return $sh }
+    return $ps1
+}
+
+<#
+.SYNOPSIS
+The role token published beside a lock's pid (fm_lock_role).
+#>
+function Get-FmHookLockRole {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][string]$LockPath)
+
+    return (Get-FmFileText "$LockPath/role").TrimEnd("`r", "`n")
+}
+
+<#
+.SYNOPSIS
+Publish this process's role into a lock it already holds (fm_lock_set_role).
+.DESCRIPTION
+Twin of fm_lock_set_role, including all three of its refusals: an unknown role
+word, a lock whose published pid is not ours, and a write that does not read
+back. The read-back is the point - the lock's owner directory may be published
+as a symlink or as a plain file holding the owner path (docs/powershell-port.md,
+"Locks"), and a write that landed somewhere else must not be reported as a role
+this process holds.
+
+Failing it is why this hook releases the owner lock and exits 0 rather than
+arming: the synchronous guard reads that role to tell an auto-arm holding the
+lock from its own terminal check, so an unlabelled claim would let the guard
+credit recovery to a holder that is not doing any.
+#>
+function Set-FmHookLockRole {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'An internal lock-protocol primitive whose bash twin writes unconditionally; a -WhatIf/-Confirm surface would diverge from the twin and could stall a non-interactive background hook.')]
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$LockPath,
+        [Parameter(Mandatory, Position = 1)][string]$Role
+    )
+
+    if ($Role -cne 'autoarm' -and $Role -cne 'terminal-check') { return $false }
+    $current = [string]$PID
+    $holder = (Get-FmFileText "$LockPath/pid").TrimEnd("`r", "`n")
+    if ($holder -cne $current) { return $false }
+    try {
+        Set-FmFileText -Path "$LockPath/role" -Text $Role
+    } catch {
+        $null = $_
+        return $false
+    }
+    return ((Get-FmHookLockRole -LockPath $LockPath) -ceq $Role)
+}
+
+<#
+.SYNOPSIS
+Clear a whole failure episode's durable markers (fm_failure_episode_reset).
+.DESCRIPTION
+Twin of fm_failure_episode_reset, both modes. `acquire` takes the budget lock
+itself and releases it; `held` asserts that THIS process already holds it and
+leaves it held.
+
+A marker that is a real DIRECTORY refuses the whole reset rather than being
+removed: `rm -f` cannot remove one either, and silently succeeding would report
+an episode as cleared while its markers still gate every later decision.
+#>
+function Reset-FmHookFailureEpisode {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'An internal `rm -f` twin whose bash original deletes unconditionally; a -WhatIf/-Confirm surface would diverge from the twin and could stall a non-interactive background hook.')]
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$State,
+        [Parameter(Position = 1)][string]$Mode = 'acquire'
+    )
+
+    $lock = "$State/.turnend-claude-blocks.lock"
+    $acquired = $false
+    if ($Mode -ceq 'acquire') {
+        if (-not (Request-FmLock -LockPath $lock)) { return $false }
+        $acquired = $true
+    } elseif ($Mode -ceq 'held') {
+        $holder = (Get-FmFileText "$lock/pid").TrimEnd("`r", "`n")
+        if ($holder -cne [string]$PID) { return $false }
+    } else {
+        return $false
+    }
+
+    $paths = @(
+        "$State/.turnend-claude-blocks"
+        "$State/.claude-autoarm-failure-notified"
+        "$State/.claude-autoarm-failure-alarmed"
+    )
+    foreach ($path in $paths) {
+        $native = ConvertTo-FmNativePath $path
+        if ([System.IO.Directory]::Exists($native) -and -not (Test-FmSymlink -Path $path)) {
+            if ($acquired) { Unlock-FmLock -LockPath $lock }
+            return $false
+        }
+    }
+    foreach ($path in $paths) {
+        $native = ConvertTo-FmNativePath $path
+        try {
+            if ([System.IO.File]::Exists($native)) { [System.IO.File]::Delete($native) }
+        } catch {
+            $null = $_
+            if ($acquired) { Unlock-FmLock -LockPath $lock }
+            return $false
+        }
+    }
+    if ($acquired) { Unlock-FmLock -LockPath $lock }
+    return $true
+}
+
+<#
+.SYNOPSIS
+The bounded number of arm attempts this firing may make.
+.DESCRIPTION
+The `case "$AUTOARM_ATTEMPTS" in 1|2|3) : ;; *) AUTOARM_ATTEMPTS=2 ;; esac` twin:
+an ALLOW-LIST, not a range check, so anything else - including 0, a huge number,
+or a non-numeric word - falls back to 2 rather than turning one Stop into an
+unbounded arm loop.
+#>
+function Get-FmAutoarmAttemptBound {
+    [CmdletBinding()]
+    [OutputType([int])]
+    param()
+
+    $raw = Get-FmEnv -Name 'FM_CLAUDE_AUTOARM_ATTEMPTS' -Default '2'
+    if ($raw -ceq '1') { return 1 }
+    if ($raw -ceq '3') { return 3 }
+    return 2
+}
 
 <#
 .SYNOPSIS
@@ -206,6 +391,10 @@ function Invoke-FmClaudeStopAutoarm {
     $grace = Get-FmEnv -Name 'FM_GUARD_GRACE' -Default '300'
     $ownerLock = "$state/.claude-autoarm.lock"
     $epoch = "$state/.claude-autoarm-epoch"
+    $failureNotice = "$state/.claude-autoarm-failure-notified"
+    $failureAlarm = "$state/.claude-autoarm-failure-alarmed"
+    $watch = Get-FmHookWatchPath -BinDir $PSScriptRoot
+    $armAttempts = Get-FmAutoarmAttemptBound
 
     # Consume the Stop payload once. The decisions below are state-based; the
     # payload is read so a slow writer can never wedge on a full pipe.
@@ -230,8 +419,7 @@ function Invoke-FmClaudeStopAutoarm {
     }
 
     # --- AFK: the away daemon owns the watcher and triage; never rewake ------
-    $afkPath = ConvertTo-FmNativePath "$state/.afk"
-    if ([System.IO.File]::Exists($afkPath) -or [System.IO.Directory]::Exists($afkPath)) { return 0 }
+    if (Test-FmHookPathPresent "$state/.afk") { return 0 }
 
     # --- need: in-flight work or an X-mode relay poll ------------------------
     if (-not (Test-FmSupervisionNeeded -State $state -Grace $grace)) { return 0 }
@@ -251,6 +439,13 @@ function Invoke-FmClaudeStopAutoarm {
     # owner foregrounds the arm and translates its close; every other firing
     # exits 0 so one watcher cycle maps to at most one exit-2 rewake.
     if (-not (Request-FmLock -LockPath $ownerLock)) { return 0 }
+    # The role is published INSIDE the claim, before the try/finally, exactly
+    # where the bash twin sets it and before its EXIT trap is armed: a claim this
+    # hook cannot label is released immediately and this firing stays inert.
+    if (-not (Set-FmHookLockRole -LockPath $ownerLock -Role 'autoarm')) {
+        Unlock-FmLock -LockPath $ownerLock
+        return 0
+    }
 
     try {
         Write-FmAutoarmEpoch -EpochPath $epoch -Outcome 'arming'
@@ -267,25 +462,39 @@ function Invoke-FmClaudeStopAutoarm {
         # lifecycle. The arm forks the watcher as its own tracked child exactly
         # as it does for the model-driven background-task path, and propagates
         # the wake reason on close.
-        $armRun = Invoke-FmScript -Name 'fm-watch-arm' -BinDir $PSScriptRoot
-        $armOutput = $armRun.StdOut + $armRun.StdErr
-        $rc = $armRun.ExitCode
+        # Every non-actionable close is checked against the same
+        # identity-matched live watcher and fresh-beacon predicate used by the
+        # turn-end guard before it is retried or translated into an
+        # operator-visible failure.
+        $armOutput = ''
+        $actionable = $false
+        $healthy = $false
+        $attempt = 0
+        while ($attempt -lt $armAttempts) {
+            $attempt = $attempt + 1
+            $armRun = Invoke-FmScript -Name 'fm-watch-arm' -BinDir $PSScriptRoot
+            $armOutput = $armRun.StdOut + $armRun.StdErr
 
-        # --- classify and translate ------------------------------------------
-        # AFK may have appeared mid-cycle: the daemon owns triage now, so
-        # suppress the rewake even for an actionable close.
-        if ([System.IO.File]::Exists($afkPath) -or [System.IO.Directory]::Exists($afkPath)) {
-            Write-FmAutoarmEpoch -EpochPath $epoch -Outcome 'afk'
-            return 0
-        }
+            # AFK may have appeared mid-cycle: the daemon owns triage now, so
+            # suppress every subsequent classification and handoff.
+            if (Test-FmHookPathPresent "$state/.afk") {
+                Write-FmAutoarmEpoch -EpochPath $epoch -Outcome 'afk'
+                return 0
+            }
 
-        $actionable = @(Select-FmAutoarmLine -Text $armOutput -Pattern '^(signal:|stale:|check:|heartbeat($|:))' -Limit 1).Count -gt 0
-        $failed = @(Select-FmAutoarmLine -Text $armOutput -Pattern '^watcher: FAILED' -Limit 1).Count -gt 0
-        if ($rc -ne 0) { $failed = $true }
+            $actionable = @(Select-FmAutoarmLine -Text $armOutput `
+                -Pattern '^(signal:|stale:|check:|heartbeat($|:))' -Limit 1).Count -gt 0
+            if ($actionable) { break }
 
-        if (-not $actionable -and -not $failed) {
-            Write-FmAutoarmEpoch -EpochPath $epoch -Outcome 'clean'
-            return 0
+            # A non-actionable close is benign when another verified watcher
+            # already owns this home and is still beating within the shared
+            # grace window.
+            if (Test-FmWatcherHealthy -State $state -WatchPath $watch -Grace $grace -FmHome $context.Home) {
+                $healthy = $true
+                break
+            }
+            if (-not ($attempt -lt $armAttempts)) { break }
+            $armOutput = ''
         }
 
         # The need may have vanished mid-cycle (fleet torn down, X opted out):
@@ -296,20 +505,56 @@ function Invoke-FmClaudeStopAutoarm {
             return 0
         }
 
-        Write-FmAutoarmEpoch -EpochPath $epoch -Outcome 'rewake'
-        if ($failed) {
-            Write-FmErr 'firstmate watcher cycle FAILED - supervision is down while this home still needs it.'
-            foreach ($line in (Select-FmAutoarmLine -Text $armOutput -Pattern '^(watcher:|signal:|stale:|check:|heartbeat)')) {
-                Write-FmErr $line
+        if ($healthy) {
+            if (Reset-FmHookFailureEpisode -State $state) {
+                Write-FmAutoarmEpoch -EpochPath $epoch -Outcome 'clean'
+                return 0
             }
-            Write-FmErr 'Run bin/fm-wake-drain.sh first. Then repair supervision with bin/fm-watch-arm.sh as its own Claude Code background task (never shell &). If the failure repeats, treat it as a blocker and report it instead of ending blind.'
-        } else {
+            Write-FmAutoarmEpoch -EpochPath $epoch -Outcome 'failed-suppressed'
+            if (Test-FmHookPathPresent $failureAlarm) { return 0 }
+            return 2
+        }
+
+        # After the synchronous guard has consumed the episode's attended
+        # fail-open, do not create another exit-2 continuation that could
+        # defeat it.
+        if (Test-FmHookPathPresent $failureAlarm) {
+            Write-FmAutoarmEpoch -EpochPath $epoch -Outcome 'failed-suppressed'
+            return 0
+        }
+
+        if ($actionable) {
+            Write-FmAutoarmEpoch -EpochPath $epoch -Outcome 'rewake'
             Write-FmErr 'firstmate watcher wake - one supervision event needs a handling turn now.'
             foreach ($line in (Select-FmAutoarmLine -Text $armOutput -Pattern '^(signal:|stale:|check:|heartbeat)')) {
                 Write-FmErr $line
             }
             Write-FmErr 'Run bin/fm-wake-drain.sh first and handle the wake. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.'
+            return 2
         }
+
+        # Notify only once for this continuous failure episode; every later
+        # invocation still exits 2 so Claude must continue into another
+        # Stop-owned retry without creating a repeated operator notice or
+        # manual-arm loop.
+        if (-not (Test-FmHookPathPresent $failureNotice)) {
+            Write-FmAutoarmEpoch -EpochPath $epoch -Outcome 'failed'
+            Write-FmErr ("firstmate watcher auto-arm FAILED - the Stop-owned automatic supervision mechanism is broken after $attempt bounded attempts," +
+                ' and no live watcher with a fresh beacon was verified.')
+            foreach ($line in (Select-FmAutoarmLine -Text $armOutput -Pattern '^(watcher:|signal:|stale:|check:|heartbeat)')) {
+                Write-FmErr $line
+            }
+            Write-FmErr 'Do not launch a manual background arm from this notice; investigate the automatic Stop hook and watcher startup before ending blind.'
+            try {
+                # `: > "$FAILURE_NOTICE" 2>/dev/null || true` - a truncating
+                # create, not an exclusive one: the marker's meaning is presence.
+                Set-FmFileText -Path $failureNotice -Text '' -NoNewline
+            } catch {
+                $null = $_
+            }
+            return 2
+        }
+        Write-FmAutoarmEpoch -EpochPath $epoch -Outcome 'failed-suppressed'
         return 2
     } finally {
         # The `trap 'fm_lock_release "$OWNER_LOCK"' EXIT` twin.

@@ -391,7 +391,11 @@ Invoke-FmMain -UnexpectedCode 70 {
     }
 
     if (-not (Test-FmTasksAxiCompatible)) {
-        Write-FmErr 'error: tasks-axi with atomic multi-ID mv support (0.2.2+) is required to move backlog items'
+        # The floor version lives in fm-tasks-axi-lib and moves; the message
+        # deliberately names none and points at bootstrap instead, exactly as
+        # the bash twin does.
+        Write-FmErr ('error: a compatible tasks-axi with atomic multi-ID mv support is required to' +
+            ' move backlog items; run bin/fm-bootstrap.sh for the required version')
         Exit-FmScript 1
     }
 
