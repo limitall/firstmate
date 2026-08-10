@@ -231,7 +231,13 @@ fm_session_lock_owned_by_self() {
   # A severed ancestry is not an unmatched one: under Git Bash the harness is
   # a native process and this bash reports PPID=1, so the walk above finds
   # nothing and no amount of ps portability can change that.
-  pids=$(fm_harness_ancestry_pids) || { fm_harness_native_session_pid; return; }
+  # The published session pid is the fallback CANDIDATE and must still go
+  # through the comparison below. Returning that resolver's own exit status
+  # here answers "mine" for EVERY numeric lock pid on Windows, where the
+  # ancestry walk always fails - two sessions would each believe they hold the
+  # other's lock, which is the one thing this test exists to prevent. It also
+  # leaked the pid to stdout.
+  pids=$(fm_harness_ancestry_pids) || pids=$(fm_harness_native_session_pid) || return 1
   while IFS= read -r pid; do
     [ "$pid" = "$lock_pid" ] && return 0
   done <<EOF
