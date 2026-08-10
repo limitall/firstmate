@@ -1,6 +1,6 @@
 # bin/fm-wake-drain.ps1 - atomically drain durable watcher wake records,
 # optionally annotate validated signal status keys after raw consumption
-# commits, then assert liveness.
+# commits, print the consolidated OPEN DECISIONS section, then assert liveness.
 #
 # Twin: bin/fm-wake-drain.sh
 #
@@ -44,6 +44,14 @@
 #      returned. A .NET write failure is an exception, not a small integer, so
 #      those paths exit 1 - the code bash's `mv`/truncate failures already use -
 #      and the diagnostic names the real fault.
+#
+#   4. NOT a divergence, recorded because it looks like one: the OPEN DECISIONS
+#      hint below names `bin/fm-send.sh` with a hard-coded extension, which
+#      contract 7 (docs/powershell-port.md) otherwise forbids. That contract
+#      governs one script EXECUTING another, where a wrong extension breaks the
+#      call; this is agent-facing TEXT the differential compares byte for byte
+#      against the oracle's, so it must stay exactly what the bash twin prints
+#      and it is cutover's job to change both at once.
 
 #Requires -Version 7.0
 
@@ -58,13 +66,18 @@ $ErrorActionPreference = 'Stop'
 # module import", and the same trap recorded in the wave-4 hook twins).
 Import-Module (Join-Path $PSScriptRoot 'fm-common.psm1')
 Import-Module (Join-Path $PSScriptRoot 'fm-wake-lib.psm1')
+Import-Module (Join-Path $PSScriptRoot 'fm-classify-lib.psm1')
+Import-Module (Join-Path $PSScriptRoot 'fm-line-cap-lib.psm1')
 
 # Defense in depth for the supervision chain: this script runs at the top of
-# every wake-handling and recovery turn, so assert watcher liveness here too. A
+# every wake-handling and recovery turn, so assert supervision health here too. A
 # lapsed supervision chain then surfaces on a plain drain-and-handle turn, not
 # only when a guarded supervision script happens to run. Reuse fm-guard's
-# existing graced, beacon-based alarm (FM_GUARD_GRACE) - do not duplicate the
-# beacon math. Called after the queue is emptied so guard never re-prints its own
+# model-aware alarm and FM_GUARD_GRACE instead of duplicating its supervision
+# verdict. Under Claude's between-turns auto-arm model, a normal fire leaves a
+# recent beacon well inside grace and stays silent mid-turn. Under
+# persistent-watcher models, the guard also requires the live identity-matched
+# watcher. Called after the queue is emptied so guard never re-prints its own
 # queued-wakes notice for the records this run just drained, and never let a
 # guard hiccup change the drain's exit status.
 function Assert-FmWatcherLiveness {
@@ -79,6 +92,146 @@ function Assert-FmWatcherLiveness {
     if ($null -eq $result) { return }
     if (-not [string]::IsNullOrEmpty([string]$result.StdOut)) { Write-FmRaw ([string]$result.StdOut) }
     if (-not [string]::IsNullOrEmpty([string]$result.StdErr)) { Write-FmErr (([string]$result.StdErr).TrimEnd("`n")) }
+}
+
+# The `IFS=$(printf '\t') read -r task key verb note` twin, and it has to be
+# hand-rolled: a plain .Split("`t") would produce a different field set for
+# three inputs this record shape actually reaches.
+#
+# Because a TAB is IFS WHITESPACE even when IFS holds nothing else, bash `read`
+# (verified on this host):
+#   * skips LEADING tabs before the first field,
+#   * collapses a RUN of tabs into one delimiter, and
+#   * gives the LAST name the whole remainder, tabs included, with TRAILING
+#     tabs removed - so a decision with an empty note ("t\tk\tv\t") yields an
+#     empty note, not a fifth field, and a note containing a tab survives whole.
+# docs/powershell-port.md calls this out as a class of bug ("TAB record
+# parsing"); the difference from the records that section warns about is that
+# HERE the collapsing behavior is the oracle's, so reproducing it - not
+# defeating it - is what parity means.
+#
+# Always returns exactly four strings; missing fields come back empty, the way
+# `read` leaves unfilled names.
+function Split-FmDrainDecisionRecord {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Record)
+
+    $tab = [char]9
+    $fields = [string[]]@('', '', '', '')
+    $len = $Record.Length
+    $i = 0
+
+    while ($i -lt $len -and $Record[$i] -ceq $tab) { $i++ }
+    for ($f = 0; $f -lt 3 -and $i -lt $len; $f++) {
+        $start = $i
+        while ($i -lt $len -and $Record[$i] -cne $tab) { $i++ }
+        $fields[$f] = $Record.Substring($start, $i - $start)
+        while ($i -lt $len -and $Record[$i] -ceq $tab) { $i++ }
+    }
+    if ($i -lt $len) { $fields[3] = $Record.Substring($i).TrimEnd($tab) }
+
+    # `, $fields`: a bare `return $fields` writes the array through the output
+    # stream, which unrolls it (docs/powershell-port.md). The caller assigns the
+    # result directly and must NOT re-wrap it in @().
+    return , $fields
+}
+
+# Print the consolidated OPEN DECISIONS section: every still-open
+# needs-decision/blocked, fleet-wide, folded from the durable status logs by
+# fm-classify-lib's status-fold (via its cursor-backed incremental wrapper)
+# rather than from the latest-line annotations above, so a decision buried under
+# later unrelated appends cannot be silently missed. Runs on every drain -
+# including the empty-queue fast path - because the decision can still be open
+# even when nothing new is queued for its task this turn. The incremental
+# wrapper bounds this scan's cost to bytes appended to each task's status log
+# since the LAST drain, not that log's whole lifetime, while still never
+# dropping an old buried decision (see fm-classify-lib.psm1's "incremental
+# (cursor-backed) open-decisions fold"). Bounded and silent: prints nothing when
+# no decision is open, which is the common case.
+function Write-FmOpenDecisionsSection {
+    [CmdletBinding()]
+    [OutputType([void])]
+    param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$State)
+
+    $itemBytes = 220
+    $globalBytes = 4000
+
+    $open = Get-FmOpenDecisionsScanIncremental -State $State
+    # `open=$(scan_open_decisions_incremental "$STATE")`: the scan is newline-
+    # TERMINATED and command substitution eats every trailing newline, so the
+    # here-doc bash feeds its read loop has no trailing blank record. TrimEnd is
+    # that same strip; without it the split below would yield a phantom empty
+    # record on every call.
+    if ($null -eq $open) { return }
+    $open = $open.TrimEnd("`n")
+    if ($open -ceq '') { return }
+
+    $output = [System.Text.StringBuilder]::new()
+    $used = 0
+    $shown = 0
+    $omitted = 0
+
+    foreach ($record in @($open.Split("`n"))) {
+        $fields = Split-FmDrainDecisionRecord -Record $record
+        $task = $fields[0]
+        if ($task -ceq '') { continue }
+        $key = $fields[1]
+        $verb = $fields[2]
+        $note = $fields[3]
+
+        $line = $task
+        # -cne: bash `[ "$key" = default ]` compares BYTES, and PowerShell's
+        # -ne is culture-sensitive (fm-classify-lib.psm1 note 6).
+        if ($key -cne 'default') { $line = "$line [key=$key]" }
+        # ${verb}, braced: a bare "$verb:" would be read as a scope/drive
+        # qualifier ($env:PATH) and swallow the colon this line needs.
+        $line = "$line ${verb}: $note"
+
+        # The shared cut counts the item's own characters; the trailing newline
+        # this section's global budget also pays for is this caller's, so the
+        # per-item allowance passed down is one short of the cap.
+        $line = Limit-FmLine -Line $line -Max ($itemBytes - 1)
+        $bytes = $line.Length + 1
+        if (($used + $bytes) -gt $globalBytes) {
+            $omitted++
+            continue
+        }
+        [void]$output.Append($line).Append("`n")
+        $used += $bytes
+        $shown++
+    }
+
+    if ($shown -le 0 -and $omitted -le 0) { return }
+    Write-FmOut 'OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):'
+    # Write-FmRaw, not Write-FmOut: each item already carries its own newline,
+    # matching bash's `printf '%s' "$output"`.
+    Write-FmRaw ($output.ToString())
+    if ($omitted -gt 0) {
+        Write-FmOut "OPEN DECISIONS: $omitted more omitted (byte cap)"
+    }
+    # Answerer-closes hint, printed at exactly the moment an answer gets written:
+    # the send that answers a listed decision also closes it, so closure never
+    # depends on the busy worker writing a matching resolved line (contract:
+    # bin/fm-send.sh header). The literal `.sh` is the oracle's own text - see
+    # divergence note 4 in this file's header.
+    Write-FmOut "OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'"
+}
+
+# The `(print_open_decisions_section) || true` twin: the section is best-effort
+# and may never fail the drain, and bash's subshell also means a failure part
+# way through leaves whatever was already printed, which is what the swallow
+# reproduces.
+function Write-FmOpenDecisionsSectionBestEffort {
+    [CmdletBinding()]
+    [OutputType([void])]
+    param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$State)
+
+    try {
+        Write-FmOpenDecisionsSection -State $State
+    } catch {
+        $null = $_
+    }
 }
 
 Invoke-FmMain -UnexpectedCode 70 {
@@ -106,6 +259,14 @@ Invoke-FmMain -UnexpectedCode 70 {
         if ($size -le 0) {
             Set-FmFileText -Path $nativeQueue -Text '' -NoNewline
             $failed = $false
+            # The lock is released HERE, before the section and the liveness
+            # assertion, exactly where the bash twin releases it. Both of those
+            # read the state directory and fm-guard reports on the queue, so
+            # holding the queue lock across them would serialize a concurrent
+            # appender behind work that has nothing left to consume.
+            Unlock-FmLock -LockPath $queueLock
+            $lockHeld = $false
+            Write-FmOpenDecisionsSectionBestEffort -State $state
             Assert-FmWatcherLiveness
             Exit-FmScript 0
         }
@@ -163,6 +324,7 @@ Invoke-FmMain -UnexpectedCode 70 {
         } catch {
             $null = $_
         }
+        Write-FmOpenDecisionsSectionBestEffort -State $state
         Assert-FmWatcherLiveness
         Exit-FmScript 0
     } finally {
