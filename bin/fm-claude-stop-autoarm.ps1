@@ -83,7 +83,8 @@
 # byte-faithful ports of those three and are character-identical to the copies
 # in bin/fm-turnend-guard.ps1, the only other caller; they MOVE into
 # fm-wake-lib.psm1 as Set-FmLockRole / Get-FmLockRole / Reset-FmFailureEpisode
-# as soon as that module's owner lands them.
+# as soon as that module's owner lands them. Unlock-FmHookLock is the third
+# piece of the same debt and carries its own note.
 #
 # DECLARED DIVERGENCE - THE ARM'S OUTPUT FILE IS CONCATENATED, NOT INTERLEAVED.
 # The bash twin runs `fm-watch-arm >"$OUT" 2>&1`, so both streams land in one
@@ -197,6 +198,40 @@ function Set-FmHookLockRole {
         return $false
     }
     return ((Get-FmHookLockRole -LockPath $LockPath) -ceq $Role)
+}
+
+<#
+.SYNOPSIS
+Release a lock this hook labelled with a role, clearing the label first.
+.DESCRIPTION
+COMPENSATES FOR A GAP IN fm-wake-lib.psm1, and is not an embellishment. Bash's
+fm_lock_clean_known_files lists `role` among the filenames a lock directory may
+contain, so fm_lock_release removes it and the directory then rmdir's. The
+PowerShell Clear-FmLockKnownFile does NOT list `role` yet, so a lock this hook
+labelled cannot be emptied: measured on this host, releasing such a lock leaves
+its whole owner directory behind on every single firing, where the bash twin
+leaves nothing. Clearing the label here - and only the label this hook itself
+wrote - restores the twin's observable filesystem result.
+
+Remove the compensation when fm-wake-lib.psm1's Clear-FmLockKnownFile gains
+'role' (see the LOCK-ROLE note in the conversion header); until then every
+release of a labelled lock must go through this, never Unlock-FmLock directly.
+#>
+function Unlock-FmHookLock {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'An internal lock-protocol primitive whose bash twin releases unconditionally; a -WhatIf/-Confirm surface would diverge from the twin and could stall a non-interactive background hook.')]
+    [CmdletBinding()]
+    [OutputType([void])]
+    param([Parameter(Mandatory, Position = 0)][string]$LockPath)
+
+    try {
+        $native = ConvertTo-FmNativePath "$LockPath/role"
+        if ([System.IO.File]::Exists($native)) { [System.IO.File]::Delete($native) }
+    } catch {
+        # `rm -f` semantics: a label that will not go must not stop the release.
+        $null = $_
+    }
+    Unlock-FmLock -LockPath $LockPath
 }
 
 <#
@@ -443,7 +478,7 @@ function Invoke-FmClaudeStopAutoarm {
     # where the bash twin sets it and before its EXIT trap is armed: a claim this
     # hook cannot label is released immediately and this firing stays inert.
     if (-not (Set-FmHookLockRole -LockPath $ownerLock -Role 'autoarm')) {
-        Unlock-FmLock -LockPath $ownerLock
+        Unlock-FmHookLock -LockPath $ownerLock
         return 0
     }
 
@@ -558,7 +593,7 @@ function Invoke-FmClaudeStopAutoarm {
         return 2
     } finally {
         # The `trap 'fm_lock_release "$OWNER_LOCK"' EXIT` twin.
-        Unlock-FmLock -LockPath $ownerLock
+        Unlock-FmHookLock -LockPath $ownerLock
     }
 }
 

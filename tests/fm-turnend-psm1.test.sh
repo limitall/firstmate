@@ -303,11 +303,23 @@ PS_HARNESS_EXE_N=""
 # The bash world's live harness, started once and reaped at exit.
 #
 # The trailing `; :` is load-bearing. bash EXECS a lone simple command given to
-# `-c`, so `-c 'sleep 900'` replaces the process image and the live process is
+# `-c`, so `-c 'sleep <n>'` replaces the process image and the live process is
 # named `sleep`, not `claude` - which makes the shared harness predicate
 # correctly answer "not a harness" and would silently turn every inertness case
 # into an arming case. A second command defeats that optimization.
-"$FAKE_CLAUDE" -c 'sleep 900; :' &
+#
+# THE LIFETIME MUST OUTLAST THE WHOLE SUITE, AND 900s DID NOT. The two halves of
+# this suite are minutes apart by construction, and the oracle half is
+# fork-bound: measured on this host with other verification runs live, it took
+# over half an hour to reach phase E. The 15-minute harness had already exited by
+# then, so `e-inert-foreign-owner` stopped being inert in the BASH world only -
+# the stale numeric owner became recoverable, the hook armed, and the twin
+# (whose own ping-based harness was still alive, because the driver runs late and
+# fast) correctly reported the inertness the case name asks for. That reads as a
+# conversion defect and is a fixture clock. FM_HARNESS_LIFETIME is bounded rather
+# than infinite so a crashed run cannot strand a process for a day.
+FM_HARNESS_LIFETIME=14400
+"$FAKE_CLAUDE" -c "sleep $FM_HARNESS_LIFETIME; :" &
 BASH_HARNESS_PID=$!
 cleanup_turnend_psm1() {
   kill "$BASH_HARNESS_PID" 2>/dev/null || true
@@ -992,6 +1004,7 @@ Set-StrictMode -Version Latest
 \$CaseFile = '$(to_native "$CASE_FILE")'
 \$OutFile  = '$(to_native "$TMP_ROOT/ps-answers.tsv")'
 \$HarnessExe = '$PS_HARNESS_EXE_N'
+\$HarnessLifetime = '$FM_HARNESS_LIFETIME'
 \$SessionLockLib = '$(to_native "$PRIMARY/bin/fm-session-lock-lib.psm1")'
 PSEOF
 cat >> "$DRIVER" <<'PSEOF'
@@ -1014,10 +1027,14 @@ Import-Module $SessionLockLib
 # THE LIVE HARNESS THIS WORLD CAN SEE. An MSYS process named `claude` is
 # invisible to the native process table, so the PowerShell world builds its own
 # native one - a copy of a self-contained system binary named claude.exe - and
-# uses it for the "another live harness holds the lock" case. Started once.
+# uses it for the "another live harness holds the lock" case. Started once, with
+# the SAME bounded lifetime as the oracle's harness: ping's -n count is one
+# second apart, so the two worlds' fixtures expire together instead of one
+# outliving the other and turning a fixture clock into an apparent conversion
+# defect (see the FM_HARNESS_LIFETIME note in the oracle half).
 $HarnessProc = $null
 if (-not [string]::IsNullOrEmpty($HarnessExe) -and [System.IO.File]::Exists($HarnessExe)) {
-    $HarnessProc = Start-Process -FilePath $HarnessExe -ArgumentList @('-n', '900', '127.0.0.1') `
+    $HarnessProc = Start-Process -FilePath $HarnessExe -ArgumentList @('-n', $HarnessLifetime, '127.0.0.1') `
         -PassThru -WindowStyle Hidden
     Start-Sleep -Milliseconds 700
 }
@@ -1418,7 +1435,7 @@ fi
 
 # Asserted from an OBSERVED green run, so a refactor that silently drops whole
 # phases fails loudly instead of certifying an empty suite.
-MIN_ASSERTIONS=108
+MIN_ASSERTIONS=109
 if [ "$ASSERTIONS" -lt "$MIN_ASSERTIONS" ]; then
   printf 'not ok - only %d differential assertions ran, expected at least %d\n' \
     "$ASSERTIONS" "$MIN_ASSERTIONS" >&2

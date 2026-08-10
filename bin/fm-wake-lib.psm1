@@ -1148,7 +1148,10 @@ function Clear-FmLockKnownFile {
     [OutputType([void])]
     param([Parameter(Mandatory, Position = 0)][string]$Path)
 
-    foreach ($name in @('pid', 'fm-home', 'pid-identity', 'watcher-path', $script:FmWakeOwnerTokenFile)) {
+    # 'role' is in the bash's rm list and was missing here. Without it, the
+    # moment any caller LABELS its lock the release cannot empty the owner
+    # directory, so every labelled lock leaks one - measured on this host.
+    foreach ($name in @('pid', 'fm-home', 'pid-identity', 'role', 'watcher-path', $script:FmWakeOwnerTokenFile)) {
         Remove-FmWakeFileQuiet -Path "$Path/$name"
     }
 }
