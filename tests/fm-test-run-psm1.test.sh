@@ -301,11 +301,22 @@ fm-transition-lib fm-x-mode"
 FX_OK="$TMP/fixtures/ok"
 fixture_bin "$FX_OK" with-proof
 for b in $PROVEN_BASENAMES; do : >"$FX_OK/tests/$b.test.sh"; done
-# One real-herdr-gated member so the Herdr lane is non-empty, and one
-# unclassified extra so the portable-serial lane is non-empty. Without both,
-# the guard dies on an empty lane before it ever reaches its union check.
+# One real-herdr-gated member so the Herdr lane is non-empty, and FOUR
+# unclassified extras so the portable-serial lane is non-empty AND every one of
+# its CI shards is too. Without all of them the guard dies on an empty lane
+# (exit 2) before it ever reaches its union check, so the case would stop
+# exercising what it exists to exercise.
+#
+# FOUR is not arbitrary: bin/fm-test-run.sh partitions the serial remainder
+# across PORTABLE_SERIAL_SHARDS separate-runner shards and refuses an empty one,
+# so the fixture needs at least one member per shard. If that count ever
+# changes, this fixture and the count assertion at the bottom of the file both
+# have to follow it - which is exactly the failure a stale fixture should cause.
 : >"$FX_OK/tests/fm-backend-herdr-smoke.test.sh"
 : >"$FX_OK/tests/fm-zz-extra.test.sh"
+: >"$FX_OK/tests/fm-zz-extra-two.test.sh"
+: >"$FX_OK/tests/fm-zz-extra-three.test.sh"
+: >"$FX_OK/tests/fm-zz-extra-four.test.sh"
 
 # Two of the proven names get a body, for the --jobs case only, and they
 # RENDEZVOUS rather than race.
@@ -349,12 +360,17 @@ printf '%s' "$FM_FAST_WORKER" >"$FX_OK/tests/fm-lint.test.sh"
 # must refuse with "extra beyond inventory" and exit 1. This is the case that
 # proves the guard still catches a violated invariant rather than only that it
 # prints ok when everything is already consistent.
+#
+# Its serial members are FOUR for the same reason as the ok fixture: an empty CI
+# shard would kill the guard at exit 2 with a lane diagnostic, and the union
+# refusal this case exists to prove would never be reached.
 FX_BAD="$TMP/fixtures/bad"
 fixture_bin "$FX_BAD"
 : >"$FX_BAD/tests/fm-backend-herdr-smoke.test.sh"
 : >"$FX_BAD/tests/fm-zz-one.test.sh"
 : >"$FX_BAD/tests/fm-zz-two.test.sh"
 : >"$FX_BAD/tests/fm-zz-three.test.sh"
+: >"$FX_BAD/tests/fm-zz-four.test.sh"
 
 # --- execution fixtures (real runner, tiny scripts) --------------------------
 
@@ -454,6 +470,14 @@ add_case r_err_jobs_cap "$RUNNER_SH" "$RUNNER_PS" --jobs 9 --all
 add_case r_err_jobs_nan "$RUNNER_SH" "$RUNNER_PS" --jobs x --all
 add_case r_err_unknown "$RUNNER_SH" "$RUNNER_PS" --nope
 add_case r_err_lane "$RUNNER_SH" "$RUNNER_PS" --lane bogus
+# The CI serial shard refusals. All three are pure argument parsing - they die
+# before any inventory is read, so they cost one fork each and nothing more. The
+# first
+# is the guard that matters most: a CI matrix built for a different shard count
+# must fail loudly rather than silently drop a shard's worth of tests.
+add_case r_err_shard_count "$RUNNER_SH" "$RUNNER_PS" --lane portable-serial-2of3
+add_case r_err_shard_index "$RUNNER_SH" "$RUNNER_PS" --lane portable-serial-9of4
+add_case r_err_shard_form "$RUNNER_SH" "$RUNNER_PS" --lane portable-serial-xof4
 add_case r_err_family "$RUNNER_SH" "$RUNNER_PS" --family nosuchfamily
 add_case r_err_nomode "$RUNNER_SH" "$RUNNER_PS"
 add_case r_err_two_modes "$RUNNER_SH" "$RUNNER_PS" --all --changed
@@ -479,6 +503,17 @@ add_case p_err_jobs "$PROOF_SH" "$PROOF_PS" --jobs 0
 # Fixture repos: everything that iterates an inventory.
 add_case fo_coverage "$FX_OK/bin/fm-test-run.sh" "$FX_OK/bin/fm-test-run.ps1" --check-coverage
 add_case fo_list_serial "$FX_OK/bin/fm-test-run.sh" "$FX_OK/bin/fm-test-run.ps1" --list --lane portable-serial
+# Each CI serial shard, listed separately. Without these the longest-processing-
+# time partition - the one piece of the runner whose OUTPUT depends on an
+# ordering rule (weight descending, path ascending, ties to the lowest bin) - has
+# no differential coverage at all, and two CI runners disagreeing about who owns
+# a script is exactly the failure the shards exist to prevent. The fixture's four
+# serial members all carry the DEFAULT weight, so every bin choice here is
+# decided by the tie-break, which is the part most likely to drift.
+add_case fo_shard1 "$FX_OK/bin/fm-test-run.sh" "$FX_OK/bin/fm-test-run.ps1" --list --lane portable-serial-1of4
+add_case fo_shard2 "$FX_OK/bin/fm-test-run.sh" "$FX_OK/bin/fm-test-run.ps1" --list --lane portable-serial-2of4
+add_case fo_shard3 "$FX_OK/bin/fm-test-run.sh" "$FX_OK/bin/fm-test-run.ps1" --list --lane portable-serial-3of4
+add_case fo_shard4 "$FX_OK/bin/fm-test-run.sh" "$FX_OK/bin/fm-test-run.ps1" --list --lane portable-serial-4of4
 add_case fo_list_all "$FX_OK/bin/fm-test-run.sh" "$FX_OK/bin/fm-test-run.ps1" --list --all
 add_case fo_list_family "$FX_OK/bin/fm-test-run.sh" "$FX_OK/bin/fm-test-run.ps1" --list --family pure-contract-unit
 add_case fo_list_herdr "$FX_OK/bin/fm-test-run.sh" "$FX_OK/bin/fm-test-run.ps1" --list --family real-herdr-gated
@@ -503,7 +538,7 @@ add_case ps_real_coverage "$RUNNER_SH" "$RUNNER_PS" --check-coverage
 
 # Cases whose bash side iterates an inventory. Launched concurrently up front so
 # the suite's wall time is the slowest oracle rather than their sum.
-HEAVY_LABELS="r_list_all fo_coverage fo_list_serial fo_list_all fo_list_family fo_exclude fb_coverage x_jobs2"
+HEAVY_LABELS="r_list_all fo_coverage fo_list_serial fo_shard1 fo_shard2 fo_shard3 fo_shard4 fo_list_all fo_list_family fo_exclude fb_coverage x_jobs2"
 
 # --- run the bash oracle -----------------------------------------------------
 
@@ -711,10 +746,12 @@ for label in \
   r_list_families r_list_lanes r_help r_list_proven r_list_shard1 r_list_shard2 \
   r_list_one r_list_bare r_list_dot r_list_dup r_list_eqform r_list_all \
   r_err_jobs_zero r_err_jobs_cap r_err_jobs_nan r_err_unknown r_err_lane \
+  r_err_shard_count r_err_shard_index r_err_shard_form \
   r_err_family r_err_nomode r_err_two_modes r_err_family_noarg r_err_mixed \
   r_err_missing r_err_jobs_nonproven r_err_agg_missing r_agg \
   p_list p_exclusions p_help p_err_arg p_err_jobs \
-  fo_list_serial fo_list_all fo_list_family fo_list_herdr fo_exclude; do
+  fo_list_serial fo_shard1 fo_shard2 fo_shard3 fo_shard4 \
+  fo_list_all fo_list_family fo_list_herdr fo_exclude; do
   compare_case "$label" out
   compare_case "$label" err
   compare_case "$label" rc
@@ -780,7 +817,7 @@ esac
 assert_same "the PowerShell guard lists the uncovered scripts" "found" "$fb_extra"
 FO_OUT=$(<"$TMP/ps/fo_coverage.out")
 case "$FO_OUT" in
-  "FM_TEST_COVERAGE ok total=26 parallel=24 serial=1 herdr=1"*) fo_ok=found ;;
+  "FM_TEST_COVERAGE ok total=29 parallel=24 serial=4 serial_shards=4 herdr=1"*) fo_ok=found ;;
   *) fo_ok="unexpected: $FO_OUT" ;;
 esac
 assert_same "the guard's success marker carries the lane counts" "found" "$fo_ok"
@@ -866,7 +903,7 @@ fi
 # count is itself asserted, EXACTLY rather than as a loose floor, and built from
 # what was actually available so a fixture that failed to materialize cannot
 # quietly shrink the run into a green one:
-#   36 byte-identical cases x 3 streams  = 108
+#   43 byte-identical cases x 3 streams  = 129
 #   2 coverage cases x 3                 =   6
 #   the CR contract                      =   1
 #   4 execution cases x 3                =  12
@@ -876,11 +913,11 @@ fi
 #   2 platform-independent worker-gate   =   2
 #   2 real-inventory                     =   2
 #                                          ---
-#                                          142, plus the worker-gate platform
+#                                          163, plus the worker-gate platform
 # branch: 3 more on Windows (inert, ownership basis, and the bash 755 fact that
 # forces it), 2 elsewhere.
-MIN_ASSERTIONS=144
-[ "$PROBE_WINDOWS" = "True" ] && MIN_ASSERTIONS=145
+MIN_ASSERTIONS=165
+[ "$PROBE_WINDOWS" = "True" ] && MIN_ASSERTIONS=166
 if [ "$ASSERTIONS" -lt "$MIN_ASSERTIONS" ]; then
   printf 'not ok - only %d assertions ran, expected at least %d\n' \
     "$ASSERTIONS" "$MIN_ASSERTIONS" >&2

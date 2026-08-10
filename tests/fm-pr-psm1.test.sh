@@ -59,7 +59,7 @@
 # ---------------------------------------------------------------------------
 # WHAT IS NORMALIZED, AND WHY EACH NORMALIZATION IS SAFE
 #
-# Three things genuinely differ between two runs of the same code, and each is
+# Four things genuinely differ between two runs of the same code, and each is
 # normalized EXPLICITLY rather than by a loose comparison:
 #   1. device:inode identities in the poll registration. Two publications of the
 #      same bytes are two different files, so those lines are replaced with
@@ -68,6 +68,20 @@
 #      presence of a leftover is compared; the random suffix is not.
 #   3. .pr-check-migration.log holds absolute paths, which differ by world.
 #      Presence is compared, content is not.
+#   4. THE CASE'S OWN WORLD DIRECTORY, wherever it appears in stdout, stderr or
+#      a durable record, becomes @W@ (see norm_world / norm_stream). Two
+#      reasons, both structural rather than behavioral:
+#        - a WRITING case cannot share one world, because both sides mutate it,
+#          so its two fixtures are two directories by construction (arm1b vs
+#          arm1p) and the meta record each script rewrites names its own;
+#        - even a SHARED world reaches the two runtimes in the two spellings
+#          they each need - /tmp/x for bash, C:\...\Temp\x for pwsh - so a
+#          diagnostic that quotes its own home differs in spelling alone.
+#      Only that root is folded, and only in the two spellings the case itself
+#      was handed. Everything around it - the message, the rest of the path,
+#      every other line - still compares byte-exactly, and a DURABLE RECORD is
+#      folded without unifying separators, so a record that ever held a native
+#      spelling still differs from its POSIX-form twin in the tail.
 # Nothing else is normalized. Exit codes, stdout, stderr and every durable
 # record are compared byte-for-byte.
 #
@@ -216,9 +230,37 @@ seed_state() {
 # Builtin-only (no fork per file): the oracle side is fork-bound and this runs
 # for every world of every writing case. See the normalization note in the
 # header for what each rewrite covers and why it is safe.
+# norm_world <text> <world-dir>: fold the case's own world root to @W@, in the
+# POSIX spelling bash was handed and the native spelling PowerShell was handed.
+# Separators are deliberately NOT unified here: this is the DURABLE-RECORD form,
+# so a record that ever held a native spelling still shows up as @W@\tail
+# against a POSIX twin's @W@/tail rather than being silently equalized.
+FM_NORM=
+norm_world() {  # <text> <world-dir>
+  local t=$1 w=$2 wn
+  nat "$w"; wn=$FM_NAT
+  t=${t//"$wn"/@W@}
+  FM_NORM=${t//"$w"/@W@}
+}
+
+# norm_stream <text> <world-dir>: the STREAM form, where the native spelling
+# arrives with backslashes and a tail (\state\x.meta) that must reduce to the
+# same text as the oracle's /state/x.meta. Separators are unified only in a text
+# that actually carries the native world root, so a backslash anywhere else -
+# and every text on the bash side - still compares as itself.
+norm_stream() {  # <text> <world-dir>
+  local t=$1 w=$2 wn
+  nat "$w"; wn=$FM_NAT
+  case $t in
+    *"$wn"*) t=${t//\\//}; wn=${wn//\\//} ;;
+  esac
+  t=${t//"$wn"/@W@}
+  FM_NORM=${t//"$w"/@W@}
+}
+
 DIGEST=
-tree_digest() {
-  local d=$1 f name line body
+tree_digest() {  # <state-dir> <world-dir>
+  local d=$1 w=$2 f name line body
   DIGEST=''
   for f in "$d"/* "$d"/.*; do
     name=${f##*/}
@@ -234,7 +276,8 @@ tree_digest() {
       case $line in
         [0-9]*:[0-9]*) line='<identity>' ;;
       esac
-      body="$body$line"$'\n'
+      norm_world "$line" "$w"
+      body="$body$FM_NORM"$'\n'
     done < "$f"
     DIGEST="${DIGEST}--- ${name}"$'\n'"$body"
   done
@@ -323,11 +366,11 @@ run_case() {
     LEAK_ALL="$LEAK_ALL$CASE_LEAK"$'\n'
   fi
   BRC+=("$rc")
-  BOUT+=("$out")
-  BERR+=("$err")
+  norm_stream "$out" "$CASE_BWORLD"; BOUT+=("$FM_NORM")
+  norm_stream "$err" "$CASE_BWORLD"; BERR+=("$FM_NORM")
 
   if [ "$CASE_DIGEST" = 1 ]; then
-    tree_digest "$CASE_BWORLD/state"
+    tree_digest "$CASE_BWORLD/state" "$CASE_BWORLD"
     BDIGEST+=("$DIGEST")
   else
     BDIGEST+=('')
@@ -760,10 +803,12 @@ while IFS='|' read -r idx rc outhex errhex; do
   [ "$idx" -lt "${#LABELS[@]}" ] || fail "driver returned an out-of-range case index: $idx"
   label=${LABELS[$idx]}
   assert_case "$label [exit code]" "${BRC[$idx]}" "$rc"
-  hex_decode "$outhex"; assert_case "$label [stdout]" "${BOUT[$idx]}" "$FM_UNHEX"
-  hex_decode "$errhex"; assert_case "$label [stderr]" "${BERR[$idx]}" "$FM_UNHEX"
+  hex_decode "$outhex"; norm_stream "$FM_UNHEX" "${PWORLD[$idx]}"
+  assert_case "$label [stdout]" "${BOUT[$idx]}" "$FM_NORM"
+  hex_decode "$errhex"; norm_stream "$FM_UNHEX" "${PWORLD[$idx]}"
+  assert_case "$label [stderr]" "${BERR[$idx]}" "$FM_NORM"
   if [ "${WANT_DIGEST[$idx]}" = 1 ]; then
-    tree_digest "${PWORLD[$idx]}/state"
+    tree_digest "${PWORLD[$idx]}/state" "${PWORLD[$idx]}"
     assert_case "$label [state tree]" "${BDIGEST[$idx]}" "$DIGEST"
   fi
   SEEN=$((SEEN + 1))

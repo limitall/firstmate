@@ -49,15 +49,17 @@
 #   1. a live identity-matched watcher with a fresh beacon allows immediately;
 #   2. otherwise wait briefly (FM_CLAUDE_AUTOARM_SYNC_WAIT_MS, default 800ms)
 #      for the auto-arm to claim this home (state/.claude-autoarm.lock owner
-#      alive) or to record a fresh rewake outcome (state/.claude-autoarm-epoch)
-#      for this event epoch - either proof allows without consuming a
-#      continuation, so one event epoch yields exactly one recovery turn;
+#      alive) or to record a fresh actionable exit-2 outcome
+#      (state/.claude-autoarm-epoch) for this event epoch - either proof allows
+#      without consuming a continuation, so one event epoch yields exactly one
+#      recovery turn; the first fresh exhausted-failure epoch preserves the
+#      bounded progression, while later fresh failed epochs consume it instead
+#      of resetting it;
 #   3. only when neither materializes is the auto-arm genuinely absent: re-block
 #      with the repair banner, bounded to FM_CLAUDE_TURNEND_BLOCK_BUDGET
 #      (default 3) consecutive blocks per session - safely below Claude Code's
-#      hard 8-consecutive-block override - then allow degraded with a visible
-#      systemMessage so the session can always end.
-# Any allow resets the consecutive-block budget.
+#      hard 8-consecutive-block override - then allow one loud attended
+#      fail-open only for an already verified failure episode.
 #
 # ---------------------------------------------------------------------------
 # CONVERSION NOTES
@@ -80,6 +82,16 @@
 # after the first read the driver's own stdin (tests/fm-hooks-psm1.test.sh
 # records the debugging cycle that cost). It is also the nested-import rule in
 # docs/powershell-port.md.
+#
+# THE LOCK-ROLE AND FAILURE-EPISODE HELPERS ARE LOCAL ON PURPOSE, FOR NOW.
+# fm_lock_set_role, fm_lock_role and fm_failure_episode_reset live in
+# bin/fm-wake-lib.sh, and bin/fm-wake-lib.psm1 has not yet gained their twins.
+# Set-FmHookLockRole / Get-FmHookLockRole / Reset-FmHookFailureEpisode below
+# are byte-faithful ports of those three, kept private here (and in the same
+# shape in bin/fm-claude-stop-autoarm.ps1, the only other caller) so the turn-end
+# hooks match their oracle today. They MOVE into fm-wake-lib.psm1 as
+# Set-FmLockRole / Get-FmLockRole / Reset-FmFailureEpisode as soon as that
+# module's owner lands them; nothing else may grow a fourth copy.
 #
 # DECLARED DIVERGENCE 1 - jq. The bash twin needs jq to read the loop-guard
 # field and exits 0 when jq is missing, because without it the field cannot be
@@ -125,6 +137,14 @@ $script:FmGuardRule = '━━━━━━━━━━━━━━━━━━━
 # The reason printed when bin/fm-supervision-instructions cannot be run at all.
 $script:FmGuardFallbackReason = 'tasks in flight, no live watcher - repair missing watcher supervision according to the session-start operating block before ending the turn'
 
+# The bash twin's COUNT and BUDGET_INITIALIZED_FAILURE are plain globals written
+# by budget_account_current_epoch and read by autoarm_owns_recovery and
+# terminal_fail_open. Script scope is their twin: $global: would leak across the
+# module boundaries the port introduces, and passing them back through every
+# caller would change which failure paths leave them stale.
+$script:FmGuardCount = 0
+$script:FmGuardInitializedFailure = 0
+
 <#
 .SYNOPSIS
 The watcher script this home's lock would name (the WATCH variable).
@@ -145,6 +165,24 @@ function Get-FmGuardWatchPath {
     $sh = Join-Path $BinDir 'fm-watch.sh'
     if (Test-Path -LiteralPath $sh) { return $sh }
     return $ps1
+}
+
+<#
+.SYNOPSIS
+The `[ -e <path> ]` twin: present as a file OR as a directory.
+.DESCRIPTION
+Every marker this guard consults is tested with `-e` rather than `-f` in the
+bash twin, deliberately: a marker that somehow became a directory still counts
+as present, and treating it as absent would let a spent failure episode start
+over.
+#>
+function Test-FmHookPathPresent {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory, Position = 0)][string]$Path)
+
+    $native = ConvertTo-FmNativePath $Path
+    return ([System.IO.File]::Exists($native) -or [System.IO.Directory]::Exists($native))
 }
 
 <#
@@ -170,6 +208,162 @@ function Get-FmGuardNumericKnob {
     if (-not [long]::TryParse($raw, [ref]$value)) { return $Default }
     if ($RejectZero -and $value -eq 0) { return $Default }
     return $value
+}
+
+<#
+.SYNOPSIS
+The `$(sed -n 's/<pattern>/\1/p' <file>)` twin: capture group 1, per line.
+.DESCRIPTION
+Two properties of that construct are load-bearing and easy to lose:
+
+  * a line that does not match contributes NOTHING, rather than contributing
+    itself, because the `p` is attached to the substitution;
+  * `$( )` joins the surviving lines with LF and strips the trailing one, so a
+    multi-line ledger can only compare equal to a bare word when exactly one
+    line matched.
+
+A missing file yields the empty string, which is what `2>/dev/null || true`
+around the sed produces.
+#>
+function Get-FmGuardCapturedField {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Path,
+        [Parameter(Mandatory, Position = 1)][string]$Pattern
+    )
+
+    $hits = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in (Get-FmFileLines $Path)) {
+        $m = [regex]::Match($line, $Pattern)
+        if ($m.Success) { $hits.Add($m.Groups[1].Value) }
+    }
+    return ($hits -join "`n")
+}
+
+<#
+.SYNOPSIS
+The outcome word recorded in the auto-arm epoch ledger, or '' when unreadable.
+.DESCRIPTION
+`sed -n 's/^.*outcome=\([a-z][a-z-]*\) .*$/\1/p'`: a lower-case outcome word,
+HYPHENS INCLUDED, followed by a space. The hyphen is not cosmetic - it is the
+difference between reading `failed-suppressed` and reading `failed`, and those
+two words take different branches everywhere below. The leading `.*` is greedy,
+so the LAST `outcome=` on a line wins.
+#>
+function Get-FmGuardEpochOutcome {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][string]$State)
+
+    return (Get-FmGuardCapturedField -Path "$State/.claude-autoarm-epoch" -Pattern '^.*outcome=([a-z][a-z-]*) .*$')
+}
+
+<#
+.SYNOPSIS
+The role token published beside a lock's pid (fm_lock_role).
+#>
+function Get-FmHookLockRole {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][string]$LockPath)
+
+    return (Get-FmFileText "$LockPath/role").TrimEnd("`r", "`n")
+}
+
+<#
+.SYNOPSIS
+Publish this process's role into a lock it already holds (fm_lock_set_role).
+.DESCRIPTION
+Twin of fm_lock_set_role, including all three of its refusals: an unknown role
+word, a lock whose published pid is not ours, and a write that does not read
+back. The read-back is the point - the lock's owner directory may be published
+as a symlink or as a plain file holding the owner path (docs/powershell-port.md,
+"Locks"), and a write that landed somewhere else must not be reported as a role
+this process holds.
+#>
+function Set-FmHookLockRole {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'An internal lock-protocol primitive whose bash twin writes unconditionally; a -WhatIf/-Confirm surface would diverge from the twin and could stall a non-interactive turn-end hook.')]
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$LockPath,
+        [Parameter(Mandatory, Position = 1)][string]$Role
+    )
+
+    if ($Role -cne 'autoarm' -and $Role -cne 'terminal-check') { return $false }
+    $current = [string]$PID
+    $holder = (Get-FmFileText "$LockPath/pid").TrimEnd("`r", "`n")
+    if ($holder -cne $current) { return $false }
+    try {
+        Set-FmFileText -Path "$LockPath/role" -Text $Role
+    } catch {
+        $null = $_
+        return $false
+    }
+    return ((Get-FmHookLockRole -LockPath $LockPath) -ceq $Role)
+}
+
+<#
+.SYNOPSIS
+Clear a whole failure episode's durable markers (fm_failure_episode_reset).
+.DESCRIPTION
+Twin of fm_failure_episode_reset, both modes. `acquire` takes the budget lock
+itself and releases it; `held` asserts that THIS process already holds it and
+leaves it held, which is what the terminal fail-open needs so its decision and
+this reset cannot be interleaved with another firing.
+
+A marker that is a real DIRECTORY refuses the whole reset rather than being
+removed: `rm -f` cannot remove one either, and silently succeeding would report
+an episode as cleared while its markers still gate every later decision.
+#>
+function Reset-FmHookFailureEpisode {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'An internal `rm -f` twin on the hot path of a turn-end hook whose bash original deletes unconditionally; a -WhatIf/-Confirm surface would diverge from the twin and could stall a non-interactive hook.')]
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$State,
+        [Parameter(Position = 1)][string]$Mode = 'acquire'
+    )
+
+    $lock = "$State/.turnend-claude-blocks.lock"
+    $acquired = $false
+    if ($Mode -ceq 'acquire') {
+        if (-not (Request-FmLock -LockPath $lock)) { return $false }
+        $acquired = $true
+    } elseif ($Mode -ceq 'held') {
+        $holder = (Get-FmFileText "$lock/pid").TrimEnd("`r", "`n")
+        if ($holder -cne [string]$PID) { return $false }
+    } else {
+        return $false
+    }
+
+    $paths = @(
+        "$State/.turnend-claude-blocks"
+        "$State/.claude-autoarm-failure-notified"
+        "$State/.claude-autoarm-failure-alarmed"
+    )
+    foreach ($path in $paths) {
+        $native = ConvertTo-FmNativePath $path
+        if ([System.IO.Directory]::Exists($native) -and -not (Test-FmSymlink -Path $path)) {
+            if ($acquired) { Unlock-FmLock -LockPath $lock }
+            return $false
+        }
+    }
+    foreach ($path in $paths) {
+        $native = ConvertTo-FmNativePath $path
+        try {
+            if ([System.IO.File]::Exists($native)) { [System.IO.File]::Delete($native) }
+        } catch {
+            $null = $_
+            if ($acquired) { Unlock-FmLock -LockPath $lock }
+            return $false
+        }
+    }
+    if ($acquired) { Unlock-FmLock -LockPath $lock }
+    return $true
 }
 
 <#
@@ -246,12 +440,158 @@ function Get-FmGuardSessionId {
 
 <#
 .SYNOPSIS
+The consecutive-block record's three fields, as written by this guard.
+.DESCRIPTION
+`sed -n '1s/^session=//p'`, `'2s/^count=//p'` and `'3s/^epoch=//p'`: each
+substitution is pinned to ONE line number and the `p` is attached to it, so a
+line that does not carry its prefix contributes nothing rather than contributing
+itself. A non-numeric count reads as 0, exactly as the bash `case` guard says.
+
+The epoch field is legitimately EMPTY whenever no auto-arm ledger exists, which
+is the ordinary case for a home whose Stop hook never ran - the record still
+carries the field so the third line's meaning never shifts.
+
+The returned key is BlockCount, not Count, and that is not a style choice:
+Hashtable has a real .Count property, so `$record.Count` reads the NUMBER OF
+KEYS (3) instead of the parsed field, and the bound would then compare 3 against
+the budget on every call while looking perfectly correct.
+#>
+function Get-FmGuardBudgetRecord {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param([Parameter(Mandatory, Position = 0)][string]$BudgetFile)
+
+    $lines = (Get-FmFileLines $BudgetFile)
+    $session = ''
+    if ($lines.Count -ge 1 -and $lines[0].StartsWith('session=', [System.StringComparison]::Ordinal)) {
+        $session = $lines[0].Substring('session='.Length)
+    }
+    $count = ''
+    if ($lines.Count -ge 2 -and $lines[1].StartsWith('count=', [System.StringComparison]::Ordinal)) {
+        $count = $lines[1].Substring('count='.Length)
+    }
+    if ($count -notmatch '^[0-9]+$') { $count = '0' }
+    $epoch = ''
+    if ($lines.Count -ge 3 -and $lines[2].StartsWith('epoch=', [System.StringComparison]::Ordinal)) {
+        $epoch = $lines[2].Substring('epoch='.Length)
+    }
+    return @{ Session = $session; BlockCount = $count; Epoch = $epoch }
+}
+
+<#
+.SYNOPSIS
+Account one consecutive block against the current auto-arm event epoch.
+.DESCRIPTION
+Twin of budget_account_current_epoch, including the two rules that make the
+bound mean something:
+
+  * a record whose epoch field still equals the ledger's CURRENT epoch is the
+    same event being re-decided, so it does not spend another block; only a new
+    (or absent) epoch increments;
+  * a fresh record opened while an exhausted-failure notice already exists
+    starts at 0 and reports that through BUDGET_INITIALIZED_FAILURE, so the
+    first fresh failed epoch preserves the bounded progression instead of
+    resetting it.
+
+$false means the record could not be taken or published, which the callers
+treat as "do not decide on this count".
+#>
+function Invoke-FmGuardBudgetAccount {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$State,
+        [Parameter(Mandatory, Position = 1)][string]$SessionId,
+        [Parameter(Mandatory, Position = 2)][string]$FailureNotice
+    )
+
+    $budgetFile = "$State/.turnend-claude-blocks"
+    $budgetLock = "$State/.turnend-claude-blocks.lock"
+    if (-not (Request-FmLock -LockPath $budgetLock)) { return $false }
+
+    $currentEpoch = Get-FmGuardCapturedField -Path "$State/.claude-autoarm-epoch" -Pattern '^epoch=([0-9][0-9]*) .*'
+    $outcome = Get-FmGuardEpochOutcome -State $State
+    $initialized = 0
+    $script:FmGuardCount = 0
+
+    $budgetExists = [System.IO.File]::Exists((ConvertTo-FmNativePath $budgetFile))
+    $oldSession = ''
+    if ($budgetExists) {
+        $record = Get-FmGuardBudgetRecord -BudgetFile $budgetFile
+        $oldSession = $record.Session
+        if ($oldSession -ceq $SessionId) {
+            $script:FmGuardCount = [long]$record.BlockCount
+            if (-not ([string]::IsNullOrEmpty($currentEpoch)) -and $record.Epoch -ceq $currentEpoch) {
+                # Same event epoch: re-deciding it costs nothing.
+            } else {
+                $script:FmGuardCount = $script:FmGuardCount + 1
+            }
+        }
+    }
+    if ((-not $budgetExists) -or ($oldSession -cne $SessionId)) {
+        if ($outcome -ceq 'failed' -or $outcome -ceq 'failed-suppressed') {
+            if (Test-FmHookPathPresent $FailureNotice) {
+                $initialized = 1
+                $script:FmGuardCount = 0
+            } else {
+                $script:FmGuardCount = 1
+            }
+        } else {
+            $script:FmGuardCount = 1
+        }
+    }
+
+    $text = "session=$SessionId`ncount=$($script:FmGuardCount)`nepoch=$currentEpoch`n"
+    if (-not (Set-FmFileTextAtomic -Path $budgetFile -Text $text -NoNewline)) {
+        Unlock-FmLock -LockPath $budgetLock
+        return $false
+    }
+    $script:FmGuardInitializedFailure = $initialized
+    Unlock-FmLock -LockPath $budgetLock
+    return $true
+}
+
+<#
+.SYNOPSIS
+True when this home is in a VERIFIED exhausted-failure episode.
+.DESCRIPTION
+Twin of failure_episode_verified, and the gate that keeps the attended fail-open
+from ever firing on an ordinary blind turn: an away home is the daemon's
+problem, and without both the auto-arm's own failure notice and a failed outcome
+in its ledger there is no evidence that the automatic mechanism was even tried.
+#>
+function Test-FmGuardFailureEpisodeVerified {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$State,
+        [Parameter(Mandatory, Position = 1)][string]$FailureNotice
+    )
+
+    if (Test-FmHookPathPresent "$State/.afk") { return $false }
+    if (-not (Test-FmHookPathPresent $FailureNotice)) { return $false }
+    $outcome = Get-FmGuardEpochOutcome -State $State
+    return ($outcome -ceq 'failed' -or $outcome -ceq 'failed-suppressed')
+}
+
+<#
+.SYNOPSIS
 True when the Stop-owned auto-arm already owns recovery for this event epoch.
 .DESCRIPTION
 Twin of autoarm_owns_recovery. Three independent proofs, in the bash twin's
-order: a healthy watcher, a live owner-lock holder, or a rewake outcome recorded
-within the freshness window. Any one of them means a continuation would be a
-DUPLICATE, and the whole point of the cooperative path is not to spend one.
+order: a healthy watcher, a live owner-lock holder whose published role is
+`autoarm`, or a fresh actionable outcome recorded in the epoch ledger. Any one
+of them means a continuation would be a DUPLICATE, and the whole point of the
+cooperative path is not to spend one.
+
+The ROLE check is not decoration. The same lock is taken by this guard's own
+terminal fail-open, so a live holder proves the auto-arm owns recovery only when
+the holder says it is the auto-arm.
+
+A fresh `failed` epoch owns recovery only the FIRST time it is accounted, and a
+fresh `failed-suppressed` epoch never does - it only spends its block - which is
+how an already-verified failure episode progresses toward the attended fail-open
+instead of allowing forever.
 #>
 function Test-FmGuardAutoarmOwnsRecovery {
     [CmdletBinding()]
@@ -261,30 +601,135 @@ function Test-FmGuardAutoarmOwnsRecovery {
         [Parameter(Mandatory, Position = 1)][string]$WatchPath,
         [Parameter(Mandatory, Position = 2)][string]$Grace,
         [Parameter(Mandatory, Position = 3)][string]$FmHome,
-        [Parameter(Mandatory, Position = 4)][long]$EpochFresh
+        [Parameter(Mandatory, Position = 4)][long]$EpochFresh,
+        [Parameter(Mandatory, Position = 5)][string]$SessionId,
+        [Parameter(Mandatory, Position = 6)][string]$FailureNotice
     )
 
     if (Test-FmWatcherHealthy -State $State -WatchPath $WatchPath -Grace $Grace -FmHome $FmHome) {
         return $true
     }
-    $ownerPid = (Get-FmFileText "$State/.claude-autoarm.lock/pid").TrimEnd("`r", "`n")
-    if (Test-FmPidAlive -ProcessId $ownerPid) { return $true }
-
-    # `sed -n 's/^.*outcome=\([a-z][a-z]*\) .*$/\1/p'`: every line that carries a
-    # lower-case outcome word FOLLOWED BY A SPACE contributes one line of output,
-    # and the leading `.*` is greedy, so the LAST `outcome=` on a line wins.
-    # `$(...)` then joins those lines, which is why a multi-line ledger can only
-    # equal "rewake" when it produced exactly one such line.
-    $outcomes = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in (Get-FmFileLines "$State/.claude-autoarm-epoch")) {
-        $m = [regex]::Match($line, '^.*outcome=([a-z][a-z]*) .*$')
-        if ($m.Success) { $outcomes.Add($m.Groups[1].Value) }
+    $ownerLock = "$State/.claude-autoarm.lock"
+    $ownerPid = (Get-FmFileText "$ownerLock/pid").TrimEnd("`r", "`n")
+    $role = Get-FmHookLockRole -LockPath $ownerLock
+    if ((Test-FmPidAlive -ProcessId $ownerPid) -and $role -ceq 'autoarm') {
+        if (Test-FmHookPathPresent $FailureNotice) {
+            $null = Invoke-FmGuardBudgetAccount -State $State -SessionId $SessionId -FailureNotice $FailureNotice
+        }
+        return $true
     }
-    if (($outcomes -join "`n") -ceq 'rewake') {
-        $age = Get-FmPathAge -Path "$State/.claude-autoarm-epoch"
-        if ($age -lt $EpochFresh) { return $true }
+
+    $outcome = Get-FmGuardEpochOutcome -State $State
+    $epochPath = "$State/.claude-autoarm-epoch"
+    if ($outcome -ceq 'rewake') {
+        $age = Get-FmPathAge -Path $epochPath
+        if ($age -lt $EpochFresh) {
+            if (Test-FmHookPathPresent $FailureNotice) {
+                $null = Invoke-FmGuardBudgetAccount -State $State -SessionId $SessionId -FailureNotice $FailureNotice
+            }
+            return $true
+        }
+    } elseif ($outcome -ceq 'failed') {
+        $age = Get-FmPathAge -Path $epochPath
+        if ($age -lt $EpochFresh -and (Test-FmHookPathPresent $FailureNotice) -and
+            (Invoke-FmGuardBudgetAccount -State $State -SessionId $SessionId -FailureNotice $FailureNotice)) {
+            if ($script:FmGuardInitializedFailure -eq 1) { return $true }
+        }
+    } elseif ($outcome -ceq 'failed-suppressed') {
+        $age = Get-FmPathAge -Path $epochPath
+        if ($age -lt $EpochFresh -and (Test-FmHookPathPresent $FailureNotice)) {
+            $null = Invoke-FmGuardBudgetAccount -State $State -SessionId $SessionId -FailureNotice $FailureNotice
+        }
     }
     return $false
+}
+
+<#
+.SYNOPSIS
+Decide the one loud attended fail-open: 0 take it, 1 refuse, 2 allow silently.
+.DESCRIPTION
+Twin of terminal_fail_open, and the three-valued return is the interface: 0
+means publish the alarm and print the systemMessage, 1 means block as usual, and
+2 means allow WITHOUT the message because recovery turned out to be under way
+after all.
+
+Everything below the first three refusals is a re-check under the owner lock,
+because the cheap checks were made before it was held. Publishing the alarm with
+an exclusive create is what makes the fail-open ONE-time across concurrent
+firings.
+#>
+function Invoke-FmGuardTerminalFailOpen {
+    [CmdletBinding()]
+    [OutputType([int])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$State,
+        [Parameter(Mandatory, Position = 1)][string]$WatchPath,
+        [Parameter(Mandatory, Position = 2)][string]$Grace,
+        [Parameter(Mandatory, Position = 3)][string]$FmHome,
+        [Parameter(Mandatory, Position = 4)][string]$SessionId,
+        [Parameter(Mandatory, Position = 5)][long]$BlockBudget,
+        [Parameter(Mandatory, Position = 6)][string]$FailureNotice,
+        [Parameter(Mandatory, Position = 7)][string]$FailureAlarm
+    )
+
+    if (-not ($script:FmGuardCount -gt $BlockBudget)) { return 1 }
+    if (-not (Test-FmGuardFailureEpisodeVerified -State $State -FailureNotice $FailureNotice)) { return 1 }
+    if (Test-FmHookPathPresent $FailureAlarm) { return 1 }
+
+    $ownerLock = "$State/.claude-autoarm.lock"
+    $budgetLock = "$State/.turnend-claude-blocks.lock"
+    if (-not (Request-FmLock -LockPath $ownerLock)) {
+        $ownerPid = (Get-FmFileText "$ownerLock/pid").TrimEnd("`r", "`n")
+        $role = Get-FmHookLockRole -LockPath $ownerLock
+        if ((Test-FmPidAlive -ProcessId $ownerPid) -and $role -ceq 'autoarm') { return 2 }
+        return 1
+    }
+    if (-not (Set-FmHookLockRole -LockPath $ownerLock -Role 'terminal-check')) {
+        Unlock-FmLock -LockPath $ownerLock
+        return 1
+    }
+    if (-not (Request-FmLock -LockPath $budgetLock)) {
+        Unlock-FmLock -LockPath $ownerLock
+        return 1
+    }
+
+    $record = Get-FmGuardBudgetRecord -BudgetFile "$State/.turnend-claude-blocks"
+    $role = Get-FmHookLockRole -LockPath $ownerLock
+    if ($role -cne 'terminal-check' -or $record.Session -cne $SessionId -or
+        [long]$record.BlockCount -le $BlockBudget -or
+        -not (Test-FmGuardFailureEpisodeVerified -State $State -FailureNotice $FailureNotice) -or
+        (Test-FmHookPathPresent $FailureAlarm)) {
+        Unlock-FmLock -LockPath $budgetLock
+        Unlock-FmLock -LockPath $ownerLock
+        return 1
+    }
+
+    if (Test-FmWatcherHealthy -State $State -WatchPath $WatchPath -Grace $Grace -FmHome $FmHome) {
+        if (-not (Reset-FmHookFailureEpisode -State $State -Mode 'held')) {
+            Unlock-FmLock -LockPath $budgetLock
+            Unlock-FmLock -LockPath $ownerLock
+            return 1
+        }
+        Unlock-FmLock -LockPath $budgetLock
+        Unlock-FmLock -LockPath $ownerLock
+        return 2
+    }
+
+    # `(set -C; : > "$FAILURE_ALARM")`: an exclusive create, so exactly one
+    # firing can ever open the attended fail-open for this episode.
+    try {
+        $stream = [System.IO.File]::Open((ConvertTo-FmNativePath $FailureAlarm),
+            [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $stream.Dispose()
+    } catch {
+        $null = $_
+        Unlock-FmLock -LockPath $budgetLock
+        Unlock-FmLock -LockPath $ownerLock
+        return 1
+    }
+    Unlock-FmLock -LockPath $budgetLock
+    Unlock-FmLock -LockPath $ownerLock
+    return 0
 }
 
 <#
@@ -296,6 +741,12 @@ bin/fm-supervision-instructions (through Invoke-FmScript, so the transition
 picks whichever twin exists) and that a failure to run it degrades to the
 literal fallback rather than to silence - a block with no instruction would be a
 wedge with no way out.
+
+The middle line names WHY supervision is needed, and the three cases are ordered
+exactly as the bash twin orders them: in-flight tasks, then registered
+process-event sources, then X-mode relay polling. A home can need a watcher
+without holding a single task, which is the whole reason the second and third
+lines exist.
 #>
 function Write-FmGuardBlockBanner {
     [CmdletBinding()]
@@ -305,16 +756,16 @@ function Write-FmGuardBlockBanner {
         [Parameter(Mandatory, Position = 1)][string]$State,
         [Parameter(Mandatory, Position = 2)][string]$ConfigDir,
         [Parameter(Mandatory, Position = 3)][int]$InFlight,
-        [Parameter(Mandatory, Position = 4)][string]$BeaconDescription,
-        [Parameter(Mandatory, Position = 5)][bool]$ClaudeMode
+        [Parameter(Mandatory, Position = 4)][int]$Sources,
+        [Parameter(Mandatory, Position = 5)][string]$BeaconDescription,
+        [Parameter(Mandatory, Position = 6)][bool]$ClaudeMode
     )
 
     # `[ -e ... ]` and `[ -f ... ]`, kept distinct exactly as the bash twin has
     # them: an away-mode flag counts whatever kind of entry it is, while the
     # X-mode cadence must be a regular file.
     $afk = 0
-    $afkPath = ConvertTo-FmNativePath "$State/.afk"
-    if ([System.IO.File]::Exists($afkPath) -or [System.IO.Directory]::Exists($afkPath)) { $afk = 1 }
+    if (Test-FmHookPathPresent "$State/.afk") { $afk = 1 }
     $xMode = 0
     if ([System.IO.File]::Exists((ConvertTo-FmNativePath "$ConfigDir/x-mode.env"))) { $xMode = 1 }
 
@@ -338,6 +789,8 @@ function Write-FmGuardBlockBanner {
     Write-FmErr '●  TURN WOULD END BLIND - SUPERVISION IS OFF'
     if ($InFlight -gt 0) {
         Write-FmErr "●  $InFlight task(s) in flight, but no live watcher holds this home lock (last beat: $BeaconDescription)."
+    } elseif ($Sources -gt 0) {
+        Write-FmErr "●  $Sources process-event source(s) registered, but no live watcher holds this home lock (last beat: $BeaconDescription)."
     } else {
         Write-FmErr "●  X-mode relay polling needs supervision, but no live watcher holds this home lock (last beat: $BeaconDescription)."
     }
@@ -404,27 +857,40 @@ function Invoke-FmTurnendGuard {
 
     # --- the actual predicate ------------------------------------------------
     $budgetFile = "$state/.turnend-claude-blocks"
+    $budgetLock = "$state/.turnend-claude-blocks.lock"
+    $failureNotice = "$state/.claude-autoarm-failure-notified"
+    $failureAlarm = "$state/.claude-autoarm-failure-alarmed"
+    $sessionId = Get-FmGuardSessionId -Payload $payload
+
     $resetBudget = {
         if ($claudeMode) {
-            try {
-                $native = ConvertTo-FmNativePath $budgetFile
-                if ([System.IO.File]::Exists($native)) { [System.IO.File]::Delete($native) }
-            } catch {
-                # `rm -f ... || true`.
-                $null = $_
+            if (Request-FmLock -LockPath $budgetLock) {
+                try {
+                    $native = ConvertTo-FmNativePath $budgetFile
+                    if ([System.IO.File]::Exists($native)) { [System.IO.File]::Delete($native) }
+                } catch {
+                    # `rm -f ... || true`.
+                    $null = $_
+                }
+                Unlock-FmLock -LockPath $budgetLock
             }
         }
     }
 
     $status = Get-FmSupervisionStatus -State $state -Grace $grace
-    if ($claudeMode) {
-        if (-not $status.Needed) { & $resetBudget; return 0 }
-    } else {
-        if ($status.InFlight -eq 0) { & $resetBudget; return 0 }
+    # NEEDED, not the in-flight count, in BOTH modes: an X-only home and a home
+    # whose only registered supervision is a process-event source both need a
+    # live watcher while carrying no tasks at all.
+    if (-not $status.Needed) {
+        # A home in an open failure episode keeps its record: clearing it here
+        # would hand the next episode a fresh budget it did not earn.
+        if (-not (Test-FmHookPathPresent $failureNotice)) { & $resetBudget }
+        return 0
     }
     if (Test-FmWatcherHealthy -State $state -WatchPath $watch -Grace $grace -FmHome $context.Home) {
-        & $resetBudget
-        return 0
+        if (-not $claudeMode) { return 0 }
+        if (Reset-FmHookFailureEpisode -State $state) { return 0 }
+        return 2
     }
 
     $blockArgs = @{
@@ -432,6 +898,7 @@ function Invoke-FmTurnendGuard {
         State             = $state
         ConfigDir         = $configDir
         InFlight          = $status.InFlight
+        Sources           = $status.Sources
         BeaconDescription = $status.BeaconDescription
         ClaudeMode        = $claudeMode
     }
@@ -446,61 +913,61 @@ function Invoke-FmTurnendGuard {
     # bounded window to prove it owns recovery for this event epoch before
     # consuming one of Claude's bounded continuations.
     $ownsArgs = @{
-        State      = $state
-        WatchPath  = $watch
-        Grace      = $grace
-        FmHome     = $context.Home
-        EpochFresh = $epochFresh
+        State         = $state
+        WatchPath     = $watch
+        Grace         = $grace
+        FmHome        = $context.Home
+        EpochFresh    = $epochFresh
+        SessionId     = $sessionId
+        FailureNotice = $failureNotice
+    }
+    $healthyArgs = @{
+        State     = $state
+        WatchPath = $watch
+        Grace     = $grace
+        FmHome    = $context.Home
     }
     $iterations = [long][Math]::Floor($syncWaitMs / 100)
     for ($i = 0; $i -lt $iterations; $i++) {
-        if (Test-FmGuardAutoarmOwnsRecovery @ownsArgs) { & $resetBudget; return 0 }
+        if (Test-FmGuardAutoarmOwnsRecovery @ownsArgs) {
+            if (Test-FmWatcherHealthy @healthyArgs) {
+                if (-not (Reset-FmHookFailureEpisode -State $state)) { return 2 }
+            }
+            return 0
+        }
         Start-Sleep -Milliseconds 100
     }
-    if (Test-FmGuardAutoarmOwnsRecovery @ownsArgs) { & $resetBudget; return 0 }
-
-    # The auto-arm genuinely failed to establish: re-block, but never past the
-    # budget so the session can always end and Claude's 8-block override is
-    # never approached.
-    $sessionId = Get-FmGuardSessionId -Payload $payload
-    $count = 0
-    if ([System.IO.File]::Exists((ConvertTo-FmNativePath $budgetFile))) {
-        # `sed -n '1s/^session=//p'` and `sed -n '2s/^count=//p'`: the `p` is
-        # attached to the substitution, so a line that does not carry the prefix
-        # contributes NOTHING rather than contributing itself.
-        $lines = (Get-FmFileLines $budgetFile)
-        $oldSession = ''
-        if ($lines.Count -ge 1 -and $lines[0].StartsWith('session=', [System.StringComparison]::Ordinal)) {
-            $oldSession = $lines[0].Substring('session='.Length)
+    if (Test-FmGuardAutoarmOwnsRecovery @ownsArgs) {
+        if (Test-FmWatcherHealthy @healthyArgs) {
+            if (-not (Reset-FmHookFailureEpisode -State $state)) { return 2 }
         }
-        $oldCount = ''
-        if ($lines.Count -ge 2 -and $lines[1].StartsWith('count=', [System.StringComparison]::Ordinal)) {
-            $oldCount = $lines[1].Substring('count='.Length)
-        }
-        if ($oldCount -notmatch '^[0-9]+$') { $oldCount = '0' }
-        if ($oldSession -ceq $sessionId) { $count = [long]$oldCount }
-    }
-    $count = $count + 1
-    if ($count -gt $blockBudget) {
-        & $resetBudget
-        $needDesc = if ($status.InFlight -gt 0) {
-            "$($status.InFlight) task(s) in flight"
-        } else {
-            'X-mode relay polling active'
-        }
-        Write-FmOut ('{"systemMessage":"firstmate turn-end guard: ' + $needDesc +
-            ' with no live watcher and no Stop auto-arm claim; block budget exhausted, allowing this stop.' +
-            ' Repair supervision (bin/fm-watch-arm.sh as a Claude Code background task) or investigate why' +
-            ' bin/fm-claude-stop-autoarm.sh is not claiming this home."}')
         return 0
     }
-    try {
-        Set-FmFileText -Path $budgetFile -Text "session=$sessionId`ncount=$count"
-    } catch {
-        # `> "$BUDGET_FILE" 2>/dev/null || true`: an unwritable budget file must
-        # not change the block decision, only the bound's memory.
-        $null = $_
+
+    # The auto-arm genuinely failed to establish: consume the bounded re-block
+    # budget before considering the verified one-time attended fail-open.
+    if (-not (Invoke-FmGuardBudgetAccount -State $state -SessionId $sessionId -FailureNotice $failureNotice)) {
+        Write-FmGuardBlockBanner @blockArgs
+        return 2
     }
+    $terminalStatus = Invoke-FmGuardTerminalFailOpen -State $state -WatchPath $watch -Grace $grace `
+        -FmHome $context.Home -SessionId $sessionId -BlockBudget $blockBudget `
+        -FailureNotice $failureNotice -FailureAlarm $failureAlarm
+    if ($terminalStatus -eq 0) {
+        $needDesc = 'X-mode relay polling active'
+        if ($status.InFlight -gt 0) {
+            $needDesc = "$($status.InFlight) task(s) in flight"
+        } elseif ($status.Sources -gt 0) {
+            $needDesc = "$($status.Sources) process-event source(s) registered"
+        }
+        Write-FmOut ('{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: ' + $needDesc +
+            ', the Stop-owned auto-arm exhausted its bounded retries and one failure notice,' +
+            ' no watcher or automatic continuation exists, and the block budget is exhausted.' +
+            ' Keep this session attended and diagnose the automatic Stop-hook and watcher startup' +
+            ' before relying on unattended supervision."}')
+        return 0
+    }
+    if ($terminalStatus -eq 2) { return 0 }
     Write-FmGuardBlockBanner @blockArgs
     return 2
 }

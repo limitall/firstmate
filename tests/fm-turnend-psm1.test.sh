@@ -16,10 +16,13 @@
 # budget - rather than on the happy path alone.
 #
 # THE BLOCK BUDGET IS CHECKED AS A NUMBER, NOT AS A BEHAVIOR. Phase D drives the
-# same session id through consecutive blocks and asserts that the FOURTH one
-# degrades to an allow with a visible systemMessage. Three consecutive blocks is
-# deliberately below Claude Code's hard 8-consecutive-block override, and a twin
-# that quietly changed the bound would still "work" in every other case here.
+# same session id through consecutive blocks and pins the count the durable
+# record reaches, together with the fact that exceeding the bound ALONE never
+# degrades to an allow: the attended fail-open also needs a verified failure
+# episode (the auto-arm's own failure notice plus a failed outcome in its epoch
+# ledger), which these fixtures deliberately do not have. A twin that quietly
+# changed the bound, or that opened the fail-open on the count alone, would still
+# "work" in every other case here.
 #
 # THE BATCHING RULE (docs/powershell-port.md, "the one rule that decides whether
 # a suite finishes"). A bare `pwsh -NoProfile -Command "exit 0"` costs 4.8s on
@@ -529,8 +532,11 @@ both b-fm-home-hides-repo-state fm-turnend-guard "$PRIMARY" "$PRIMARY_N" "$PAYLO
   "FM_HOME=$QUIET_HOME${US}FM_ROOT_OVERRIDE=$PRIMARY" \
   "FM_HOME=$QUIET_HOME_N${US}FM_ROOT_OVERRIDE=$PRIMARY_N"
 
-# An X-mode-only home: a relay poll needs supervision but is NOT an in-flight
-# task, so the default mode exits at the in-flight gate while --claude blocks.
+# An X-mode-only home: a relay poll needs supervision without a single task in
+# flight, so BOTH modes must block. The gate is whether supervision is NEEDED,
+# not how many tasks exist, and a twin that still counted tasks here would go
+# silent on exactly the home whose watcher exists so a mention can wake it with
+# no fleet work at all.
 XMODE="$TMP_ROOT/xmode"
 make_primary_fixture "$XMODE"
 mkdir -p "$XMODE/config"
@@ -642,10 +648,12 @@ done
 guard d-clean-outcome-blocks "$TW_BASH" "$TW_PS" "$PAYLOAD_TRUE" \
   "$CLAUDE_ENV${US}FM_CLAUDE_AUTOARM_EPOCH_FRESH=86400" --claude
 
-# THE BOUNDED BUDGET. Three consecutive blocks for one session id, then a
-# degraded ALLOW carrying a visible systemMessage - deliberately below Claude
-# Code's hard 8-consecutive-block override - and the budget resets so a later
-# chain re-engages. Each world drives its own fixture through the same sequence.
+# THE BOUNDED BUDGET. Five consecutive blocks for one session id, accounted into
+# state/.turnend-claude-blocks. The bound itself (3, deliberately below Claude
+# Code's hard 8-consecutive-block override) is necessary for the attended
+# fail-open but not sufficient: without a verified failure episode every block
+# past the bound still blocks and the count keeps climbing, which is what these
+# fixtures assert. Each world drives its own fixture through the same sequence.
 two_world claude-budget
 : > "$TW_BASH/state/task1.meta"
 : > "$TW_PS_POSIX/state/task1.meta"
@@ -1331,31 +1339,33 @@ assert_same "divergence D: the twin re-emits the same diagnostic as LF" "lf" "$K
 # --- the block budget, asserted as a NUMBER ----------------------------------
 #
 # The join above already proved the two worlds agree case by case. What it
-# cannot show is that they agree on the right NUMBER, because a twin that
-# blocked five times before degrading would still match a twin that did the
-# same. These read the joined answers and pin the bound itself: three blocks,
-# then a degraded allow carrying a visible systemMessage, deliberately below
-# Claude Code's hard 8-consecutive-block override.
+# cannot show is that they agree on the right NUMBER, because two twins that
+# both blocked five times would match each other whatever bound they carried.
+# These read the joined answers and pin the accounting itself: every block in
+# the chain blocks, the durable record reaches exactly five, and no block
+# degrades to an allow - the attended fail-open stays shut because these
+# fixtures carry no verified failure episode, only an exhausted count.
 budget_rc() {  # <target-var> <label>
   local a=${PS_ANSWER[$2]:-}
   printf -v "$1" '%s' "${a%%"$US"*}"
 }
-for budget_i in 1 2 3; do
+BUDGET_MSG=none
+for budget_i in 1 2 3 4 5; do
   budget_rc BUDGET_RC "d-budget-$budget_i"
-  assert_same "budget: block $budget_i of 3 exits 2" "2" "$BUDGET_RC"
+  assert_same "budget: block $budget_i of the chain exits 2" "2" "$BUDGET_RC"
+  BUDGET_OUT=${PS_ANSWER["d-budget-$budget_i"]:-}
+  BUDGET_OUT=${BUDGET_OUT#*"$US"}
+  BUDGET_OUT=${BUDGET_OUT%%"$US"*}
+  case $BUDGET_OUT in
+    *'"systemMessage"'*) BUDGET_MSG="block $budget_i: $BUDGET_OUT" ;;
+  esac
 done
-budget_rc BUDGET_RC d-budget-4
-assert_same "budget: the fourth consecutive block degrades to an allow" "0" "$BUDGET_RC"
-BUDGET_OUT=${PS_ANSWER[d-budget-4]:-}
-BUDGET_OUT=${BUDGET_OUT#*"$US"}
-BUDGET_OUT=${BUDGET_OUT%%"$US"*}
-case $BUDGET_OUT in
-  *'"systemMessage"'*'block budget exhausted'*) BUDGET_SEEN=yes ;;
-  *) BUDGET_SEEN="no:$BUDGET_OUT" ;;
-esac
-assert_same "budget: the degraded allow carries a visible systemMessage" "yes" "$BUDGET_SEEN"
-budget_rc BUDGET_RC d-budget-5
-assert_same "budget: the chain re-engages after the degraded allow" "2" "$BUDGET_RC"
+assert_same "budget: exceeding the bound alone never opens the attended fail-open" \
+  "none" "$BUDGET_MSG"
+# The bound as a number, read from the twin's OWN answer rather than only from
+# the oracle it was already compared against: five blocks, five counted.
+assert_same "budget: the durable record counted every block in the chain" \
+  "session=sess-diff;count=5;epoch=" "${PS_ANSWER[d-budget-after]:-}"
 
 # --- DECLARED DIVERGENCE A: jq ------------------------------------------------
 #
