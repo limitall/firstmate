@@ -1,8 +1,21 @@
 # bin/fm-spawn.ps1 - spawn a direct report (PowerShell twin of bin/fm-spawn.sh).
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--scout]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
+#   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
+#   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
+#   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
+#   standing posture as context, not as this task's answer, so a spawn never looks
+#   the mode up. A ship spawn additionally reads the brief's recorded
+#   "Delivery contract: mode=<mode>" line and REFUSES a mismatch, so the worker's
+#   instructions and the recorded task delivery cannot drift apart; a brief
+#   scaffolded before that line existed warns once and launches on the flag. When
+#   the explicit mode carries less rigor than the project's standing posture, a
+#   loud one-line deviation notice is printed and the spawn continues.
+#   no-mistakes-prod-only is a registry policy rather than a task mode and is
+#   refused as a flag value.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -99,7 +112,9 @@
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
-#   source of truth; shared --scout/--harness/--model/--effort/--backend applies to every pair.
+#   source of truth; shared --scout/--harness/--model/--effort/--backend/--mode/--yolo
+#   applies to every pair. A ship batch therefore carries one delivery contract, and each
+#   pair still checks it against its own brief; a batch spanning modes is two invocations.
 #   If config/crew-dispatch.json exists, shared --harness is required for crewmate
 #   and scout batches. The loop lives here, in bash, so callers never hand-write a
 #   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
@@ -123,9 +138,10 @@
 # muse installs no hook at all - its plugin engine is off in the default build - so
 # it writes state/<id>.muse-session to bind the pane to muse's own session event
 # log; muse is crewmate/scout only and is refused for --secondmate.
-# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> mode=<mode> yolo=<on|off> window=<backend-target> worktree=<path>
-# mode/yolo are resolved per-project from data/projects.md for ship/scout tasks;
-# secondmate spawns record mode=secondmate, yolo=off, home=, and projects=.
+# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
+# A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
+# mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
+# success line and state/<id>.meta omit them.
 
 # ---------------------------------------------------------------------------
 # Twin: bin/fm-spawn.sh
@@ -134,7 +150,7 @@
 # sed-ing its own header (`sed -n '2,${/^#/!q;p;}'` then stripping `# `): skip
 # line 1, print every following comment line, stop at the first non-comment line.
 # This file reproduces that reader exactly, so line 1 is the skipped title, lines
-# 2-123 are the bash header VERBATIM, and the blank line above terminates the
+# 2-144 are the bash header VERBATIM, and the blank line above terminates the
 # block. The text still says `fm-spawn.sh` because CLI surfaces are identical
 # during the transition (docs/powershell-port.md contract 4) and the differential
 # harness compares this stdout byte for byte; flipping the spelling belongs to the
@@ -463,6 +479,27 @@ function Write-FmSpawnChildStdErr {
     if ([string]::IsNullOrEmpty($Text)) { return }
     foreach ($line in @(($Text -replace "`r", '') -split "`n")) {
         if ($line -ne '') { Write-FmErr $line }
+    }
+}
+
+<#
+.SYNOPSIS
+Delivery rigor rank: 3 (most rigor) .. 1 (least); 0 = not a task mode.
+.DESCRIPTION
+Twin of delivery_rigor_rank, which the bash defines immediately before the
+standing-posture deviation check. PowerShell needs it at script scope, so it
+lives here with the other pure helpers; its only caller is that same check.
+no-mistakes-prod-only deliberately ranks 0 - it is a registry policy rather
+than a task mode, and the caller excludes it before ever ranking it.
+#>
+function Get-FmSpawnDeliveryRigorRank {
+    [OutputType([int])]
+    param([Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$Mode = '')
+    switch -CaseSensitive ($Mode) {
+        'no-mistakes' { return 3 }
+        'direct-PR' { return 2 }
+        'local-only' { return 1 }
+        default { return 0 }
     }
 }
 
@@ -920,10 +957,16 @@ function Invoke-FmSpawnAbortCleanup {
                     [void]$sb.Append("project=$($script:FmSpawnProject)`n")
                     [void]$sb.Append("harness=$($script:FmSpawnHarness)`n")
                     [void]$sb.Append("kind=$($script:FmSpawnKind)`n")
-                    $mode = if ([string]::IsNullOrEmpty($script:FmSpawnMode)) { 'no-mistakes' } else { $script:FmSpawnMode }
-                    $yolo = if ([string]::IsNullOrEmpty($script:FmSpawnYolo)) { 'off' } else { $script:FmSpawnYolo }
-                    [void]$sb.Append("mode=$mode`n")
-                    [void]$sb.Append("yolo=$yolo`n")
+                    # Empty means "this spawn carries no delivery contract yet"
+                    # (a scout always, a secondmate until its fixed posture is
+                    # stamped), and the twin omits the line rather than inventing
+                    # a default.
+                    if (-not [string]::IsNullOrEmpty($script:FmSpawnMode)) {
+                        [void]$sb.Append("mode=$($script:FmSpawnMode)`n")
+                    }
+                    if (-not [string]::IsNullOrEmpty($script:FmSpawnYolo)) {
+                        [void]$sb.Append("yolo=$($script:FmSpawnYolo)`n")
+                    }
                     [void]$sb.Append("tasktmp=$($script:FmSpawnTaskTmp)`n")
                     $model = if ([string]::IsNullOrEmpty($script:FmSpawnModel)) { 'default' } else { $script:FmSpawnModel }
                     $effort = if ([string]::IsNullOrEmpty($script:FmSpawnEffort)) { 'default' } else { $script:FmSpawnEffort }
@@ -1035,10 +1078,14 @@ function Invoke-FmSpawnMain {
     $model = ''
     $effort = ''
     $backendArg = ''
+    $mode = ''
+    $yolo = ''
     $harnessSet = $false
     $modelSet = $false
     $effortSet = $false
     $backendSet = $false
+    $modeSet = $false
+    $yoloSet = $false
     $positional = [System.Collections.Generic.List[string]]::new()
     $wantValue = ''
 
@@ -1053,6 +1100,8 @@ function Invoke-FmSpawnMain {
                 'model' { $model = $a; $modelSet = $true }
                 'effort' { $effort = $a; $effortSet = $true }
                 'backend' { $backendArg = $a; $backendSet = $true }
+                'mode' { $mode = $a; $modeSet = $true }
+                'yolo' { $yolo = $a; $yoloSet = $true }
                 default {
                     Write-FmErr "error: internal parser state for --$wantValue"
                     Exit-FmScript 1
@@ -1072,6 +1121,10 @@ function Invoke-FmSpawnMain {
             '^--effort=' { $effort = $a.Substring('--effort='.Length); $effortSet = $true; break }
             '^--backend$' { $wantValue = 'backend'; break }
             '^--backend=' { $backendArg = $a.Substring('--backend='.Length); $backendSet = $true; break }
+            '^--mode$' { $wantValue = 'mode'; break }
+            '^--mode=' { $mode = $a.Substring('--mode='.Length); $modeSet = $true; break }
+            '^--yolo$' { $wantValue = 'yolo'; break }
+            '^--yolo=' { $yolo = $a.Substring('--yolo='.Length); $yoloSet = $true; break }
             default { $positional.Add($a); break }
         }
     }
@@ -1095,13 +1148,79 @@ function Invoke-FmSpawnMain {
         Write-FmErr 'error: --backend requires a non-empty value'
         Exit-FmScript 1
     }
+    if ($modeSet -and $mode -eq '') {
+        Write-FmErr 'error: --mode requires a non-empty value'
+        Exit-FmScript 1
+    }
+    if ($yoloSet -and $yolo -eq '') {
+        Write-FmErr 'error: --yolo requires a non-empty value'
+        Exit-FmScript 1
+    }
     if ($effort -ne '' -and $effort -cnotin @('low', 'medium', 'high', 'xhigh', 'max')) {
         Write-FmErr 'error: --effort must be one of low, medium, high, xhigh, max'
         Exit-FmScript 1
     }
+
+    # --- delivery contract (AGENTS.md section 7) ------------------------------
+    #
+    # A ship task's mode and yolo are firstmate's per-task decision, so they are
+    # REQUIRED and closed-set validated here rather than resolved from the project
+    # registry: data/projects.md holds the captain's standing posture as context,
+    # not as this task's answer. Scouts deliver a report and record no delivery
+    # posture; secondmate spawns hardcode theirs. Validated before backend
+    # selection, exactly as the bash twin does, so a missing contract refuses
+    # before any backend is resolved or any batch pair is re-exec'd.
+    if ($kind -ceq 'ship') {
+        if (-not $modeSet) {
+            Write-FmErr ('error: ship spawns require --mode <no-mistakes|direct-PR|local-only>; ' +
+                "resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md")
+            Exit-FmScript 1
+        }
+        if (-not $yoloSet) {
+            Write-FmErr ('error: ship spawns require --yolo <on|off>; ' +
+                "it is this task's routine approval authority, not a project lookup")
+            Exit-FmScript 1
+        }
+        switch -CaseSensitive ($mode) {
+            'no-mistakes' { }
+            'direct-PR' { }
+            'local-only' { }
+            'no-mistakes-prod-only' {
+                Write-FmErr ('error: no-mistakes-prod-only is a registry policy, not a task mode; ' +
+                    "classify this task's surface and resolve it to no-mistakes or direct-PR at intake")
+                Exit-FmScript 1
+            }
+            default {
+                Write-FmErr "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$mode')"
+                Exit-FmScript 1
+            }
+        }
+        if ($yolo -cnotin @('on', 'off')) {
+            Write-FmErr "error: --yolo must be on or off (got '$yolo')"
+            Exit-FmScript 1
+        }
+    } else {
+        if ($modeSet) {
+            Write-FmErr ('error: --mode applies only to ship spawns; ' +
+                'a scout delivers a report and a secondmate records its own fixed posture')
+            Exit-FmScript 1
+        }
+        if ($yoloSet) {
+            Write-FmErr ('error: --yolo applies only to ship spawns; ' +
+                'a scout delivers a report and a secondmate records its own fixed posture')
+            Exit-FmScript 1
+        }
+    }
+
     $script:FmSpawnKind = $kind
     $script:FmSpawnModel = $model
     $script:FmSpawnEffort = $effort
+    # Published at PARSE time, like the bash twin's MODE/YOLO: a mid-spawn orca
+    # abort must record the contract this spawn actually carries. A scout and a
+    # not-yet-fixed-up secondmate both hold '' here, and the abort writer omits
+    # the line entirely for an empty value.
+    $script:FmSpawnMode = $mode
+    $script:FmSpawnYolo = $yolo
 
     # --- backend selection (fails closed) -------------------------------------
     #
@@ -1150,6 +1269,11 @@ function Invoke-FmSpawnMain {
         if ($model -ne '') { $shared.Add('--model'); $shared.Add($model) }
         if ($effort -ne '') { $shared.Add('--effort'); $shared.Add($effort) }
         if ($backendArg -ne '') { $shared.Add('--backend'); $shared.Add($backendArg) }
+        # One delivery contract applies to every pair in a batch, exactly like the shared
+        # harness. Each pair still re-validates it against its own brief, so a batch
+        # spanning several modes is two invocations rather than a silent mixed dispatch.
+        if ($modeSet) { $shared.Add('--mode'); $shared.Add($mode) }
+        if ($yoloSet) { $shared.Add('--yolo'); $shared.Add($yolo) }
 
         $previousNoGuard = [Environment]::GetEnvironmentVariable('FM_SPAWN_NO_GUARD')
         $env:FM_SPAWN_NO_GUARD = '1'
@@ -1518,6 +1642,53 @@ function Invoke-FmSpawnMain {
         Write-FmErr "error: no brief at $brief"
         Exit-FmScript 1
     }
+
+    # Brief/spawn delivery agreement, checked before any endpoint exists.
+    # fm-brief.sh records a ship brief's mode as a fixed "Delivery contract: mode=<mode>"
+    # line. A spawn that disagrees would launch a worker whose instructions and whose
+    # recorded task delivery differ, which is the exact drift this contract prevents.
+    if ($kind -ceq 'ship') {
+        $projName = [System.IO.Path]::GetFileName((ConvertTo-FmNativePath $projAbs).TrimEnd('\'))
+        # `sed -n 's/^Delivery contract: mode=\([^ ]*\).*$/\1/p' | head -n 1`: the
+        # FIRST matching line's capture, even when that capture is empty - not the
+        # first non-empty one.
+        $briefMode = ''
+        foreach ($line in (Get-FmFileLines $brief)) {
+            $m = [regex]::Match($line, '^Delivery contract: mode=([^ ]*).*$')
+            if ($m.Success) { $briefMode = $m.Groups[1].Value; break }
+        }
+        if ($briefMode -eq '') {
+            Write-FmErr ("warning: $brief records no delivery contract line (scaffolded before ship briefs recorded one); " +
+                "launching on the explicit --mode $mode - confirm its definition of done matches")
+        } elseif ($briefMode -cne $mode) {
+            Write-FmErr ("error: delivery mismatch for ${id}: the brief says mode=$briefMode but this spawn passed --mode $mode; " +
+                "correct the flag or re-scaffold the brief so the worker's instructions and the task record agree")
+            Exit-FmScript 1
+        }
+        # The registry holds the captain's standing posture, so dropping below it is
+        # allowed (a current explicit captain instruction wins) but never silent. An
+        # unregistered project resolves to the same no-mistakes standing default, which
+        # is why the notice names the standing posture rather than the registry line. A
+        # conditional policy is excluded: both of its legs are legitimate classifications.
+        #
+        # `2>/dev/null`: the registry reader's own diagnostics are deliberately NOT
+        # replayed here, unlike every other child call in this script.
+        $standingMode = ''
+        $standingResult = Invoke-FmScript 'fm-project-mode' @('--raw', $projName) -BinDir "$fmRoot/bin"
+        $standingOut = Get-FmSpawnCaptured $standingResult.StdOut
+        if ($standingOut -ne '') {
+            # `cut -d' ' -f1` on the single line the reader prints.
+            $standingLine = @($standingOut -split "`n")[0]
+            $sp = $standingLine.IndexOf(' ')
+            if ($sp -ge 0) { $standingMode = $standingLine.Substring(0, $sp) } else { $standingMode = $standingLine }
+        }
+        if ($standingMode -ne '' -and $standingMode -cne 'no-mistakes-prod-only' -and
+            (Get-FmSpawnDeliveryRigorRank $mode) -lt (Get-FmSpawnDeliveryRigorRank $standingMode)) {
+            Write-FmErr ("notice: $id ships mode=$mode while the standing posture for $projName is $standingMode - " +
+                "less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state")
+        }
+    }
+
     $briefDirReal = Resolve-FmSpawnPhysical (Split-Path -Parent (ConvertTo-FmNativePath $brief))
     $briefLeaf = [System.IO.Path]::GetFileName((ConvertTo-FmNativePath $brief))
     $briefReal = "$briefDirReal/$briefLeaf"
@@ -1942,24 +2113,18 @@ function Invoke-FmSpawnMain {
 
     # --- delivery mode and metadata -------------------------------------------
     #
-    # Per-project delivery mode + yolo flag (bin/fm-project-mode; the
-    # project-management skill and AGENTS.md task lifecycle). Recorded in meta so
-    # fm-teardown's safety check and the validate/merge stages can branch on them.
-    # Mode governs ship tasks; a scout's deliverable is a report, not a merge, so
-    # scout teardown ignores mode.
-    $mode = ''
-    $yolo = ''
+    # Delivery posture recorded in meta so fm-teardown's safety check and the
+    # validate/merge stages can branch on it. A ship task carries the explicit
+    # per-task decision validated above; a secondmate's posture is fixed; a scout
+    # records none at all, because its deliverable is a report rather than a merge
+    # (fm-teardown.sh defaults an absent mode to no-mistakes, and fm-promote.sh
+    # requires an explicit mode when a scout is promoted to a ship task).
     if ($kind -ceq 'secondmate') {
         $mode = 'secondmate'
         $yolo = 'off'
-    } else {
-        $projName = [System.IO.Path]::GetFileName((ConvertTo-FmNativePath $projAbs).TrimEnd('\'))
-        $modeResult = Invoke-FmScript 'fm-project-mode' @($projName) -BinDir "$fmRoot/bin"
-        Write-FmSpawnChildStdErr $modeResult.StdErr
-        $modeLine = @((Get-FmSpawnCaptured $modeResult.StdOut) -split "`n")[0]
-        $modeFields = @($modeLine -split '\s+' | Where-Object { $_ -ne '' })
-        $mode = if ($modeFields.Count -ge 1) { $modeFields[0] } else { '' }
-        $yolo = if ($modeFields.Count -ge 2) { $modeFields[1] } else { '' }
+    } elseif ($kind -ceq 'scout') {
+        $mode = ''
+        $yolo = ''
     }
     $script:FmSpawnMode = $mode
     $script:FmSpawnYolo = $yolo
@@ -1974,8 +2139,9 @@ function Invoke-FmSpawnMain {
     [void]$meta.Append("project=$projAbs`n")
     [void]$meta.Append("harness=$harness`n")
     [void]$meta.Append("kind=$kind`n")
-    [void]$meta.Append("mode=$mode`n")
-    [void]$meta.Append("yolo=$yolo`n")
+    # A scout records neither line at all, so the field is absent rather than empty.
+    if ($mode -ne '') { [void]$meta.Append("mode=$mode`n") }
+    if ($yolo -ne '') { [void]$meta.Append("yolo=$yolo`n") }
     [void]$meta.Append("tasktmp=$taskTmp`n")
     [void]$meta.Append("model=$(if ($model -eq '') { 'default' } else { $model })`n")
     [void]$meta.Append("effort=$(if ($effort -eq '') { 'default' } else { $effort })`n")
@@ -2090,7 +2256,11 @@ function Invoke-FmSpawnMain {
         }
     }
 
-    Write-FmOut "spawned $id harness=$harness kind=$kind mode=$mode yolo=$yolo window=$metaWindow worktree=$wt"
+    # A scout carries no delivery contract, so the success line omits both fields
+    # rather than printing empty ones.
+    $spawnDelivery = ''
+    if ($mode -ne '') { $spawnDelivery = " mode=$mode yolo=$yolo" }
+    Write-FmOut "spawned $id harness=$harness kind=$kind$spawnDelivery window=$metaWindow worktree=$wt"
     Exit-FmScript 0
 }
 
