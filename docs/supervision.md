@@ -27,10 +27,19 @@ boundary.
 
 A Linux firstmate must be able to read a queue this code wrote, and the reverse.
 Verified both directions on this box against
-`/home/adit-admin/dhaval_first_test/firstmate`: bash `fm_wake_print_deduped` and
-`fm_wake_queued_keys` read a PowerShell-written queue unchanged, bash
-`fm_wake_append` continued the sequence from the PowerShell-written
-`.wake-queue.seq`, and PowerShell then read the bash-appended record back.
+`/home/adit-admin/dhaval_first_test/firstmate`:
+
+- bash `fm_wake_print_deduped` and `fm_wake_queued_keys` read a PowerShell-written
+  queue unchanged; bash `fm_wake_append` continued the sequence from the
+  PowerShell-written `.wake-queue.seq`; PowerShell then read the bash-appended
+  record back;
+- end to end, `bin/fm-watch.ps1` queued a signal and the unmodified bash
+  `bin/fm-wake-drain.sh` presented it - annotation, OPEN DECISIONS fold and all -
+  then acknowledged it against the recovery generation the PowerShell side had
+  opened, leaving the queue empty and the marker `acked:`;
+- the lock, too: bash `fm_lock_try_acquire` correctly reports a PowerShell-held
+  lock as held by its live pid, and `Lock-FmPath` does the same for a bash-held
+  symlink lock.
 
 Everything that writes a shared state file goes through `Set-FmFileTextLf` or
 `Add-FmWakeQueueBytes`. Never `Add-Content`, `Out-File` or `Set-Content` -
