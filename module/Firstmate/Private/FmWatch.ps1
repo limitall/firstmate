@@ -268,7 +268,7 @@ function Invoke-FmProceventSurface {
     param([Parameter(Mandatory)][hashtable]$Context)
 
     if (-not (Test-FmNonEmptyFile -Path $Context.Queue)) { return }
-    if (-not (Wait-FmLock -LockDir $Context.QueueLock -TimeoutSeconds 60)) { return }
+    if (-not (Wait-FmPathLock -LockDir $Context.QueueLock -TimeoutSeconds 60)) { return }
 
     $surfaced = [System.Collections.Generic.List[string]]::new()
     try {
@@ -402,9 +402,12 @@ function Invoke-FmPausedStale {
     }
 
     $statusFile = Join-Path $Context.State "$Task.status"
+    # The foundation's Get-FmPathMtime returns a [datetime], not epoch seconds.
+    # An unreadable status file still reads as age 0, NOT as Get-FmPathAge's
+    # 999999: this decides whether a DECLARED pause has gone quiet long enough to
+    # resurface, and a missing status must not resurface it on the spot.
     $mtime = Get-FmPathMtime -Path $statusFile
-    if ($null -eq $mtime) { $mtime = Get-FmUnixTime }
-    $age = (Get-FmUnixTime) - $mtime
+    $age = if ($null -eq $mtime) { 0L } else { [long][Math]::Floor(([datetime]::UtcNow - $mtime).TotalSeconds) }
 
     $resurfacedFile = Join-Path $Context.State ".paused-resurfaced-$key"
     $resurfacedAge = Get-FmPathAge -Path $resurfacedFile

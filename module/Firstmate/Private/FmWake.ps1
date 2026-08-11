@@ -46,13 +46,6 @@ function Get-FmUnixTime {
     return [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 }
 
-function Get-FmEnvValue {
-    param([Parameter(Mandatory)][string]$Name)
-    $value = [Environment]::GetEnvironmentVariable($Name)
-    if ([string]::IsNullOrEmpty($value)) { return $null }
-    return $value
-}
-
 function Get-FmWakeContext {
     <#
         .SYNOPSIS
@@ -216,32 +209,12 @@ function Update-FmFileTimestamp {
     }
 }
 
-function Get-FmPathMtime {
-    <# `stat -c %Y` - epoch seconds, or $null when the path is unreadable. #>
-    [OutputType([System.Nullable[long]])]
-    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
-    if ([string]::IsNullOrEmpty($Path)) { return $null }
-    try {
-        if ([System.IO.File]::Exists($Path)) {
-            $t = [System.IO.File]::GetLastWriteTimeUtc($Path)
-        }
-        elseif ([System.IO.Directory]::Exists($Path)) {
-            $t = [System.IO.Directory]::GetLastWriteTimeUtc($Path)
-        }
-        else { return $null }
-        return [DateTimeOffset]::new($t, [TimeSpan]::Zero).ToUnixTimeSeconds()
-    }
-    catch { return $null }
-}
-
-function Get-FmPathAge {
-    <# Seconds since mtime; 999999 ("due immediately") when unreadable. #>
-    [OutputType([long])]
-    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
-    $m = Get-FmPathMtime -Path $Path
-    if ($null -eq $m) { return 999999L }
-    return ((Get-FmUnixTime) - $m)
-}
+# Get-FmPathMtime and Get-FmPathAge live in the foundation (Private/FmState.ps1).
+# This area kept its own copies while it was built alone; they are gone now
+# rather than kept as a second owner. Note the foundation's Get-FmPathMtime
+# returns a [datetime], not the epoch seconds this area's copy returned, so the
+# two callers that need seconds convert at the call site. Get-FmPathAge keeps the
+# 999999 "unreadable reads as very old" sentinel unchanged.
 
 function Get-FmFileSignature {
     <#
@@ -268,18 +241,9 @@ function Get-FmCurrentProcessId {
     return $PID
 }
 
-function Test-FmProcessAlive {
-    <# `kill -0` - true only for a numeric pid naming a live process. #>
-    param([AllowNull()][AllowEmptyString()]$ProcessId)
-    if ($null -eq $ProcessId) { return $false }
-    $text = [string]$ProcessId
-    if ($text -notmatch '^[0-9]+$') { return $false }
-    try {
-        $null = Get-Process -Id ([int]$text) -ErrorAction Stop
-        return $true
-    }
-    catch { return $false }
-}
+# Test-FmProcessAlive is the foundation's (Private/FmIdentity.ps1). Every call
+# here passes the pid positionally, which binds to its -Id just as it bound to
+# this area's former -ProcessId.
 
 function ConvertTo-FmHexString {
     [OutputType([string])]
@@ -288,7 +252,7 @@ function ConvertTo-FmHexString {
     return [System.Convert]::ToHexString($Bytes).ToLowerInvariant()
 }
 
-function Get-FmProcessIdentity {
+function Get-FmWakeProcessIdentity {
     <#
         .SYNOPSIS
         A PID-reuse-proof identity string for <ProcessId>, or $null.
@@ -296,6 +260,22 @@ function Get-FmProcessIdentity {
         .DESCRIPTION
         Same purpose as fm_pid_identity: pin a lock to one process incarnation so
         a recycled pid can never look like the watcher that took the lock.
+
+        NOT the foundation's Get-FmProcessIdentity, and deliberately so. This one
+        reproduces fm_pid_identity's output byte for byte
+        ("linux-starttime=<field 22> cmdline-hex=<hex>"), which is what the
+        wake-lock family below writes into and reads back out of a lock's
+        pid-identity file. The foundation's token is a different string
+        ("proc-starttime=<field 22> name=<process>"), so the two must not be
+        crossed: an identity written by one and compared by the other reads as a
+        recycled pid and steals a live holder's lock.
+
+        Each lock family is self-consistent today - this area's Lock-FmPath
+        writes and compares with this function, the foundation's Request-FmLock
+        with its own, and they never share a lock directory. Collapsing them onto
+        one identity owner is a real change to the bash interop contract for
+        state/.watch.lock/pid-identity, so it is left to a deliberate decision
+        rather than made as a side effect of a rebase.
 
         On Linux this reproduces the bash output byte-for-byte
         ("linux-starttime=<field 22> cmdline-hex=<hex>") by reading /proc through
@@ -541,8 +521,17 @@ function Lock-FmPath {
     }
 }
 
-function Wait-FmLock {
-    <# fm_lock_acquire_wait: spin until the lock is ours. #>
+function Wait-FmPathLock {
+    <#
+        fm_lock_acquire_wait: spin until the lock is ours.
+
+        Named for its family - Lock-FmPath / Unlock-FmPath / Set-FmLockRole - and
+        NOT Wait-FmLock, which is the foundation's and takes a different contract
+        entirely (-Path, returns a lock object, throws on timeout). This one takes
+        -LockDir and returns a bool. They shared a name while the two areas were
+        built apart, and Private/FmWake.ps1 sorts after Private/FmLock.ps1, so the
+        loader silently gave every caller this one.
+    #>
     param(
         [Parameter(Mandatory)][string]$LockDir,
         [int]$TimeoutSeconds = 0
@@ -654,7 +643,7 @@ function Publish-FmRecoveryMarker {
         [ValidateSet('handling', 'downtime')][string]$Kind = 'downtime'
     )
     $lock = "$Marker.lock"
-    if (-not (Wait-FmLock -LockDir $lock -TimeoutSeconds 30)) { return $false }
+    if (-not (Wait-FmPathLock -LockDir $lock -TimeoutSeconds 30)) { return $false }
     try {
         if ([System.IO.Directory]::Exists($Marker)) { return $false }
         return (Write-FmRecoveryMarkerLocked -Marker $Marker -Kind $Kind)
@@ -667,7 +656,7 @@ function Get-FmRecoveryMarkerSnapshot {
     param([Parameter(Mandatory)][string]$Marker)
     $script:FmRecoveryMarkerToken = ''
     $lock = "$Marker.lock"
-    if (-not (Wait-FmLock -LockDir $lock -TimeoutSeconds 30)) { return $false }
+    if (-not (Wait-FmPathLock -LockDir $lock -TimeoutSeconds 30)) { return $false }
     try { $null = Read-FmRecoveryMarker -Marker $Marker }
     finally { Unlock-FmPath -LockDir $lock }
     return $true
@@ -686,7 +675,7 @@ function Start-FmRecoveryHandling {
         [string]$ExpectedGeneration
     )
     $lock = "$Marker.lock"
-    if (-not (Wait-FmLock -LockDir $lock -TimeoutSeconds 30)) { return 1 }
+    if (-not (Wait-FmPathLock -LockDir $lock -TimeoutSeconds 30)) { return 1 }
     try {
         if (-not (Read-FmRecoveryMarker -Marker $Marker)) { return 1 }
         $line = $script:FmRecoveryMarkerToken
@@ -716,7 +705,7 @@ function Confirm-FmRecoveryMarker {
     )
     if (-not $ExpectedGeneration) { return 2 }
     $lock = "$Marker.lock"
-    if (-not (Wait-FmLock -LockDir $lock -TimeoutSeconds 30)) { return 1 }
+    if (-not (Wait-FmPathLock -LockDir $lock -TimeoutSeconds 30)) { return 1 }
     try {
         if (-not (Read-FmRecoveryMarker -Marker $Marker)) { return 3 }
         $line = $script:FmRecoveryMarkerToken
@@ -747,9 +736,9 @@ function Test-FmRecoveryArmCheck {
     $ctx = Get-FmWakeContext
     $lock = "$Marker.lock"
 
-    if (-not (Wait-FmLock -LockDir $ctx.QueueLock -TimeoutSeconds 30)) { return $false }
+    if (-not (Wait-FmPathLock -LockDir $ctx.QueueLock -TimeoutSeconds 30)) { return $false }
     try {
-        if (-not (Wait-FmLock -LockDir $lock -TimeoutSeconds 30)) { return $false }
+        if (-not (Wait-FmPathLock -LockDir $lock -TimeoutSeconds 30)) { return $false }
         try {
             $exists = [System.IO.File]::Exists($Marker) -or [System.IO.Directory]::Exists($Marker)
             if (-not $exists) {
@@ -834,7 +823,7 @@ function Invoke-FmRecoveryTransition {
         'release-lock-existing' {
             if (-not $Target) { return $false }
             $lock = "$Marker.lock"
-            if (-not (Wait-FmLock -LockDir $lock -TimeoutSeconds 30)) { return $false }
+            if (-not (Wait-FmPathLock -LockDir $lock -TimeoutSeconds 30)) { return $false }
             try {
                 if (-not (Read-FmRecoveryMarker -Marker $Marker)) { return $false }
                 Unlock-FmPath -LockDir $Target
@@ -922,7 +911,7 @@ function Add-FmWakeRecord {
     $cleanPayload = ConvertTo-FmWakeField $Payload
     $epoch = Get-FmUnixTime
 
-    if (-not (Wait-FmLock -LockDir $Context.QueueLock -TimeoutSeconds 60)) { return $false }
+    if (-not (Wait-FmPathLock -LockDir $Context.QueueLock -TimeoutSeconds 60)) { return $false }
     try {
         if (-not (Publish-FmRecoveryMarker -Marker $Context.RecoveryMarker -Kind downtime)) { return $false }
 
@@ -997,7 +986,7 @@ function Get-FmWakeQueuedKeys {
         return @()
     }
     if (-not $Context) { $Context = Get-FmWakeContext }
-    if (-not (Wait-FmLock -LockDir $Context.QueueLock -TimeoutSeconds 60)) { return @() }
+    if (-not (Wait-FmPathLock -LockDir $Context.QueueLock -TimeoutSeconds 60)) { return @() }
     try { return (Get-FmWakeQueuedKeysLocked -Kind $Kind -Context $Context) }
     finally { Unlock-FmPath -LockDir $Context.QueueLock }
 }
@@ -1244,7 +1233,7 @@ function Test-FmWatcherLockMatchesPid {
     if ($lockHome -ne $FmHome) { return $false }
     if ($lockPath -ne $WatchPath) { return $false }
     if (-not $lockIdentity) { return $false }
-    $current = Get-FmProcessIdentity -ProcessId $ProcessId
+    $current = Get-FmWakeProcessIdentity -ProcessId $ProcessId
     if (-not $current) { return $false }
     if ($current -ne $lockIdentity) { return $false }
     $script:FmWatcherMatchedIdentity = $lockIdentity

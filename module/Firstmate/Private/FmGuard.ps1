@@ -79,9 +79,10 @@ function Get-FmSupervisionStatus {
     $beaconDesc = 'never'
     $fresh = $false
     if ([System.IO.File]::Exists($beat)) {
+        # The foundation's Get-FmPathMtime returns a [datetime], not epoch seconds.
         $m = Get-FmPathMtime -Path $beat
         if ($null -ne $m) {
-            $age = (Get-FmUnixTime) - $m
+            $age = [long][Math]::Floor(([datetime]::UtcNow - $m).TotalSeconds)
             $beaconDesc = "${age}s ago"
             $fresh = ($age -lt $Grace)
         }

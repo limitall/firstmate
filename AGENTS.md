@@ -86,6 +86,20 @@ follow:
 - **One owner per rule.** When a shared helper exists, delegate to it rather than
   keeping a second copy (`Write-FmTextFileLf`, `Get-FmMetaValue`,
   `Test-FmPathEqual`, `Get-FmJsonValue`).
+- **Two areas defining one function name is silent, not an error.** The loader
+  dot-sources `Private/*.ps1` then `Public/*.ps1` in filename order, so the
+  later file simply wins and every caller gets it - a Public copy also takes
+  over the exported name. Before landing an area, check:
+  `grep -rh '^function' module/Firstmate/{Private,Public} | awk '{print $2}' |
+  sort | uniq -d` must print nothing. Where two areas genuinely need different
+  contracts, name them apart (`Wait-FmLock` vs `Wait-FmPathLock`,
+  `Get-FmProcessIdentity` vs `Get-FmWakeProcessIdentity`) rather than letting
+  one shadow the other.
+- **A degradation test stops testing degradation once the owner lands.** Suites
+  asserting the "owner not loaded" branch must stage the absence at the
+  `Resolve-Fm*Command` seam. Deleting the function is not enough - the
+  foundation suites import the manifest, and an imported module keeps exporting
+  the name whatever the test session's function table says.
 
 ## Module foundation
 

@@ -130,7 +130,7 @@ function Start-FmWatch {
         try { Set-FmFileTextLf -Path (Join-Path $watchLock 'fm-home') -Text ($ctx.Home + "`n") } catch { }
         try { Set-FmFileTextLf -Path (Join-Path $watchLock 'watcher-path') -Text ($watchPath + "`n") } catch { }
         $script:FmWatchDeliveryPid = [string]$watcherPid
-        $identity = Get-FmProcessIdentity -ProcessId $watcherPid
+        $identity = Get-FmWakeProcessIdentity -ProcessId $watcherPid
         $script:FmWatchDeliveryIdentity = if ($identity) { $identity } else { '' }
         try { Set-FmFileTextLf -Path (Join-Path $watchLock 'pid-identity') -Text ($script:FmWatchDeliveryIdentity + "`n") } catch { }
 
@@ -681,10 +681,11 @@ function Get-FmPaneHash {
     finally { $md5.Dispose() }
 }
 
-function Remove-FmStateFile {
-    param([Parameter(Mandatory)][string]$Path)
-    try { if ([System.IO.File]::Exists($Path)) { [System.IO.File]::Delete($Path) } } catch { }
-}
+# Remove-FmStateFile is the foundation's (Private/FmState.ps1): same contract -
+# absent is success - plus its retry-on-a-held-file discipline. This area's copy
+# is gone rather than kept as a second owner, and it mattered more than the rest:
+# it sat in a Public file, so the loader exported THIS one under the foundation's
+# name to every caller in the module.
 
 function Test-FmBusyTurnOverAge {
     <#

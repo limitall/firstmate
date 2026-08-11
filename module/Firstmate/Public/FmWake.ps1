@@ -108,7 +108,7 @@ function Invoke-FmWakeDrain {
         return 2
     }
 
-    if (-not (Wait-FmLock -LockDir $Context.QueueLock -TimeoutSeconds 120)) {
+    if (-not (Wait-FmPathLock -LockDir $Context.QueueLock -TimeoutSeconds 120)) {
         [Console]::Error.WriteLine('wake drain: could not serialize against the wake queue')
         return 1
     }
@@ -216,7 +216,7 @@ function Invoke-FmWakeAcknowledge {
         [Parameter(Mandatory)][hashtable]$Context
     )
     $marker = $Context.RecoveryMarker
-    if (-not (Wait-FmLock -LockDir $Context.QueueLock -TimeoutSeconds 120)) {
+    if (-not (Wait-FmPathLock -LockDir $Context.QueueLock -TimeoutSeconds 120)) {
         [Console]::Error.WriteLine('wake drain: could not serialize against the wake queue')
         return 1
     }

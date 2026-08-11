@@ -53,7 +53,7 @@ BeforeAll {
         $null = Lock-FmPath -LockDir $Ctx.WatchLock
         Set-FmFileTextLf -Path (Join-Path $Ctx.WatchLock 'fm-home') -Text ($Ctx.Home + "`n")
         Set-FmFileTextLf -Path (Join-Path $Ctx.WatchLock 'watcher-path') -Text ((Get-FmWatchPath -Context $Ctx) + "`n")
-        Set-FmFileTextLf -Path (Join-Path $Ctx.WatchLock 'pid-identity') -Text ((Get-FmProcessIdentity -ProcessId $PID) + "`n")
+        Set-FmFileTextLf -Path (Join-Path $Ctx.WatchLock 'pid-identity') -Text ((Get-FmWakeProcessIdentity -ProcessId $PID) + "`n")
         Update-FmFileTimestamp -Path $Ctx.Beacon
     }
 }

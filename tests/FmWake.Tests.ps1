@@ -29,7 +29,7 @@ BeforeAll {
         $null = Lock-FmPath -LockDir $Ctx.WatchLock
         Set-FmFileTextLf -Path (Join-Path $Ctx.WatchLock 'fm-home') -Text ($Ctx.Home + "`n")
         Set-FmFileTextLf -Path (Join-Path $Ctx.WatchLock 'watcher-path') -Text ($WatchPath + "`n")
-        Set-FmFileTextLf -Path (Join-Path $Ctx.WatchLock 'pid-identity') -Text ((Get-FmProcessIdentity -ProcessId $PID) + "`n")
+        Set-FmFileTextLf -Path (Join-Path $Ctx.WatchLock 'pid-identity') -Text ((Get-FmWakeProcessIdentity -ProcessId $PID) + "`n")
         Update-FmFileTimestamp -Path $Ctx.Beacon
     }
 
@@ -318,9 +318,14 @@ Describe 'Portable locks' {
 
     It 'serialises two processes against the same lock' {
         $lock = Join-Path $script:Ctx.State '.demo.lock'
-        $moduleDir = Join-Path $script:RepoRoot 'module' 'Firstmate' 'Private' 'FmWake.ps1'
+        # A REAL second process, not a runspace: the guarantee under test is that
+        # the OS admits one creator. It loads the whole Private set rather than
+        # FmWake.ps1 alone, because the wake area now takes its process, path and
+        # env helpers from the foundation instead of carrying its own copies.
+        $privateDir = Join-Path $script:RepoRoot 'module' 'Firstmate' 'Private'
+        $load = "Get-ChildItem -Path '$privateDir' -Filter '*.ps1' | Sort-Object Name | ForEach-Object { . `$_.FullName }"
         $null = Lock-FmPath -LockDir $lock
-        $out = pwsh -NoProfile -Command ". '$moduleDir'; if (Lock-FmPath -LockDir '$lock') { 'stole' } else { 'blocked' }"
+        $out = pwsh -NoProfile -Command "$load; if (Lock-FmPath -LockDir '$lock') { 'stole' } else { 'blocked' }"
         Unlock-FmPath -LockDir $lock
 
         $out | Should -Be 'blocked'

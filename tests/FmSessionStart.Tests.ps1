@@ -209,6 +209,19 @@ Describe 'Get-FmSessionStartDigest' {
     }
 
     It 'says a wake drain did not happen rather than printing a reassuring nothing' {
+        # The watcher area ships a real Invoke-FmWakeDrain, so the absence this
+        # line reports has to be staged. Deleting the function is not enough: the
+        # foundation suites import the manifest, and an imported module keeps
+        # exporting the name however the test session's own function table is
+        # edited. Withhold it at the seam that actually decides - the by-name
+        # resolution - and delegate every OTHER name to the real resolver, so
+        # this stays a test of the digest's degradation reporting rather than of
+        # an empty module build.
+        $realResolve = (Get-Command -Name 'Resolve-FmSessionCommand').ScriptBlock
+        Mock Resolve-FmSessionCommand {
+            if ($Name -contains 'Invoke-FmWakeDrain') { return $null }
+            return (& $realResolve -Name $Name)
+        }
         New-TestHome -Populated | Out-Null
         [System.IO.File]::WriteAllText((Join-Path $env:FM_HOME 'state' '.lock'), "4242`n")
         function Invoke-FmLock { 'lock acquired: harness pid 4242' }
