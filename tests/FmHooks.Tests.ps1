@@ -550,3 +550,84 @@ Describe 'Get-FmClaudeHookSettings' {
         (Get-FmClaudeHookSettings) | ConvertFrom-Json | Should -Not -BeNullOrEmpty
     }
 }
+
+Describe 'bin/fm-claude-hook.ps1 end to end' {
+    # These drive the REAL entry point in a REAL child process with a REAL piped
+    # payload, which is the only way to catch a fault in the transport rather
+    # than in the state machine. One already escaped the unit tests: an unbound
+    # [string] parameter arrives as the empty string, not $null, so the hook
+    # never read stdin and every event failed open.
+    BeforeAll {
+        # A throwaway checkout carrying this module plus a stand-in watcher-area
+        # owner, so the guard can evaluate its predicate for real.
+        $script:E2ERoot = Join-Path $TestDrive 'e2e-checkout'
+        Copy-Item -LiteralPath (Join-Path $script:RepoRoot 'module') -Destination (Join-Path $script:E2ERoot 'module') -Recurse -Force
+        Copy-Item -LiteralPath (Join-Path $script:RepoRoot 'bin') -Destination (Join-Path $script:E2ERoot 'bin') -Recurse -Force
+        foreach ($sub in @('state', 'data', 'config')) {
+            New-Item -ItemType Directory -Path (Join-Path $script:E2ERoot $sub) -Force | Out-Null
+        }
+        [System.IO.File]::WriteAllText((Join-Path $script:E2ERoot 'AGENTS.md'), "fixture`n")
+        [System.IO.File]::WriteAllText((Join-Path $script:E2ERoot '.fm-secondmate-home'), "atlas`n")
+        [System.IO.File]::WriteAllText((Join-Path $script:E2ERoot 'state' 'task-a.meta'), "window=fm-task-a`n")
+        [System.IO.File]::WriteAllText(
+            (Join-Path $script:E2ERoot 'module' 'Firstmate' 'Private' 'ZZTestWatcherStub.ps1'),
+            "function Test-FmWatcherHealthy { param(`$State, `$Grace) `$false }`n")
+
+        function Invoke-HookEntryPoint {
+            param([string]$Payload, [string[]]$HookArguments)
+
+            $entry = Join-Path $script:E2ERoot 'bin' 'fm-claude-hook.ps1'
+            $stdout = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+            $stderr = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+            $stdin = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+            [System.IO.File]::WriteAllText($stdin, $Payload)
+
+            $psi = [System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName = (Get-Process -Id $PID).Path
+            foreach ($a in (@('-NoProfile', '-NonInteractive', '-File', $entry) + $HookArguments)) {
+                $psi.ArgumentList.Add($a)
+            }
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardInput = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.EnvironmentVariables['FM_HOME'] = $script:E2ERoot
+            $psi.EnvironmentVariables['FM_ROOT_OVERRIDE'] = $script:E2ERoot
+            $psi.EnvironmentVariables['FM_CLAUDE_AUTOARM_SYNC_WAIT_MS'] = '100'
+            $psi.EnvironmentVariables['FM_TASKS_AXI_COMPATIBLE'] = '0'
+
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $proc.StandardInput.Write($Payload)
+            $proc.StandardInput.Close()
+            $out = $proc.StandardOutput.ReadToEnd()
+            $err = $proc.StandardError.ReadToEnd()
+            $proc.WaitForExit()
+            $code = $proc.ExitCode
+            $proc.Dispose()
+            Remove-Item -LiteralPath $stdout, $stderr, $stdin -Force -ErrorAction SilentlyContinue
+            [pscustomobject]@{ ExitCode = $code; Stdout = $out; Stderr = $err }
+        }
+    }
+
+    It 'reads the payload from stdin and blocks the Stop with exit 2 plus the banner on stderr' {
+        $result = Invoke-HookEntryPoint -Payload '{"session_id":"s1","stop_hook_active":true}' `
+            -HookArguments @('-Event', 'Stop', '-Check', 'turnend-guard')
+        $result.ExitCode | Should -Be 2
+        $result.Stderr | Should -BeLike '*TURN WOULD END BLIND - SUPERVISION IS OFF*'
+        $result.Stderr | Should -BeLike '*1 task(s) in flight*'
+        $result.Stdout | Should -Be ''
+    }
+
+    It 'exits 0 and prints the digest for a SessionStart, because exit 2 would block session initialization' {
+        $result = Invoke-HookEntryPoint -Payload '{"source":"startup"}' -HookArguments @('-Event', 'SessionStart')
+        $result.ExitCode | Should -Be 0
+        $result.Stdout | Should -BeLike '*READ-ONCE CONTRACT*'
+    }
+
+    It 'allows a PreToolUse call when no policy owner is loaded' {
+        $result = Invoke-HookEntryPoint -Payload '{"tool_input":{"command":"bin/fm-watch-arm.ps1"}}' `
+            -HookArguments @('-Event', 'PreToolUse', '-Check', 'arm')
+        $result.ExitCode | Should -Be 0
+        $result.Stdout | Should -Be ''
+    }
+}

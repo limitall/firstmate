@@ -442,7 +442,10 @@ function Reset-FmHookFailureEpisode {
 
 # --- SessionStart -------------------------------------------------------------
 
-# Source routing, port of bin/fm-sessionstart-run.sh:
+# Source routing, port of bin/fm-sessionstart-run.sh.
+# WINDOWS-UNVERIFIED: the set of session-open source values Claude Code emits on
+# Windows. An unrecognized source deliberately routes to a full digest, so an
+# unexpected value costs one redundant startup rather than a missed one.
 #   startup, new         full digest - this process has not taken the helm
 #   clear, compact       re-emit only when this lock owner recorded a completed
 #                        full startup; otherwise a full digest, so a startup
@@ -509,6 +512,8 @@ function Get-FmHookToolCommand {
 
 # Render the established Claude-shaped deny response. Claude requires stdout to
 # remain empty on deny, so the decision object carries it on stderr only.
+# WINDOWS-UNVERIFIED: that Claude Code on Windows reads this hookSpecificOutput
+# shape from a PowerShell-native hook's stderr.
 function New-FmHookDenyDecision {
     [CmdletBinding()]
     param(

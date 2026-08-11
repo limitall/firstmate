@@ -43,7 +43,11 @@ function Invoke-FmClaudeHook {
         [AllowEmptyString()][AllowNull()][string]$Payload
     )
 
-    if ($null -eq $Payload) { $Payload = Read-FmHookStdin }
+    # Keyed on whether the caller BOUND the parameter, not on its value: an
+    # unbound [string] parameter arrives as the empty string, not $null, so a
+    # null test here silently skipped the stdin read and made every hook fail
+    # open on an empty payload.
+    if (-not $PSBoundParameters.ContainsKey('Payload')) { $Payload = Read-FmHookStdin }
 
     switch ($Event) {
         'SessionStart' { return (Invoke-FmClaudeSessionStartHook -Payload $Payload) }
@@ -80,6 +84,10 @@ function Read-FmHookStdin {
     Every path exits 0. A Claude SessionStart exit 2 blocks session
     initialization, so a failed session start must reach the agent as digest text
     it can act on, never as a refusal to open the session.
+
+    WINDOWS-UNVERIFIED: that Claude Code on Windows injects SessionStart hook
+    stdout into model context, and that it sets CLAUDE_PROJECT_DIR for a
+    PowerShell-native hook.
 #>
 function Invoke-FmClaudeSessionStartHook {
     [CmdletBinding()]
@@ -139,6 +147,10 @@ function Invoke-FmClaudeSessionStartHook {
     ALLOW - exit 0 and no output.
     DENY  - exit 2 with a Claude-shaped deny object on stderr and empty stdout.
     FAIL OPEN - malformed or empty payload, or a missing policy owner.
+
+    WINDOWS-UNVERIFIED: that Claude Code on Windows honours exit 2 from a
+    PowerShell-native PreToolUse hook as a deny, and that it still requires
+    stdout to stay empty on that deny.
 #>
 function Invoke-FmClaudePreToolUseHook {
     [CmdletBinding()]
