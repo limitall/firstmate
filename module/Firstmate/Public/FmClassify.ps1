@@ -160,7 +160,7 @@ function Get-FmOpenDecision {
     [CmdletBinding()]
     [OutputType([object[]])]
     param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Path)
-    if (-not (Test-FmLifecycleRegularFile -Path $Path)) { return @() }
+    if (-not (Test-FmLifecycleRegularFile -Path $Path)) { return , @() }
     $open = New-FmClassifyOpenSet
     foreach ($line in (Get-FmLifecycleFileLines -Path $Path)) {
         Add-FmClassifyDecisionFoldLine -OpenSet $open -Line $line
@@ -185,7 +185,7 @@ function Get-FmOpenDecisionIncremental {
     [CmdletBinding()]
     [OutputType([object[]])]
     param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Path)
-    if (-not (Test-FmLifecycleRegularFile -Path $Path)) { return @() }
+    if (-not (Test-FmLifecycleRegularFile -Path $Path)) { return , @() }
     $cursorPath = Get-FmClassifyCursorPath -StatusFile $Path
     $cursor = Read-FmClassifyCursor -CursorPath $cursorPath
 
@@ -195,15 +195,22 @@ function Get-FmOpenDecisionIncremental {
         if ($parts.Count -eq 3) { $trusted += (New-FmClassifyOpenRecord -Key $parts[0] -Verb $parts[1] -Note $parts[2]) }
     }
 
-    $currentIdent = Get-FmClassifyFileIdent -Path $Path
-    if ($currentIdent -eq '') { return , @($trusted) }
     $size = 0L
     try { $size = ([System.IO.FileInfo]::new($Path)).Length } catch { return , @($trusted) }
+    # The identity covers the bytes this cursor already consumed, which an
+    # append-only file never rewrites. A read failure here is a genuine I/O
+    # error, not "nothing is open": report the trusted set unchanged rather than
+    # risking a silent invalidation that would wipe it.
+    $recordedIdent = ''
+    if ($cursor.Offset -gt 0 -and $cursor.Offset -le $size) {
+        $recordedIdent = Get-FmClassifyFileIdent -Path $Path -Length $cursor.Offset
+        if ($recordedIdent -eq '') { return , @($trusted) }
+    }
 
     $open = New-FmClassifyOpenSet
     $offset = $cursor.Offset
     $dirty = $false
-    if ($cursor.Ident -ne $currentIdent -or $offset -gt $size) {
+    if ($cursor.Ident -ne $recordedIdent -or $offset -gt $size) {
         $offset = 0
         $trusted = @()
         $dirty = $true
@@ -229,7 +236,10 @@ function Get-FmOpenDecisionIncremental {
     }
 
     if ($dirty) {
-        Write-FmClassifyCursor -CursorPath $cursorPath -Offset $offset -Ident $currentIdent -OpenSet $open
+        $newIdent = Get-FmClassifyFileIdent -Path $Path -Length $offset
+        if ($newIdent -ne '') {
+            Write-FmClassifyCursor -CursorPath $cursorPath -Offset $offset -Ident $newIdent -OpenSet $open
+        }
     }
     return , @($open.ToArray())
 }

@@ -72,6 +72,10 @@ governs the import.
   byte-exact wake-queue record, why locks are directories rather than symlinks,
   why the FileSystemWatcher may only shorten a wait, and the collaborating
   functions each other area may supply.
+- `docs/lifecycle.md` - briefs, the wake classifier, teardown and the local
+  merge: the landed-work test and the rule that every inconclusive answer
+  refuses, which task shapes teardown refuses rather than half-performs, and how
+  this area degrades when another area's owner is absent.
 
 ## Cross-area composition
 

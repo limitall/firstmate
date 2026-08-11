@@ -68,9 +68,9 @@ function Get-FmLifecyclePaths {
 function Get-FmLifecycleFileLines {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return , @() }
     $text = [System.IO.File]::ReadAllText($Path)
-    if ($text.Length -eq 0) { return @() }
+    if ($text.Length -eq 0) { return , @() }
     $text = $text -replace "`r`n", "`n"
     $lines = $text.Split("`n")
     if ($lines[-1] -eq '') { $lines = $lines[0..($lines.Count - 2)] }

@@ -350,8 +350,9 @@ function Invoke-FmTeardown {
             }
             $branch = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $worktree 'rev-parse' '--abbrev-ref' 'HEAD')
             if ($branch -and $branch -ne 'HEAD') {
-                if (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $worktree 'checkout' '--detach' '-q')) {
-                    [void](Invoke-FmGit -RepoPath $worktree 'branch' '-D' $branch)
+                if (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $worktree -Arguments @('checkout', '--detach', '-q'))) {
+                    # -Arguments explicitly: a bare -D would bind to the -Debug common parameter.
+                    [void](Invoke-FmGit -RepoPath $worktree -Arguments @('branch', '-D', $branch))
                 }
             }
             # Drop our hook files so a reused pool worktree cannot fire signals

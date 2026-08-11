@@ -60,7 +60,9 @@ function Test-FmClassifyReservedKeyTransitionAllowed {
 }
 
 function New-FmClassifyOpenSet {
-    return [System.Collections.Generic.List[object]]::new()
+    # The unary comma keeps PowerShell from unrolling the empty list away.
+    $set = [System.Collections.Generic.List[object]]::new()
+    return , $set
 }
 
 function Remove-FmClassifyOpenKey {
@@ -149,31 +151,42 @@ function Get-FmClassifyCursorPath {
 
 # Cheap identity for the "is the file at this path still the same file"
 # invalidation. The bash library uses dev:inode from `stat`; .NET exposes
-# neither portably (and creation time is not a stable birth time on this
-# platform's filesystems), so the port hashes a bounded 1 KiB prefix instead:
-# O(1), and a recreated or rotated status file with different early content
-# invalidates the cursor exactly as an inode change would. A recreated file
-# whose first kilobyte is byte-identical is not detected, which is the same
-# class of deliberately accepted gap as the bash version's same-inode in-place
-# edit - no firstmate code path ever rewrites a status file in place.
+# neither portably, and creation time is not a stable birth time on every
+# filesystem. The port hashes the ALREADY-CONSUMED prefix instead - the first
+# min(offset, 1 KiB) bytes - which is exactly the region an append-only status
+# file never rewrites, so a normal append leaves the identity unchanged while a
+# recreated or rotated file at the same path almost certainly changes it. Cost
+# is one bounded 1 KiB read.
+#
+# A recreated file whose first kilobyte is byte-identical is not detected, the
+# same class of deliberately accepted gap as the bash version's same-inode
+# in-place edit: no firstmate code path ever rewrites a status file in place,
+# and the cursor is safe to delete, which forces one full re-fold.
 function Get-FmClassifyFileIdent {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Path)
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][long]$Length
+    )
+    $want = [int][Math]::Min($Length, 1024)
+    if ($want -le 0) { return 'prefix:empty' }
     try {
         $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
     } catch {
         return ''
     }
     try {
-        $buffer = [byte[]]::new(1024)
-        $read = $stream.Read($buffer, 0, 1024)
-        $sha = [System.Security.Cryptography.SHA256]::Create()
-        try {
-            $hash = $sha.ComputeHash($buffer, 0, $read)
-        } finally {
-            $sha.Dispose()
+        $buffer = [byte[]]::new($want)
+        $read = 0
+        while ($read -lt $want) {
+            $n = $stream.Read($buffer, $read, $want - $read)
+            if ($n -le 0) { break }
+            $read += $n
         }
-        return 'prefix1k:' + [System.BitConverter]::ToString($hash).Replace('-', '').Substring(0, 32).ToLowerInvariant()
+        if ($read -lt $want) { return '' }
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { $hash = $sha.ComputeHash($buffer, 0, $read) } finally { $sha.Dispose() }
+        return 'prefix:' + [System.BitConverter]::ToString($hash).Replace('-', '').Substring(0, 32).ToLowerInvariant()
     } catch {
         return ''
     } finally {

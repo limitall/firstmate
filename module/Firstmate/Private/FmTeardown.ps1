@@ -106,12 +106,14 @@ function Confirm-FmTeardownCommitObject {
         [Parameter(Mandatory)][AllowEmptyString()][string]$Target,
         [Parameter(Mandatory)][AllowEmptyString()][string]$Commit
     )
-    if (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath 'cat-file' '-e' "$Commit^{commit}")) { return $true }
+    # -Arguments explicitly: a bare -e is an ambiguous prefix of the -ErrorAction
+    # and -ErrorVariable common parameters and would fail to bind.
+    if (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath -Arguments @('cat-file', '-e', "$Commit^{commit}"))) { return $true }
     $number = Get-FmTeardownPrNumberFromTarget -Target $Target
     if (-not $number) { return $false }
     if (-not (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath 'remote' 'get-url' 'origin'))) { return $false }
     if (-not (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath 'fetch' '--quiet' 'origin' "refs/pull/$number/head"))) { return $false }
-    return (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath 'cat-file' '-e' "$Commit^{commit}"))
+    return (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath -Arguments @('cat-file', '-e', "$Commit^{commit}")))
 }
 
 function Get-FmTeardownPatchId {

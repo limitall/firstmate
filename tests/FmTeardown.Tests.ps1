@@ -367,6 +367,29 @@ Describe 'Invoke-FmTeardown' {
     }
 }
 
+Describe 'git invocation' {
+    BeforeEach {
+        $script:TestHome = New-FmTestHome
+        $script:Repo = New-FmTestProject -Root $script:TestHome.Path -Id 't1'
+    }
+    AfterEach { Remove-FmTestHome -TestHome $script:TestHome }
+
+    It 'passes a short flag through as an explicit argument array' {
+        # A bare -D in a remaining-arguments call binds to the -Debug common
+        # parameter and never reaches git, which would silently leave the task
+        # branch behind at teardown.
+        Invoke-FmTestGit -RepoPath $script:Repo.Project branch 'side' | Out-Null
+        (Invoke-FmGit -RepoPath $script:Repo.Project -Arguments @('branch', '-D', 'side')).ExitCode | Should -Be 0
+        (Invoke-FmGit -RepoPath $script:Repo.Project -Arguments @('rev-parse', '--verify', '--quiet', 'refs/heads/side')).ExitCode | Should -Not -Be 0
+    }
+
+    It 'confirms a commit object that is already present, and rejects one that is not' {
+        $head = (Invoke-FmTestGit -RepoPath $script:Repo.Worktree rev-parse HEAD).Trim()
+        Confirm-FmTeardownCommitObject -WorktreePath $script:Repo.Worktree -Target '' -Commit $head | Should -BeTrue
+        Confirm-FmTeardownCommitObject -WorktreePath $script:Repo.Worktree -Target '' -Commit '0123456789abcdef0123456789abcdef01234567' | Should -BeFalse
+    }
+}
+
 Describe 'Get-FmBacklogRefreshReminder' {
     BeforeEach { $script:TestHome = New-FmTestHome }
     AfterEach { Remove-FmTestHome -TestHome $script:TestHome }
