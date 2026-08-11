@@ -71,9 +71,16 @@ fails closed to a read-only session.
 | `Test-FmTasksAxiCompatible`, `Test-FmQuotaAxiCompatible`, `Test-FmBacklogBackendManual -ConfigDir` | the axi compatibility probes | bootstrap, backlog listing |
 | `Set-FmStartupMemoryBudget -ConfigDir`, `Set-FmTraceContextSessionStart`, `Get-FmPublicFollowupPending`, `Get-FmPrimaryTangleBranch -Root`, `Get-FmDefaultBranch -Root` | their bash libraries | bootstrap, digest |
 
-Each of the policy predicates returns an object with `Deny`, `Code`, and
-`Reason`; an invalid verdict fails open, because only the policy owner may decide
-deny.
+Two return shapes matter:
+
+- **`Invoke-FmLock`** may report refusal by throwing, or by returning an object
+  carrying `Acquired = $false`. Both are honoured, and so is not existing at all.
+  All three land on a read-only session, because a session that cannot verify
+  lock ownership must not mutate shared fleet state. Whatever else it returns is
+  printed verbatim under the `LOCK` subsection.
+- **The three PreToolUse policy predicates** return an object (or hashtable) with
+  `Deny`, `Code`, and `Reason`. An invalid verdict fails open, because only the
+  policy owner may decide deny.
 
 If an owner lands under a different name, change the name in the one
 `Resolve-FmSessionCommand` call that asks for it. The fallbacks are deliberately

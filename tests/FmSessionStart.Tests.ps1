@@ -332,3 +332,48 @@ $writer.Dispose()
         @($output | Where-Object { $_ -like '*STARTUP TRUNCATED*' }).Count | Should -Be 0
     }
 }
+
+Describe 'Invoke-FmSessionLockStage' {
+    # The lock stage is the one stage whose result decides what the rest of the
+    # digest may do, so every shape of refusal has to land on read-only.
+    It 'is read-only when the lock owner is not loaded at all' {
+        New-TestHome | Out-Null
+        $lock = Invoke-FmSessionLockStage
+        $lock.Acquired | Should -BeFalse
+        $lock.Output[0] | Should -BeLike 'lock: NOT ACQUIRED - *'
+    }
+
+    It 'is read-only when the lock owner throws' {
+        New-TestHome | Out-Null
+        function Invoke-FmLock { throw 'another live session holds the lock (pid 1234)' }
+        try {
+            $lock = Invoke-FmSessionLockStage
+            $lock.Acquired | Should -BeFalse
+            $lock.Output[0] | Should -BeLike '*another live session holds the lock*'
+        } finally {
+            Remove-Item -Path 'function:Invoke-FmLock' -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'is read-only when the lock owner returns a refusal record' {
+        New-TestHome | Out-Null
+        function Invoke-FmLock { [pscustomobject]@{ Acquired = $false; Message = 'refused: pid 1234 is live' } }
+        try {
+            (Invoke-FmSessionLockStage).Acquired | Should -BeFalse
+        } finally {
+            Remove-Item -Path 'function:Invoke-FmLock' -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'acquires when the owner returns plain confirmation lines' {
+        New-TestHome | Out-Null
+        function Invoke-FmLock { 'lock acquired: harness pid 4242' }
+        try {
+            $lock = Invoke-FmSessionLockStage
+            $lock.Acquired | Should -BeTrue
+            $lock.Output[0] | Should -Be 'lock acquired: harness pid 4242'
+        } finally {
+            Remove-Item -Path 'function:Invoke-FmLock' -ErrorAction SilentlyContinue
+        }
+    }
+}

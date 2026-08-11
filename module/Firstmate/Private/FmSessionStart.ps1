@@ -528,6 +528,44 @@ function Invoke-FmSessionComposedStep {
     }
 }
 
+# The lock stage gets its own handling rather than the generic composed step,
+# because it is the one stage whose RESULT decides what the rest of the digest is
+# allowed to do. Refusal is honoured in all three shapes an owner might use:
+# throwing, returning an object with Acquired = $false, or simply not existing.
+# Every one of them lands on read-only, which is the safe direction: a session
+# that cannot verify lock ownership must not mutate shared fleet state.
+function Invoke-FmSessionLockStage {
+    [CmdletBinding()]
+    param()
+
+    $cmd = Resolve-FmSessionCommand -Name 'Invoke-FmLock'
+    if (-not $cmd) {
+        return [pscustomobject]@{
+            Acquired = $false
+            Output   = @('lock: NOT ACQUIRED - Invoke-FmLock is not available in this module build, so fleet-lock ownership could not be verified.')
+        }
+    }
+
+    try {
+        $result = @(& $cmd 2>&1)
+    } catch {
+        return [pscustomobject]@{ Acquired = $false; Output = @([string]$_) }
+    }
+
+    $acquired = $true
+    foreach ($item in $result) {
+        if ($null -eq $item) { continue }
+        if ($item -is [System.Management.Automation.ErrorRecord]) { $acquired = $false; continue }
+        $property = $item.PSObject.Properties['Acquired']
+        if ($null -ne $property) { $acquired = [bool]$property.Value }
+    }
+
+    [pscustomobject]@{
+        Acquired = $acquired
+        Output   = @($result | ForEach-Object { [string]$_ })
+    }
+}
+
 # --- the digest ---------------------------------------------------------------
 
 function Get-FmSessionStartDigest {
@@ -572,10 +610,9 @@ function Get-FmSessionStartDigest {
     # --- 1. lock --------------------------------------------------------------
     Set-FmSessionStage -Name 'lock'
     $out += New-FmSessionSubsection -Title 'LOCK'
-    $lock = Invoke-FmSessionComposedStep -CommandName @('Invoke-FmLock') `
-        -UnavailableLine 'lock: NOT ACQUIRED - Invoke-FmLock is not available in this module build, so fleet-lock ownership could not be verified.'
+    $lock = Invoke-FmSessionLockStage
     $out += $lock.Output
-    $readOnly = (-not $lock.Available) -or (-not $lock.Success)
+    $readOnly = -not $lock.Acquired
 
     if ($readOnly) {
         $bar = '●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
