@@ -75,8 +75,8 @@ governs the import.
 - `docs/bounded-execution.md` - the hard bound on untrusted code: Job Objects,
   the exit-124 convention, and the validated-check seam the watcher calls. Also
   the home of the worktree-tangle detector the guard binds by name.
-- `docs/lifecycle.md` - briefs, the wake classifier and the local merge, plus
-  how that area degrades when another area's owner is absent.
+- `docs/lifecycle.md` - briefs and the wake classifier, plus how that area
+  degrades when another area's owner is absent.
 - `docs/teardown-windows.md` - teardown: the landed-work test (the one thing
   that must never be relaxed), process custody via Win32 job objects instead of
   `lsof` and process groups, the exclusive-open stale-lock probe, and the lease
@@ -84,6 +84,10 @@ governs the import.
 - `docs/task-dispatch-windows.md` - the dispatch half of the spawn: the refusals
   that make it stop instead of guess (delivery contract, brief agreement,
   unverified adapter, missing dependency), and the `state/<id>.meta` field order.
+- `docs/delivery-and-projects.md` - the guarded local merge, scout promotion,
+  fleet sync, project add/create/remove, and the agent-memory file convention.
+  It also states the v1 delivery-mode gate: `direct-PR` and `local-only` ship,
+  and `no-mistakes` is **refused by name** rather than recorded and not run.
 
 ## Cross-area composition
 

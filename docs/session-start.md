@@ -68,7 +68,7 @@ fails closed to a read-only session.
 | `Invoke-FmSessionStartNudge` | `bin/fm-sessionstart-nudge.sh` | SessionStart resume/reload/fork |
 | `Test-FmGateAgent -Root` | `fm_is_gate_agent` | SessionStart eligibility |
 | `Test-FmArmCommandPolicy -Command`, `Test-FmCdCommandPolicy -Command`, `Test-FmSubagentPolicy -Payload` | the PreToolUse policy owners | PreToolUse hook |
-| `Invoke-FmPrCheckMigrate`, `Invoke-FmSecondmateLivenessSweep`, `Invoke-FmSecondmateSync`, `Invoke-FmSecondmateHandoffResume`, `Set-FmXModeArtifact`, `Invoke-FmFleetSync`, `Invoke-FmHerdrSessionCleanup` | bootstrap's six mutating sweeps plus Herdr cleanup | `Invoke-FmBootstrap` |
+| `Invoke-FmPrCheckMigrate`, `Invoke-FmSecondmateLivenessSweep`, `Invoke-FmSecondmateSync`, `Invoke-FmSecondmateHandoffResume`, `Set-FmXModeArtifact`, `Invoke-FmFleetSync` (delivery area, landed - callable with no arguments), `Invoke-FmHerdrSessionCleanup` | bootstrap's six mutating sweeps plus Herdr cleanup | `Invoke-FmBootstrap` |
 | `Test-FmTasksAxiCompatible`, `Test-FmQuotaAxiCompatible`, `Test-FmBacklogBackendManual -ConfigDir` | the axi compatibility probes | bootstrap, backlog listing |
 | `Set-FmStartupMemoryBudget -ConfigDir`, `Set-FmTraceContextSessionStart`, `Get-FmPublicFollowupPending`, `Get-FmPrimaryTangleBranch -Root`, `Get-FmDefaultBranch -Root` | their bash libraries | bootstrap, digest |
 
