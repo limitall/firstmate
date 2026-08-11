@@ -72,6 +72,9 @@ governs the import.
   byte-exact wake-queue record, why locks are directories rather than symlinks,
   why the FileSystemWatcher may only shorten a wait, and the collaborating
   functions each other area may supply.
+- `docs/bounded-execution.md` - the hard bound on untrusted code: Job Objects,
+  the exit-124 convention, and the validated-check seam the watcher calls. Also
+  the home of the worktree-tangle detector the guard binds by name.
 - `docs/lifecycle.md` - briefs, the wake classifier and the local merge, plus
   how that area degrades when another area's owner is absent.
 - `docs/teardown-windows.md` - teardown: the landed-work test (the one thing

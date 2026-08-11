@@ -279,7 +279,14 @@ function Invoke-FmWatchCheckSweep {
 
     $rejected = ''
     $checks = @()
-    try { $checks = [System.IO.Directory]::GetFiles($Context.State, '*.check.sh') | Sort-Object }
+    # Both extensions are enumerated on purpose. A *.check.ps1 is what this port
+    # can execute (report section 3.3); a *.check.sh belongs to a Linux firstmate
+    # sharing the home, and is enumerated so the validating seam REFUSES it out
+    # loud rather than leaving it silently unswept.
+    try {
+        $checks = @([System.IO.Directory]::GetFiles($Context.State, '*.check.ps1')) +
+                  @([System.IO.Directory]::GetFiles($Context.State, '*.check.sh')) | Sort-Object
+    }
     catch { $checks = @() }
 
     foreach ($check in $checks) {

@@ -134,7 +134,7 @@ staleness but can never swallow a wake.
 | --- | --- |
 | `Test-FmSignalActionable` | signal treated as actionable - surfaced |
 | `Test-FmSignalCrewProvablyWorking` | crew treated as not working - surfaced |
-| `Invoke-FmValidatedCheck` | check refused **without execution**, reported as `check: rejected unauthenticated state checks` |
+| `Invoke-FmValidatedCheck` (owned since the bounded-execution area landed - `docs/bounded-execution.md`) | check refused **without execution**, reported as `check: rejected unauthenticated state checks` |
 | `Get-FmRecordedWindows`, `Get-FmBackendCapture` | pane staleness skipped, noted once in the triage log |
 | `Get-FmWindowKind`, `Get-FmWindowTask`, `Test-FmWindowBusy`, `Get-FmBackendAgentAlive` | not busy / not a secondmate / agent state unknown |
 | `Test-FmStaleIsTerminal`, `Test-FmCrewProvablyWorking`, `Get-FmCrewAbsorbClass` | non-terminal, not working, class `none` - surfaced |
@@ -143,9 +143,33 @@ staleness but can never swallow a wake.
 | `Get-FmOpenDecisions` | the drain prints no OPEN DECISIONS section |
 | `Get-FmSupervisionInstructions` | guards fall back to the generic repair sentence |
 | `Get-FmHarness` | supervision model defaults to `persistent` (the stricter one) |
-| `Get-FmPrimaryTangleBranch`, `Get-FmDefaultBranch` | no worktree-tangle alarm |
+| `Get-FmPrimaryTangleBranch`, `Get-FmDefaultBranch` (owned since `Public/FmTangle.ps1` landed - see below) | no worktree-tangle alarm |
 | `Invoke-FmPrCheckMigration`, `Repair-FmPrPollRetirementAll`, `Publish-FmPrPollRetirement` | migration assumed done, no retirement recovery |
 | `Invoke-FmPendingReplyTick`, `Invoke-FmProceventReconcile` | no-op |
+
+## The two seams that now have owners
+
+Both of these were documented degradations with nobody on the other side. They
+are the only supervision behaviour that changed when the bounded-execution area
+landed; everything else in this file is untouched.
+
+**The check sweep can now execute something.** `Invoke-FmValidatedCheck` lives in
+`Public/FmBounded.ps1` (`docs/bounded-execution.md`): it refuses anything it
+cannot authenticate - which, until the check registry is ported, is still every
+check - and otherwise runs a private snapshot of the check under a hard bound
+with the exit-124 convention. `Invoke-FmWatchCheckSweep` now enumerates
+`*.check.ps1` as well as `*.check.sh`: a `.ps1` is what this port can execute,
+and a `.sh` is enumerated so the seam REFUSES it out loud instead of leaving it
+silently unswept.
+
+**The worktree-tangle alarm now fires.** `Public/FmTangle.ps1` publishes
+`Get-FmPrimaryTangleBranch` and `Get-FmDefaultBranch`. The banner above was
+already complete; it simply never had an answer to its question. One rule
+differs from `bin/fm-tangle-lib.sh` and it is deliberate: bash keeps linked
+worktrees quiet through detached HEAD, while this port's crewmates work on named
+branches inside linked worktrees, so the detector tests git-dir against
+git-common-dir instead. `tests/FmTangle.Tests.ps1` pins that case against a real
+`git worktree add`.
 
 ## Shared helpers this area consumes
 
