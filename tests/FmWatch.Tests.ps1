@@ -405,3 +405,210 @@ Describe 'Process-event surfacing' {
         Unlock-FmPath -LockDir $script:Ctx.QueueLock
     }
 }
+
+Describe 'Signal triage with the classifier present' {
+    <#
+        The absorb side of triage only exists when the classifier seam is
+        available. These stubs stand in for it so both outcomes are covered:
+        fail-closed surfacing is tested above, deliberate absorption here.
+    #>
+    BeforeAll {
+        function Test-FmSignalActionable { param($Files) return $script:StubActionable }
+        function Test-FmSignalCrewProvablyWorking { param($Files) return $script:StubWorking }
+        function Set-FmStatusSurfaced { param($Path, $State) $script:StubSurfaced += @($Path) }
+    }
+    AfterAll {
+        foreach ($n in @('Test-FmSignalActionable', 'Test-FmSignalCrewProvablyWorking', 'Set-FmStatusSurfaced')) {
+            Remove-Item -Path "function:$n" -ErrorAction SilentlyContinue
+        }
+    }
+    BeforeEach {
+        $script:TestHome = New-TestHome
+        $script:Ctx = Get-FmWakeContext
+        $script:Settings = Get-FmWatchSettings
+        $script:StubActionable = $false
+        $script:StubWorking = $true
+        $script:StubSurfaced = @()
+        Set-FmFileTextLf -Path (Join-Path $script:Ctx.State 'alpha.status') -Text "working: still going`n"
+    }
+    AfterEach { Remove-TestHome -Path $script:TestHome }
+
+    It 'absorbs a no-verb signal whose crew is provably working' {
+        Invoke-FmWatchSignalCycle -Context $script:Ctx -Settings $script:Settings
+
+        Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+        # The marker still advances, so the absorbed wake does not re-fire.
+        (Get-FmFileTextOrEmpty -Path (Join-Path $script:Ctx.State '.seen-alpha_status')) |
+            Should -Be (Get-FmFileSignature -Path (Join-Path $script:Ctx.State 'alpha.status'))
+        (Get-FmFileTextOrEmpty -Path (Join-Path $script:Ctx.State '.watch-triage.log')) |
+            Should -BeLike '*absorbed benign signal:*'
+    }
+
+    It 'surfaces a captain-relevant signal without consulting the costly crew read' {
+        $script:StubActionable = $true
+        $script:StubWorking = $true   # would absorb, if it were even asked
+
+        { Invoke-FmWatchSignalCycle -Context $script:Ctx -Settings $script:Settings } | Should -Throw
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 1
+        $script:StubSurfaced.Count | Should -Be 1
+    }
+
+    It 'surfaces a no-verb signal whose crew stopped without a captain-relevant status' {
+        $script:StubWorking = $false
+
+        { Invoke-FmWatchSignalCycle -Context $script:Ctx -Settings $script:Settings } | Should -Throw
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -Match "\tsignal\talpha\.status\t"
+    }
+
+    It 'hands every wake to the daemon while away mode is on, absorbing nothing' {
+        Set-FmFileTextLf -Path (Join-Path $script:Ctx.State '.afk') -Text ''
+
+        { Invoke-FmWatchSignalCycle -Context $script:Ctx -Settings $script:Settings } | Should -Throw
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 1
+    }
+}
+
+Describe 'Pane staleness with the backend present' {
+    BeforeAll {
+        function Get-FmRecordedWindows { param($State) return @('sess:1') }
+        function Get-FmBackendCapture { param($Window, $State, $Lines) return $script:StubPane }
+        function Get-FmWindowKind { param($Window, $State) return 'ship' }
+        function Get-FmWindowTask { param($Window, $State) return 'alpha' }
+        function Test-FmWindowBusy { param($Window, $State, $Tail) return $script:StubBusy }
+        function Test-FmStaleIsTerminal { param($Window, $State) return $script:StubTerminal }
+        function Test-FmCrewProvablyWorking { param($Task) return $script:StubCrewWorking }
+        function Get-FmCrewAbsorbClass { param($Task) return $script:StubAbsorbClass }
+        function Get-FmLastStatusLine { param($Path) return $script:StubLastLine }
+        function Test-FmStatusPaused { param($Line) return $script:StubPaused }
+        function Test-FmStatusPausedOrCaptainHeld { param($Line) return $script:StubPaused }
+        function Get-FmBackendAgentAlive { param($Window, $State) return $script:StubAgentAlive }
+    }
+    AfterAll {
+        foreach ($n in @('Get-FmRecordedWindows', 'Get-FmBackendCapture', 'Get-FmWindowKind', 'Get-FmWindowTask',
+                'Test-FmWindowBusy', 'Test-FmStaleIsTerminal', 'Test-FmCrewProvablyWorking', 'Get-FmCrewAbsorbClass',
+                'Get-FmLastStatusLine', 'Test-FmStatusPaused', 'Test-FmStatusPausedOrCaptainHeld', 'Get-FmBackendAgentAlive')) {
+            Remove-Item -Path "function:$n" -ErrorAction SilentlyContinue
+        }
+    }
+    BeforeEach {
+        $script:TestHome = New-TestHome
+        $script:Ctx = Get-FmWakeContext
+        $script:Settings = Get-FmWatchSettings
+        $script:StubPane = 'pane contents'
+        $script:StubBusy = $false
+        $script:StubTerminal = $false
+        $script:StubCrewWorking = $false
+        $script:StubAbsorbClass = 'none'
+        $script:StubLastLine = 'working: going'
+        $script:StubPaused = $false
+        $script:StubAgentAlive = 'dead'
+        Set-FmFileTextLf -Path (Join-Path $script:Ctx.State 'alpha.status') -Text "working: going`n"
+    }
+    AfterEach { Remove-TestHome -Path $script:TestHome }
+
+    It 'needs two consecutive identical hashes before calling a pane stale' {
+        # First sight records the hash and zeroes the counter; the first matching
+        # poll only takes the counter to 1. Two matches are required.
+        Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings
+        (Get-FmFileTextOrEmpty -Path (Join-Path $script:Ctx.State '.hash-sess_1')) | Should -Not -BeNullOrEmpty
+        Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings
+        (Get-FmFirstLine -Path (Join-Path $script:Ctx.State '.count-sess_1')) | Should -Be '1'
+        Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+
+        { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings } | Should -Throw
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -Match "\tstale\tsess:1\tstale: sess:1$"
+    }
+
+    It 'resets the count when the pane changes again' {
+        Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings
+        $script:StubPane = 'something new'
+        Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings
+
+        (Get-FmFirstLine -Path (Join-Path $script:Ctx.State '.count-sess_1')) | Should -Be '0'
+        Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+    }
+
+    It 'never calls a busy pane stale' {
+        $script:StubBusy = $true
+        1..3 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings }
+        Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+    }
+
+    It 'absorbs a provably-working stale and starts its wedge timer instead' {
+        $script:StubAbsorbClass = 'working'
+        1..3 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings }
+
+        Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+        (Get-FmFirstLine -Path (Join-Path $script:Ctx.State '.stale-since-sess_1')) | Should -Match '^\d+$'
+    }
+
+    It 'lets an active run override a stale captain-relevant status line' {
+        # The exact 2026-07 false-surface case: the log still reads done: from
+        # before a validation started, but the pipeline is genuinely running.
+        $script:StubTerminal = $true
+        $script:StubCrewWorking = $true
+        1..3 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings }
+
+        Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+        (Get-FmFileTextOrEmpty -Path (Join-Path $script:Ctx.State '.watch-triage.log')) |
+            Should -BeLike '*overriding a stale captain-relevant status*'
+    }
+
+    It 'surfaces a terminal stale when the crew is not provably working' {
+        $script:StubTerminal = $true
+        1..2 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings }
+
+        { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings } | Should -Throw
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 1
+    }
+
+    It 'absorbs a declared pause on the long recheck cadence rather than wedging it' {
+        $script:StubPaused = $true
+        $script:StubAbsorbClass = 'paused'
+        1..3 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings }
+
+        Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+        [System.IO.File]::Exists((Join-Path $script:Ctx.State '.paused-sess_1')) | Should -BeTrue
+        [System.IO.File]::Exists((Join-Path $script:Ctx.State '.stale-since-sess_1')) | Should -BeFalse
+    }
+
+    It 're-surfaces a long-standing pause once, so a forgotten hold cannot rot invisibly' {
+        $env:FM_PAUSE_RESURFACE_SECS = '60'
+        $settings = Get-FmWatchSettings
+        $status = Join-Path $script:Ctx.State 'alpha.status'
+        [System.IO.File]::SetLastWriteTimeUtc($status, [DateTime]::UtcNow.AddSeconds(-600))
+
+        { Invoke-FmPausedStale -Window 'sess:1' -Task 'alpha' -Hash 'abc' -Context $script:Ctx -Settings $settings } |
+            Should -Throw
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -BeLike '*awaiting external - declared pause*'
+
+        # Throttled: the next poll inside the same window stays quiet.
+        Invoke-FmPausedStale -Window 'sess:1' -Task 'alpha' -Hash 'abc' -Context $script:Ctx -Settings $settings
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 1
+        Remove-Item -Path 'env:FM_PAUSE_RESURFACE_SECS' -ErrorAction SilentlyContinue
+    }
+
+    It 'queues one wake per distinct stale hash while away mode owns triage' {
+        Set-FmFileTextLf -Path (Join-Path $script:Ctx.State '.afk') -Text ''
+        1..2 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings }
+
+        { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings } | Should -Throw
+        # Same hash again: already classified, so nothing more is queued.
+        Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 1
+    }
+
+    It 'bounds a busy pane that has gone too long with no completed turn' {
+        $script:StubBusy = $true
+        $env:FM_BUSY_TURN_MAX_SECS = '1'
+        $env:FM_STALE_ESCALATE_SECS = '1'
+        $settings = Get-FmWatchSettings
+        Set-FmFileTextLf -Path (Join-Path $script:Ctx.State 'alpha.meta') -Text "window=sess:1`n"
+        [System.IO.File]::SetLastWriteTimeUtc((Join-Path $script:Ctx.State 'alpha.meta'), [DateTime]::UtcNow.AddSeconds(-600))
+        Set-FmFileTextLf -Path (Join-Path $script:Ctx.State '.stale-since-sess_1') -Text (((Get-FmUnixTime) - 300).ToString() + "`n")
+
+        { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings } | Should -Throw
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -BeLike '*possible wedge, escalation 1)'
+        Remove-Item -Path 'env:FM_BUSY_TURN_MAX_SECS', 'env:FM_STALE_ESCALATE_SECS' -ErrorAction SilentlyContinue
+    }
+}
