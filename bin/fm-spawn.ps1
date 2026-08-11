@@ -53,6 +53,9 @@ try {
     $worker | Format-List | Out-String | Write-Output
     exit 0
 } catch {
-    Write-Error $_.Exception.Message
+    # Straight to stderr, not Write-Error: an entry point's refusal is a
+    # message for a human or a calling script, not a PowerShell error record
+    # with source-line decoration wrapped around it.
+    [Console]::Error.WriteLine($_.Exception.Message)
     exit 1
 }

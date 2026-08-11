@@ -61,14 +61,14 @@ if (Test-Path -LiteralPath $fmManifest) {
 }
 
 if (-not $TaskId -or -not $Verb) {
-    Write-Error 'usage: fm-control.ps1 <task-id> <interrupt|exit>'
+    [Console]::Error.WriteLine('usage: fm-control.ps1 <task-id> <interrupt|exit>')
     exit 2
 }
 
 if ($Verb -eq 'relaunch') {
-    Write-Error ("error: 'relaunch' is not implemented on this port. It is a durable transaction (checkpoint, staged " +
+    [Console]::Error.WriteLine(("error: 'relaunch' is not implemented on this port. It is a durable transaction (checkpoint, staged " +
         "rollback, replacement launch) and a partial one is worse than none. Run './bin/fm-control.ps1 <id> exit', " +
-        "then spawn a replacement with './bin/fm-spawn.ps1' once its brief carries the progress note.")
+        "then spawn a replacement with './bin/fm-spawn.ps1' once its brief carries the progress note."))
     exit 2
 }
 
@@ -77,7 +77,7 @@ if ($Verb -eq 'relaunch') {
 # its own verbs would have to reach into module internals to refuse one.
 $fmControlVerbs = @('interrupt', 'exit')
 if ($Verb -notin $fmControlVerbs) {
-    Write-Error ("error: '$Verb' is not a control verb; allowed verbs: " + ($fmControlVerbs -join ', '))
+    [Console]::Error.WriteLine(("error: '$Verb' is not a control verb; allowed verbs: " + ($fmControlVerbs -join ', ')))
     exit 2
 }
 
@@ -95,6 +95,9 @@ try {
     }
     exit 0
 } catch {
-    Write-Error $_.Exception.Message
+    # Straight to stderr, not Write-Error: an entry point's refusal is a
+    # message for a human or a calling script, not a PowerShell error record
+    # with source-line decoration wrapped around it.
+    [Console]::Error.WriteLine($_.Exception.Message)
     exit 1
 }

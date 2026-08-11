@@ -244,38 +244,42 @@ function Invoke-FmHerdrCliJson {
     $json
 }
 
-# Test-FmHerdrTool: refuse loudly if the herdr CLI is missing. Unlike the bash
-# adapter there is no jq requirement on this port.
-function Test-FmHerdrTool {
+# Assert-FmHerdrTool: refuse loudly if the herdr CLI is missing. Unlike the
+# bash adapter there is no jq requirement on this port - herdr's JSON is parsed
+# natively - so the herdr binary is the whole dependency.
+#
+# These two are Assert-, not Test-, deliberately: a missing or too-old CLI is a
+# hard blocker in every context, and a throw behaves the same whatever the
+# caller's $ErrorActionPreference happens to be. A Write-Error would be
+# terminating under the module's own 'Stop' preference and non-terminating
+# under a caller's 'Continue', which is exactly the kind of
+# refusal-that-might-not-refuse this port must not have.
+function Assert-FmHerdrTool {
     [CmdletBinding()]
     param()
     if (Get-Command herdr -CommandType Application -ErrorAction SilentlyContinue) { return $true }
-    Write-Error "backend=herdr selected but the 'herdr' CLI is not installed (https://herdr.dev)"
-    $false
+    throw "error: backend=herdr selected but the 'herdr' CLI is not installed (https://herdr.dev)"
 }
 
-# Test-FmHerdrVersion: refuse loudly on a missing or too-old herdr client.
+# Assert-FmHerdrVersion: refuse loudly on a missing or too-old herdr client.
 # Reads .client.protocol, which is session-independent (unlike .server).
-function Test-FmHerdrVersion {
+function Assert-FmHerdrVersion {
     [CmdletBinding()]
     param()
-    if (-not (Test-FmHerdrTool)) { return $false }
+    $null = Assert-FmHerdrTool
     $result = Invoke-FmChildProcess -FilePath 'herdr' -ArgumentList @('status', '--json') -TimeoutSeconds 30
     $json = ConvertFrom-FmJsonSafe -Text $result.StdOut
     if ($null -eq $json) {
-        Write-Error "'herdr status --json' failed; is herdr installed correctly?"
-        return $false
+        throw "error: 'herdr status --json' failed; is herdr installed correctly?"
     }
     $protocol = Get-FmJsonValue -InputObject $json -Path 'client.protocol'
     $version = Get-FmJsonValue -InputObject $json -Path 'client.version'
     if ($null -eq $protocol -or -not ([int]::TryParse([string]$protocol, [ref]([int]0)))) {
-        Write-Error "could not read herdr client protocol from 'herdr status --json'; refusing to use an unverified herdr build"
-        return $false
+        throw "error: could not read herdr client protocol from 'herdr status --json'; refusing to use an unverified herdr build"
     }
     if ([int]$protocol -lt $script:FmHerdrMinProtocol) {
         $shown = if ($version) { $version } else { 'unknown' }
-        Write-Error "herdr protocol $protocol (version $shown) is older than the verified minimum $($script:FmHerdrMinProtocol); update herdr before using backend=herdr"
-        return $false
+        throw "error: herdr protocol $protocol (version $shown) is older than the verified minimum $($script:FmHerdrMinProtocol); update herdr before using backend=herdr"
     }
     $true
 }
@@ -327,14 +331,17 @@ function Start-FmHerdrServer {
         $psi.Environment['HERDR_SESSION'] = $Session
         $null = [System.Diagnostics.Process]::Start($psi)
     } catch {
-        Write-Error "could not start the herdr server for session '$Session': $($_.Exception.Message)"
+        # -ErrorAction Continue, not a throw: this reports a verdict its
+        # callers branch on (a send to a dead session becomes 'send-failed'),
+        # so it must not terminate under the module's 'Stop' preference.
+        Write-Error "could not start the herdr server for session '$Session': $($_.Exception.Message)" -ErrorAction Continue
         return $false
     }
     for ($i = 0; $i -lt $Polls; $i++) {
         if (Test-FmHerdrServerRunning -Session $Session) { return $true }
         Start-Sleep -Seconds $PollSeconds
     }
-    Write-Error "herdr server for session '$Session' did not report running within $([math]::Round($Polls * $PollSeconds, 1))s"
+    Write-Error "herdr server for session '$Session' did not report running within $([math]::Round($Polls * $PollSeconds, 1))s" -ErrorAction Continue
     $false
 }
 
@@ -591,7 +598,7 @@ function New-FmHerdrContainer {
         [Parameter(Mandatory)][string]$Cwd,
         [ValidateSet('launcher-home', 'other-home')][string]$Relationship = 'launcher-home'
     )
-    if (-not (Test-FmHerdrVersion)) { throw 'herdr version check failed' }
+    $null = Assert-FmHerdrVersion
     $session = Get-FmHerdrSession
     if (-not $PSCmdlet.ShouldProcess("herdr session '$session'", 'ensure container')) { return $null }
     if (-not (Start-FmHerdrServer -Session $session)) { throw "herdr server for session '$session' is not running" }
@@ -1538,22 +1545,14 @@ function Resolve-FmTaskSelector {
 # (ported from bin/fm-control-lib.sh; see this file's header for the split)
 #
 # These are pure tables: no side effects, no backend command, no state read.
-# The verb list is closed on purpose - there is no arbitrary-text and no
-# generic raw-key entry point on the control plane, because a routing-marked
-# lifecycle command arrives as chat the agent reasons ABOUT instead of running.
+#
+# The VERB ALLOWLIST itself is not here: bin/fm-control.ps1 is the control
+# plane's only door on this port and states its closed list inline, so there is
+# exactly one list rather than two that can drift. The list stays closed on
+# purpose - there is no arbitrary-text and no generic raw-key entry point,
+# because a routing-marked lifecycle command arrives as chat the agent reasons
+# ABOUT instead of running.
 # =============================================================================
-
-function Get-FmControlVerb {
-    [CmdletBinding()]
-    param()
-    @('interrupt', 'exit')
-}
-
-function Test-FmControlVerbAllowed {
-    [CmdletBinding()]
-    param([Parameter()][AllowNull()][AllowEmptyString()][string]$Verb)
-    $Verb -in (Get-FmControlVerb)
-}
 
 # Get-FmControlHarnessFamily: the verified adapter a RECORDED harness value
 # belongs to. A task launched from a raw command records that command's

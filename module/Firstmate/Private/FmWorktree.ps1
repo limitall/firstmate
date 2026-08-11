@@ -251,12 +251,13 @@ function Assert-FmWorktreeIsolation {
 
 # --- treehouse lease ---------------------------------------------------------
 
-function Test-FmTreehouseTool {
+# Assert-, not Test-: a missing treehouse is a hard blocker, and a throw
+# refuses identically whatever the caller's $ErrorActionPreference is.
+function Assert-FmTreehouseTool {
     [CmdletBinding()]
     param()
     if (Get-Command treehouse -CommandType Application -ErrorAction SilentlyContinue) { return $true }
-    Write-Error "the 'treehouse' CLI is not installed; firstmate cannot acquire an isolated worktree without it"
-    $false
+    throw "error: the 'treehouse' CLI is not installed; firstmate cannot acquire an isolated worktree without it"
 }
 
 # New-FmWorktreeLease: acquire one worktree from <Project>'s treehouse pool
@@ -283,7 +284,7 @@ function New-FmWorktreeLease {
         [string]$LeaseHolder = '',
         [double]$TimeoutSeconds = 300
     )
-    if (-not (Test-FmTreehouseTool)) { throw "treehouse is not installed" }
+    $null = Assert-FmTreehouseTool
     if (-not (Test-Path -LiteralPath $Project -PathType Container)) {
         throw "project '$Project' is not a directory; cannot acquire a worktree from its pool"
     }
@@ -345,7 +346,7 @@ function Remove-FmWorktreeLease {
         [switch]$Force,
         [double]$TimeoutSeconds = 300
     )
-    if (-not (Test-FmTreehouseTool)) { return $false }
+    $null = Assert-FmTreehouseTool
     if (-not $PSCmdlet.ShouldProcess($Path, 'treehouse return')) { return $false }
     $argv = @('return', $Path)
     if ($IfLeaseId) { $argv += @('--if-lease-id', $IfLeaseId) }

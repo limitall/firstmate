@@ -51,11 +51,11 @@ if (Test-Path -LiteralPath $fmManifest) {
 $text = ($Message -join ' ').Trim()
 
 if ($Key -and $text) {
-    Write-Error 'error: pass either -Key or a message, not both'
+    [Console]::Error.WriteLine('error: pass either -Key or a message, not both')
     exit 2
 }
 if (-not $Key -and -not $text) {
-    Write-Error 'usage: fm-send.ps1 <target> <message...> | fm-send.ps1 <target> -Key <key>'
+    [Console]::Error.WriteLine('usage: fm-send.ps1 <target> <message...> | fm-send.ps1 <target> -Key <key>')
     exit 2
 }
 
@@ -68,6 +68,9 @@ try {
     }
     exit 0
 } catch {
-    Write-Error $_.Exception.Message
+    # Straight to stderr, not Write-Error: an entry point's refusal is a
+    # message for a human or a calling script, not a PowerShell error record
+    # with source-line decoration wrapped around it.
+    [Console]::Error.WriteLine($_.Exception.Message)
     exit 1
 }
