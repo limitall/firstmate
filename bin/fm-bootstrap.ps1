@@ -20,13 +20,41 @@
 #                 "NUDGE_SECONDMATES: secondmate <id>: send failed: <reason>",
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
+#                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
+#                 "NETWORK_CHECKS: fleet lock ownership changed before <label>, ...",
 #                 "WINDOWS_SETUP: <remediation>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...".
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the five MUTATING sweeps
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the six MUTATING sweeps
 #          (PR-check migration, secondmate_sync, secondmate_liveness_sweep,
-#          x_mode_setup, fleet_sync) while still printing every read-only detect
-#          line; the TANGLE line switches to advisory-only wording with no
-#          checkout command.
+#          secondmate_handoff_resume, x_mode_setup, fleet_sync) while still
+#          printing every read-only detect line; the TANGLE line switches to
+#          advisory-only wording with no checkout command.
+#          Set FM_BOOTSTRAP_NETWORK to split this run by whether a step talks to
+#          the network, so a session start can print its digest from local reads
+#          alone and run the network half concurrently:
+#            all  (default, and any unrecognized value) - everything, exactly as
+#                 before. Unrecognized values fall back here on purpose: a typo
+#                 must never silently skip a safety sweep.
+#            skip - every LOCAL step, and none of the network ones. Skips
+#                 `gh auth status`, the liveness sweep, the secondmate sync, the
+#                 pending-handoff delivery, and the fleet sync.
+#            only - ONLY those network steps and nothing else. No tool detection,
+#                 no version floors, no tangle check, no PR-check migration, no
+#                 x_mode_setup: those already ran on the local pass.
+#          FM_BOOTSTRAP_DETECT_ONLY composes with it unchanged, so `only` plus
+#          detect-only is the read-only `gh auth status` probe on its own.
+#          bin/fm-startup-network.sh owns the deferral: it runs the `only` phase
+#          in a detached bounded worker and publishes the result. This file stays
+#          the single owner of every sweep, and the split changes only WHEN each
+#          runs, never WHETHER.
+#          A relaunch the liveness sweep performs during an `only` run is always
+#          reported, because a digest composed before that run already printed the
+#          superseded endpoint record.
+#          FM_BOOTSTRAP_NETWORK_LOCK_PID, when set by that deferred worker, names
+#          the fleet-lock owner the worker was launched for. Every mutating
+#          network sweep rechecks state/.lock against it first, so a worker whose
+#          session already handed the lock on refuses the sweep loudly rather than
+#          racing the new owner.
 #        fm-bootstrap.ps1 install <tool>...
 #          Install the named tools (only ones the captain approved).
 #
@@ -49,8 +77,12 @@
 #   pr-check migration -> startup memory budget -> backend validity -> backend
 #   tools -> common tools -> treehouse lease -> no-mistakes -> quota-axi ->
 #   tasks-axi -> gh auth -> tangle -> windows stubs -> crew harness fact ->
-#   crew dispatch -> tasks-axi fact -> liveness -> secondmate sync -> X mode ->
-#   fleet sync.
+#   crew dispatch -> tasks-axi fact -> liveness -> secondmate sync -> pending
+#   handoff delivery -> X mode -> fleet sync -> pending handoff detection.
+#
+# A phase-split run is that same sequence with one half's lines removed, never a
+# reshuffle: `gh auth` sits between the two local blocks because that is where it
+# has always sat.
 #
 # DETECT-ONLY MEANS DETECT-ONLY. Nothing above the FM_BOOTSTRAP_DETECT_ONLY
 # guards writes anything, and fm-session-start's read-only path depends on that
@@ -111,6 +143,60 @@ Import-Module (Join-Path $PSScriptRoot 'fm-secondmate-registry-lib.psm1')
 Import-Module (Join-Path $PSScriptRoot 'fm-wake-lib.psm1')
 
 $fmArgv = @($args)
+
+# Network-phase selection (see the header). An unrecognized value resolves to
+# `all` so a malformed override runs every step rather than silently dropping a
+# safety sweep. The comparison is case-SENSITIVE because the bash `case` is:
+# `SKIP` is unrecognized there and must stay unrecognized here.
+$script:FmNetworkPhase = 'all'
+switch -CaseSensitive (Get-FmEnv 'FM_BOOTSTRAP_NETWORK' 'all') {
+    'skip' { $script:FmNetworkPhase = 'skip' }
+    'only' { $script:FmNetworkPhase = 'only' }
+    default { $script:FmNetworkPhase = 'all' }
+}
+
+function Test-FmLocalPhase {
+    [OutputType([bool])]
+    param()
+    return ($script:FmNetworkPhase -cne 'only')
+}
+
+function Test-FmNetworkPhase {
+    [OutputType([bool])]
+    param()
+    return ($script:FmNetworkPhase -cne 'skip')
+}
+
+# The deferred worker inherits the fleet-lock owner it was launched for. With no
+# such pid this is an ordinary in-session run and everything is authorized; with
+# one, the CURRENT owner recorded in state/.lock must still be that pid.
+function Test-FmNetworkMutationAuthorized {
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][string]$StateDir)
+    $expected = Get-FmEnv 'FM_BOOTSTRAP_NETWORK_LOCK_PID'
+    if ($expected -eq '') { return $true }
+    if ($expected -match '[^0-9]') { return $false }
+    $lock = ConvertTo-FmNativePath (Join-Path $StateDir '.lock')
+    if (-not [System.IO.File]::Exists($lock)) { return $false }
+    if (Test-FmSymlink $lock) { return $false }
+    # `current=$(cat ...)` strips trailing NEWLINES only, so a CR left by a
+    # CRLF writer stays in the value and refuses the sweep in BOTH worlds
+    # rather than in only one of them.
+    $current = Get-FmFileText $lock
+    $current = $current -replace "`n+$", ''
+    return ($current -ceq $expected)
+}
+
+function Test-FmNetworkSweepAuthorized {
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$StateDir,
+        [Parameter(Mandatory)][string]$Label
+    )
+    if (Test-FmNetworkMutationAuthorized -StateDir $StateDir) { return $true }
+    Write-FmOut "NETWORK_CHECKS: fleet lock ownership changed before $Label, so this stale worker skipped that sweep"
+    return $false
+}
 
 $script:FmSecondmateNudgeMessage = 'firstmate was updated to the latest - please re-read your AGENTS.md to pick up the new instructions.'
 $script:FmRespawnedSecondmateIds = @()
@@ -692,7 +778,13 @@ function Invoke-FmSecondmateLivenessSweep {
                     -Arguments @($id, '--secondmate') -Environment @{ FM_SPAWN_NO_GUARD = '1' }
                 if ($spawn.Ok) {
                     $script:FmRespawnedSecondmateIds += $id
-                    if ($verbose) {
+                    # A relaunch replaces the endpoint record a digest may already
+                    # have printed. On the local pass that digest has not been
+                    # composed yet, so the fact stays behind the verbose flag as
+                    # before; on the deferred network pass the digest is already
+                    # out, so reporting it is what keeps the superseded record
+                    # from being acted on.
+                    if ($verbose -or -not (Test-FmLocalPhase)) {
                         Write-FmOut "BOOTSTRAP_INFO: secondmate $id relaunched after $cause (backend=$backend)"
                     }
                 } else {
@@ -1018,6 +1110,61 @@ function Invoke-FmSecondmateSync {
         } finally {
             try { $null = Unlock-FmLock -LockPath $homeLock } catch { $null = $_ }
         }
+    }
+}
+
+# --- pending backlog handoff --------------------------------------------------
+
+# Deliver anything a previous session left pending in an outbox. Entirely
+# best-effort and entirely silent: the delivery script owns its own reporting and
+# a failure here must never colour a bootstrap digest.
+function Invoke-FmSecondmateHandoffResume {
+    param([Parameter(Mandatory)][hashtable]$Ctx)
+    if (-not [System.IO.Directory]::Exists((ConvertTo-FmNativePath (Join-Path $Ctx.Data 'handoff')))) { return }
+    try {
+        $null = Invoke-FmScript -Name 'fm-backlog-handoff' -BinDir $Ctx.BinDir -Arguments @('--resume-pending')
+    } catch { $null = $_ }
+}
+
+# Report what is still undelivered. Read-only, so it runs on every local pass
+# including a detect-only one.
+function Invoke-FmSecondmateHandoffDetect {
+    param([Parameter(Mandatory)][hashtable]$Ctx)
+    $dir = ConvertTo-FmNativePath (Join-Path $Ctx.Data 'handoff')
+    if (-not [System.IO.Directory]::Exists($dir)) { return }
+    # `for outbox in "$DATA/handoff"/*.outbox.md` - sorted, dot-prefixed leaves
+    # excluded, and DIRECTORIES included, because a directory with that name is
+    # exactly one of the shapes the unsafe-outbox arm below exists to catch.
+    $entries = [System.Collections.Generic.List[string]]::new()
+    foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($dir, '*.outbox.md')) {
+        $leaf = [System.IO.Path]::GetFileName($entry)
+        if ($leaf.StartsWith('.')) { continue }
+        if (-not $leaf.EndsWith('.outbox.md', [System.StringComparison]::Ordinal)) { continue }
+        $entries.Add($entry)
+    }
+    $entries.Sort([System.StringComparer]::Ordinal)
+
+    foreach ($outbox in $entries) {
+        # `[ -e ]` - a dangling link expands from the glob but is then skipped.
+        if (-not ([System.IO.File]::Exists($outbox) -or [System.IO.Directory]::Exists($outbox))) { continue }
+        $leaf = [System.IO.Path]::GetFileName($outbox)
+        $id = $leaf.Substring(0, $leaf.Length - '.outbox.md'.Length)
+        if ($id -eq '' -or $id -notmatch '^[A-Za-z0-9._-]+$') { $id = 'unknown' }
+        # `[ ! -f ] || [ -L ]`: -f follows the link, so a symlink TO a regular
+        # file is still unsafe.
+        if ((-not [System.IO.File]::Exists($outbox)) -or (Test-FmSymlink $outbox)) {
+            Write-FmOut "SECONDMATE_HANDOFF: secondmate ${id}: pending delivery: unsafe outbox"
+            continue
+        }
+        $count = 'unknown'
+        try {
+            $n = 0
+            foreach ($line in (Get-FmFileLines $outbox)) {
+                if ($line -cmatch '^- \[[ x]\] ') { $n++ }
+            }
+            $count = [string]$n
+        } catch { $count = 'unknown' }
+        Write-FmOut "SECONDMATE_HANDOFF: secondmate ${id}: pending delivery: $count item(s)"
     }
 }
 
@@ -1404,8 +1551,10 @@ Invoke-FmMain -UnexpectedCode 70 {
 
     # The FIRST mutating sweep at a locked session boundary: it neutralizes legacy
     # PR checks before any later bootstrap mutation can leave old artifacts
-    # runnable. Detect-only sessions never touch state.
-    if (-not $detectOnly) {
+    # runnable. Detect-only sessions never touch state, and the deferred network
+    # pass never repeats it: the local pass that ran first already closed that
+    # window.
+    if ((-not $detectOnly) -and (Test-FmLocalPhase)) {
         $migrate = Invoke-FmScript -Name 'fm-pr-check-migrate' -BinDir $ctx.BinDir
         if ($migrate.StdOut -ne '') { Write-FmRaw $migrate.StdOut }
         if ($migrate.StdErr -ne '') { Write-FmErr ($migrate.StdErr.TrimEnd("`n")) }
@@ -1428,71 +1577,99 @@ Invoke-FmMain -UnexpectedCode 70 {
     $allTools = (@($backendToolList) + @($commonTools)) -join ' '
     $noMistakesMin = '1.31.2'
 
-    if (-not $backendValid) {
-        Write-FmOut "BACKEND_INVALID: $backend (known: $(Get-FmBackendKnownName))"
-    }
-    foreach ($tool in $backendToolList) {
-        if (-not (Test-FmBackendRequiredTool $backend $tool)) { Write-FmMissingToolDiagnostic $tool }
-    }
-    foreach ($tool in $commonTools) {
-        if (-not (Test-FmCommand $tool)) { Write-FmMissingToolDiagnostic $tool }
-    }
-    # The treehouse lease-support upgrade check is only relevant when the resolved
-    # backend actually requires treehouse; an orca home must not be told to
-    # upgrade a provider it never uses.
-    if ((Test-FmBackendListContains $allTools 'treehouse') -and (Test-FmCommand 'treehouse') -and
-        -not (Test-FmTreehouseSupportsLease)) {
-        Write-FmOut "MISSING: treehouse (install: $(Get-FmInstallCommand 'treehouse'))"
-    }
-    if ((Test-FmCommand 'no-mistakes') -and -not (Test-FmToolVersionAtLeast 'no-mistakes' $noMistakesMin)) {
-        Write-FmOut "MISSING: no-mistakes (install: $(Get-FmInstallCommand 'no-mistakes'))"
-    }
-    if ((Test-FmCommand 'quota-axi') -and -not (Test-FmQuotaAxiCompatible)) {
-        Write-FmOut "MISSING: quota-axi (install: $(Get-FmInstallCommand 'quota-axi'))"
-    }
-    if ((Test-FmCommand 'tasks-axi') -and -not (Test-FmTasksAxiCompatible)) {
-        Write-FmOut "MISSING: tasks-axi (install: $(Get-FmInstallCommand 'tasks-axi'))"
-    }
-    $ghAuth = Invoke-FmBootstrapTool -Name 'gh' -Arguments @('auth', 'status')
-    if (-not $ghAuth.Ok) { Write-FmOut 'NEEDS_GH_AUTH' }
-
-    # Worktree-tangle check: the firstmate primary checkout must sit on its
-    # default branch, not a feature branch. Scoped to the primary only;
-    # detached-HEAD worktrees and secondmate homes never trip it.
-    $tangleBranch = ''
-    try { $tangleBranch = Get-FmPrimaryTangleBranch -Root $ctx.Root } catch { $tangleBranch = '' }
-    if (-not [string]::IsNullOrEmpty($tangleBranch)) {
-        $tangleDefault = ''
-        try { $tangleDefault = Get-FmDefaultBranch -Directory $ctx.Root } catch { $tangleDefault = '' }
-        if ([string]::IsNullOrEmpty($tangleDefault)) { $tangleDefault = 'main' }
-        if ($detectOnly) {
-            Write-FmOut "TANGLE: primary checkout on feature branch '$tangleBranch' (expected '$tangleDefault'); the work is safe on that ref - read-only session must leave restore work to the session holding the fleet lock"
-        } else {
-            Write-FmOut "TANGLE: primary checkout on feature branch '$tangleBranch' (expected '$tangleDefault'); the work is safe on that ref - restore the primary with: git -C $($ctx.PosixRoot) checkout $tangleDefault, then re-validate the branch in a proper worktree"
+    # Local detection: presence, version floors, and configuration. Nothing here
+    # leaves this machine, so it stays on the session-start critical path.
+    if (Test-FmLocalPhase) {
+        if (-not $backendValid) {
+            Write-FmOut "BACKEND_INVALID: $backend (known: $(Get-FmBackendKnownName))"
+        }
+        foreach ($tool in $backendToolList) {
+            if (-not (Test-FmBackendRequiredTool $backend $tool)) { Write-FmMissingToolDiagnostic $tool }
+        }
+        foreach ($tool in $commonTools) {
+            if (-not (Test-FmCommand $tool)) { Write-FmMissingToolDiagnostic $tool }
+        }
+        # The treehouse lease-support upgrade check is only relevant when the
+        # resolved backend actually requires treehouse; an orca home must not be
+        # told to upgrade a provider it never uses.
+        if ((Test-FmBackendListContains $allTools 'treehouse') -and (Test-FmCommand 'treehouse') -and
+            -not (Test-FmTreehouseSupportsLease)) {
+            Write-FmOut "MISSING: treehouse (install: $(Get-FmInstallCommand 'treehouse'))"
+        }
+        if ((Test-FmCommand 'no-mistakes') -and -not (Test-FmToolVersionAtLeast 'no-mistakes' $noMistakesMin)) {
+            Write-FmOut "MISSING: no-mistakes (install: $(Get-FmInstallCommand 'no-mistakes'))"
+        }
+        if ((Test-FmCommand 'quota-axi') -and -not (Test-FmQuotaAxiCompatible)) {
+            Write-FmOut "MISSING: quota-axi (install: $(Get-FmInstallCommand 'quota-axi'))"
+        }
+        if ((Test-FmCommand 'tasks-axi') -and -not (Test-FmTasksAxiCompatible)) {
+            Write-FmOut "MISSING: tasks-axi (install: $(Get-FmInstallCommand 'tasks-axi'))"
         }
     }
 
-    Test-FmWindowsSymlinkStub -Root $ctx.Root
+    # The GitHub-auth probe sits BETWEEN the two local blocks because that is
+    # where it has always sat, so a `skip` run is the same output with the
+    # network lines removed rather than a reshuffle.
+    if (Test-FmNetworkPhase) {
+        $ghAuth = Invoke-FmBootstrapTool -Name 'gh' -Arguments @('auth', 'status')
+        if (-not $ghAuth.Ok) { Write-FmOut 'NEEDS_GH_AUTH' }
+    }
 
-    $crew = ''
-    $crewFile = Join-Path $ctx.Config 'crew-harness'
-    if ([System.IO.File]::Exists((ConvertTo-FmNativePath $crewFile))) {
-        $crew = (Get-FmFileText $crewFile) -replace '\s', ''
-    }
-    if ($verboseFacts -and $crew -ne '' -and $crew -cne 'default') {
-        Write-FmOut "BOOTSTRAP_INFO: crew harness override active: $crew"
-    }
-    Invoke-FmCrewDispatchValidate -ConfigDir $ctx.Config
-    if ($verboseFacts -and -not (Test-FmBacklogBackendManual $ctx.Config) -and (Test-FmTasksAxiCompatible)) {
-        Write-FmOut 'BOOTSTRAP_INFO: tasks-axi available'
+    if (Test-FmLocalPhase) {
+        # Worktree-tangle check: the firstmate primary checkout must sit on its
+        # default branch, not a feature branch. Scoped to the primary only;
+        # detached-HEAD worktrees and secondmate homes never trip it.
+        $tangleBranch = ''
+        try { $tangleBranch = Get-FmPrimaryTangleBranch -Root $ctx.Root } catch { $tangleBranch = '' }
+        if (-not [string]::IsNullOrEmpty($tangleBranch)) {
+            $tangleDefault = ''
+            try { $tangleDefault = Get-FmDefaultBranch -Directory $ctx.Root } catch { $tangleDefault = '' }
+            if ([string]::IsNullOrEmpty($tangleDefault)) { $tangleDefault = 'main' }
+            if ($detectOnly) {
+                Write-FmOut "TANGLE: primary checkout on feature branch '$tangleBranch' (expected '$tangleDefault'); the work is safe on that ref - read-only session must leave restore work to the session holding the fleet lock"
+            } else {
+                Write-FmOut "TANGLE: primary checkout on feature branch '$tangleBranch' (expected '$tangleDefault'); the work is safe on that ref - restore the primary with: git -C $($ctx.PosixRoot) checkout $tangleDefault, then re-validate the branch in a proper worktree"
+            }
+        }
+
+        Test-FmWindowsSymlinkStub -Root $ctx.Root
+
+        $crew = ''
+        $crewFile = Join-Path $ctx.Config 'crew-harness'
+        if ([System.IO.File]::Exists((ConvertTo-FmNativePath $crewFile))) {
+            $crew = (Get-FmFileText $crewFile) -replace '\s', ''
+        }
+        if ($verboseFacts -and $crew -ne '' -and $crew -cne 'default') {
+            Write-FmOut "BOOTSTRAP_INFO: crew harness override active: $crew"
+        }
+        Invoke-FmCrewDispatchValidate -ConfigDir $ctx.Config
+        if ($verboseFacts -and -not (Test-FmBacklogBackendManual $ctx.Config) -and (Test-FmTasksAxiCompatible)) {
+            Write-FmOut 'BOOTSTRAP_INFO: tasks-axi available'
+        }
     }
 
     if (-not $detectOnly) {
-        Invoke-FmSecondmateLivenessSweep -StateDir $ctx.State -Root $ctx.Root
-        Invoke-FmSecondmateSync -Ctx $ctx
-        Invoke-FmXModeSetup -Ctx $ctx
-        Invoke-FmFleetSync -Ctx $ctx
+        # The liveness sweep hands SECONDMATE_RESPAWNED ids to the convergence
+        # sweep, so those two always run together in the same phase.
+        if (Test-FmNetworkPhase) {
+            if (Test-FmNetworkSweepAuthorized -StateDir $ctx.State -Label 'dead-secondmate relaunch') {
+                Invoke-FmSecondmateLivenessSweep -StateDir $ctx.State -Root $ctx.Root
+            }
+            if (Test-FmNetworkSweepAuthorized -StateDir $ctx.State -Label 'secondmate convergence') {
+                Invoke-FmSecondmateSync -Ctx $ctx
+            }
+            if (Test-FmNetworkSweepAuthorized -StateDir $ctx.State -Label 'pending handoff delivery') {
+                Invoke-FmSecondmateHandoffResume -Ctx $ctx
+            }
+        }
+        # X mode writes local Relay artifacts only and never leaves the machine.
+        if (Test-FmLocalPhase) { Invoke-FmXModeSetup -Ctx $ctx }
+        if ((Test-FmNetworkPhase) -and
+            (Test-FmNetworkSweepAuthorized -StateDir $ctx.State -Label 'project clone refresh')) {
+            Invoke-FmFleetSync -Ctx $ctx
+        }
     }
+    if (Test-FmLocalPhase) { Invoke-FmSecondmateHandoffDetect -Ctx $ctx }
 
     Exit-FmScript 0
 }

@@ -104,6 +104,7 @@ command -v git >/dev/null 2>&1 || { echo "skip: git not found"; exit 0; }
 unset FM_ROOT_OVERRIDE FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE
 unset FM_PROJECTS_OVERRIDE FM_BOOTSTRAP_DETECT_ONLY FM_BOOTSTRAP_VERBOSE_FACTS
 unset FM_SESSION_START_STATUS_TAIL FM_SESSION_START_BACKLOG_LIMIT
+unset FM_SESSION_START_QUEUED_LIMIT FM_SESSION_START_TIMEOUT FM_SESSION_START_STAGE_FILE
 unset FM_CODEX_WATCH_CHECKPOINT FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT
 
 BASE_PATH=$PATH
@@ -331,7 +332,9 @@ TOUCHED_ENV="CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT FM_HOME
 FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE
 FM_PROJECTS_OVERRIDE FM_BOOTSTRAP_DETECT_ONLY FM_BOOTSTRAP_VERBOSE_FACTS
 FM_CODEX_WATCH_CHECKPOINT FM_SESSION_START_STATUS_TAIL
-FM_SESSION_START_BACKLOG_LIMIT FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT"
+FM_SESSION_START_BACKLOG_LIMIT FM_SESSION_START_QUEUED_LIMIT
+FM_SESSION_START_TIMEOUT FM_SESSION_START_STAGE_FILE
+FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT"
 
 CASE_ENV=()
 
@@ -514,6 +517,28 @@ boot_env "$TMP_ROOT/boot-dispatch-bad"; run_case boot-dispatch-malformed fm-boot
 boot_env "$TMP_ROOT/boot-dispatch-harness"; run_case boot-dispatch-harness fm-bootstrap
 boot_env "$TMP_ROOT/boot-dispatch-effort"; run_case boot-dispatch-effort fm-bootstrap
 boot_env "$TMP_ROOT/boot-dispatch-select"; run_case boot-dispatch-select fm-bootstrap
+# The NETWORK-PHASE split, which had no differential coverage at all until the
+# defect it hides was found by hand: bin/fm-session-start.sh passes
+# FM_BOOTSTRAP_NETWORK=skip on EVERY path, because the network half is what the
+# deferred stage is running right now and doing it twice both re-blocks the
+# digest and races that worker's sweeps against themselves. The PowerShell
+# bootstrap ignored the variable outright - it had no phase concept - so the
+# native digest did the network work inline and printed a NEEDS_GH_AUTH the
+# oracle does not. Nothing in this suite noticed, because nothing set the
+# variable. These three cases pin the whole gate:
+#   skip -> the local half only, no network line;
+#   only -> the network half only, no local MISSING lines;
+#   SKIP -> an UNRECOGNIZED value, which must fall back to `all` rather than
+#           silently dropping a safety sweep. bash's `case` is case-sensitive,
+#           so the twin's switch must be too - that asymmetry is the whole
+#           point of the case and is invisible to a lowercase-only test.
+boot_env "$TMP_ROOT/boot-base"; CASE_ENV+=(FM_BOOTSTRAP_NETWORK=skip)
+run_case boot-network-skip fm-bootstrap
+boot_env "$TMP_ROOT/boot-base"; CASE_ENV+=(FM_BOOTSTRAP_NETWORK=only)
+run_case boot-network-only fm-bootstrap
+boot_env "$TMP_ROOT/boot-base"; CASE_ENV+=(FM_BOOTSTRAP_NETWORK=SKIP)
+run_case boot-network-unrecognized fm-bootstrap
+
 boot_env "$TMP_ROOT/boot-base" "$TANGLE_REPO"; run_case boot-tangle-detect fm-bootstrap
 boot_env "$TMP_ROOT/boot-base" "$STUB_REPO"; run_case boot-windows-stub fm-bootstrap
 # The verbose-facts surface: a crew-harness override fact plus the dispatch
@@ -550,14 +575,22 @@ seed_session_home() {  # <dir>
   printf '# projects\n\n- demo -> /nowhere\n' > "$d/data/projects.md"
   : > "$d/data/captain.md"
   printf '# learnings\n\n- 2026-01-01 something\n' > "$d/data/learnings.md"
+  # The queued group drives every branch of the compact renderer's bound: two
+  # gated title lines (a "(hold: ...)" marker and a "blocked-by:" marker) that
+  # must ALWAYS print regardless of the limit, and three plain queued lines of
+  # which FM_SESSION_START_QUEUED_LIMIT=2 shows two and discloses one.
   {
     printf '## In flight\n'
     printf -- '- t1 first task\n'
     printf '  body line that must NOT appear\n'
     printf '## Queued\n'
     printf -- '- t2 second task\n'
+    printf -- '- t3 third task (hold: captain decision)\n'
+    printf -- '- t4 fourth task blocked-by: t1\n'
+    printf -- '- t5 fifth task\n'
+    printf -- '- t6 sixth task\n'
     printf '## Notes\n'
-    printf -- '- t3 must not be counted\n'
+    printf -- '- t7 must not be counted\n'
     printf '## Done\n'
     printf -- '- t0 finished\n'
   } > "$d/data/backlog.md"
@@ -576,8 +609,67 @@ SS_PS="$TMP_ROOT/ss-ps"
 seed_session_home "$SS_BASH"
 seed_session_home "$SS_PS"
 
+# The digest now launches the deferred network stage (fm-startup-network.sh
+# start) right after the lock and harvests it at the end - and a LIVE stage is
+# nondeterministic by construction: its harvest text embeds elapsed seconds
+# ("completed off the startup path in 47s"), and whether it reads "completed"
+# or "IN PROGRESS" depends on how long the digest between start and harvest
+# took, which differs by minutes between the fork-bound oracle and the twin.
+# So both fixture homes are pinned to the SAME deterministic in-flight state:
+#   - state=running plus a live pid (this test's own shell, alive in both
+#     worlds' checks) makes `start` take its single-flight branch - the real
+#     production branch for "a worker is already going" - so no real worker is
+#     ever launched and no background bootstrap runs during the suite;
+#   - lock_pid must equal what fm-lock will write into each home, or
+#     single-flight would be refused and a REAL worker launched, so it is
+#     probed from a scratch home with the same resolver first;
+#   - started=pinned is deliberately non-numeric: worker_alive treats an
+#     unparseable age as alive, and print_pending SKIPS its "Started Ns ago"
+#     line, removing the last timing-dependent byte from the compared text.
+# Harvest then prints the stable IN PROGRESS section in both worlds. If no
+# harness identity resolves here, fm-lock refuses in both worlds, the digest
+# runs read-only, and this pin is inert (the read-only section is static).
+SS_PROBE="$TMP_ROOT/ss-probe"
+mk_home "$SS_PROBE"
+(
+  # A subshell, so the probe's environment never leaks into the case plumbing.
+  # shellcheck disable=SC2086  # deliberate word splitting over the name list
+  unset $TOUCHED_ENV
+  export PATH="$BASE_PATH" FM_HOME="$SS_PROBE"
+  "$ROOT/bin/fm-lock.sh" >/dev/null 2>&1 || true
+)
+SS_LOCK_PID=""
+if [ -f "$SS_PROBE/state/.lock" ]; then
+  IFS= read -r SS_LOCK_PID < "$SS_PROBE/state/.lock" || true
+fi
+case "$SS_LOCK_PID" in *[!0-9]*) SS_LOCK_PID="" ;; esac
+
+seed_network_pin() {  # <dir>
+  {
+    printf 'state=running\n'
+    printf 'pid=%s\n' "$$"
+    printf 'started=pinned\n'
+    printf 'locked=1\n'
+    printf 'phases=probe,sweeps\n'
+    printf 'generation=fmtest-pinned\n'
+    printf 'lock_pid=%s\n' "$SS_LOCK_PID"
+  } > "$1/state/.startup-network.status"
+}
+seed_network_pin "$SS_BASH"
+seed_network_pin "$SS_PS"
+
+# FM_SESSION_START_TIMEOUT is pinned HIGH for BOTH worlds, deliberately: the
+# bash oracle is fork-bound and genuinely exceeds the default 120s budget on
+# this host, so an unpinned run compares a TRUNCATED oracle (digest cut at the
+# bound, banner appended) against a complete twin - which is exactly the
+# failure this case once produced. The truncation arm itself cannot be driven
+# differentially, because which stage the bound lands in depends on host
+# speed; it is verified manually with FM_SESSION_START_TIMEOUT=1 instead.
+# FM_SESSION_START_QUEUED_LIMIT is the bound the current bash actually reads
+# (it replaced FM_SESSION_START_BACKLOG_LIMIT, now inert in both worlds).
 CASE_ENV=("FM_HOME=$SS_BASH" "FM_ROOT_OVERRIDE=$BOOT_REPO"
-          FM_SESSION_START_STATUS_TAIL=2 FM_SESSION_START_BACKLOG_LIMIT=2 'PATH=%MINPATH%')
+          FM_SESSION_START_STATUS_TAIL=2 FM_SESSION_START_QUEUED_LIMIT=2
+          FM_SESSION_START_TIMEOUT=900 'PATH=%MINPATH%')
 run_case session-start fm-session-start
 # The PowerShell half must be pointed at its OWN home, so its case record is
 # rewritten rather than reusing the one just emitted.
@@ -637,7 +729,9 @@ $TouchedNames = @('CLAUDECODE', 'PI_CODING_AGENT', 'FM_PI_HARNESS', 'GROK_AGENT'
     'FM_ROOT_OVERRIDE', 'FM_STATE_OVERRIDE', 'FM_DATA_OVERRIDE', 'FM_CONFIG_OVERRIDE',
     'FM_PROJECTS_OVERRIDE', 'FM_BOOTSTRAP_DETECT_ONLY', 'FM_BOOTSTRAP_VERBOSE_FACTS',
     'FM_CODEX_WATCH_CHECKPOINT', 'FM_SESSION_START_STATUS_TAIL',
-    'FM_SESSION_START_BACKLOG_LIMIT', 'FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT')
+    'FM_SESSION_START_BACKLOG_LIMIT', 'FM_SESSION_START_QUEUED_LIMIT',
+    'FM_SESSION_START_TIMEOUT', 'FM_SESSION_START_STAGE_FILE',
+    'FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT')
 $BasePath = $env:PATH
 
 $OrigOut = [Console]::Out
@@ -693,8 +787,49 @@ foreach ($line in [System.IO.File]::ReadAllLines($CaseFile)) {
         [Console]::SetOut($outWriter)
         [Console]::SetError($errWriter)
         $global:LASTEXITCODE = 0
-        & (Join-Path $BinDir "$scriptName.ps1") @caseArgs
-        $rc = $LASTEXITCODE
+        if ($scriptName -ceq 'fm-session-start') {
+            # OUT OF PROCESS, unlike every other case. The twin now mirrors its
+            # bash oracle's runtime bound: the parent re-executes ITSELF as a
+            # bounded child pwsh whose stdio is INHERITED, never redirected, so
+            # the digest streams. [Console]::SetOut is a .NET-level redirect
+            # that a real child process cannot see - an in-process `&` here
+            # would stream the whole digest into the driver's log and this case
+            # would compare an empty answer. A spawned child whose pipes the
+            # driver owns captures the parent AND its bounded grandchild (which
+            # inherits those same pipe handles), and drives the true production
+            # entry shape (`pwsh -NoProfile -File`). Costs one extra pwsh
+            # startup for the whole suite, within the batching rule's
+            # once-per-phase budget.
+            $psi = [System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName = [Environment]::ProcessPath
+            $psi.ArgumentList.Add('-NoProfile')
+            $psi.ArgumentList.Add('-File')
+            $psi.ArgumentList.Add((Join-Path $BinDir "$scriptName.ps1"))
+            foreach ($a in $caseArgs) { $psi.ArgumentList.Add([string]$a) }
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+            $psi.StandardErrorEncoding = [System.Text.UTF8Encoding]::new($false)
+            $proc = [System.Diagnostics.Process]::new()
+            $proc.StartInfo = $psi
+            try {
+                [void]$proc.Start()
+                # Drain both pipes concurrently while waiting: reading one to
+                # completion first deadlocks when the child fills the other.
+                $outTask = $proc.StandardOutput.ReadToEndAsync()
+                $errTask = $proc.StandardError.ReadToEndAsync()
+                $proc.WaitForExit()
+                $outWriter.Write($outTask.GetAwaiter().GetResult())
+                $errWriter.Write($errTask.GetAwaiter().GetResult())
+                $rc = $proc.ExitCode
+            } finally {
+                $proc.Dispose()
+            }
+        } else {
+            & (Join-Path $BinDir "$scriptName.ps1") @caseArgs
+            $rc = $LASTEXITCODE
+        }
     } catch {
         $errWriter.Write("DRIVER-EXCEPTION: $($_.Exception.Message)`n")
         $rc = 99
