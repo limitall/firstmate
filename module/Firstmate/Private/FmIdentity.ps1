@@ -313,7 +313,9 @@ function Get-FmProcessAncestry {
         if (-not $parent) { break }
         $current = $parent
     }
-    return $result.ToArray()
+    # Unary comma: without it a one-element result unrolls to a bare int and
+    # every caller's .Count fails under Set-StrictMode -Version Latest.
+    return , $result.ToArray()
 }
 
 function Get-FmHarnessAncestry {
@@ -352,7 +354,7 @@ function Get-FmHarnessAncestry {
             break
         }
     }
-    return $matched.ToArray()
+    return , $matched.ToArray()
 }
 
 function Get-FmHarnessAncestryPid {
@@ -374,7 +376,9 @@ function Get-FmHarnessAncestryPid {
         [ValidateRange(1, 64)][int]$MaxDepth = 16
     )
 
+    # No @() wrapper: the function already returns a real array (see its unary
+    # comma), and @() around a single array object would nest it one deep.
     $ancestry = Get-FmHarnessAncestry -Id $Id -MaxDepth $MaxDepth
-    if (-not $ancestry -or $ancestry.Count -eq 0) { return $null }
+    if ($null -eq $ancestry -or $ancestry.Count -eq 0) { return $null }
     return $ancestry[-1]
 }

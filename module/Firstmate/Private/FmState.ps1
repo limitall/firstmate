@@ -365,6 +365,18 @@ function Assert-FmSingleLine {
     }
 }
 
+function Get-FmAppendLockPath {
+    <#
+        .SYNOPSIS
+        Lock serializing appends to one state file.
+    #>
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+    $directory = [System.IO.Path]::GetDirectoryName($Path)
+    $name = [System.IO.Path]::GetFileName($Path)
+    return (Join-Path $directory ".$name.append.lock")
+}
+
 function Add-FmStateLine {
     <#
         .SYNOPSIS
@@ -373,14 +385,26 @@ function Add-FmStateLine {
         .DESCRIPTION
         Append, not read-modify-write: state/<id>.status is an append-only wake
         event log that several processes write concurrently, and a
-        read-modify-write would silently drop a competitor's line. Each call
-        writes in one Write to an append-mode handle, which the OS keeps atomic
-        for the short records firstmate appends.
+        read-modify-write would silently drop a competitor's line.
+
+        The append is SERIALIZED on a sibling lock, and that is not belt and
+        braces. `echo >> file` in the bash original is atomic because the kernel
+        applies O_APPEND to every write. .NET's FileMode.Append does not give
+        that: it seeks to end when the handle is opened and writes at the offset
+        it recorded, so two processes that open at the same moment write over
+        each other. Measured on this port before the lock existed: three
+        processes appending 40 lines each produced 93 of 120 lines - a fifth of
+        the status log silently gone.
+
+        -NoLock is for a caller that already holds a lock covering this file (the
+        wake queue appends under its own queue lock, as bash does).
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][AllowEmptyString()][string[]]$Line
+        [Parameter(Mandatory)][AllowEmptyString()][string[]]$Line,
+        [switch]$NoLock,
+        [ValidateRange(1, 3600)][int]$TimeoutSeconds = 60
     )
 
     $full = Resolve-FmFullPath -Path $Path
@@ -390,17 +414,26 @@ function Add-FmStateLine {
     New-FmDirectory -Path ([System.IO.Path]::GetDirectoryName($full))
     $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes((($Line -join "`n") + "`n"))
 
-    Invoke-FmFileRetry -Operation 'append state line' -Path $full -Action {
-        $stream = [System.IO.File]::Open(
-            $full,
-            [System.IO.FileMode]::Append,
-            [System.IO.FileAccess]::Write,
-            [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
-        try {
-            $stream.Write($bytes, 0, $bytes.Length)
-            $stream.Flush($true)
-        } finally { $stream.Dispose() }
+    $append = {
+        Invoke-FmFileRetry -Operation 'append state line' -Path $full -Action {
+            $stream = [System.IO.File]::Open(
+                $full,
+                [System.IO.FileMode]::Append,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+            try {
+                $stream.Write($bytes, 0, $bytes.Length)
+                $stream.Flush($true)
+            } finally { $stream.Dispose() }
+        }
     }
+
+    if ($NoLock) {
+        & $append
+        return
+    }
+    $null = Invoke-FmWithLock -Path (Get-FmAppendLockPath -Path $full) `
+        -TimeoutSeconds $TimeoutSeconds -ScriptBlock $append
 }
 
 function Remove-FmStateFile {
@@ -431,11 +464,20 @@ function Get-FmPathMtime {
     $full = Resolve-FmFullPath -Path $Path
     if (-not ([System.IO.File]::Exists($full) -or [System.IO.Directory]::Exists($full))) { return $null }
     try {
-        if ([System.IO.Directory]::Exists($full)) { return [System.IO.Directory]::GetLastWriteTimeUtc($full) }
-        return [System.IO.File]::GetLastWriteTimeUtc($full)
+        $mtime = if ([System.IO.Directory]::Exists($full)) {
+            [System.IO.Directory]::GetLastWriteTimeUtc($full)
+        } else {
+            [System.IO.File]::GetLastWriteTimeUtc($full)
+        }
     } catch {
         return $null
     }
+    # These APIs do not throw for a path that disappeared between the existence
+    # check above and the read - they return the 1601 epoch sentinel. Reported as
+    # a real timestamp it becomes an age of ~13 billion seconds, which overflows
+    # Int32 and turns a routine race into a thrown error inside a lock acquisition.
+    if ($mtime.Year -le 1601) { return $null }
+    return $mtime
 }
 
 function Get-FmPathAge {
@@ -455,9 +497,12 @@ function Get-FmPathAge {
 
     $mtime = Get-FmPathMtime -Path $Path
     if ($null -eq $mtime) { return 999999 }
-    $seconds = [int][Math]::Floor(([datetime]::UtcNow - $mtime).TotalSeconds)
+    # Clamped both ways before the Int32 cast: a wildly out-of-range timestamp is
+    # bad data, not a reason to throw inside a lock acquisition.
+    $seconds = [Math]::Floor(([datetime]::UtcNow - $mtime).TotalSeconds)
     if ($seconds -lt 0) { return 0 }
-    return $seconds
+    if ($seconds -gt 999999) { return 999999 }
+    return [int]$seconds
 }
 
 function Read-FmKeyValueFile {
@@ -471,12 +516,17 @@ function Read-FmKeyValueFile {
         bash readers' `grep '^key='`. On a duplicated key the LAST value wins,
         while the key keeps its first position. Returns an empty map for a missing
         file, never $null, so callers can index without a null check.
+
+        Field names are matched CASE-SENSITIVELY, because `grep '^home='` is. The
+        default [ordered]@{} comparer is case-insensitive and would silently merge
+        a Home= line with a home= line into one field - a difference that only
+        ever shows up on the platform this port targets.
     #>
     [CmdletBinding()]
     [OutputType([System.Collections.Specialized.OrderedDictionary])]
     param([Parameter(Mandatory)][string]$Path)
 
-    $fields = [ordered]@{}
+    $fields = [System.Collections.Specialized.OrderedDictionary]::new([System.StringComparer]::Ordinal)
     foreach ($line in (Read-FmStateLines -Path $Path)) {
         if ([string]::IsNullOrEmpty($line)) { continue }
         $index = $line.IndexOf('=')

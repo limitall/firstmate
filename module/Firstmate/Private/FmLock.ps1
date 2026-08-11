@@ -271,19 +271,21 @@ function Request-FmLock {
             "firstmate: lock path '$full' exists but is a file, not a lock directory; refusing to touch it")
     }
 
-    New-FmDirectory -Path ([System.IO.Path]::GetDirectoryName($full))
+    # The lock DIRECTORY is created once and then kept forever; only the pid file
+    # inside it is created and destroyed. That is not tidiness, it is the
+    # correctness property: while release also removed the directory, a releaser
+    # could unlink it just as a new claimer was creating its pid file inside,
+    # and the claim would evaporate with no error - two processes then each
+    # believed they held the lock. Measured before this change: three processes
+    # taking one lock 40 times each produced repeated double-claims. With a
+    # permanent directory the only contended operation left is the atomic
+    # CreateNew of one file, which the OS decides for exactly one winner.
+    New-FmDirectory -Path $full
     $pidFile = Join-Path $full 'pid'
     $identity = Get-FmProcessIdentity -Id $PID
     $recovered = $null
 
     for ($attempt = 0; $attempt -le $MaxBreakAttempts; $attempt++) {
-        try {
-            $null = [System.IO.Directory]::CreateDirectory($full)
-        } catch {
-            $script:FmLastLockHolder = Get-FmLockInfo -Path $full
-            return $null
-        }
-
         $claimed = $false
         try {
             $stream = [System.IO.File]::Open(
@@ -298,8 +300,7 @@ function Request-FmLock {
                 $claimed = $true
             } finally { $stream.Dispose() }
         } catch [System.IO.IOException] {
-            # Someone else owns the pid file, or the directory vanished under a
-            # concurrent release. Both are ordinary contention: look and decide.
+            # Someone else owns the pid file. Ordinary contention: look and decide.
             $claimed = $false
         } catch [System.UnauthorizedAccessException] {
             $claimed = $false
@@ -307,8 +308,10 @@ function Request-FmLock {
 
         if ($claimed) {
             # Publish the ownership details, then verify the pid file still says
-            # us. Nothing can legitimately overwrite it, so a mismatch here means
-            # the lock directory was destroyed under us - fail closed.
+            # us. Nothing can legitimately overwrite it, so a mismatch means
+            # something outside this module removed our claim - report the lock
+            # as unavailable and touch NOTHING, because whatever is in there now
+            # may be a live holder's.
             $identityValue = if ($identity) { $identity } else { '' }
             Write-FmStateFile -Path (Join-Path $full 'pid-identity') -Content $identityValue
             if ($PSBoundParameters.ContainsKey('HomePath') -and $HomePath) {
@@ -319,8 +322,7 @@ function Request-FmLock {
 
             $readback = Read-FmStateFile -Path $pidFile
             if ($null -eq $readback -or $readback.Trim() -ne [string]$PID) {
-                Remove-FmLockChildFile -LockPath $full
-                try { [System.IO.Directory]::Delete($full) } catch { }
+                $null = $script:FmHeldLocks.Remove($key)
                 $script:FmLastLockHolder = Get-FmLockInfo -Path $full
                 return $null
             }
@@ -383,8 +385,10 @@ function Wait-FmLock {
         indistinguishable from a wedge, and a timeout with the holder's pid in
         the message is a diagnosis rather than a mystery.
 
-        Each poll interval is jittered so two waiters do not resynchronize into
-        lockstep collisions.
+        Polling starts tight and backs off (5ms growing to 150ms), so a lock held
+        for a millisecond - an appended status line - costs a millisecond, while a
+        lock held for a minute costs almost no wasted wakeups. Each interval is
+        jittered so two waiters do not resynchronize into lockstep collisions.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -402,6 +406,7 @@ function Wait-FmLock {
     }
 
     $deadline = if ($TimeoutSeconds -gt 0) { [datetime]::UtcNow.AddSeconds($TimeoutSeconds) } else { [datetime]::MaxValue }
+    $poll = 5.0
     while ($true) {
         $lock = Request-FmLock @request
         if ($lock) { return $lock }
@@ -411,7 +416,8 @@ function Wait-FmLock {
             throw [System.TimeoutException]::new(
                 "firstmate: timed out after ${TimeoutSeconds}s waiting for lock '$Path'; held by $who")
         }
-        Start-Sleep -Milliseconds (Get-Random -Minimum 50 -Maximum 150)
+        Start-Sleep -Milliseconds ([int][Math]::Max(1, (Get-Random -Minimum ($poll / 2) -Maximum $poll)))
+        $poll = [Math]::Min(150.0, $poll * 1.5)
     }
 }
 
@@ -425,11 +431,11 @@ function Unlock-FmLock {
         then it belongs to someone else, and removing it would hand a third
         process a lock two others believe they hold.
 
-        Children are removed before the directory, and the directory removal is a
-        NON-recursive delete: if a new holder has already claimed the directory
-        its files are present and the delete simply fails, leaving the new
-        holder's lock intact. That is the same protection rmdir gives the bash
-        version.
+        The sidecars go first and the pid file LAST, because the pid file is the
+        lock: while it exists nobody else can claim, so every other file can be
+        cleaned up unhurried, and the single delete that hands the lock on is the
+        last thing that happens. The lock directory itself is left in place - see
+        Request-FmLock for why removing it is what broke mutual exclusion.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([bool])]
@@ -456,7 +462,6 @@ function Unlock-FmLock {
         Clear-FmLockBreakResidue -LockPath $full
         Remove-FmLockChildFile -LockPath $full -Name ($script:FmLockChildNames | Where-Object { $_ -ne 'pid' })
         try { [System.IO.File]::Delete($pidFile) } catch { }
-        try { [System.IO.Directory]::Delete($full) } catch { }
         $null = $script:FmHeldLocks.Remove($key)
         return $true
     }
@@ -680,7 +685,7 @@ function Test-FmSessionLockOwnedBySelf {
     if (-not (Test-FmProcessId -Id $trimmed)) { return $false }
 
     $ancestry = Get-FmHarnessAncestry
-    if (-not $ancestry -or $ancestry.Count -eq 0) { return $false }
+    if ($null -eq $ancestry -or $ancestry.Count -eq 0) { return $false }
     return $ancestry -contains [int]$trimmed
 }
 
