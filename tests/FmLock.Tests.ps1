@@ -307,9 +307,20 @@ Describe 'One holder, proven with real processes' {
             }
         }
         $null = $jobs | Wait-Job -Timeout 300
-        $failed = @($jobs | Where-Object State -eq 'Failed')
+        # Read the workers' own outcome BEFORE the counter, for the same reason
+        # the cross-process append test does: Invoke-FmWithLock gives up on the
+        # lock after its timeout and throws, and a worker that threw - or that
+        # was still running at the deadline - leaves exactly the same evidence
+        # downstream as a lost increment. Only one of those is a mutual-exclusion
+        # defect. `State -eq 'Failed'` alone does not tell them apart, because a
+        # worker still Running at the deadline is neither Failed nor finished.
+        $unfinished = @($jobs | Where-Object { $_.State -ne 'Completed' } |
+            ForEach-Object { "$($_.Id):$($_.State)" })
+        $workerErrors = @($jobs | ForEach-Object { $_.ChildJobs[0].Error } |
+            ForEach-Object { [string]$_ })
         $jobs | Remove-Job -Force
-        $failed.Count | Should -Be 0
+        $unfinished | Should -BeNullOrEmpty -Because 'every worker must finish before the counter is judged'
+        $workerErrors | Should -BeNullOrEmpty -Because 'a worker that threw did not lose an increment, it never made one'
 
         [int](Read-FmStateFile -Path $counter).Trim() | Should -Be ($workers * $perWorker)
     }
