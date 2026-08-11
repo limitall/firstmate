@@ -126,6 +126,7 @@ Describe 'bin/fm-teardown.ps1' {
             worktree = $script:Repo.Worktree
             project  = $script:Repo.Project
             window   = 'fleet:fm-t1'
+            backend  = 'herdr'
         } | Out-Null
         $result = Invoke-FmCli -Script 'fm-teardown.ps1' -CliArgs @('t1')
         $result.ExitCode | Should -Be 1
@@ -133,16 +134,42 @@ Describe 'bin/fm-teardown.ps1' {
         Test-Path -LiteralPath (Join-Path $script:TestHome.State 't1.meta') | Should -BeTrue
     }
 
-    It 'accepts --force as the explicit discard authority' {
+    It 'exits 2 on a bare --force, which discards work without naming an authority' {
+        New-FmTestCommit -RepoPath $script:Repo.Worktree
+        New-FmTestMeta -TestHome $script:TestHome -Id 't1' -Fields @{
+            worktree = $script:Repo.Worktree
+            project  = $script:Repo.Project
+            backend  = 'herdr'
+        } | Out-Null
+        $result = Invoke-FmCli -Script 'fm-teardown.ps1' -CliArgs @('t1', '--force')
+        $result.ExitCode | Should -Be 2
+        $result.StdErr | Should -Match 'requires --approved-by'
+        Test-Path -LiteralPath (Join-Path $script:TestHome.State 't1.meta') | Should -BeTrue
+    }
+
+    It 'accepts --force WITH an explicit discard authority' {
+        # No `window`: with no endpoint recorded there is no pane to confirm
+        # gone, which is the shape a task has once its endpoint was cleared.
         New-FmTestCommit -RepoPath $script:Repo.Worktree
         New-FmTestMeta -TestHome $script:TestHome -Id 't1' -Fields @{
             worktree = (Join-Path $script:TestHome.Path 'already-returned')
             project  = $script:Repo.Project
-            window   = 'fleet:fm-t1'
+            backend  = 'herdr'
         } | Out-Null
-        $result = Invoke-FmCli -Script 'fm-teardown.ps1' -CliArgs @('t1', '--force')
+        $result = Invoke-FmCli -Script 'fm-teardown.ps1' -CliArgs @('t1', '--force', '--approved-by', 'captain')
         $result.ExitCode | Should -Be 0
         $result.StdOut | Should -Match 'teardown t1 complete'
+    }
+
+    It 'refuses a backend this port does not drive' {
+        New-FmTestMeta -TestHome $script:TestHome -Id 't1' -Fields @{
+            worktree = $script:Repo.Worktree
+            project  = $script:Repo.Project
+            backend  = 'tmux'
+        } | Out-Null
+        $result = Invoke-FmCli -Script 'fm-teardown.ps1' -CliArgs @('t1')
+        $result.ExitCode | Should -Be 1
+        $result.StdErr | Should -Match 'herdr session provider only'
     }
 }
 

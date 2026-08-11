@@ -23,7 +23,14 @@ BeforeAll {
         foreach ($file in $files) {
             $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
             $predicate = { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }
-            foreach ($fn in $ast.FindAll($predicate, $true)) {
+            # $false = do not descend into nested script blocks, which is the
+            # loader's own rule (Firstmate.psm1 parses the same way). Only a
+            # TOP-LEVEL definition lands in module scope and can shadow another
+            # file's; a helper declared inside a function body - `function
+            # local:Fail` appears twice in the lifecycle area - is scoped to
+            # its enclosing function and shadows nothing. Flagging those would
+            # be a false alarm that trains people to ignore this test.
+            foreach ($fn in $ast.FindAll($predicate, $false)) {
                 [pscustomobject]@{ Name = $fn.Name; File = $file.Name; Line = $fn.Extent.StartLineNumber }
             }
         }
