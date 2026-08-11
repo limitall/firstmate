@@ -80,8 +80,10 @@ governs the import.
 ## Cross-area composition
 
 Areas resolve each other by name at call time and degrade explicitly when an
-owner is absent, so any one area can be developed and tested alone. Two rules
-follow:
+owner is absent, so any one area can be developed and tested alone. That
+by-name binding is also where this port's costliest bugs have come from: every
+one of them was silent, and every one had a passing test over it. The rules
+below are what those bugs cost.
 
 - **Say when a step did not run.** A missing owner is reported as a step that did
   NOT run, never as one that passed. Which direction the degradation takes is
@@ -99,11 +101,21 @@ follow:
   contracts, name them apart (`Wait-FmLock` vs `Wait-FmPathLock`,
   `Get-FmProcessIdentity` vs `Get-FmWakeProcessIdentity`) rather than letting
   one shadow the other.
+- **Match the published parameter names, or the caller degrades in silence.**
+  A by-name call is `& $cmd -Foo $x`: if the owner does not declare `-Foo` the
+  call throws, the caller's `catch` reads that as "no owner", and it takes its
+  degraded path forever while looking healthy. This exact break made the
+  turn-end guard fail OPEN on every turn. Worse, an owner that is a SIMPLE
+  function (no `[CmdletBinding()]`, no `[Parameter()]`) does not even throw -
+  the arguments land in `$args` and are dropped, so the call succeeds having
+  discarded its input. The table in `docs/session-start.md` is the contract for
+  both sides; an owner that needs more should default it, not require it.
 - **A degradation test stops testing degradation once the owner lands.** Suites
   asserting the "owner not loaded" branch must stage the absence at the
   `Resolve-Fm*Command` seam. Deleting the function is not enough - the
   foundation suites import the manifest, and an imported module keeps exporting
-  the name whatever the test session's function table says.
+  the name whatever the test session's function table says. Check such a test
+  still fails when you revert the code it guards; several here did not.
 
 ## Module foundation
 

@@ -470,7 +470,19 @@ Describe 'Real concurrency across processes' {
             }
         }
         $null = $jobs | Wait-Job -Timeout 180
+        # Read the writers' own outcome BEFORE the file. A writer that threw -
+        # Add-FmStateLine gives up on the append lock after its timeout - or that
+        # was still running at the deadline leaves exactly the same evidence
+        # downstream as a lost line, and only one of those is a defect in the
+        # append. Name which one it was rather than letting the count assertion
+        # report a lock timeout as data loss.
+        $unfinished = @($jobs | Where-Object { $_.State -ne 'Completed' } |
+            ForEach-Object { "$($_.Id):$($_.State)" })
+        $writerErrors = @($jobs | ForEach-Object { $_.ChildJobs[0].Error } |
+            ForEach-Object { [string]$_ })
         $jobs | Remove-Job -Force
+        $unfinished | Should -BeNullOrEmpty -Because 'every writer must finish before the file is judged'
+        $writerErrors | Should -BeNullOrEmpty -Because 'a writer that threw did not lose a line, it never wrote one'
 
         $lines = Read-FmStateLines -Path $path
         $lines.Count | Should -Be ($writers * $perWriter)
