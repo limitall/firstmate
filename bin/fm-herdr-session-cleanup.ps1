@@ -103,6 +103,15 @@ function Get-FmHerdrCleanupNode {
         if (-not $current.Contains($key)) { return $null }
         $current = $current[$key]
     }
+    # `,` is load-bearing: a bare return UNROLLS an array through the output
+    # stream, so a ONE-element JSON array arrives at the caller as its bare
+    # element and an empty one as $null. The array helper below then sees a
+    # dictionary where an array belongs and correctly answers "not an array" -
+    # which is how every single-tab projection (the normal production shape)
+    # read as an ambiguous candidate and was never cleaned. Same defect and
+    # same fix as Get-FmBackendHerdrJsonValue in bin/backends/herdr.psm1;
+    # these helpers are that function's private duplicate.
+    if ($current -is [System.Array] -or $current -is [System.Collections.IList]) { return , $current }
     return $current
 }
 
@@ -115,11 +124,11 @@ function Get-FmHerdrCleanupArray {
         [Parameter(Position = 1)][AllowEmptyCollection()][string[]]$Path = @()
     )
     $value = Get-FmHerdrCleanupNode $Node $Path
-    if ($null -eq $value) { return @() }
-    if ($value -is [System.Collections.IDictionary]) { return @() }
-    if ($value -is [string]) { return @() }
-    if ($value -is [System.Collections.IEnumerable]) { return @($value) }
-    return @()
+    if ($null -eq $value) { return , @() }
+    if ($value -is [System.Collections.IDictionary]) { return , @() }
+    if ($value -is [string]) { return , @() }
+    if ($value -is [System.Collections.IEnumerable]) { return , @($value) }
+    return , @()
 }
 
 function Get-FmHerdrCleanupItem {
@@ -231,7 +240,7 @@ function Get-FmHerdrCleanupJournalFile {
     try {
         $entries = [System.IO.Directory]::GetFiles($native, "*$($script:FmCleanupJournalSuffix)")
     } catch {
-        return @()
+        return , @()
     }
     foreach ($entry in $entries) {
         if (-not [System.IO.File]::Exists($entry)) { continue }
@@ -395,7 +404,10 @@ function Get-FmHerdrCleanupSnapshotCandidate {
     $s = Get-FmHerdrCleanupNode $doc @('result', 'snapshot')
     if ($null -eq $s) { return $null }
 
-    $allWorkspaces = @(Get-FmHerdrCleanupArray $s @('workspaces'))
+    # Plain assignment, not @(...): the helper comma-wraps its return, so
+    # assignment unwraps to the inner array while @() would nest it one
+    # level deep (docs/powershell-port.md, the consumer contract).
+    $allWorkspaces = Get-FmHerdrCleanupArray $s @('workspaces')
     $workspaces = @()
     foreach ($item in $allWorkspaces) {
         if ((Get-FmHerdrCleanupItem $item 'workspace_id') -ceq $Workspace) { $workspaces += , $item }
@@ -509,7 +521,7 @@ function Test-FmHerdrCleanupRevalidated {
     if (-not $result.Ok) { return $false }
     $doc = ConvertFrom-FmHerdrCleanupJson $result.StdOut
     if ($null -eq (Get-FmHerdrCleanupNode $doc @('result', 'tabs'))) { return $false }
-    $tabList = @(Get-FmHerdrCleanupArray $doc @('result', 'tabs'))
+    $tabList = Get-FmHerdrCleanupArray $doc @('result', 'tabs')
     if ($tabList.Count -ne 1) { return $false }
     if ((Get-FmHerdrCleanupItem $tabList[0] 'workspace_id') -cne $Workspace) { return $false }
     if ((Get-FmHerdrCleanupItem $tabList[0] 'tab_id') -cne $Tab) { return $false }
@@ -518,7 +530,7 @@ function Test-FmHerdrCleanupRevalidated {
     if (-not $result.Ok) { return $false }
     $doc = ConvertFrom-FmHerdrCleanupJson $result.StdOut
     if ($null -eq (Get-FmHerdrCleanupNode $doc @('result', 'panes'))) { return $false }
-    $paneList = @(Get-FmHerdrCleanupArray $doc @('result', 'panes'))
+    $paneList = Get-FmHerdrCleanupArray $doc @('result', 'panes')
     if ($paneList.Count -ne 1) { return $false }
     if ((Get-FmHerdrCleanupItem $paneList[0] 'workspace_id') -cne $Workspace) { return $false }
     if ((Get-FmHerdrCleanupItem $paneList[0] 'tab_id') -cne $Tab) { return $false }
@@ -671,7 +683,12 @@ function Invoke-FmHerdrSessionCleanup {
     param()
 
     if (-not (Test-FmHerdrCleanupStateUsable)) { return }
-    if (@(Get-FmHerdrCleanupJournalFile).Count -eq 0) { return }
+    # Plain assignment, never @(...): the enumerator comma-wraps its return,
+    # and @() around that NESTS - an empty journal set then counts as ONE
+    # (the inner array), the guard never fires, and a home with no
+    # projections at all gets a workspace probe on every session start.
+    $journals = Get-FmHerdrCleanupJournalFile
+    if ($journals.Count -eq 0) { return }
     if (-not (Test-FmCommand 'herdr')) { return }
 
     $homeReal = Get-FmHerdrCleanupHomeIdentity

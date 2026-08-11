@@ -129,7 +129,12 @@ BASH_BIN=$(command -v bash)
 ASSERTIONS=0
 # Observed on a green run. A suite that silently stops exercising cases must
 # fail rather than report success on a handful of assertions.
-MIN_ASSERTIONS=310
+# Raised from 310 after three fixture defects were fixed: an unreachable focus
+# snapshot had been making revalidation refuse EVERY case in both worlds, so the
+# close, retire and refusal paths never executed and the suite agreed with the
+# oracle about doing nothing. A floor 80 below the real count is not a floor - it
+# is exactly the regression that hole already was.
+MIN_ASSERTIONS=385
 
 # --- assertions --------------------------------------------------------------
 #
@@ -871,6 +876,22 @@ sc_default_resp() {
     "$SC_WS" "$SC_TITLE" "$SC_TAB" > "$CT/resp/workspace-get.out"
   printf '{"result":{"tabs":[{"tab_id":"%s","workspace_id":"%s","focused":false,"label":"fm-task"}]}}\n' \
     "$SC_TAB" "$SC_WS" > "$CT/resp/tab-list.out"
+  # The SECOND `tab list` of a case is the focus snapshot's, and it asks about
+  # the FOCUSED workspace (w1), not the candidate. The fake keys its responses by
+  # "<arg1>-<arg2>" only, so `--workspace w1` and `--workspace w2` share one key
+  # and the ORDINAL is the only thing that can tell them apart.
+  #
+  # This response is load-bearing, not decoration: unlike the bash-only suite,
+  # which stubs fm_backend_herdr_projection_focus_snapshot outright, this
+  # differential runs the REAL focus snapshot on both sides, and that function
+  # requires exactly one tab with "focused":true whose id is the focused
+  # workspace's active_tab_id. Without a w1 response carrying a focused tab, the
+  # snapshot is unreadable in BOTH worlds, revalidation refuses every case, and
+  # the close path, the journal retirement and the two close-failure fixtures
+  # below become unreachable - a hole the differential itself cannot see,
+  # because the two worlds agree on refusing.
+  printf '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1","focused":true,"label":"firstmate"}]}}\n' \
+    > "$CT/resp/tab-list.2.out"
   printf '{"result":{"panes":[{"pane_id":"%s","tab_id":"%s","workspace_id":"%s","agent_status":"unknown"}]}}\n' \
     "$SC_PANE" "$SC_TAB" "$SC_WS" > "$CT/resp/pane-list.out"
   printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s"}}}\n' \
@@ -933,6 +954,11 @@ sc_journal_v2() { # <home> <workspace> <tab> <pane>
 sc_journal_v2_home() { sc_journal_v2 '@HOME@' "$SC_WS" "$SC_TAB" "$SC_PANE"; }
 
 SC_LABELS=()
+# sc_run <label>: the label is BARE - "positive-v1", not "sc-positive-v1". Every
+# result file this phase writes is named "sc-<label>", and the safety contract
+# below reads those names directly, so a label that carries its own "sc-" makes
+# every one of those reads miss (read_file answers '' for a missing file) and the
+# contract silently compares against nothing.
 sc_run() { # <label>
   local label=$1
   SC_LABELS+=("$label")
@@ -1023,71 +1049,71 @@ sc_substitute_home() { # <state-dir> <home>
 
 # --- the cases ---------------------------------------------------------------
 
-sc_begin sc-positive-v1;      sc_journal_v1 "$SC_ID";                       sc_run sc-positive-v1
-sc_begin sc-no-journal;                                                     sc_run sc-no-journal
-sc_begin sc-malformed-title
+sc_begin positive-v1;         sc_journal_v1 "$SC_ID";                       sc_run positive-v1
+sc_begin no-journal;                                                        sc_run no-journal
+sc_begin malformed-title
 sc_default_resp
 printf '{"result":{"workspaces":%s}}\n' "$(sc_workspaces "└ malformed p:$SC_TOKEN")" > "$CT/resp/workspace-list.out"
-sc_journal_v1 "$SC_ID";                                                     sc_run sc-malformed-title
-sc_begin sc-missing-token
+sc_journal_v1 "$SC_ID";                                                     sc_run malformed-title
+sc_begin missing-token
 printf '{"result":{"workspaces":%s}}\n' "$(sc_workspaces '└ missing-token')" > "$CT/resp/workspace-list.out"
-sc_journal_v1 "$SC_ID";                                                     sc_run sc-missing-token
-sc_begin sc-double-token
+sc_journal_v1 "$SC_ID";                                                     sc_run missing-token
+sc_begin double-token
 printf '{"result":{"workspaces":%s}}\n' "$(sc_workspaces "└ task · p:$SC_TOKEN p:$SC_TOKEN")" > "$CT/resp/workspace-list.out"
-sc_journal_v1 "$SC_ID";                                                     sc_run sc-double-token
-sc_begin sc-short-token
+sc_journal_v1 "$SC_ID";                                                     sc_run double-token
+sc_begin short-token
 printf 'version=1\ntask_id=%s\nprojection_id=short\n' "$SC_ID" > "$CT/state/$SC_ID.herdr-presentation"
-sc_run sc-short-token
-sc_begin sc-zero-journal;                                                   :
-sc_journal_v1 other-task;                                                   sc_run sc-zero-journal
-sc_begin sc-two-journals
-sc_journal_v1 "$SC_ID"; sc_journal_v1 "fm-$SC_ID";                          sc_run sc-two-journals
-sc_begin sc-duplicate-token
+sc_run short-token
+sc_begin zero-journal;                                                      :
+sc_journal_v1 other-task;                                                   sc_run zero-journal
+sc_begin two-journals
+sc_journal_v1 "$SC_ID"; sc_journal_v1 "fm-$SC_ID";                          sc_run two-journals
+sc_begin duplicate-token
 sc_snapshot "$SC_TITLE" w1:t1 1 1 "{\"workspace_id\":\"w3\",\"label\":\"└ copy · p:$SC_TOKEN\",\"focused\":false,\"active_tab_id\":\"w3:t1\",\"tab_count\":1,\"pane_count\":1}"
 printf '{"result":{"workspaces":%s}}\n' \
   "$(sc_workspaces "$SC_TITLE" 1 1 "{\"workspace_id\":\"w3\",\"label\":\"└ copy · p:$SC_TOKEN\",\"focused\":false,\"active_tab_id\":\"w3:t1\",\"tab_count\":1,\"pane_count\":1}")" \
   > "$CT/resp/workspace-list.out"
-sc_journal_v1 "$SC_ID";                                                     sc_run sc-duplicate-token
-sc_begin sc-cross-home
-sc_journal_v2 "$SC/other-home" "$SC_WS" "$SC_TAB" "$SC_PANE";                sc_run sc-cross-home
-sc_begin sc-v2-match;         sc_journal_v2_home;                            sc_run sc-v2-match
-sc_begin sc-v2-workspace-mismatch
-sc_journal_v2 '@HOME@' w9 "$SC_TAB" "$SC_PANE";                              sc_run sc-v2-workspace-mismatch
-sc_begin sc-v2-tab-mismatch
-sc_journal_v2 '@HOME@' "$SC_WS" w9:t1 "$SC_PANE";                            sc_run sc-v2-tab-mismatch
-sc_begin sc-v2-pane-mismatch
-sc_journal_v2 '@HOME@' "$SC_WS" "$SC_TAB" w9:p1;                             sc_run sc-v2-pane-mismatch
-sc_begin sc-task-meta
-sc_journal_v1 "$SC_ID"; : > "$CT/state/$SC_ID.meta";                         sc_run sc-task-meta
-sc_begin sc-agent-live
+sc_journal_v1 "$SC_ID";                                                     sc_run duplicate-token
+sc_begin cross-home
+sc_journal_v2 "$SC/other-home" "$SC_WS" "$SC_TAB" "$SC_PANE";                sc_run cross-home
+sc_begin v2-match;            sc_journal_v2_home;                            sc_run v2-match
+sc_begin v2-workspace-mismatch
+sc_journal_v2 '@HOME@' w9 "$SC_TAB" "$SC_PANE";                              sc_run v2-workspace-mismatch
+sc_begin v2-tab-mismatch
+sc_journal_v2 '@HOME@' "$SC_WS" w9:t1 "$SC_PANE";                            sc_run v2-tab-mismatch
+sc_begin v2-pane-mismatch
+sc_journal_v2 '@HOME@' "$SC_WS" "$SC_TAB" w9:p1;                             sc_run v2-pane-mismatch
+sc_begin task-meta
+sc_journal_v1 "$SC_ID"; : > "$CT/state/$SC_ID.meta";                         sc_run task-meta
+sc_begin agent-live
 sc_journal_v1 "$SC_ID"
 printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$CT/resp/agent-get.out"
-rm -f "$CT/resp/agent-get.exit";                                             sc_run sc-agent-live
-sc_begin sc-agent-unknown
+rm -f "$CT/resp/agent-get.exit";                                             sc_run agent-live
+sc_begin agent-unknown
 sc_journal_v1 "$SC_ID"
-printf '{"error":{"code":"internal_error"}}\n' > "$CT/resp/agent-get.out";    sc_run sc-agent-unknown
-sc_begin sc-multiple-tabs
-sc_journal_v1 "$SC_ID"; sc_snapshot "$SC_TITLE" w1:t1 2 2;                   sc_run sc-multiple-tabs
-sc_begin sc-multiple-panes
-sc_journal_v1 "$SC_ID"; sc_snapshot "$SC_TITLE" w1:t1 1 2;                   sc_run sc-multiple-panes
-sc_begin sc-process-unsafe
-sc_journal_v1 "$SC_ID"; : > "$CT/fixture/process-unsafe";                     sc_run sc-process-unsafe
-sc_begin sc-snapshot-error
-sc_journal_v1 "$SC_ID"; printf '1\r\n' > "$CT/resp/api-snapshot.exit";        sc_run sc-snapshot-error
-sc_begin sc-workspace-get-error
-sc_journal_v1 "$SC_ID"; printf '1\r\n' > "$CT/resp/workspace-get.exit";       sc_run sc-workspace-get-error
-sc_begin sc-revalidation-race
+printf '{"error":{"code":"internal_error"}}\n' > "$CT/resp/agent-get.out";    sc_run agent-unknown
+sc_begin multiple-tabs
+sc_journal_v1 "$SC_ID"; sc_snapshot "$SC_TITLE" w1:t1 2 2;                   sc_run multiple-tabs
+sc_begin multiple-panes
+sc_journal_v1 "$SC_ID"; sc_snapshot "$SC_TITLE" w1:t1 1 2;                   sc_run multiple-panes
+sc_begin process-unsafe
+sc_journal_v1 "$SC_ID"; : > "$CT/fixture/process-unsafe";                     sc_run process-unsafe
+sc_begin snapshot-error
+sc_journal_v1 "$SC_ID"; printf '1\r\n' > "$CT/resp/api-snapshot.exit";        sc_run snapshot-error
+sc_begin workspace-get-error
+sc_journal_v1 "$SC_ID"; printf '1\r\n' > "$CT/resp/workspace-get.exit";       sc_run workspace-get-error
+sc_begin revalidation-race
 sc_journal_v1 "$SC_ID"
 printf '{"result":{"workspaces":%s}}\n' "$(sc_workspaces renamed)" > "$CT/resp/workspace-list.2.out"
-sc_run sc-revalidation-race
-sc_begin sc-active-target
-sc_journal_v1 "$SC_ID"; sc_snapshot "$SC_TITLE" "$SC_TAB";                   sc_run sc-active-target
-sc_begin sc-discovery-error
-sc_journal_v1 "$SC_ID"; printf '1\r\n' > "$CT/resp/workspace-list.exit";      sc_run sc-discovery-error
-sc_begin sc-focus-refuse
-sc_journal_v1 "$SC_ID"; : > "$CT/fixture/focus-refuse";                       sc_run sc-focus-refuse
-sc_begin sc-close-unconfirmed
-sc_journal_v1 "$SC_ID"; : > "$CT/fixture/close-unconfirmed";                  sc_run sc-close-unconfirmed
+sc_run revalidation-race
+sc_begin active-target
+sc_journal_v1 "$SC_ID"; sc_snapshot "$SC_TITLE" "$SC_TAB";                   sc_run active-target
+sc_begin discovery-error
+sc_journal_v1 "$SC_ID"; printf '1\r\n' > "$CT/resp/workspace-list.exit";      sc_run discovery-error
+sc_begin focus-refuse
+sc_journal_v1 "$SC_ID"; : > "$CT/fixture/focus-refuse";                       sc_run focus-refuse
+sc_begin close-unconfirmed
+sc_journal_v1 "$SC_ID"; : > "$CT/fixture/close-unconfirmed";                  sc_run close-unconfirmed
 
 # =============================================================================
 # PHASE 3 - one pwsh driver for every PowerShell case
@@ -1110,12 +1136,22 @@ $basePath  = $args[6]
 
 # Deliberately NOT importing fm-common here: every entrypoint imports it with
 # -Force, which REMOVES the loaded copy before re-importing, and the driver must
-# not depend on a binding that can disappear mid-run. The one conversion needed
-# is the MSYS drive form, inlined.
+# not depend on a binding that can disappear mid-run. The two conversions needed
+# are the MSYS drive forms, inlined.
 function ToNative([string]$p) {
     if ([string]::IsNullOrEmpty($p)) { return $p }
     if ($p -match '^/([A-Za-z])(/|$)') { return ($Matches[1].ToUpperInvariant() + ':' + ($p.Substring(2) -replace '/', '\')) }
     return ($p -replace '/', '\')
+}
+
+# The inverse. Needed for exactly one thing: a path written INTO a durable
+# record, which is a wire format rather than an argument (see the @HOME@
+# substitution below).
+function ToPosix([string]$p) {
+    if ([string]::IsNullOrEmpty($p)) { return $p }
+    $q = $p -replace '\\', '/'
+    if ($q -match '^([A-Za-z]):(/|$)') { return ('/' + $Matches[1].ToLowerInvariant() + $q.Substring(2)) }
+    return $q
 }
 
 $utf8 = [System.Text.UTF8Encoding]::new($false)
@@ -1244,7 +1280,17 @@ function Close-FmBackendHerdrProjectionPane {
     return @{ Code = 0; AgentState = 'dead' }
 }
 
-$scHome = ToNative "$scRoot/home"
+# POSIX, deliberately, and NOT the native spelling every other path here uses.
+# A version 2 journal's `home=` is durable state co-owned by both worlds
+# (docs/powershell-port.md contract 3), so its stored form is POSIX and BOTH
+# readers hard-refuse anything else - bash with `case $home in /*)` and the twin
+# with the StartsWith('/') clause in Get-FmBackendHerdrProjectionJournalSnapshot.
+# Substituting `F:\...` here forged a journal no writer in either world ever
+# produces: the twin correctly rejected the record and silently found no match,
+# while the oracle read its own POSIX copy and went on to revalidate - which
+# read as the twin being LESS careful than the oracle on a safety gate, the exact
+# opposite of what was happening.
+$scHome = ToPosix (ToNative "$scRoot/home")
 $scState = ToNative "$scRoot/home/state"
 $scResp = ToNative "$scRoot/resp"
 $scFake = ToNative "$scRoot/fkstate"
