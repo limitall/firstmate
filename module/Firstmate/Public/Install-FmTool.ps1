@@ -67,6 +67,12 @@ function Install-FmTool {
             # The install strings are captain-facing shell one-liners (pipelines,
             # && chains). They are executed through the platform's own shell so a
             # published install line runs exactly as documented.
+            #
+            # The product path is the Windows one, and it uses PowerShell alone.
+            # The POSIX branch exists only so the module is runnable while it is
+            # being developed on Linux; it is a development convenience, not part
+            # of the Windows product, and nothing on the Windows path depends on
+            # a POSIX shell existing.
             if ($IsWindows) {
                 & (Get-Process -Id $PID).Path -NoProfile -Command $item.Command
             } else {

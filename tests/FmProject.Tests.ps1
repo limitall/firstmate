@@ -5,6 +5,10 @@
 # byte-for-byte parity with it and not merely internal consistency.
 
 BeforeAll {
+    # The module loader sets these, so the tests must exercise the same rules.
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     foreach ($subdir in @('Private', 'Public')) {
         Get-ChildItem -LiteralPath (Join-Path $script:RepoRoot 'module' 'Firstmate' $subdir) -Filter '*.ps1' |

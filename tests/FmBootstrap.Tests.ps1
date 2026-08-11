@@ -6,6 +6,10 @@
 # skill matches on.
 
 BeforeAll {
+    # The module loader sets these, so the tests must exercise the same rules.
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     foreach ($subdir in @('Private', 'Public')) {
         Get-ChildItem -LiteralPath (Join-Path $script:RepoRoot 'module' 'Firstmate' $subdir) -Filter '*.ps1' |
@@ -258,7 +262,7 @@ Describe 'Invoke-FmBootstrap' {
     It 'reports an unresolvable backend rather than silently detecting the wrong tools' {
         $env:FM_BACKEND = 'nonesuch'
         $lines = @(Invoke-FmBootstrap -DetectOnly -Network skip)
-        ($lines | Where-Object { $_ -like 'BACKEND_INVALID: nonesuch (known: *' }).Count | Should -Be 1
+        @($lines | Where-Object { $_ -like 'BACKEND_INVALID: nonesuch (known: *' }).Count | Should -Be 1
     }
 }
 

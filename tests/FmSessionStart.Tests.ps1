@@ -7,6 +7,10 @@
 # implementation against the same fixture home and are byte-identical to it.
 
 BeforeAll {
+    # The module loader sets these, so the tests must exercise the same rules.
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     foreach ($subdir in @('Private', 'Public')) {
         Get-ChildItem -LiteralPath (Join-Path $script:RepoRoot 'module' 'Firstmate' $subdir) -Filter '*.ps1' |
@@ -182,7 +186,7 @@ Describe 'Get-FmSessionStartDigest' {
         New-TestHome -Populated | Out-Null
         $digest = @(Get-FmSessionStartDigest)
         $digest | Should -Contain '●  READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED'
-        ($digest | Where-Object { $_ -like 'skipped (read-only session) - * record(s) remain queued*' }).Count | Should -Be 1
+        @($digest | Where-Object { $_ -like 'skipped (read-only session) - * record(s) remain queued*' }).Count | Should -Be 1
         $digest | Should -Contain 'skipped (read-only session) - GitHub authentication, project clone refresh,'
     }
 
@@ -223,7 +227,7 @@ Describe 'Get-FmSessionStartDigest' {
         function Invoke-FmLock { 'lock acquired: harness pid 4242' }
         try {
             $digest = @(Get-FmSessionStartDigest -Reemit)
-            ($digest | Where-Object { $_ -like 'SESSION START (CONTEXT RE-EMIT) - *' }).Count | Should -Be 1
+            @($digest | Where-Object { $_ -like 'SESSION START (CONTEXT RE-EMIT) - *' }).Count | Should -Be 1
             $digest | Should -Contain 'Queued wakes ARE still drained: they arrived after startup and are this turn work.'
             Test-Path -LiteralPath (Join-Path $home_ 'state' '.session-start-complete') | Should -BeTrue
         } finally {
@@ -325,6 +329,6 @@ $writer.Dispose()
         $env:FM_SESSION_START_TIMEOUT = '60'
         $output = @(Invoke-FmSessionStartBounded -EntryScript $entry)
         $output | Should -Contain 'complete digest'
-        ($output | Where-Object { $_ -like '*STARTUP TRUNCATED*' }).Count | Should -Be 0
+        @($output | Where-Object { $_ -like '*STARTUP TRUNCATED*' }).Count | Should -Be 0
     }
 }

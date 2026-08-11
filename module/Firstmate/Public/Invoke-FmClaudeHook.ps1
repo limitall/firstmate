@@ -176,8 +176,7 @@ function Invoke-FmClaudePreToolUseHook {
         # the whole payload rather than a command string.
         $verdict = $null
         try { $verdict = & $policy -Payload $parsed } catch { return (New-FmHookDecision) }
-        if ($null -eq $verdict -or -not $verdict.Deny) { return (New-FmHookDecision) }
-        return (New-FmHookDenyDecision -Code $verdict.Code -Reason $verdict.Reason)
+        return (Resolve-FmHookPolicyVerdict -Verdict $verdict)
     }
 
     $command = Get-FmHookToolCommand -Payload $parsed
@@ -185,11 +184,20 @@ function Invoke-FmClaudePreToolUseHook {
 
     $verdict = $null
     try { $verdict = & $policy -Command $command } catch { return (New-FmHookDecision) }
-    # An invalid policy response fails open: the policy owner is the only thing
-    # allowed to decide deny, so an unreadable verdict is not one.
-    if ($null -eq $verdict -or -not $verdict.Deny) { return (New-FmHookDecision) }
-    if ([string]::IsNullOrEmpty($verdict.Code) -or [string]::IsNullOrEmpty($verdict.Reason)) { return (New-FmHookDecision) }
-    return (New-FmHookDenyDecision -Code $verdict.Code -Reason $verdict.Reason)
+    return (Resolve-FmHookPolicyVerdict -Verdict $verdict)
+}
+
+# An invalid policy response fails open: the policy owner is the only thing
+# allowed to decide deny, so an unreadable verdict is not one.
+function Resolve-FmHookPolicyVerdict {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowNull()]$Verdict)
+
+    if (-not (Get-FmHookVerdictField -Verdict $Verdict -Field 'Deny')) { return (New-FmHookDecision) }
+    $code = [string](Get-FmHookVerdictField -Verdict $Verdict -Field 'Code')
+    $reason = [string](Get-FmHookVerdictField -Verdict $Verdict -Field 'Reason')
+    if ([string]::IsNullOrEmpty($code) -or [string]::IsNullOrEmpty($reason)) { return (New-FmHookDecision) }
+    return (New-FmHookDenyDecision -Code $code -Reason $reason)
 }
 
 <#

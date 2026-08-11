@@ -14,6 +14,10 @@
 # The hook functions return a decision object precisely so that is testable.
 
 BeforeAll {
+    # The module loader sets these, so the tests must exercise the same rules.
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     foreach ($subdir in @('Private', 'Public')) {
         Get-ChildItem -LiteralPath (Join-Path $script:RepoRoot 'module' 'Firstmate' $subdir) -Filter '*.ps1' |
@@ -629,5 +633,22 @@ Describe 'bin/fm-claude-hook.ps1 end to end' {
             -HookArguments @('-Event', 'PreToolUse', '-Check', 'arm')
         $result.ExitCode | Should -Be 0
         $result.Stdout | Should -Be ''
+    }
+}
+
+Describe 'Resolve-FmHookPolicyVerdict' {
+    It 'fails open on a verdict that does not carry the fields at all' {
+        # The policy owners live in other areas, so a verdict of the wrong shape
+        # must be an invalid response rather than an exception - which under
+        # Set-StrictMode -Version Latest a bare property access would be.
+        (Resolve-FmHookPolicyVerdict -Verdict $null).ExitCode | Should -Be 0
+        (Resolve-FmHookPolicyVerdict -Verdict ([pscustomobject]@{ Other = 1 })).ExitCode | Should -Be 0
+        (Resolve-FmHookPolicyVerdict -Verdict 'nonsense').ExitCode | Should -Be 0
+    }
+
+    It 'accepts a hashtable verdict as readily as an object one' {
+        $decision = Resolve-FmHookPolicyVerdict -Verdict @{ Deny = $true; Code = 'CD_ESCAPE'; Reason = 'left the worktree' }
+        $decision.ExitCode | Should -Be 2
+        ($decision.Stderr[0] | ConvertFrom-Json).systemMessage | Should -Be '[CD_ESCAPE] left the worktree'
     }
 }

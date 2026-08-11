@@ -510,6 +510,27 @@ function Get-FmHookToolCommand {
     return ''
 }
 
+# Read one field off a policy verdict without assuming the shape. The policy
+# owners live in other areas, so a verdict missing a field is an invalid response
+# to fail open on, not an exception to throw - and under Set-StrictMode -Version
+# Latest a bare property access on a missing member IS an exception.
+function Get-FmHookVerdictField {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowNull()]$Verdict,
+        [Parameter(Mandatory)][string]$Field
+    )
+
+    if ($null -eq $Verdict) { return $null }
+    if ($Verdict -is [hashtable]) {
+        if ($Verdict.ContainsKey($Field)) { return $Verdict[$Field] }
+        return $null
+    }
+    $property = $Verdict.PSObject.Properties[$Field]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
 # Render the established Claude-shaped deny response. Claude requires stdout to
 # remain empty on deny, so the decision object carries it on stderr only.
 # WINDOWS-UNVERIFIED: that Claude Code on Windows reads this hookSpecificOutput
