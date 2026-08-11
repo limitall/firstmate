@@ -417,6 +417,27 @@ function Remove-FmLockPath {
         rmdir failure preserves evidence rather than deleting a stranger's data.
     #>
     param([Parameter(Mandatory)][string]$LockDir)
+
+    # A lock claimed by the bash implementation on this machine is a SYMLINK to
+    # a private owner directory. Evicting one means dropping the link and the
+    # owner dir behind it, or the owner dir leaks into the state directory.
+    $owner = $null
+    try {
+        $info = [System.IO.DirectoryInfo]::new($LockDir)
+        if ($info.LinkTarget) {
+            $owner = $info.LinkTarget
+            if (-not [System.IO.Path]::IsPathRooted($owner)) {
+                $owner = Join-Path (Split-Path -Parent $LockDir) $owner
+            }
+        }
+    }
+    catch { $owner = $null }
+    if ($owner) {
+        try { [System.IO.File]::Delete($LockDir) } catch { }
+        if ([System.IO.Directory]::Exists($owner)) { $null = Remove-FmLockPath -LockDir $owner }
+        return (-not ([System.IO.Directory]::Exists($LockDir) -or [System.IO.File]::Exists($LockDir)))
+    }
+
     foreach ($name in @('pid', 'fm-home', 'pid-identity', 'role', 'watcher-path')) {
         $p = Join-Path $LockDir $name
         try { if ([System.IO.File]::Exists($p)) { [System.IO.File]::Delete($p) } } catch { }

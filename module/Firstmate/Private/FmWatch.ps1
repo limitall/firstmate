@@ -115,7 +115,7 @@ function Write-FmTriageLog {
         Add-FmWakeQueueBytes -Path $log -Record ("[{0}] {1}`n" -f $stamp, $Message)
         $info = [System.IO.FileInfo]::new($log)
         if ($info.Exists -and $info.Length -ge $Settings.TriageLogMaxBytes) {
-            $lines = Get-FmWakeQueueLines -Path $log
+            $lines = @(Get-FmWakeQueueLines -Path $log)
             $keep = if ($lines.Count -gt 2000) { $lines[($lines.Count - 2000)..($lines.Count - 1)] } else { $lines }
             Set-FmFileTextLf -Path $log -Text (($keep -join "`n") + "`n")
         }
@@ -154,7 +154,7 @@ function Publish-FmWatchDelivery {
 
         $info = [System.IO.FileInfo]::new($log)
         if ($info.Exists -and $info.Length -ge $Settings.DeliveryMaxBytes) {
-            $lines = Get-FmWakeQueueLines -Path $log
+            $lines = @(Get-FmWakeQueueLines -Path $log)
             $keepCount = [Math]::Min($Settings.DeliveryKeepLines, $lines.Count)
             $keep = @($lines[($lines.Count - $keepCount)..($lines.Count - 1)]) | Where-Object { $_ -match '^[0-9]+\t' }
             Set-FmFileTextLf -Path $log -Text (($keep -join "`n") + "`n")

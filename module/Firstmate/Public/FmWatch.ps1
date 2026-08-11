@@ -337,11 +337,11 @@ function Invoke-FmWatchSignalCycle {
         [Parameter(Mandatory)][hashtable]$Context,
         [Parameter(Mandatory)][hashtable]$Settings
     )
-    $pending = Get-FmWatchSignalChanges -Context $Context
+    $pending = @(Get-FmWatchSignalChanges -Context $Context)
     if ($pending.Count -eq 0) { return }
 
     Start-Sleep -Seconds $Settings.SignalGrace
-    $second = Get-FmWatchSignalChanges -Context $Context
+    $second = @(Get-FmWatchSignalChanges -Context $Context)
     # Last write wins per seen-file: the re-scan's signature supersedes.
     $byMarker = [ordered]@{}
     foreach ($change in @($pending) + @($second)) { $byMarker[$change.SeenFile] = $change }
