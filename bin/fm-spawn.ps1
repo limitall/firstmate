@@ -25,6 +25,7 @@ param(
     [string]$Model = '',
     [string]$Effort = '',
     [string]$FirstmateHome = '',
+    [string]$LabelHome = '',
     [switch]$SkipBaseRefresh
 )
 
@@ -48,7 +49,7 @@ if (Test-Path -LiteralPath $fmManifest) {
 try {
     $worker = Start-FmWorker -TaskId $TaskId -Project $Project -BriefPath $BriefPath -Harness $Harness `
         -LaunchCommand $LaunchCommand -Kind $Kind -Mode $Mode -Yolo $Yolo -Model $Model -Effort $Effort `
-        -FirstmateHome $FirstmateHome -SkipBaseRefresh:$SkipBaseRefresh
+        -FirstmateHome $FirstmateHome -LabelHome $LabelHome -SkipBaseRefresh:$SkipBaseRefresh
     if ($null -eq $worker) { exit 0 }
     $worker | Format-List | Out-String | Write-Output
     exit 0

@@ -49,6 +49,7 @@ function Start-FmWorker {
         [string]$Model = '',
         [string]$Effort = '',
         [string]$FirstmateHome = '',
+        [string]$LabelHome = '',
         [ValidateSet('herdr')][string]$Backend = 'herdr',
         [switch]$SkipBaseRefresh
     )
@@ -90,6 +91,22 @@ function Start-FmWorker {
         throw "error: no launch command for harness '$Harness'; pass -LaunchCommand, because this port never guesses how to start an agent"
     }
 
+    # The herdr workspace label is derived from FM_HOME: the primary home is
+    # "firstmate", a seeded secondmate home is "2ndmate-<id>". A PRIMARY home
+    # spawning a SECONDMATE must therefore label the container with the
+    # SECONDMATE's home, not its own - otherwise that secondmate's workers land
+    # in the primary's workspace and every later per-home lookup finds the wrong
+    # container. The bash spawn shadows FM_HOME around the container call for
+    # exactly this; here it is an explicit parameter, and a secondmate launch
+    # must name it rather than silently inheriting the wrong label.
+    if (-not $LabelHome) {
+        if ($Kind -eq 'secondmate') {
+            throw ("error: a secondmate launch must name that secondmate's own home with -LabelHome, so its herdr " +
+                "workspace carries that home's label instead of the launching home's")
+        }
+        $LabelHome = $FirstmateHome
+    }
+
     $label = "fm-$TaskId"
     if (-not $PSCmdlet.ShouldProcess("task $TaskId", "spawn a $Harness worker on $Backend")) { return $null }
 
@@ -107,8 +124,14 @@ function Start-FmWorker {
         # 2. The container. A fresh per-home workspace is created in the
         #    PROJECT directory, exactly as the bash spawn does, so an
         #    unlabelled workspace's displayed name still reads as the project.
-        $container = New-FmHerdrContainer -Cwd $projectReal `
-            -Relationship $(if ($Kind -eq 'secondmate') { 'other-home' } else { 'launcher-home' }) -Confirm:$false
+        $savedHome = $env:FM_HOME
+        try {
+            $env:FM_HOME = $LabelHome
+            $container = New-FmHerdrContainer -Cwd $projectReal `
+                -Relationship $(if ($Kind -eq 'secondmate') { 'other-home' } else { 'launcher-home' }) -Confirm:$false
+        } finally {
+            $env:FM_HOME = $savedHome
+        }
 
         # 3. The pane, created directly IN the leased worktree. This is where
         #    the mechanism changes and the guarantee does not: the bash spawn

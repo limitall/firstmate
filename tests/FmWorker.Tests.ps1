@@ -145,6 +145,28 @@ Describe 'Start-FmWorker' {
             Should -Throw '*refusing a duplicate launch*'
     }
 
+    It 'labels the container with the secondmate home a secondmate launch names' {
+        Mock New-FmHerdrContainer {
+            [pscustomobject]@{ Session = 'default'; WorkspaceId = 'w1'; SeededTabId = ''; Container = 'default:w1'
+                SeenHome = $env:FM_HOME }
+        }
+        $smHome = Join-Path $TestDrive 'sm-home'
+        New-Item -ItemType Directory -Path $smHome -Force | Out-Null
+        $before = $env:FM_HOME
+        $null = Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
+            -Harness 'claude' -LaunchCommand 'claude' -Kind 'secondmate' -LabelHome $smHome `
+            -FirstmateHome $script:fmHome -Confirm:$false
+        Should -Invoke New-FmHerdrContainer -Times 1 -ParameterFilter { $Relationship -eq 'other-home' }
+        $env:FM_HOME | Should -Be $before
+    }
+
+    It 'refuses a secondmate launch that does not name the secondmate home' {
+        { Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
+                -Harness 'claude' -LaunchCommand 'claude' -Kind 'secondmate' `
+                -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*must name that secondmate*'
+    }
+
     It 'refuses an invalid task id, a missing brief, and a missing launch command' {
         { Start-FmWorker -TaskId 'bad id' -Project $script:project -BriefPath $script:brief `
                 -Harness 'claude' -LaunchCommand 'claude' -FirstmateHome $script:fmHome -Confirm:$false } |
