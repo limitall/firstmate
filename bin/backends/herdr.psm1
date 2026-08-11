@@ -3839,6 +3839,18 @@ locale and in BYTES under LC_ALL=C. The differential oracle host runs
 LANG=en_GB.UTF-8 (verified), so characters is the oracle's own answer and is what
 this uses.
 #>
+<#
+.SYNOPSIS
+True when a plain row is a Pi separator: 8+ rule characters and nothing else.
+.DESCRIPTION
+KNOWN production divergence on this host, deliberate: bash's `${#row} -ge 8`
+counts BYTES under the C-default locale the hooks run in, so each 3-byte
+U+2500 counts as three and THREE dashes already satisfy bash's check. This
+twin counts CHARACTERS, which is the rule's stated intent ("Unicode width
+rule"). The differential pins a UTF-8 locale around the bash oracle call so
+the suite asserts the rule; the byte-counting behaviour is a bash-side
+environmental defect, not an oracle contract worth copying.
+#>
 function Test-FmBackendHerdrPiSeparatorRow {
     [CmdletBinding()]
     [OutputType([bool])]

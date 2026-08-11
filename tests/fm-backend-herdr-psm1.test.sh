@@ -137,11 +137,20 @@ MOD_BACKEND_N=$(fm_test_native_path "$ROOT/bin/fm-backend.psm1")
 
 LF=$'\n'
 TAB=$'\t'
-GLYPH_CORNER=$(printf '\u2514')
-GLYPH_MIDDOT=$(printf '\u00B7')
-GLYPH_DASH=$(printf '\u2500')
-GLYPH_BAR=$(printf '\u2502')
-GLYPH_CLAUDE=$(printf '\u276F')
+# BYTE escapes, never printf '\uXXXX': bash renders \u through the CURRENT
+# locale's charmap, and when that charmap cannot encode the code point (the
+# MSYS default when no locale variable is exported - exactly firstmate's
+# production hook environment) printf silently emits the LITERAL six bytes
+# "\u2502" instead of the glyph. Every fixture built from these then contained
+# no real glyph at all, the suite's own byte-copied expectations stayed
+# self-consistently wrong, and the code-point-built PowerShell probe was the
+# only honest participant. Same incident and same fix as the composer,
+# classify and backend-core suites (task ps-port-locale).
+GLYPH_CORNER=$'\xe2\x94\x94'   # U+2514
+GLYPH_MIDDOT=$'\xc2\xb7'       # U+00B7
+GLYPH_DASH=$'\xe2\x94\x80'     # U+2500
+GLYPH_BAR=$'\xe2\x94\x82'      # U+2502
+GLYPH_CLAUDE=$'\xe2\x9d\xaf'   # U+276F
 TOKEN22='AbC0123456789_-xyzABCD'
 
 # --- assertion bookkeeping ----------------------------------------------------
@@ -415,7 +424,17 @@ FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6
 
 # --- Pi separator rows (Unicode width rule) -----------------------------------
 add_sep_case() {  # <label> <row>
+  # The oracle's ${#row} counts BYTES under the C-default locale firstmate's
+  # hooks actually run in, so seven 3-byte rule characters read as 21 and pass
+  # the >=8 rule - production bash lowers the intended character threshold to
+  # three dashes. The twin implements the rule's stated intent (characters).
+  # Pin a UTF-8 LC_ALL around the oracle call so the differential asserts the
+  # RULE rather than the host's byte-counting accident; the production-side
+  # divergence itself is documented at Test-FmBackendHerdrPiSeparatorRow.
+  local _sep_saved_lc=${LC_ALL-} _sep_had_lc=${LC_ALL+set}
+  LC_ALL=C.UTF-8
   run_yesno fm_backend_herdr_pi_separator_row "$2"
+  if [ -n "$_sep_had_lc" ]; then LC_ALL=$_sep_saved_lc; else unset LC_ALL; fi
   add_case "herdr:pisep $1" "$YESNO" pisep '' "$2" '' '' '' '' ''
 }
 SEP8=$(printf "$GLYPH_DASH%.0s" 1 2 3 4 5 6 7 8)
