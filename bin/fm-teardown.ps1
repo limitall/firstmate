@@ -34,6 +34,35 @@ $usage = 'usage: fm-teardown.ps1 <task-id> [--force --approved-by "<authority>"]
 $force = $false
 $approvedBy = ''
 $expectApproval = $false
+# PowerShell routes a leading `-h`/`--help` into RemainingArguments rather than
+# into $TaskId, so both places are checked. The text is written out rather than
+# read back through Get-Help: comment-based help does not reliably attach to a
+# script that opens with #requires, and a help flag that prints only a syntax
+# line is worse than no help flag.
+if ($TaskId -in @('-h', '--help') -or
+    @($RemainingArguments | Where-Object { $_ -in @('-h', '--help') }).Count -gt 0) {
+    @(
+        $usage
+        ''
+        'Tear down a finished task: REFUSE while its worktree holds work that has not'
+        'landed, then take custody of its processes, return the worktree to its pool,'
+        'and clear the task''s volatile state.'
+        ''
+        'Work has landed when it is reachable from a remote-tracking branch, or its PR'
+        'is merged and contains the current local work, or its content is already in the'
+        'up-to-date default branch. local-only tasks also accept work merged into the'
+        'local default branch. Uncommitted changes are never landed, and an inspection'
+        'that cannot run refuses exactly like unlanded work.'
+        ''
+        '  --force          skip the landed-work test and the scout report gate. This'
+        '                   DISCARDS work, so it requires --approved-by.'
+        '  --approved-by S  who authorized the discard. Recorded with the teardown.'
+        ''
+        'Exit codes: 0 complete, 1 refused or failed, 2 invalid request.'
+        'Details: docs/teardown-windows.md'
+    ) | ForEach-Object { Write-Output $_ }
+    exit 0
+}
 foreach ($arg in @($RemainingArguments | Where-Object { -not [string]::IsNullOrEmpty($_) })) {
     if ($expectApproval) {
         $approvedBy = $arg

@@ -73,6 +73,14 @@ BeforeAll {
     $script:RealChildProcess = ${function:Invoke-FmChildProcess}
     $script:RealInvokeGit = ${function:Invoke-FmGit}
 
+    # A pid that is provably NOT running. 0 is not a safe choice: on Linux it
+    # resolves to the kernel scheduler and reads as alive.
+    function Get-DeadProcessId {
+        $candidate = 999999
+        while (Get-Process -Id $candidate -ErrorAction SilentlyContinue) { $candidate-- }
+        $candidate
+    }
+
     function New-ChildProcessResult {
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
         param([bool]$Ok = $true, [int]$ExitCode = 0, [string]$StdOut = '', [string]$StdErr = '')
@@ -251,6 +259,56 @@ Describe 'Test-FmTeardownWorktreeSafety' {
     It 'REFUSES a staged-but-uncommitted change too' {
         Set-Content -LiteralPath (Join-Path $script:fx.Worktree 'new.txt') -Value 'x'
         $null = Invoke-FmGit -Directory $script:fx.Worktree -Arguments @('add', '-A')
+        (Test-FmTeardownWorktreeSafety -Worktree $script:fx.Worktree -Project $script:fx.Project).Verdict |
+            Should -Be 'refuse'
+    }
+
+    It 'lists at most five unpushed commits in the refusal' {
+        1..7 | ForEach-Object {
+            $null = Add-TestCommit -Directory $script:fx.Worktree -File "f$_.txt" -Content "$_" -Message "commit $_"
+        }
+        Mock Test-FmTeardownWorkLanded { $false }
+        $verdict = Test-FmTeardownWorktreeSafety -Worktree $script:fx.Worktree -Project $script:fx.Project
+        $verdict.Verdict | Should -Be 'refuse'
+        # header line plus exactly five commits, then the remedy line
+        $listed = @($verdict.Message | Where-Object { $_ -match '^[0-9a-f]{7,} ' })
+        $listed.Count | Should -Be 5
+    }
+
+    It 'allows commits that ARE reachable from a remote-tracking branch' {
+        # The plain landed case: pushed work needs no PR or content proof at all.
+        $null = Add-TestCommit -Directory $script:fx.Worktree -File 'pushed.txt' -Content 'pushed'
+        $null = Invoke-FmGit -Directory $script:fx.Worktree -Arguments @('push', '-q', 'origin', 'HEAD:refs/heads/pushed')
+        Mock Test-FmTeardownWorkLanded { throw 'the landed-work test must not be reached for pushed work' }
+        (Test-FmTeardownWorktreeSafety -Worktree $script:fx.Worktree -Project $script:fx.Project).Verdict |
+            Should -Be 'allow'
+    }
+
+    It 'REFUSES when the default branch has only PART of the work' {
+        # Half a squash-merge is not a landing: merge-tree still adds something.
+        $null = Add-TestCommit -Directory $script:fx.Worktree -File 'first.txt' -Content 'first'
+        $null = Add-TestCommit -Directory $script:fx.Worktree -File 'second.txt' -Content 'second'
+        $null = Add-TestCommit -Directory $script:fx.Project -File 'first.txt' -Content 'first' -Message 'only the first change'
+        $null = Invoke-FmGit -Directory $script:fx.Project -Arguments @('push', '-q', 'origin', 'main')
+        Mock Invoke-FmChildProcess { New-ChildProcessResult -Ok $false -ExitCode 1 } -ParameterFilter { $FilePath -in @('gh', 'gh-axi') }
+        (Test-FmTeardownWorktreeSafety -Worktree $script:fx.Worktree -Project $script:fx.Project).Verdict |
+            Should -Be 'refuse'
+    }
+
+    It 'REFUSES a directory that is not a git repository at all' {
+        # No mock: a real non-repo directory makes every git read fail, and an
+        # inspection that cannot run refuses exactly like unlanded work.
+        $plain = Join-Path $script:root 'not-a-repo'
+        New-Item -ItemType Directory -Path $plain -Force | Out-Null
+        $verdict = Test-FmTeardownWorktreeSafety -Worktree $plain -Project $script:fx.Project
+        $verdict.Verdict | Should -Be 'refuse'
+        ($verdict.Message -join "`n") | Should -Match 'REFUSED: cannot inspect worktree .* for uncommitted changes'
+    }
+
+    It 'still REFUSES when a dropping-shaped name is a real change' {
+        # `.claude-notes` is NOT the ignored pattern: only `?? .claude/` and the
+        # exact turn-end markers are.
+        Set-Content -LiteralPath (Join-Path $script:fx.Worktree '.claude-notes') -Value 'real work'
         (Test-FmTeardownWorktreeSafety -Worktree $script:fx.Worktree -Project $script:fx.Project).Verdict |
             Should -Be 'refuse'
     }
@@ -654,6 +712,7 @@ Describe 'Invoke-FmTeardown' {
             if ($null -ne $TimeoutSeconds) { $splat['TimeoutSeconds'] = $TimeoutSeconds }
             & $script:RealInvokeGit @splat
         }
+        Mock Test-FmTeardownTreehouseAvailable { $true }
         Mock Remove-FmHerdrPane { $true }
         Mock Test-FmHerdrEndpointGone { $true }
         Mock Stop-FmTaskJob { [pscustomobject]@{ Outcome = 'terminated'; Survivors = @(); Detail = 'clean' } }
@@ -795,9 +854,245 @@ Describe 'Invoke-FmTeardown' {
             Should -Throw '*not a valid task id*'
     }
 
+    It 'REFUSES a second concurrent lifecycle action for the same task' {
+        # A live owner: this very process, which is certainly alive.
+        $lock = Join-Path $script:stateDir '.control-alpha.lock'
+        New-Item -ItemType Directory -Path $lock -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $lock 'pid') -Value "$PID"
+        { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*another lifecycle action is already running*'
+        Test-Path -LiteralPath $script:metaPath | Should -BeTrue
+        Should -Invoke Remove-FmHerdrPane -Times 0
+    }
+
+    It 'releases its control lock on success and on refusal alike' {
+        $lock = Join-Path $script:stateDir '.control-alpha.lock'
+        $null = Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false
+        Test-Path -LiteralPath $lock | Should -BeFalse
+
+        & $script:WriteMeta
+        Set-Content -LiteralPath (Join-Path $script:ifx.Worktree 'README.md') -Value 'dirty'
+        { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } | Should -Throw
+        Test-Path -LiteralPath $lock | Should -BeFalse
+    }
+
+    It 'reclaims a lock whose owner is gone rather than deadlocking on it' {
+        $lock = Join-Path $script:stateDir '.control-alpha.lock'
+        New-Item -ItemType Directory -Path $lock -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $lock 'pid') -Value "$(Get-DeadProcessId)"
+        (Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false).Outcome |
+            Should -Be 'complete'
+    }
+
+    It 'REFUSES a remote-placed secondmate rather than reaching across the network' {
+        & $script:WriteMeta @{ remote_host = 'builder.example.invalid' }
+        { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*remote-placed secondmate*'
+        Test-Path -LiteralPath $script:metaPath | Should -BeTrue
+    }
+
+    It 'REFUSES before deleting the branch when treehouse is not installed' {
+        Mock Test-FmTeardownTreehouseAvailable { $false }
+        { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*treehouse is not available*'
+        Test-Path -LiteralPath $script:metaPath | Should -BeTrue
+        # The branch must survive: nothing destructive may run before that refusal.
+        Get-FmGitOutput -Directory $script:ifx.Project -Arguments @('rev-parse', '--verify', "refs/heads/$($script:ifx.Branch)") |
+            Should -Not -BeNullOrEmpty
+    }
+
+    It 'removes the task PR-check artifacts with the rest of the volatile state' {
+        foreach ($leaf in @('alpha.check.sh', 'alpha.pr-poll', 'alpha.check-trust')) {
+            Set-Content -LiteralPath (Join-Path $script:stateDir $leaf) -Value 'x'
+        }
+        $null = Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false
+        foreach ($leaf in @('alpha.check.sh', 'alpha.pr-poll', 'alpha.check-trust')) {
+            Test-Path -LiteralPath (Join-Path $script:stateDir $leaf) | Should -BeFalse
+        }
+    }
+
+    It 'REFUSES a PR-check artifact that is a symlink out of the state directory' {
+        $outside = Join-Path $script:iRoot 'outside.txt'
+        Set-Content -LiteralPath $outside -Value 'keep me'
+        $link = Join-Path $script:stateDir 'alpha.check.sh'
+        New-Item -ItemType SymbolicLink -Path $link -Target $outside -ErrorAction SilentlyContinue | Out-Null
+        if (-not (Test-Path -LiteralPath $link)) { Set-ItResult -Skipped -Because 'symlinks are not available here' }
+        { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*PR-check artifacts did not pass validation*'
+        Test-Path -LiteralPath $outside | Should -BeTrue
+        Test-Path -LiteralPath $script:metaPath | Should -BeTrue
+    }
+
     It 'changes nothing under -WhatIf' {
         $null = Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -WhatIf
         Test-Path -LiteralPath $script:metaPath | Should -BeTrue
         Should -Invoke Invoke-FmTeardownWorktreeReturn -Times 0
+    }
+}
+
+# =============================================================================
+# Carried over from the lifecycle area's teardown, which this port replaces.
+# Kept under the same names and signatures because other areas resolve them:
+# tests/FmCrewState.Tests.ps1 calls Get-FmTaskParkedRunId directly.
+# =============================================================================
+
+Describe 'the per-task control lock' {
+    BeforeEach {
+        $script:lockRoot = Join-Path $TestDrive ([Guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $script:lockRoot -Force | Out-Null
+        $script:lockPath = Join-Path $script:lockRoot '.control-t1.lock'
+    }
+
+    It 'is taken once and refuses a second acquirer' {
+        Enter-FmTeardownLock -LockPath $script:lockPath | Should -BeTrue
+        Enter-FmTeardownLock -LockPath $script:lockPath | Should -BeFalse
+    }
+
+    It 'writes the holder pid in the shape the bash lock library reads' {
+        $null = Enter-FmTeardownLock -LockPath $script:lockPath
+        (Get-Content -LiteralPath (Join-Path $script:lockPath 'pid') -Raw).Trim() | Should -Be "$PID"
+    }
+
+    It 'reclaims a lock whose recorded owner is gone' {
+        New-Item -ItemType Directory -Path $script:lockPath -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:lockPath 'pid') -Value "$(Get-DeadProcessId)"
+        Enter-FmTeardownLock -LockPath $script:lockPath | Should -BeTrue
+    }
+
+    It 'reclaims a lock whose acquirer died before writing its pid' {
+        New-Item -ItemType Directory -Path $script:lockPath -Force | Out-Null
+        Enter-FmTeardownLock -LockPath $script:lockPath | Should -BeTrue
+    }
+
+    It 'treats a pid file it cannot READ as a LIVE owner rather than stealing it' {
+        # A malformed lock is not proof the owner is dead. Refusing costs an
+        # operator one `rm`; stealing costs two teardowns in one worktree.
+        New-Item -ItemType Directory -Path $script:lockPath -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:lockPath 'pid') -Force | Out-Null
+        Test-FmTeardownLockOwnerAlive -LockPath $script:lockPath | Should -BeTrue
+        Enter-FmTeardownLock -LockPath $script:lockPath | Should -BeFalse
+    }
+
+    It 'is released only by its holder' {
+        $null = Enter-FmTeardownLock -LockPath $script:lockPath
+        Set-Content -LiteralPath (Join-Path $script:lockPath 'pid') -Value '999999'
+        Exit-FmTeardownLock -LockPath $script:lockPath
+        Test-Path -LiteralPath $script:lockPath | Should -BeTrue
+
+        Set-Content -LiteralPath (Join-Path $script:lockPath 'pid') -Value "$PID"
+        Exit-FmTeardownLock -LockPath $script:lockPath
+        Test-Path -LiteralPath $script:lockPath | Should -BeFalse
+    }
+}
+
+Describe 'Get-FmTaskParkedRunId' {
+    BeforeAll {
+        $script:nmRoot = Join-Path $TestDrive 'nmrun'
+        $script:nmfx = New-TestFixture -Root $script:nmRoot -Branch 'fm/t1'
+        $script:nmHead = Get-FmGitOutput -Directory $script:nmfx.Worktree -Arguments @('rev-parse', 'HEAD')
+    }
+
+    It 'concludes only a parked run that belongs to THIS worktree' {
+        $parked = "id: run-1`nbranch: fm/t1`nhead: $script:nmHead`nstatus: awaiting_approval`n"
+        Get-FmTaskParkedRunId -WorktreePath $script:nmfx.Worktree -StatusOutput $parked | Should -Be 'run-1'
+
+        $otherBranch = "id: run-2`nbranch: fm/other`nhead: $script:nmHead`nstatus: awaiting_approval`n"
+        Get-FmTaskParkedRunId -WorktreePath $script:nmfx.Worktree -StatusOutput $otherBranch | Should -Be ''
+
+        # An autonomous step is driven against no-mistakes' own clone, so
+        # removing this worktree does not orphan it: leave it alone.
+        $running = "id: run-3`nbranch: fm/t1`nhead: $script:nmHead`nstatus: running`n"
+        Get-FmTaskParkedRunId -WorktreePath $script:nmfx.Worktree -StatusOutput $running | Should -Be ''
+
+        $terminal = "id: run-4`nbranch: fm/t1`nhead: $script:nmHead`nstatus: awaiting_approval`noutcome: passed`n"
+        Get-FmTaskParkedRunId -WorktreePath $script:nmfx.Worktree -StatusOutput $terminal | Should -Be ''
+
+        $gated = "id: run-5`nbranch: fm/t1`nhead: $script:nmHead`nstatus: running`nawaiting_agent: crew`n"
+        Get-FmTaskParkedRunId -WorktreePath $script:nmfx.Worktree -StatusOutput $gated | Should -Be 'run-5'
+    }
+
+    It 'refuses to attribute a run whose head does not match this worktree' {
+        $foreign = "id: run-6`nbranch: fm/t1`nhead: 0123456789abcdef0123456789abcdef01234567`nstatus: awaiting_approval`n"
+        Get-FmTaskParkedRunId -WorktreePath $script:nmfx.Worktree -StatusOutput $foreign | Should -Be ''
+    }
+
+    It 'says nothing for empty status output' {
+        Get-FmTaskParkedRunId -WorktreePath $script:nmfx.Worktree -StatusOutput '' | Should -Be ''
+    }
+}
+
+Describe 'Remove-FmTaskPrPollArtifact' {
+    BeforeEach {
+        $script:prState = Join-Path $TestDrive ([Guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $script:prState -Force | Out-Null
+    }
+
+    It 'is a no-op when the task has no artifacts' {
+        Remove-FmTaskPrPollArtifact -StatePath $script:prState -Id 't1' -Confirm:$false | Should -BeTrue
+    }
+
+    It 'removes every artifact and the emptied quarantine directory' {
+        foreach ($leaf in @('t1.check.sh', 't1.pr-poll', 't1.pr-poll-registration', 't1.pr-poll-retirement', 't1.check-trust')) {
+            Set-Content -LiteralPath (Join-Path $script:prState $leaf) -Value 'x'
+        }
+        $quarantine = Join-Path $script:prState '.pr-check-quarantine'
+        New-Item -ItemType Directory -Path $quarantine -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $quarantine 't1.diagnostic') -Value 'x'
+
+        Remove-FmTaskPrPollArtifact -StatePath $script:prState -Id 't1' -Confirm:$false | Should -BeTrue
+        @(Get-ChildItem -LiteralPath $script:prState -Force).Count | Should -Be 0
+    }
+
+    It 'leaves another task''s quarantine entries alone' {
+        $quarantine = Join-Path $script:prState '.pr-check-quarantine'
+        New-Item -ItemType Directory -Path $quarantine -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $quarantine 't1.diagnostic') -Value 'x'
+        Set-Content -LiteralPath (Join-Path $quarantine 'other.diagnostic') -Value 'x'
+        Remove-FmTaskPrPollArtifact -StatePath $script:prState -Id 't1' -Confirm:$false | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $quarantine 'other.diagnostic') | Should -BeTrue
+    }
+
+    It 'REFUSES an artifact that is a symlink out of the state directory' {
+        $outside = Join-Path $TestDrive 'pr-outside.txt'
+        Set-Content -LiteralPath $outside -Value 'keep me'
+        $link = Join-Path $script:prState 't1.check.sh'
+        New-Item -ItemType SymbolicLink -Path $link -Target $outside -ErrorAction SilentlyContinue | Out-Null
+        if (-not (Test-Path -LiteralPath $link)) { Set-ItResult -Skipped -Because 'symlinks are not available here' }
+        Remove-FmTaskPrPollArtifact -StatePath $script:prState -Id 't1' -WarningAction SilentlyContinue -Confirm:$false |
+            Should -BeFalse
+        Test-Path -LiteralPath $outside | Should -BeTrue
+        Test-Path -LiteralPath $link | Should -BeTrue
+    }
+
+    It 'REFUSES a quarantine path that is not an ordinary directory' {
+        Set-Content -LiteralPath (Join-Path $script:prState 't1.pr-poll') -Value 'x'
+        Set-Content -LiteralPath (Join-Path $script:prState '.pr-check-quarantine') -Value 'not a directory'
+        Remove-FmTaskPrPollArtifact -StatePath $script:prState -Id 't1' -WarningAction SilentlyContinue -Confirm:$false |
+            Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:prState 't1.pr-poll') | Should -BeTrue
+    }
+}
+
+Describe 'Test-FmTeardownTasksAxiBacklog' {
+    It 'honours a configured manual backlog backend' {
+        $config = Join-Path $TestDrive ([Guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $config -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $config 'backlog-backend') -Value "manual`n"
+        Test-FmTeardownTasksAxiBacklog -ConfigPath $config | Should -BeFalse
+    }
+}
+
+Describe 'the stale-lock symlink refusal' {
+    It 'never treats a SYMLINKED index.lock as stale' {
+        # Removing it would follow the link and delete something else entirely.
+        $target = Join-Path $TestDrive 'lock-target.txt'
+        Set-Content -LiteralPath $target -Value ''
+        $link = Join-Path $TestDrive 'linked.lock'
+        New-Item -ItemType SymbolicLink -Path $link -Target $target -ErrorAction SilentlyContinue | Out-Null
+        if (-not (Test-Path -LiteralPath $link)) { Set-ItResult -Skipped -Because 'symlinks are not available here' }
+        [System.IO.File]::SetLastWriteTimeUtc($target, [DateTime]::UtcNow.AddMinutes(-10))
+        Mock Test-FmTeardownGitLockHeld { 'free' }
+        Mock Test-FmTeardownDirectoryHeld { 'none' }
+        Test-FmTeardownGitLockStale -LockPath $link -TaskId 'alpha' -MinimumAgeSeconds 30 | Should -BeFalse
     }
 }

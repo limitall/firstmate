@@ -192,6 +192,12 @@ function Test-FmTeardownGitLockStale {
     if (-not $LockPath) { return $false }
     if (-not (Test-Path -LiteralPath $LockPath -PathType Leaf)) { return $false }
 
+    # A symlinked index.lock is never removed: the removal would follow the link
+    # and delete something else entirely. Carried over from the lifecycle area's
+    # teardown, which this port replaces.
+    $lockItem = Get-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
+    if (-not $lockItem -or $lockItem.LinkTarget) { return $false }
+
     if ((Test-FmTeardownGitLockHeld -Path $LockPath) -ne 'free') { return $false }
     if ((Test-FmTeardownDirectoryHeld -TaskId $TaskId) -ne 'none') { return $false }
 
@@ -581,6 +587,15 @@ function Clear-FmTeardownStaleLock {
 
 # --- returning the worktree to the pool --------------------------------------
 
+# Test-FmTeardownTreehouseAvailable: is the pool CLI here at all? Asked before
+# anything is touched, because without it the worktree cannot be returned and
+# finding that out after deleting the branch would be a pointless loss.
+function Test-FmTeardownTreehouseAvailable {
+    [CmdletBinding()]
+    param()
+    $null -ne (Get-Command -Name 'treehouse' -CommandType Application -ErrorAction SilentlyContinue)
+}
+
 # Test-FmTeardownIndexLockError: the ONE failure signature that earns patience.
 # Every other treehouse failure aborts immediately and loudly.
 function Test-FmTeardownIndexLockError {
@@ -717,6 +732,261 @@ function Invoke-FmTeardownWorktreeReturn {
     }
 }
 
+# =============================================================================
+# CARRIED OVER from the lifecycle area's teardown, which this port replaces.
+# Names and signatures are kept EXACTLY: lifecycle's surviving files and tests
+# resolve some of them (tests/FmCrewState.Tests.ps1 calls Get-FmTaskParkedRunId
+# directly), so a rename here would be a silent break in another area.
+# =============================================================================
+
+# --- the per-task control lock -----------------------------------------------
+#
+# A directory plus a `pid` file - the same on-disk shape bin/fm-wake-lib.sh's
+# fm_lock_try_acquire creates, so a Linux firstmate and this one recognise each
+# other's held lock. Directory creation and FileMode.CreateNew are both atomic,
+# so exactly one racing acquirer wins.
+#
+# The bash library's full steal protocol (owner symlinks, mid-acquire freshness)
+# belongs to the wake-queue area; what teardown needs is narrower: refuse while
+# the recorded owner is alive, reclaim an ownerless lock.
+#
+# MERGE POINT: when the foundation area's Request-FmLock / Unlock-FmLock land,
+# delegate to them and delete these three - one owner for the lock protocol.
+
+function Test-FmTeardownLockOwnerAlive {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$LockPath)
+    $pidFile = Join-Path $LockPath 'pid'
+    # No pid file at all: an acquirer died between creating the directory and
+    # writing its pid, so there is provably no owner.
+    if (-not (Test-Path -LiteralPath $pidFile)) { return $false }
+    $raw = ''
+    # A pid file that cannot be READ (wrong type, permissions) is treated as a
+    # LIVE owner. Stealing a lock we cannot prove is ownerless is how two
+    # teardowns end up in one worktree; an operator can always remove a
+    # malformed lock by hand, and that is the cheaper failure.
+    try { $raw = ([System.IO.File]::ReadAllText($pidFile)).Trim() } catch { return $true }
+    if ($raw -notmatch '^[0-9]+$') { return $false }
+    $null -ne (Get-Process -Id ([int]$raw) -ErrorAction SilentlyContinue)
+}
+
+function Enter-FmTeardownLock {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$LockPath)
+    $pidFile = Join-Path $LockPath 'pid'
+    for ($attempt = 0; $attempt -lt 2; $attempt++) {
+        try {
+            $null = [System.IO.Directory]::CreateDirectory((Split-Path -Parent $LockPath))
+            $null = [System.IO.Directory]::CreateDirectory($LockPath)
+            $stream = [System.IO.File]::Open($pidFile, [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+            try {
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes("$PID`n")
+                $stream.Write($bytes, 0, $bytes.Length)
+            } finally {
+                $stream.Dispose()
+            }
+            return $true
+        } catch [System.IO.IOException] {
+            if (Test-FmTeardownLockOwnerAlive -LockPath $LockPath) { return $false }
+            # Ownerless: the previous holder died without releasing. Reclaim once.
+            Remove-Item -LiteralPath $LockPath -Recurse -Force -ErrorAction SilentlyContinue
+        } catch {
+            return $false
+        }
+    }
+    $false
+}
+
+function Exit-FmTeardownLock {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$LockPath)
+    $pidFile = Join-Path $LockPath 'pid'
+    if (-not (Test-Path -LiteralPath $pidFile -PathType Leaf)) { return }
+    $raw = ''
+    try { $raw = ([System.IO.File]::ReadAllText($pidFile)).Trim() } catch { return }
+    # Only the holder releases: a lock reclaimed by someone else is not ours.
+    if ($raw -ne "$PID") { return }
+    Remove-Item -LiteralPath $LockPath -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --- the task's own parked no-mistakes run (Fix 1 in the bash header) --------
+#
+# A ship task's worktree can be torn down while its no-mistakes run is still
+# PARKED at a gate with no worker left to ever answer it - the run then holds a
+# fleet slot indefinitely. A run with an autonomous step still under way is left
+# alone: no-mistakes drives those against its own clone, not this worktree.
+
+# Field readers delegate to the crew-state area's owners when they are present,
+# and fall back to the same parse otherwise, so this works in a partial build
+# without ever defining a second copy of THEIR names.
+function Get-FmTeardownRunField {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Output,
+        [Parameter(Mandatory)][string]$Key
+    )
+    $owner = Resolve-FmTeardownOwner -Name 'Get-FmNmField'
+    if ($owner) { return [string](& $owner -Output $Output -Key $Key) }
+    if (-not $Output) { return '' }
+    foreach ($line in ($Output -replace "`r`n", "`n").Split("`n")) {
+        if ($line -match ('^\s*' + [regex]::Escape($Key) + ':\s*(.*)$')) {
+            $value = $Matches[1].Trim()
+            if ($value.Length -ge 2 -and $value.StartsWith('"') -and $value.EndsWith('"')) {
+                $value = $value.Substring(1, $value.Length - 2).Trim()
+            }
+            return $value
+        }
+    }
+    ''
+}
+
+function Test-FmTeardownRunHeadMatches {
+    # 'Matches' is a verb form here, not a plural noun.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '')]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$WorktreePath,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$RunHead
+    )
+    $owner = Resolve-FmTeardownOwner -Name 'Test-FmNmHeadMatchesWorktree'
+    if ($owner) { return [bool](& $owner -WorktreePath $WorktreePath -RunHead $RunHead) }
+    if (-not $RunHead) { return $false }
+    $local = Get-FmGitOutput -Directory $WorktreePath -Arguments @('rev-parse', 'HEAD')
+    if (-not $local) { return $false }
+    $run = Get-FmGitOutput -Directory $WorktreePath -Arguments @('rev-parse', '--verify', "$RunHead^{commit}")
+    if (-not $run) { return $false }
+    if ($run -eq $local) { return $true }
+    # The run tip advanced along the same history (pipeline fix commits): still
+    # this worktree's run. A diverged or rewritten tip is not.
+    (Invoke-FmGit -Directory $WorktreePath -Arguments @('merge-base', '--is-ancestor', $local, $run)).Ok
+}
+
+# Get-FmTaskParkedRunId: the run id when the active-or-most-recent run belongs
+# to THIS worktree and is parked at a gate; '' otherwise (including a terminal
+# run, which needs nothing). Attribution requires branch AND code identity to
+# match - never a guess.
+function Get-FmTaskParkedRunId {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$WorktreePath,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$StatusOutput
+    )
+    if (-not $StatusOutput) { return '' }
+    $branch = Get-FmGitOutput -Directory $WorktreePath -Arguments @('symbolic-ref', '--quiet', '--short', 'HEAD')
+    if (-not $branch) { return '' }
+    $runId = Get-FmTeardownRunField -Output $StatusOutput -Key 'id'
+    if (-not $runId) { return '' }
+    $runBranch = Get-FmTeardownRunField -Output $StatusOutput -Key 'branch'
+    if (-not $runBranch -or $runBranch -ne $branch) { return '' }
+    if (-not (Test-FmTeardownRunHeadMatches -WorktreePath $WorktreePath -RunHead (Get-FmTeardownRunField -Output $StatusOutput -Key 'head'))) { return '' }
+    if (Get-FmTeardownRunField -Output $StatusOutput -Key 'outcome') { return '' }
+    $status = Get-FmTeardownRunField -Output $StatusOutput -Key 'status'
+    if ($status -in @('awaiting_approval', 'fix_review')) { return $runId }
+    if ($StatusOutput -match '(?m)^\s*awaiting_agent:') { return $runId }
+    if ($StatusOutput -match '(?m)^\s*gate:\s*') { return $runId }
+    ''
+}
+
+function Stop-FmTaskNoMistakesRun {
+    # Aborting a parked pipeline run is the lifecycle area's established name
+    # and signature; adding ShouldProcess here would change a contract another
+    # area already calls.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$WorktreePath)
+    if (-not $WorktreePath -or -not (Test-Path -LiteralPath $WorktreePath -PathType Container)) { return '' }
+    $runner = Resolve-FmTeardownOwner -Name 'Invoke-FmNoMistakes'
+    if (-not $runner) { return '' }
+    if (-not (Get-Command -Name 'no-mistakes' -CommandType Application -ErrorAction SilentlyContinue)) { return '' }
+    $timeout = [int](Get-FmTeardownSetting -Name @('FM_TEARDOWN_NM_TIMEOUT') -Default 10)
+
+    $status = [string](& $runner -WorktreePath $WorktreePath -TimeoutSeconds $timeout -Arguments @('axi', 'status'))
+    $runId = Get-FmTaskParkedRunId -WorktreePath $WorktreePath -StatusOutput $status
+    if (-not $runId) { return '' }
+    Write-Warning "teardown: concluding this task's parked no-mistakes run $runId before removing its worktree"
+    $null = & $runner -WorktreePath $WorktreePath -TimeoutSeconds $timeout -Arguments @('axi', 'abort', '--run', $runId)
+    $runId
+}
+
+# --- PR-check artifacts ------------------------------------------------------
+
+# Path-safety predicates: delegate to the lifecycle area's owners when present.
+function Test-FmTeardownRegularFile {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+    $owner = Resolve-FmTeardownOwner -Name 'Test-FmLifecycleRegularFile'
+    if ($owner) { return [bool](& $owner -Path $Path) }
+    if (-not $Path) { return $false }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $item -or $item.PSIsContainer -or $item.LinkTarget) { return $false }
+    $true
+}
+
+function Test-FmTeardownRegularDirectory {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+    $owner = Resolve-FmTeardownOwner -Name 'Test-FmLifecycleRegularDirectory'
+    if ($owner) { return [bool](& $owner -Path $Path) }
+    if (-not $Path) { return $false }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $item -or -not $item.PSIsContainer -or $item.LinkTarget) { return $false }
+    $true
+}
+
+# Remove-FmTaskPrPollArtifact: validate, then remove, the task's PR-check
+# artifacts and any matching quarantine entries. Anything that is not an
+# ordinary non-symlinked file in an ordinary state directory REFUSES and
+# preserves task state, rather than following a link out of the home and
+# deleting whatever is on the other end. Ported from the bash
+# validate_pr_poll_cleanup / remove_pr_poll_artifacts pair.
+function Remove-FmTaskPrPollArtifact {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string]$StatePath,
+        [Parameter(Mandatory)][string]$Id
+    )
+    if (-not (Test-FmTaskIdShape -TaskId $Id)) { return $true }
+    $artifacts = @("$Id.check.sh", "$Id.pr-poll", "$Id.pr-poll-registration",
+        "$Id.pr-poll-retirement", "$Id.check-trust") | ForEach-Object { Join-Path $StatePath $_ }
+    $quarantine = Join-Path $StatePath '.pr-check-quarantine'
+    $present = @($artifacts | Where-Object { Test-Path -LiteralPath $_ })
+    $quarantinePresent = Test-Path -LiteralPath $quarantine
+    if ($present.Count -eq 0 -and -not $quarantinePresent) { return $true }
+    if (-not $PSCmdlet.ShouldProcess($StatePath, "remove PR-check artifacts for $Id")) { return $false }
+
+    if (-not (Test-FmTeardownRegularDirectory -Path $StatePath)) {
+        Write-Warning 'REFUSED: unsafe task state directory; preserving task state.'
+        return $false
+    }
+    foreach ($artifact in $present) {
+        if (-not (Test-FmTeardownRegularFile -Path $artifact)) {
+            Write-Warning 'REFUSED: unsafe task PR-check artifact; preserving task state.'
+            return $false
+        }
+    }
+    $quarantineEntries = @()
+    if ($quarantinePresent) {
+        if (-not (Test-FmTeardownRegularDirectory -Path $quarantine)) {
+            Write-Warning "REFUSED: unsafe PR-check quarantine path $quarantine; preserving task state."
+            return $false
+        }
+        $quarantineEntries = @(Get-ChildItem -LiteralPath $quarantine -Filter "$Id.*" -Force -ErrorAction SilentlyContinue)
+        foreach ($entry in $quarantineEntries) {
+            if (-not (Test-FmTeardownRegularFile -Path $entry.FullName)) {
+                Write-Warning 'REFUSED: unsafe task quarantine entry; preserving task state.'
+                return $false
+            }
+        }
+    }
+    foreach ($artifact in $present) { Remove-Item -LiteralPath $artifact -Force -ErrorAction SilentlyContinue }
+    foreach ($entry in $quarantineEntries) { Remove-Item -LiteralPath $entry.FullName -Force -ErrorAction SilentlyContinue }
+    if ($quarantinePresent -and @(Get-ChildItem -LiteralPath $quarantine -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+        Remove-Item -LiteralPath $quarantine -Force -ErrorAction SilentlyContinue
+    }
+    $true
+}
+
 # --- cross-area binding ------------------------------------------------------
 
 # Resolve-FmTeardownOwner: areas bind to each other by NAME at call time, so a
@@ -727,6 +997,32 @@ function Resolve-FmTeardownOwner {
     param([Parameter(Mandatory)][string]$Name)
     Get-Command -Name $Name -CommandType Function, Cmdlet -ErrorAction SilentlyContinue |
         Select-Object -First 1
+}
+
+# Test-FmTeardownTasksAxiBacklog: which backlog backend this home uses.
+# Delegates to the session area's landed probe when it is there; otherwise reads
+# config/backlog-backend itself (manual forces hand-editing) and checks the CLI
+# is installed. Carried over from the lifecycle area's teardown, so a partial
+# build still honours a configured `manual` backend instead of assuming one.
+function Test-FmTeardownTasksAxiBacklog {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ConfigPath)
+
+    $owner = Resolve-FmTeardownOwner -Name 'Test-FmSessionTasksAxiBackendAvailable'
+    if ($owner) { return [bool](& $owner -ConfigDir $ConfigPath) }
+
+    $backendFile = Join-Path $ConfigPath 'backlog-backend'
+    $value = 'tasks-axi'
+    if (Test-Path -LiteralPath $backendFile -PathType Leaf) {
+        $raw = ''
+        try { $raw = [System.IO.File]::ReadAllText($backendFile) } catch { $raw = '' }
+        $raw = ($raw -replace '\s', '')
+        if ($raw) { $value = $raw }
+    }
+    if ($value -eq 'manual') { return $false }
+    $probe = Resolve-FmTeardownOwner -Name 'Test-FmTasksAxiCompatible'
+    if ($probe) { return [bool](& $probe) }
+    $null -ne (Get-Command -Name 'tasks-axi' -CommandType Application -ErrorAction SilentlyContinue)
 }
 
 # Get-FmTeardownBacklogReminder: the one line teardown prints so the backlog

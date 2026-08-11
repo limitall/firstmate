@@ -19,7 +19,16 @@ Every step below is a proof that must SUCCEED before the next one runs; a step
 that cannot establish its fact refuses, and a refusal leaves every durable
 record intact so a plain rerun is always safe.
 
-1. **Backend** - the meta must record `herdr`. Another backend refuses by name.
+0. **The control lock** - `state/.control-<id>.lock`, a directory plus a `pid`
+   file: the same on-disk shape `bin/fm-wake-lib.sh`'s `fm_lock_try_acquire`
+   creates, so a Linux firstmate and this one recognise each other's held lock.
+   One lifecycle action per task at a time; a contended lock changes nothing.
+   An ownerless lock is reclaimed; a lock whose `pid` file cannot be READ is
+   treated as live, because stealing it costs two teardowns in one worktree
+   while refusing costs an operator one `rm`.
+1. **Shape gates** - the meta must record `herdr`; a `remote_host` (the work
+   lives on another machine) and `kind=secondmate` (home retirement is its own
+   area) are refused by name rather than half-performed.
 2. **Scout gate** - `kind=scout` declares the worktree scratch, so the report at
    `data/<id>/report.md` IS the work product. No report, no teardown. The
    unresolved-decision completion gate then runs through its owner
@@ -32,6 +41,17 @@ record intact so a plain rerun is always safe.
    keeps the worktree AND the state files.
 6. **The endpoint gate** - durable records are erased only once the exact
    recorded pane is confirmed gone (`Test-FmHerdrEndpointGone`).
+7. **The artifact gate** - the task's PR-check artifacts (`<id>.check.sh`,
+   `.pr-poll`, `.pr-poll-registration`, `.pr-poll-retirement`, `.check-trust`)
+   and its `.pr-check-quarantine` entries are validated as ordinary,
+   non-symlinked files in an ordinary state directory before removal. A
+   symlinked one refuses and preserves task state instead of following the link
+   out of the home.
+
+Before the destructive steps, teardown also concludes a no-mistakes run that
+THIS worktree provably owns and that is parked at a gate no worker will ever
+answer (branch AND code identity must both match). That is housekeeping, not a
+safety property: a failure there is recorded and never strands the teardown.
 
 ## The landed-work test
 
@@ -115,7 +135,9 @@ A lock is provably stale iff ALL of:
 1. the lock file exists,
 2. no live process holds it - `Test-FmTeardownGitLockHeld`,
 3. nothing holds the companion directory - `Test-FmTeardownDirectoryHeld`,
-4. its mtime age is at least `FM_STALE_WORKTREE_LOCK_AGE_SECS` (default 30).
+4. its mtime age is at least `FM_STALE_WORKTREE_LOCK_AGE_SECS` (default 30),
+5. it is not itself a symlink - removing one would follow the link and delete
+   something else entirely.
 
 Any uncertainty returns "not stale". Never remove a lock the proof rejects.
 
@@ -177,8 +199,9 @@ is reported as a step that did NOT run, never as one that passed.
 
 | Expected function | Replaces | Direction when absent |
 | --- | --- | --- |
-| `Test-FmDecisionHoldComplete -TaskId -FirstmateHome` | `bin/fm-decision-hold.sh verify` | REFUSE (fail closed - destructive step) |
-| `Stop-FmNoMistakesRun -Worktree -TaskId` | `conclude_task_no_mistakes_run` | skip with notice (a courtesy, not a safety property) |
+| `Test-FmDecisionHoldComplete -TaskId -FirstmateHome`, or `Test-FmDecisionHoldVerified -Id` (either name is accepted) | `bin/fm-decision-hold.sh verify` | REFUSE (fail closed - destructive step) |
+| `Invoke-FmNoMistakes`, `Get-FmNmField`, `Test-FmNmHeadMatchesWorktree` (crew-state area) | `bin/fm-nm-run-lib.sh` | the run-conclusion step reports nothing-to-do; the local fallback parse still attributes correctly |
+| `Test-FmLifecycleRegularFile`, `Test-FmLifecycleRegularDirectory` (lifecycle area) | the bash path-safety tests | a local copy of the same predicate is used |
 | `Test-FmSessionTasksAxiBackendAvailable -ConfigDir` (landed) | `fm_tasks_axi_backend_available` | fall back to the manual backlog reminder |
 | `Remove-FmHerdrPane`, `Test-FmHerdrEndpointGone` (landed) | the herdr adapter | pane close is unconfirmed -> the endpoint gate refuses |
 
@@ -202,8 +225,6 @@ of them is worse than none:
 - **the Orca backend** - dropped by directive.
 - **the myfirstmate public-followup gate** and **remote secondmates** - deferred
   in the port scope (report section 2).
-- **the PR-poll artifact and quarantine validation** - belongs with the PR-check
-  owner.
 - **the Herdr presentation journal** and the focus-preserving projected close -
   the backend area owns the projection; this port closes the exact recorded pane
   and nothing else.
@@ -222,3 +243,25 @@ The tests split accordingly. The degradation contract - every entry point
 reporting "not proven" rather than "nothing to kill" - is covered everywhere and
 is the part that protects work. The real terminate-and-verify path is covered by
 tests that SKIP off Windows rather than silently passing.
+
+## Provenance: the lifecycle area's teardown
+
+Two areas ported teardown in parallel. The captain's decision (2026-08-12) was
+that this one lands and the lifecycle area's four teardown files are dropped,
+because that version refused the herdr backend - the only backend this port
+ships - and returned worktrees with an unconditional `treehouse return --force`
+that could recycle a re-issued lease.
+
+Nothing was lost in the swap. Carried over from it, under its exact names where
+another area resolves them: the per-task control lock (`Enter-FmTeardownLock` /
+`Exit-FmTeardownLock` / `Test-FmTeardownLockOwnerAlive`), the parked-run
+conclusion (`Get-FmTaskParkedRunId` - `tests/FmCrewState.Tests.ps1` calls it
+directly - and `Stop-FmTaskNoMistakesRun`), the PR-check artifact validation
+(`Remove-FmTaskPrPollArtifact`), the `remote_host` refusal, the
+treehouse-not-installed pre-check, the symlinked-lock refusal, the
+`config/backlog-backend` fallback read, and `--help` on the entry point.
+
+Deliberately NOT carried over: the blanket herdr/orca refusal (the defect that
+decided the swap), the unconditional force-return, and the
+`ExitCode`/`Messages` return shape - this port throws on refusal so a refusal
+stays distinguishable from a bug, and `bin/fm-teardown.ps1` maps it to exit 1.
