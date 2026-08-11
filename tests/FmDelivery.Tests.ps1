@@ -270,6 +270,20 @@ Describe 'Invoke-FmMergeLocal' {
             Should -Throw "*is on 'sidequest', expected default branch 'main'*"
     }
 
+    It 'refuses a project checkout left on a detached HEAD' {
+        # A detached checkout has no branch name at all, so the fast-forward
+        # would land somewhere nobody asked for. It must refuse like any other
+        # off-default state rather than read as "not dirty, carry on".
+        $fx = New-TestFixture
+        $null = Invoke-FmGit -Directory $fx.Project -Arguments @('checkout', '-q', '--detach', 'HEAD')
+        $before = Get-FmGitOutput -Directory $fx.Project -Arguments @('rev-parse', 'HEAD')
+        $null = New-TestTaskMeta -StateDir $fx.State -TaskId 'task1' -Lines @(
+            'id=task1', "project=$($fx.Project)", 'mode=local-only')
+        { Invoke-FmMergeLocal -TaskId 'task1' -StateDir $fx.State -Confirm:$false } |
+            Should -Throw "*expected default branch 'main'; cannot merge safely*"
+        Get-FmGitOutput -Directory $fx.Project -Arguments @('rev-parse', 'HEAD') | Should -Be $before
+    }
+
     It 'refuses a dirty project working tree rather than merging over it' {
         $fx = New-TestFixture
         Set-Content -LiteralPath (Join-Path $fx.Project 'scratch.txt') -Value 'uncommitted'
