@@ -147,6 +147,31 @@ staleness but can never swallow a wake.
 | `Invoke-FmPrCheckMigration`, `Repair-FmPrPollRetirementAll`, `Publish-FmPrPollRetirement` | migration assumed done, no retirement recovery |
 | `Invoke-FmPendingReplyTick`, `Invoke-FmProceventReconcile` | no-op |
 
+## Shared helpers this area consumes
+
+Reading git belongs to the worktree area: `Get-FmGitOutput` / `Invoke-FmGit` in
+`FmWorktree.ps1` run git through `Invoke-FmChildProcess` with an argv array and
+no shell. `Test-FmPrimaryScope` calls it with `-Directory`.
+
+Note its failure convention: it returns an **empty string**, not `$null`. The
+emptiness check in `Test-FmPrimaryScope` is load-bearing - without it two failed
+reads would compare equal and a directory that is not a checkout at all would
+scope in as a primary, where bash returns 1.
+
+This area briefly carried its own `Get-FmGitOutput` under the same name. Because
+every `Private/*.ps1` and `Public/*.ps1` is dot-sourced into one scope, the
+later file silently won and the guard broke on the first rebase onto a main
+carrying the backend port. `tests/FmWake.Tests.ps1` now fails on any function
+name defined in two files, so the next collision surfaces at test time rather
+than at integration time.
+
+Still duplicated on purpose, pending a consolidation decision: this area writes
+LF files through `Set-FmFileTextLf` / `Add-FmWakeQueueBytes` while the backend
+area has `Write-FmTextFileLf` / `Add-FmTextLineLf`. Same contract, different
+names, no collision. Folding them together is worth doing once the foundation
+area lands, but not while the byte-level interop evidence above is pinned to
+these call paths.
+
 ## Environment
 
 Same names and defaults as the bash originals: `FM_POLL` (15), `FM_HEARTBEAT`
@@ -182,6 +207,6 @@ be proven on Windows:
 pwsh -NoProfile -c 'Invoke-Pester -Path ./tests'
 ```
 
-141 tests across `FmWake.Tests.ps1`, `FmWatch.Tests.ps1` and
+157 tests across `FmWake.Tests.ps1`, `FmWatch.Tests.ps1` and
 `FmGuard.Tests.ps1`. `FmWatch.Tests.ps1` drives `bin/fm-watch.ps1` and
 `bin/fm-wake-drain.ps1` out-of-process, the way a harness arms them.

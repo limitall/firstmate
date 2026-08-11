@@ -565,3 +565,41 @@ Describe 'Invoke-FmWakeDrain' {
         Invoke-FmWakeDrain -Context $script:Ctx 2>$null | Should -Be 1
     }
 }
+
+Describe 'Module assembly' {
+    <#
+        Cross-area integrity, not a wake-queue concern - parked here until the
+        foundation area claims it. Every Private/*.ps1 and Public/*.ps1 is
+        dot-sourced into one scope, so two areas defining the same function name
+        do not collide loudly: the later file silently WINS, and the earlier
+        area's callers start passing arguments to a stranger. That is exactly how
+        a duplicate Get-FmGitOutput broke this area's primary-scope test on the
+        first rebase onto a main carrying the backend port.
+    #>
+    It 'defines every function name exactly once across all areas' {
+        $defs = @{}
+        Get-ChildItem -Recurse -Path (Join-Path $script:RepoRoot 'module') -Filter '*.ps1' | ForEach-Object {
+            $file = $_.Name
+            foreach ($m in [regex]::Matches((Get-Content -Raw $_.FullName), '(?m)^function\s+([A-Za-z]+-[A-Za-z0-9]+)')) {
+                $name = $m.Groups[1].Value
+                if (-not $defs.ContainsKey($name)) { $defs[$name] = [System.Collections.Generic.List[string]]::new() }
+                if (-not $defs[$name].Contains($file)) { $defs[$name].Add($file) }
+            }
+        }
+        $duplicates = @($defs.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 } |
+                ForEach-Object { "$($_.Key) in $($_.Value -join ', ')" })
+
+        $duplicates | Should -BeNullOrEmpty -Because 'a name defined twice is silently shadowed by dot-source order'
+    }
+
+    It 'uses only approved PowerShell verbs' {
+        $approved = (Get-Verb).Verb
+        $bad = @()
+        Get-ChildItem -Recurse -Path (Join-Path $script:RepoRoot 'module') -Filter '*.ps1' | ForEach-Object {
+            foreach ($m in [regex]::Matches((Get-Content -Raw $_.FullName), '(?m)^function\s+([A-Za-z]+)-([A-Za-z0-9]+)')) {
+                if ($m.Groups[1].Value -notin $approved) { $bad += "$($m.Groups[0].Value.Substring(9)) in $($_.Name)" }
+            }
+        }
+        $bad | Should -BeNullOrEmpty
+    }
+}

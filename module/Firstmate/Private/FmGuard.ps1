@@ -134,9 +134,13 @@ function Test-FmPrimaryScope {
         [Parameter(Mandatory)][string]$State
     )
     if (-not (Test-FmSecondmateHome -Root $Root)) {
-        $gitDir = Get-FmGitOutput -Root $Root -Arguments @('rev-parse', '--git-dir')
-        $commonDir = Get-FmGitOutput -Root $Root -Arguments @('rev-parse', '--git-common-dir')
-        if ($null -eq $gitDir -or $null -eq $commonDir) { return $false }
+        # Get-FmGitOutput is the worktree area's shell-free git runner. It
+        # reports failure as an EMPTY string, so the emptiness check below is
+        # load-bearing: without it two failed reads would compare equal and a
+        # non-checkout would scope in as a primary. bash returns 1 here.
+        $gitDir = Get-FmGitOutput -Directory $Root -Arguments @('rev-parse', '--git-dir')
+        $commonDir = Get-FmGitOutput -Directory $Root -Arguments @('rev-parse', '--git-common-dir')
+        if (-not $gitDir -or -not $commonDir) { return $false }
         if ($gitDir -ne $commonDir) { return $false }
     }
     if (-not [System.IO.File]::Exists((Join-Path $Root 'AGENTS.md'))) { return $false }
@@ -145,22 +149,10 @@ function Test-FmPrimaryScope {
     return $true
 }
 
-function Get-FmGitOutput {
-    <# Single-line `git -C <root> ...`, or $null. git is cross-platform; this is
-       not a POSIX-shell dependency. #>
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory)][string]$Root,
-        [Parameter(Mandatory)][string[]]$Arguments
-    )
-    try {
-        $out = & git -C $Root @Arguments 2>$null
-        if ($LASTEXITCODE -ne 0) { return $null }
-        if ($null -eq $out) { return $null }
-        return ([string]($out | Select-Object -First 1)).Trim()
-    }
-    catch { return $null }
-}
+# Reading git is the worktree area's job: Get-FmGitOutput / Invoke-FmGit in
+# FmWorktree.ps1 run git through Invoke-FmChildProcess with an argv array and no
+# shell. This area used to carry its own `& git ... 2>$null` copy under the same
+# name, which the dot-source order silently shadowed - see docs/supervision.md.
 
 # --- guard-banner episode dedup ---------------------------------------------
 
