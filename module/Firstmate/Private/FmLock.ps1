@@ -681,10 +681,18 @@ function Test-FmSessionLockOwnedBySelf {
         unknown depth in a contiguous Claude run. A missing lock, a malformed
         lock, a lock held by a harness outside this ancestry, or an ancestry that
         cannot be resolved all fail closed.
+
+        The hook and session areas resolve this by name and call it as `-State`,
+        the spelling published in the cross-area table in docs/session-start.md.
+        That binds today only because `-State` is an unambiguous PREFIX of
+        `-StatePath`; adding any second `State*` parameter here would make it
+        ambiguous and break both callers at once. The alias pins the published
+        spelling so it survives that, without renaming the parameter the rest of
+        the session-lock family uses.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
-    param([string]$StatePath)
+    param([Alias('State')][string]$StatePath)
 
     $lockPath = Get-FmSessionLockPath -StatePath $StatePath
     $raw = $null

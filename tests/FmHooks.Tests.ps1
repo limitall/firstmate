@@ -47,6 +47,11 @@ BeforeAll {
         }
         [System.IO.File]::WriteAllText((Join-Path $home_ 'AGENTS.md'), "fixture`n")
         [System.IO.File]::WriteAllText((Join-Path $home_ '.fm-secondmate-home'), "atlas`n")
+        # This home's session lock, held by this session. The hook identity gate
+        # asks the foundation's Test-FmSessionLockOwnedBySelf whether the lock pid
+        # sits in this harness ancestry, so a test that means to reach the arm
+        # path pairs this with `Mock Get-FmHarnessAncestry { , @($PID) }`.
+        [System.IO.File]::WriteAllText((Join-Path $home_ 'state' '.lock'), "$PID`n")
         $env:FM_HOME = $home_
         $env:FM_ROOT_OVERRIDE = $home_
         # Keep every wait in these tests short: the state machine, not the clock,
@@ -192,6 +197,11 @@ Describe 'Get-FmHookSessionStartRoute' {
 
 Describe 'Test-FmHookStartupCompleted' {
     It 'is true only when the completion record names the current lock owner' {
+        # Real cross-area call: this exercises the foundation's
+        # Test-FmSessionLockOwnedBySelf through the -State spelling the table in
+        # docs/session-start.md publishes, so a parameter rename fails here
+        # rather than silently degrading the gate to "never completed".
+        Mock Get-FmHarnessAncestry { , @(4242) }
         $home_ = New-TestPrimaryHome
         $state = Join-Path $home_ 'state'
         Test-FmHookStartupCompleted -State $state | Should -BeFalse
@@ -429,6 +439,12 @@ Describe 'Invoke-FmClaudeTurnEndGuard' {
 }
 
 Describe 'Invoke-FmClaudeStopAutoArm' {
+    # Only the lock-owning session's hooks may arm. New-TestPrimaryHome writes the
+    # session lock as $PID; this makes that pid a real harness ancestor, so each
+    # test below reaches the branch it names instead of stopping at the identity
+    # gate. Tests that mean to be refused by the gate override the mock locally.
+    BeforeEach { Mock Get-FmHarnessAncestry { , @($PID) } }
+
     It 'stays inert outside a primary checkout' {
         Reset-TestEnvironment
         $worktree = Join-Path $TestDrive 'autoarm-not-primary'
