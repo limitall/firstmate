@@ -157,6 +157,9 @@ function New-FmDirectory {
         .SYNOPSIS
         Ensure a directory exists, tolerating a concurrent creator.
     #>
+    # Creating a missing state directory is implied by every write that needs
+    # it; the ShouldProcess prompt belongs on that write, not here.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
     param([Parameter(Mandatory)][string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return }
     if ([System.IO.Directory]::Exists($Path)) { return }
@@ -312,7 +315,7 @@ function Write-FmStateFile {
             } catch {
                 # Leave no half-written temp behind for the next attempt to trip
                 # over: CreateNew would then fail on its own leftover forever.
-                try { [System.IO.File]::Delete($temp) } catch { }
+                try { [System.IO.File]::Delete($temp) } catch { Write-Verbose "firstmate: could not remove $temp" }
                 throw
             }
         }
@@ -320,7 +323,7 @@ function Write-FmStateFile {
             [System.IO.File]::Move($temp, $full, $true)
         }
     } catch {
-        try { [System.IO.File]::Delete($temp) } catch { }
+        try { [System.IO.File]::Delete($temp) } catch { Write-Verbose "firstmate: could not remove $temp" }
         throw
     }
 }

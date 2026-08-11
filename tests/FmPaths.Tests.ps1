@@ -201,7 +201,7 @@ Describe 'Test-FmTaskId' {
         @{ Id = 'a\b'; Reason = 'it contains a Windows path separator' }
         @{ Id = 'a b'; Reason = 'it contains a space' }
         @{ Id = 'a:b'; Reason = 'a colon is an alternate data stream on Windows' }
-        @{ Id = 'tache-lettré'; Reason = 'it is outside the ASCII charset bash validates' }
+        @{ Id = ('tache-lettr' + [char]0x00E9); Reason = 'it is outside the ASCII charset bash validates' }
     ) {
         Test-FmTaskId -TaskId $Id | Should -BeFalse
     }

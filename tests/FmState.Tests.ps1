@@ -25,7 +25,7 @@ BeforeAll {
     $script:TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("fmstate-" + [guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Path $script:TempRoot -Force
 
-    function New-TestPath {
+    function Get-TestPath {
         param([string]$Name = 'record')
         Join-Path $script:TempRoot ("$Name-" + [guid]::NewGuid().ToString('N'))
     }
@@ -39,7 +39,7 @@ AfterAll {
 
 Describe 'The on-disk byte contract' {
     It 'writes UTF-8 with no byte order mark' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content 'window=fm:1'
         $bytes = [System.IO.File]::ReadAllBytes($path)
         # A BOM would corrupt the first field of the first line for every bash reader.
@@ -48,7 +48,7 @@ Describe 'The on-disk byte contract' {
     }
 
     It 'writes LF line endings, never CRLF' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateLines -Path $path -Line @('window=fm:1', 'harness=claude')
         $bytes = [System.IO.File]::ReadAllBytes($path)
         # Set-Content and Out-File would write CRLF on Windows. Nothing here uses them.
@@ -57,51 +57,55 @@ Describe 'The on-disk byte contract' {
     }
 
     It 'ends a line-oriented file with a trailing LF, like printf %s\n' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content 'done: PR https://example/pr/1'
         $bytes = [System.IO.File]::ReadAllBytes($path)
         $bytes[-1] | Should -Be 0x0A
     }
 
     It 'does not add a second newline to content that already ends with one' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content "a`n"
         [System.IO.File]::ReadAllBytes($path).Length | Should -Be 2
     }
 
     It 'normalizes CRLF input to LF on the way out' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content "a`r`nb`r`n"
         [System.IO.File]::ReadAllBytes($path) | Should -Not -Contain 0x0D
     }
 
     It 'suppresses the trailing newline on request' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content 'no-newline' -NoTrailingNewline
         [System.IO.File]::ReadAllBytes($path)[-1] | Should -Be 0x65   # 'e'
     }
 
     It 'writes an empty file for empty content, with no stray newline' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content ''
         [System.IO.File]::ReadAllBytes($path).Length | Should -Be 0
     }
 
     It 'round-trips non-ASCII text as UTF-8' {
-        $path = New-TestPath
-        Write-FmStateFile -Path $path -Content 'note=café ⚓'
-        Read-FmStateFile -Path $path | Should -Be "note=café ⚓`n"
+        # Built from code points so this test file stays pure ASCII and the
+        # assertion tests the module's encoding, not the test file's.
+        $path = Get-TestPath
+        $text = 'note=caf' + [char]0x00E9 + ' ' + [char]0x2693
+        Write-FmStateFile -Path $path -Content $text
+        Read-FmStateFile -Path $path | Should -Be "$text`n"
+        [System.IO.File]::ReadAllBytes($path) | Should -Contain 0xC3   # UTF-8 lead byte
     }
 }
 
 Describe 'Reading' {
     It 'returns $null for a file that does not exist' {
         # Missing is an answer, not an error - `cat 2>/dev/null` in the original.
-        Read-FmStateFile -Path (New-TestPath) | Should -BeNullOrEmpty
+        Read-FmStateFile -Path (Get-TestPath) | Should -BeNullOrEmpty
     }
 
     It 'distinguishes an empty file from a missing one' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content ''
         $result = Read-FmStateFile -Path $path
         $null -eq $result | Should -BeFalse
@@ -109,11 +113,11 @@ Describe 'Reading' {
     }
 
     It 'returns an empty collection of lines for a missing file' {
-        (Read-FmStateLines -Path (New-TestPath)).Count | Should -Be 0
+        (Read-FmStateLines -Path (Get-TestPath)).Count | Should -Be 0
     }
 
     It 'drops only the final newline, keeping meaningful blank lines inside' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content "a`n`nb`n"
         $lines = Read-FmStateLines -Path $path
         $lines.Count | Should -Be 3
@@ -121,13 +125,13 @@ Describe 'Reading' {
     }
 
     It 'tolerates a CRLF file written by some other tool' {
-        $path = New-TestPath
+        $path = Get-TestPath
         [System.IO.File]::WriteAllBytes($path, [System.Text.Encoding]::UTF8.GetBytes("a`r`nb`r`n"))
         Read-FmStateLines -Path $path | Should -Be @('a', 'b')
     }
 
     It 'strips a BOM it would never write itself' {
-        $path = New-TestPath
+        $path = Get-TestPath
         $bom = [byte[]]@(0xEF, 0xBB, 0xBF)
         [System.IO.File]::WriteAllBytes($path, $bom + [System.Text.Encoding]::UTF8.GetBytes("window=fm:1`n"))
         Read-FmStateLines -Path $path | Should -Be @('window=fm:1')
@@ -136,33 +140,33 @@ Describe 'Reading' {
 
 Describe 'Appending' {
     It 'creates the file and its directory on first append' {
-        $path = Join-Path (New-TestPath 'deep') 'nested' 'task.status'
+        $path = Join-Path (Get-TestPath 'deep') 'nested' 'task.status'
         Add-FmStateLine -Path $path -Line 'working: setup done'
         Read-FmStateLines -Path $path | Should -Be @('working: setup done')
     }
 
     It 'appends rather than replacing - the status log is append-only' {
-        $path = New-TestPath 'status'
+        $path = Get-TestPath 'status'
         Add-FmStateLine -Path $path -Line 'working: setup done'
         Add-FmStateLine -Path $path -Line 'done: PR https://example/pr/1'
         Read-FmStateLines -Path $path | Should -HaveCount 2
     }
 
     It 'appends several lines in one call' {
-        $path = New-TestPath 'status'
+        $path = Get-TestPath 'status'
         Add-FmStateLine -Path $path -Line @('a', 'b', 'c')
         Read-FmStateLines -Path $path | Should -Be @('a', 'b', 'c')
     }
 
     It 'refuses a line containing a newline instead of silently writing two records' {
         # A smuggled newline splits into two records for every reader, durably.
-        $path = New-TestPath 'status'
+        $path = Get-TestPath 'status'
         { Add-FmStateLine -Path $path -Line "done: ok`nblocked: no" } | Should -Throw '*line feed*'
         Test-Path -LiteralPath $path | Should -BeFalse
     }
 
     It 'refuses a line containing a carriage return' {
-        { Add-FmStateLine -Path (New-TestPath) -Line "done: ok`r" } | Should -Throw '*carriage return*'
+        { Add-FmStateLine -Path (Get-TestPath) -Line "done: ok`r" } | Should -Throw '*carriage return*'
     }
 }
 
@@ -190,7 +194,7 @@ Describe 'Atomic publication' {
     }
 
     It 'replaces content wholesale rather than truncating in place' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content ('x' * 500)
         Write-FmStateFile -Path $path -Content 'short'
         Read-FmStateFile -Path $path | Should -Be "short`n"
@@ -199,7 +203,7 @@ Describe 'Atomic publication' {
 
 Describe 'key=value records' {
     It 'parses fields in file order' {
-        $path = New-TestPath 'meta'
+        $path = Get-TestPath 'meta'
         Write-FmStateFile -Path $path -Content "window=fm:1`nharness=claude`n"
         $fields = Read-FmKeyValueFile -Path $path
         @($fields.Keys) | Should -Be @('window', 'harness')
@@ -207,29 +211,29 @@ Describe 'key=value records' {
     }
 
     It 'splits on the first = only, so a value keeps its own = signs' {
-        $path = New-TestPath 'meta'
+        $path = Get-TestPath 'meta'
         Write-FmStateFile -Path $path -Content "pr=https://x/y?a=b&c=d`n"
         (Read-FmKeyValueFile -Path $path)['pr'] | Should -Be 'https://x/y?a=b&c=d'
     }
 
     It 'ignores a line with no = at all, as the bash readers do' {
-        $path = New-TestPath 'meta'
+        $path = Get-TestPath 'meta'
         Write-FmStateFile -Path $path -Content "window=fm:1`ngarbage`n"
         (Read-FmKeyValueFile -Path $path).Count | Should -Be 1
     }
 
     It 'takes the last value for a duplicated key' {
-        $path = New-TestPath 'meta'
+        $path = Get-TestPath 'meta'
         Write-FmStateFile -Path $path -Content "mode=no-mistakes`nmode=direct-PR`n"
         (Read-FmKeyValueFile -Path $path)['mode'] | Should -Be 'direct-PR'
     }
 
     It 'returns an empty map, not $null, for a missing record' {
-        (Read-FmKeyValueFile -Path (New-TestPath)).Count | Should -Be 0
+        (Read-FmKeyValueFile -Path (Get-TestPath)).Count | Should -Be 0
     }
 
     It 'preserves the caller field order when writing' {
-        $path = New-TestPath 'meta'
+        $path = Get-TestPath 'meta'
         Write-FmKeyValueFile -Path $path -Fields ([ordered]@{
                 window = 'fm:1'; endpoint_task_id = 't1'; harness = 'claude'
             })
@@ -237,19 +241,19 @@ Describe 'key=value records' {
     }
 
     It 'refuses a field value containing a newline' {
-        { Write-FmKeyValueFile -Path (New-TestPath) -Fields ([ordered]@{ a = "x`ny=2" }) } |
+        { Write-FmKeyValueFile -Path (Get-TestPath) -Fields ([ordered]@{ a = "x`ny=2" }) } |
             Should -Throw '*line feed*'
     }
 
     It 'refuses a field name containing = or whitespace' {
-        { Write-FmKeyValueFile -Path (New-TestPath) -Fields ([ordered]@{ 'a=b' = 'x' }) } | Should -Throw
-        { Write-FmKeyValueFile -Path (New-TestPath) -Fields ([ordered]@{ 'a b' = 'x' }) } | Should -Throw
+        { Write-FmKeyValueFile -Path (Get-TestPath) -Fields ([ordered]@{ 'a=b' = 'x' }) } | Should -Throw
+        { Write-FmKeyValueFile -Path (Get-TestPath) -Fields ([ordered]@{ 'a b' = 'x' }) } | Should -Throw
     }
 }
 
 Describe 'Set-FmKeyValueField' {
     BeforeEach {
-        $script:Meta = New-TestPath 'meta'
+        $script:Meta = Get-TestPath 'meta'
         Write-FmStateFile -Path $script:Meta -Content "window=fm:1`nproject=/p/a`nharness=claude`n"
     }
 
@@ -286,7 +290,7 @@ Describe 'Set-FmKeyValueField' {
     }
 
     It 'creates the record when it does not exist yet' {
-        $fresh = New-TestPath 'meta'
+        $fresh = Get-TestPath 'meta'
         Set-FmKeyValueField -Path $fresh -Name 'window' -Value 'fm:1'
         Read-FmStateLines -Path $fresh | Should -Be @('window=fm:1')
     }
@@ -300,7 +304,7 @@ Describe 'Set-FmKeyValueField' {
 
 Describe 'File age' {
     It 'reports a fresh file as seconds old' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content 'x'
         Get-FmPathAge -Path $path | Should -BeLessThan 5
     }
@@ -308,25 +312,25 @@ Describe 'File age' {
     It 'reports the sentinel age for a missing path, so it never reads as fresh' {
         # fm_path_age's 999999 contract: an unreadable path must compare as very
         # old against every threshold, never as brand new.
-        Get-FmPathAge -Path (New-TestPath) | Should -Be 999999
+        Get-FmPathAge -Path (Get-TestPath) | Should -Be 999999
     }
 
     It 'reads an age from a backdated file' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content 'x'
         [System.IO.File]::SetLastWriteTimeUtc($path, [datetime]::UtcNow.AddSeconds(-90))
         Get-FmPathAge -Path $path | Should -BeGreaterOrEqual 89
     }
 
     It 'clamps a future timestamp to zero rather than reporting a negative age' {
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content 'x'
         [System.IO.File]::SetLastWriteTimeUtc($path, [datetime]::UtcNow.AddHours(1))
         Get-FmPathAge -Path $path | Should -Be 0
     }
 
     It 'returns $null mtime for a missing path' {
-        Get-FmPathMtime -Path (New-TestPath) | Should -BeNullOrEmpty
+        Get-FmPathMtime -Path (Get-TestPath) | Should -BeNullOrEmpty
     }
 }
 
@@ -438,7 +442,7 @@ Describe 'Retry discipline' {
     It 'retries a genuinely locked file on Windows' -Skip:(-not $IsWindows) {
         # WINDOWS-UNVERIFIED: FileShare.None only blocks other openers on
         # Windows; on Linux .NET does not enforce it, so this cannot run here.
-        $path = New-TestPath
+        $path = Get-TestPath
         Write-FmStateFile -Path $path -Content 'held'
         $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open,
             [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)

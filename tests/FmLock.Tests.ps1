@@ -23,13 +23,13 @@ BeforeAll {
     $null = New-Item -ItemType Directory -Path $script:TempRoot -Force
     $script:DeadPid = 2147483600
 
-    function New-LockPath {
+    function Get-LockPath {
         Join-Path $script:TempRoot ("lock-" + [guid]::NewGuid().ToString('N'))
     }
 
     # A lock directory whose recorded holder is whatever the caller says, used to
     # stage dead holders, recycled ids and half-written claims.
-    function Set-LockHolder {
+    function Write-LockHolder {
         param(
             [Parameter(Mandatory)][string]$Path,
             [Parameter(Mandatory)][AllowEmptyString()][string]$HolderPid,
@@ -51,7 +51,7 @@ AfterAll {
 
 Describe 'Acquire and release' {
     It 'acquires a free lock and reports itself as the holder' {
-        $path = New-LockPath
+        $path = Get-LockPath
         $lock = Request-FmLock -Path $path
         try {
             $lock | Should -Not -BeNullOrEmpty
@@ -64,7 +64,7 @@ Describe 'Acquire and release' {
     }
 
     It 'records the role, home and watcher path a caller supplies' {
-        $path = New-LockPath
+        $path = Get-LockPath
         $lock = Request-FmLock -Path $path -Role 'terminal-check' -HomePath '/srv/home-a' -WatcherPath '/x/fm-watch.ps1'
         try {
             $info = Get-FmLockInfo -Path $path
@@ -75,11 +75,11 @@ Describe 'Acquire and release' {
     }
 
     It 'reports a free lock as free' {
-        (Get-FmLockInfo -Path (New-LockPath)).State | Should -Be 'free'
+        (Get-FmLockInfo -Path (Get-LockPath)).State | Should -Be 'free'
     }
 
     It 'releases the lock so the next caller can take it' {
-        $path = New-LockPath
+        $path = Get-LockPath
         $lock = Request-FmLock -Path $path
         Unlock-FmLock -Lock $lock | Should -BeTrue
         (Get-FmLockInfo -Path $path).State | Should -Be 'free'
@@ -91,7 +91,7 @@ Describe 'Acquire and release' {
     It 'refuses a second acquisition by the same process instead of waiting for itself' {
         # A lock is held per process, so a second take inside one process would
         # block forever. Failing loudly beats a wedged agent.
-        $path = New-LockPath
+        $path = Get-LockPath
         $lock = Request-FmLock -Path $path
         try {
             { Request-FmLock -Path $path } | Should -Throw '*already holds the lock*'
@@ -99,7 +99,7 @@ Describe 'Acquire and release' {
     }
 
     It 'lists the locks this process holds' {
-        $path = New-LockPath
+        $path = Get-LockPath
         $lock = Request-FmLock -Path $path
         try {
             (Get-FmHeldLock -Path $path).ProcessId | Should -Be $PID
@@ -109,7 +109,7 @@ Describe 'Acquire and release' {
     }
 
     It 'refuses a lock path occupied by a plain file' {
-        $path = New-LockPath
+        $path = Get-LockPath
         [System.IO.File]::WriteAllText($path, 'not a lock')
         { Request-FmLock -Path $path } | Should -Throw '*not a lock directory*'
     }
@@ -120,8 +120,8 @@ Describe 'Mutual exclusion against another live holder' {
         # The parent process is genuinely alive and is not us: a stand-in for
         # another session holding the lock.
         $script:LivePid = Get-FmParentProcessId -Id $PID
-        $script:Path = New-LockPath
-        Set-LockHolder -Path $script:Path -HolderPid $script:LivePid `
+        $script:Path = Get-LockPath
+        Write-LockHolder -Path $script:Path -HolderPid $script:LivePid `
             -Identity (Get-FmProcessIdentity -Id $script:LivePid)
     }
 
@@ -149,8 +149,8 @@ Describe 'Mutual exclusion against another live holder' {
 
 Describe 'Stale-holder recovery' {
     It 'recovers a lock whose holder is gone, and says whose it was' {
-        $path = New-LockPath
-        Set-LockHolder -Path $path -HolderPid $script:DeadPid -Identity 'proc-starttime=1 name=ghost'
+        $path = Get-LockPath
+        Write-LockHolder -Path $path -HolderPid $script:DeadPid -Identity 'proc-starttime=1 name=ghost'
         (Get-FmLockInfo -Path $path).State | Should -Be 'stale'
 
         $lock = Request-FmLock -Path $path
@@ -164,16 +164,16 @@ Describe 'Stale-holder recovery' {
         # THE reason identity is recorded at all: this process id is genuinely
         # alive, but it is not the process that took the lock. Without the
         # identity check the home would stay locked by a ghost forever.
-        $path = New-LockPath
-        Set-LockHolder -Path $path -HolderPid $PID -Identity 'proc-starttime=1 name=ghost'
+        $path = Get-LockPath
+        Write-LockHolder -Path $path -HolderPid $PID -Identity 'proc-starttime=1 name=ghost'
         (Get-FmLockInfo -Path $path).State | Should -Be 'stale'
         $lock = Request-FmLock -Path $path
         try { $lock | Should -Not -BeNullOrEmpty } finally { $null = Unlock-FmLock -Lock $lock }
     }
 
     It 'clears the dead holder sidecars rather than attributing them to the new holder' {
-        $path = New-LockPath
-        Set-LockHolder -Path $path -HolderPid $script:DeadPid -Identity 'proc-starttime=1 name=ghost'
+        $path = Get-LockPath
+        Write-LockHolder -Path $path -HolderPid $script:DeadPid -Identity 'proc-starttime=1 name=ghost'
         [System.IO.File]::WriteAllText((Join-Path $path 'role'), "autoarm`n")
         $lock = Request-FmLock -Path $path
         try {
@@ -187,8 +187,8 @@ Describe 'Stale-holder recovery' {
     It 'treats a half-written claim as held while it is fresh' {
         # A claimer creates the pid file and writes it as two steps; an empty pid
         # file that young means someone is mid-claim, not that the lock is free.
-        $path = New-LockPath
-        Set-LockHolder -Path $path -HolderPid ''
+        $path = Get-LockPath
+        Write-LockHolder -Path $path -HolderPid ''
         $info = Get-FmLockInfo -Path $path
         $info.State | Should -Be 'claiming'
         $info.IsHeld | Should -BeTrue
@@ -196,8 +196,8 @@ Describe 'Stale-holder recovery' {
     }
 
     It 'recovers a half-written claim that outlived the grace' {
-        $path = New-LockPath
-        Set-LockHolder -Path $path -HolderPid ''
+        $path = Get-LockPath
+        Write-LockHolder -Path $path -HolderPid ''
         [System.IO.File]::SetLastWriteTimeUtc((Join-Path $path 'pid'), [datetime]::UtcNow.AddSeconds(-60))
         (Get-FmLockInfo -Path $path).State | Should -Be 'stale'
         $lock = Request-FmLock -Path $path
@@ -221,7 +221,7 @@ Describe 'Stale-holder recovery' {
 
 Describe 'Release safety' {
     It 'refuses to release a lock that now names another process' {
-        $path = New-LockPath
+        $path = Get-LockPath
         $lock = Request-FmLock -Path $path
         # Someone else legitimately owns it now.
         [System.IO.File]::WriteAllText((Join-Path $path 'pid'), "$($script:DeadPid)`n")
@@ -230,33 +230,33 @@ Describe 'Release safety' {
     }
 
     It 'releases by path as well as by lock object' {
-        $path = New-LockPath
+        $path = Get-LockPath
         $null = Request-FmLock -Path $path
         Unlock-FmLock -Path $path | Should -BeTrue
         (Get-FmLockInfo -Path $path).State | Should -Be 'free'
     }
 
     It 'is a no-op on a lock nobody holds' {
-        Unlock-FmLock -Path (New-LockPath) | Should -BeFalse
+        Unlock-FmLock -Path (Get-LockPath) | Should -BeFalse
     }
 }
 
 Describe 'Invoke-FmWithLock' {
     It 'runs the body while holding the lock and releases afterwards' {
-        $path = New-LockPath
+        $path = Get-LockPath
         $state = Invoke-FmWithLock -Path $path -ScriptBlock { (Get-FmLockInfo -Path $path).State }
         $state | Should -Be 'held'
         (Get-FmLockInfo -Path $path).State | Should -Be 'free'
     }
 
     It 'releases the lock when the body throws - one failure must not wedge the home' {
-        $path = New-LockPath
+        $path = Get-LockPath
         { Invoke-FmWithLock -Path $path -ScriptBlock { throw 'boom' } } | Should -Throw 'boom'
         (Get-FmLockInfo -Path $path).State | Should -Be 'free'
     }
 
     It 'returns the body result' {
-        Invoke-FmWithLock -Path (New-LockPath) -ScriptBlock { 'result' } | Should -Be 'result'
+        Invoke-FmWithLock -Path (Get-LockPath) -ScriptBlock { 'result' } | Should -Be 'result'
     }
 }
 
@@ -286,7 +286,7 @@ Describe 'One holder, proven with real processes' {
         # The honest test of mutual exclusion: each worker reads, pauses, and
         # writes back under the lock. Without exclusion the counter loses
         # increments; with it, the total is exact.
-        $lockPath = New-LockPath
+        $lockPath = Get-LockPath
         $counter = Join-Path $script:TempRoot ('counter-' + [guid]::NewGuid().ToString('N'))
         Write-FmStateFile -Path $counter -Content '0'
         $workers = 3
@@ -296,11 +296,12 @@ Describe 'One holder, proven with real processes' {
             Start-Job -ArgumentList $script:ModulePath, $lockPath, $counter, $perWorker -ScriptBlock {
                 param($ModulePath, $LockPath, $Counter, $Count)
                 Import-Module $ModulePath -Force
+                $counterPath = $Counter
                 for ($i = 1; $i -le $Count; $i++) {
                     Invoke-FmWithLock -Path $LockPath -TimeoutSeconds 120 -ScriptBlock {
-                        $value = [int](Read-FmStateFile -Path $Counter).Trim()
+                        $value = [int](Read-FmStateFile -Path $counterPath).Trim()
                         Start-Sleep -Milliseconds 5
-                        Write-FmStateFile -Path $Counter -Content ([string]($value + 1))
+                        Write-FmStateFile -Path $counterPath -Content ([string]($value + 1))
                     }
                 }
             }
@@ -316,7 +317,7 @@ Describe 'One holder, proven with real processes' {
     It 'hands the lock on when a holder is killed outright, with no cleanup step' {
         # Property 3: a crash must not deadlock the home. The holder is killed
         # with no chance to release; the next caller recovers the lock itself.
-        $lockPath = New-LockPath
+        $lockPath = Get-LockPath
         $ready = Join-Path $script:TempRoot ('ready-' + [guid]::NewGuid().ToString('N'))
         $holder = Start-Job -ArgumentList $script:ModulePath, $lockPath, $ready -ScriptBlock {
             param($ModulePath, $LockPath, $Ready)

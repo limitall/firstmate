@@ -6,9 +6,11 @@
 
     The bash version reads /proc/<pid>/stat field 22 (starttime) so a recycled
     process id can never be mistaken for the original. Windows has no /proc, so
-    the same guarantee comes from Get-Process: a process id plus its creation
-    time is unique for as long as anyone cares - Windows recycles ids freely, but
-    never with the same start instant.
+    the same guarantee comes from the process creation time behind Get-Process:
+    a process id plus its creation instant is unique for as long as anyone cares
+    - Windows recycles ids freely, but never with the same start instant. See
+    Get-FmProcessIdentity for why the token has to be read from a source that
+    reports the same value to every observer, and what breaks when it is not.
 
     Every function here fails SAFE for a lock caller: when the answer cannot be
     established (access denied, identity unreadable), a process is reported ALIVE
@@ -167,7 +169,12 @@ function Test-FmProcessAlive {
 
     $process = Get-FmProcess -Id $Id
     if (-not $process) { return $false }
-    try { if ($process.HasExited) { return $false } } catch { }
+    try {
+        if ($process.HasExited) { return $false }
+    } catch {
+        # An unreadable exit state proves nothing; fall through to alive.
+        Write-Verbose "firstmate: could not read exit state of process $Id"
+    }
 
     if (-not $PSBoundParameters.ContainsKey('Identity') -or [string]::IsNullOrWhiteSpace($Identity)) {
         return $true

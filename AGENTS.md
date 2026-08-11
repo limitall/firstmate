@@ -66,6 +66,8 @@ governs the import.
 - `docs/claude-hooks-windows.md` - the Claude hook surface, and the line between
   what is `# WINDOWS-UNVERIFIED:` documentation and what the tests actually
   prove.
+- `docs/foundation.md` - the module foundation: paths, state files, locks, and
+  process identity, plus where this port deliberately differs from bash.
 
 ## Cross-area composition
 
@@ -80,6 +82,38 @@ follow:
 - **One owner per rule.** When a shared helper exists, delegate to it rather than
   keeping a second copy (`Write-FmTextFileLf`, `Get-FmMetaValue`,
   `Test-FmPathEqual`, `Get-FmJsonValue`).
+
+## Module foundation
+
+`docs/foundation.md` is the contract every area builds on: home resolution
+(`FM_HOME` and the `data/state/config/projects` layout), state-file reads and
+writes, the per-home mutexes and session lock, and process identity. Read it
+before touching a state file or a lock.
+
+- State files go through `Read-FmStateFile` / `Write-FmStateFile` /
+  `Add-FmStateLine` / `Read-FmKeyValueFile` / `Set-FmKeyValueField`. They hold
+  the UTF-8-no-BOM, LF-only contract above AND the retry-and-backoff discipline
+  Windows needs, where it raises a sharing violation for a file another process
+  holds open. (`Write-FmTextFileLf` / `Add-FmTextLineLf` predate the foundation
+  and cover the byte contract only; prefer the `Fm*State` functions for anything
+  under `state/`, and note that a concurrent append needs the locked one.)
+- Take a lock with `Invoke-FmWithLock`, which releases even when the body
+  throws. One process must not take the same lock twice.
+- Adding a `module/Firstmate/Public/*.ps1` file exports its top-level functions
+  automatically - the loader discovers them by parsing. Neither the manifest nor
+  the loader needs editing, so separate areas never collide in one export list.
+
+## Checks
+
+```powershell
+Invoke-Pester -Path ./tests
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+```
+
+Keep the analyzer clean of Error and Warning findings; its three excluded rules
+each carry their reason in `PSScriptAnalyzerSettings.psd1`. The lock and state
+suites spawn real background processes on purpose - every concurrency defect
+found in this port was found by running them, never by reading the code.
 
 ## Maintaining this file
 

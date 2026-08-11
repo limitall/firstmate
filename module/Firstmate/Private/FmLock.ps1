@@ -149,8 +149,9 @@ function Get-FmLockInfo {
     $info.ProcessId = [int]$trimmed
     $info.Identity = (Read-FmStateFile -Path (Join-Path $full 'pid-identity'))
     if ($info.Identity) { $info.Identity = $info.Identity.Trim() }
-    $home = Read-FmStateFile -Path (Join-Path $full 'fm-home')
-    if ($home) { $info.Home = $home.Trim() }
+    # Not $home: PowerShell's $HOME is read-only and assigning to it fails.
+    $recordedHome = Read-FmStateFile -Path (Join-Path $full 'fm-home')
+    if ($recordedHome) { $info.Home = $recordedHome.Trim() }
     $role = Read-FmStateFile -Path (Join-Path $full 'role')
     if ($role) { $info.Role = $role.Trim() }
     $watcher = Read-FmStateFile -Path (Join-Path $full 'watcher-path')
@@ -170,10 +171,15 @@ function Get-FmLockInfo {
 }
 
 function Remove-FmLockChildFile {
+    # Internal helper called only by functions that have already established
+    # ownership; ShouldProcess belongs on those, not on every private step.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
     param([Parameter(Mandatory)][string]$LockPath, [string[]]$Name = $script:FmLockChildNames)
     foreach ($child in $Name) {
         $path = Join-Path $LockPath $child
-        try { [System.IO.File]::Delete($path) } catch { }
+        # Best effort: a sidecar that will not delete is not worth failing a
+        # release over, and the pid file alone decides ownership.
+        try { [System.IO.File]::Delete($path) } catch { Write-Verbose "firstmate: could not remove $path" }
     }
 }
 
@@ -194,7 +200,7 @@ function Clear-FmLockBreakResidue {
     }
     foreach ($file in $residue) {
         if ((Get-FmPathAge -Path $file) -lt (Get-FmLockStaleAfterSeconds)) { continue }
-        try { [System.IO.File]::Delete($file) } catch { }
+        try { [System.IO.File]::Delete($file) } catch { Write-Verbose "firstmate: could not sweep $file" }
     }
 }
 
@@ -224,7 +230,9 @@ function Invoke-FmLockBreak {
     } catch {
         return $false
     }
-    try { [System.IO.File]::Delete($claimed) } catch { }
+    # A crash before this delete leaves an inert pid.stale.* file that the next
+    # holder sweeps up, so failing to remove it now costs nothing.
+    try { [System.IO.File]::Delete($claimed) } catch { Write-Verbose "firstmate: could not remove $claimed" }
     return $true
 }
 
@@ -461,7 +469,7 @@ function Unlock-FmLock {
 
         Clear-FmLockBreakResidue -LockPath $full
         Remove-FmLockChildFile -LockPath $full -Name ($script:FmLockChildNames | Where-Object { $_ -ne 'pid' })
-        try { [System.IO.File]::Delete($pidFile) } catch { }
+        try { [System.IO.File]::Delete($pidFile) } catch { Write-Verbose "firstmate: could not remove $pidFile" }
         $null = $script:FmHeldLocks.Remove($key)
         return $true
     }
