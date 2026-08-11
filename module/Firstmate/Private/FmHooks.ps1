@@ -173,7 +173,7 @@ function Get-FmHookSupervisionStatus {
 
     $queuePending = $false
     $queue = Join-Path $State '.wake-queue'
-    if ((Test-Path -LiteralPath $queue -PathType Leaf) -and (Get-Item -LiteralPath $queue).Length -gt 0) {
+    if ((Test-Path -LiteralPath $queue -PathType Leaf) -and (Get-Item -LiteralPath $queue -Force).Length -gt 0) {
         $queuePending = $true
     }
 

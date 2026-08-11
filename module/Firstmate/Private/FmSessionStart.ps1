@@ -231,7 +231,7 @@ function Format-FmSessionFileOrAbsent {
 
     $out = @(New-FmSessionSubsection -Title $Label)
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        $len = (Get-Item -LiteralPath $Path).Length
+        $len = (Get-Item -LiteralPath $Path -Force).Length
         if ($len -gt 0) {
             $out += Get-FmSessionFileLines -Path $Path
         } else {
@@ -420,7 +420,7 @@ function Format-FmSessionBacklogCompact {
 
     $out = @(New-FmSessionSubsection -Title $Label)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return ($out + 'ABSENT') }
-    if ((Get-Item -LiteralPath $Path).Length -eq 0) { return ($out + '(present, empty)') }
+    if ((Get-Item -LiteralPath $Path -Force).Length -eq 0) { return ($out + '(present, empty)') }
 
     if (Test-FmSessionTasksAxiBackendAvailable -ConfigDir $ConfigDir) {
         $out += Format-FmSessionBacklogTasksAxiCompact -Path $Path -QueuedLimit $QueuedLimit

@@ -268,12 +268,9 @@ function Invoke-FmClaudeTurnEndGuard {
     if (-not $ClaudeMode) { return (New-FmHookBlockDecision -Paths $paths -Status $status -ClaudeMode:$false) }
 
     # --- the cooperative path -------------------------------------------------
-    $budget = $null
     $ownsRecovery = {
-        $result = Test-FmHookAutoArmOwnsRecovery -State $state -SessionId $sessionId -Grace $grace `
-            -EpochFresh $epochFresh -FailureNotice $failureNotice
-        $script:FmHookLastBudget = $result.Budget
-        $result.Owns
+        (Test-FmHookAutoArmOwnsRecovery -State $state -SessionId $sessionId -Grace $grace `
+                -EpochFresh $epochFresh -FailureNotice $failureNotice).Owns
     }
 
     $waited = 0
