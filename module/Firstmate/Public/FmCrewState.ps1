@@ -97,10 +97,18 @@ function Get-FmCrewState {
         # The ci-step log tail is the only place no-mistakes records the
         # "checks green, waiting on merge" transition, and it costs another
         # bounded CLI call, so it is resolved lazily.
+        # Deliberately NOT .GetNewClosure(): that copy binds a fresh scope whose
+        # function lookup does not carry the module's own functions when the
+        # scriptblock is invoked from a host that dot-sourced them (a Pester
+        # session is the one that bites), so the ci-monitor branch throws
+        # CommandNotFoundException instead of resolving. A plain scriptblock
+        # resolves $worktree and $nmTimeout through the runtime scope chain -
+        # Resolve-FmCrewRunState's caller is this function - and keeps the branch
+        # exercisable end to end.
         $ciChecks = {
             param([string]$runId)
             Get-FmNmCiChecksState -WorktreePath $worktree -TimeoutSeconds $nmTimeout -RunId $runId
-        }.GetNewClosure()
+        }
         $run = Resolve-FmCrewRunState -Output $runOut -RunSource $runSource -CoarseStatus $coarseStatus -CiChecksStateProvider $ciChecks
         $runState = $run.State
         $runDetail = $run.Detail

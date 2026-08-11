@@ -273,6 +273,36 @@ Describe 'the incremental (cursor-backed) fold' {
         (Get-FmOpenDecisionIncremental -Path $script:Status).Key | Should -Be 'a'
     }
 
+    It 'never follows a status file that is a symlink' -Skip:($IsWindows) {
+        # The fleet scan enumerates a directory rather than a caller-chosen path,
+        # so a link escaping the state directory must not be read at all.
+        New-StatusFile -Path $script:Status -Line @('needs-decision [key=k]: real')
+        $link = Join-Path $script:TestHome.State 'linked.status'
+        New-Item -ItemType SymbolicLink -Path $link -Target $script:Status | Out-Null
+        $open = Get-FmOpenDecision -Path $link
+        $open.Count | Should -Be 0
+    }
+
+    It 'folds a status log an editor rewrote with CRLF' {
+        # A Windows operator opening a status log in a CRLF editor must not
+        # silently change what is open.
+        [System.IO.File]::WriteAllText($script:Status, "needs-decision [key=k]: one`r`nworking: two`r`n")
+        $open = Get-FmOpenDecision -Path $script:Status
+        $open.Count | Should -Be 1
+        $open[0].Note | Should -Be 'one'
+    }
+
+    It 'scans a whole fleet incrementally with the same output shape' {
+        New-StatusFile -Path $script:Status -Line @('blocked [key=k1]: waiting on the lease')
+        $first = Get-FmOpenDecisionScan -StatePath $script:TestHome.State -Incremental
+        $first.Count | Should -Be 1
+        $first[0].Task | Should -Be 't1'
+        $first[0].Verb | Should -Be 'blocked'
+        Add-StatusLine -Path $script:Status -Line @('resolved [key=k1]: lease freed')
+        $second = Get-FmOpenDecisionScan -StatePath $script:TestHome.State -Incremental
+        $second.Count | Should -Be 0
+    }
+
     It 'writes the cursor next to the status file, safe to delete' {
         New-StatusFile -Path $script:Status -Line @('needs-decision [key=a]: first')
         [void](Get-FmOpenDecisionIncremental -Path $script:Status)
@@ -382,6 +412,24 @@ Describe 'absorb classification' {
         }
         Test-FmSignalCrewProvablyWorking -Path @('/s/t1.status') -StateLineProvider $mixed | Should -BeTrue
         Test-FmSignalCrewProvablyWorking -Path @('/s/t1.status', '/s/t2.turn-ended') -StateLineProvider $mixed | Should -BeFalse
+    }
+
+    It 'surfaces the wake when the state reader itself fails' {
+        # Absorbing needs positive evidence; a reader that throws is not evidence,
+        # so the wake must surface rather than be silently swallowed.
+        $broken = { param($id) throw 'reader exploded' }
+        Get-FmCrewAbsorbClass -Id 't1' -StateLineProvider $broken | Should -Be 'none'
+        Test-FmCrewProvablyWorking -Id 't1' -StateLineProvider $broken | Should -BeFalse
+        Test-FmCrewIsPaused -Id 't1' -StateLineProvider $broken | Should -BeFalse
+    }
+
+    It 'publishes the bounded pause re-surface cadence with one owner' {
+        # Both supervisors read this cadence from here, so it cannot drift.
+        Get-FmClassifyPauseResurfaceSecs | Should -Be 3600
+        $env:FM_PAUSE_RESURFACE_SECS = '900'
+        try { Get-FmClassifyPauseResurfaceSecs | Should -Be 900 } finally { Remove-Item Env:FM_PAUSE_RESURFACE_SECS }
+        $env:FM_PAUSE_RESURFACE_SECS = 'soon'
+        try { Get-FmClassifyPauseResurfaceSecs | Should -Be 3600 } finally { Remove-Item Env:FM_PAUSE_RESURFACE_SECS }
     }
 
     It 'does not absorb a wake that names no resolvable task' {

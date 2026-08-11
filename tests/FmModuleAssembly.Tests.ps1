@@ -130,6 +130,15 @@ foreach (`$name in @('Invoke-FmTeardown', 'Invoke-FmMergeLocal', 'Invoke-FmPromo
         $loaded | Should -Contain 'OK'
     }
 
+    It 'gives every module function the Fm prefix' {
+        # Every top-level name lands in one shared scope, so an unprefixed helper
+        # from one area is a collision waiting for the next area that wants that
+        # word. The prefix is what makes the duplicate check above rare.
+        foreach ($definition in $script:Definitions) {
+            $definition.Name | Should -Match '^[A-Za-z]+-Fm' -Because "$($definition.File):$($definition.Line)"
+        }
+    }
+
     It 'gives every Public file at least one Fm function to export' {
         # Deliberately NOT "the file is named after its function": the repo's
         # layout says one Public file per AREA, and some areas use one file per
@@ -226,6 +235,27 @@ Describe 'entry points' {
                 'fm-project-create.ps1', 'fm-project-remove.ps1', 'fm-fleet-sync.ps1', 'fm-ensure-agents-md.ps1')) {
             Test-Path -LiteralPath (Join-Path $script:BinRoot $name) -PathType Leaf |
                 Should -BeTrue -Because "bin/$name is part of this port's command surface"
+        }
+    }
+
+    It 'resolves the module in every bin/ entry point before calling into it' {
+        # Three conventions are in use across the areas that have landed - the
+        # shared loader, importing the manifest, and an inline dot-source of
+        # Private then Public. What matters is that no entry point calls a module
+        # function without loading the module at all.
+        foreach ($file in @(Get-ChildItem -LiteralPath $script:BinRoot -Filter 'fm-*.ps1' -File)) {
+            if ($file.Name -eq 'fm-module-load.ps1') { continue }
+            $text = [System.IO.File]::ReadAllText($file.FullName)
+            $text | Should -Match "(fm-module-load\.ps1|Import-Module|'module' 'Firstmate')" -Because $file.Name
+        }
+    }
+
+    It 'pins PowerShell 7 and strict mode in every bin/ entry point' {
+        foreach ($file in @(Get-ChildItem -LiteralPath $script:BinRoot -Filter 'fm-*.ps1' -File)) {
+            $text = [System.IO.File]::ReadAllText($file.FullName)
+            $text | Should -Match '#requires -Version 7\.0' -Because $file.Name
+            if ($file.Name -eq 'fm-module-load.ps1') { continue }
+            $text | Should -Match 'Set-StrictMode -Version Latest' -Because $file.Name
         }
     }
 }

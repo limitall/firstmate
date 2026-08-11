@@ -218,3 +218,104 @@ Describe 'TOON field reads' {
         Get-FmNmEffectiveCiStepStatus -Output '' -RunStatus 'fixing' | Should -Be 'fixing'
     }
 }
+
+Describe 'reconciling a stale status log against an attributed run' {
+    # These drive Get-FmCrewState end to end with the run lookup live, which is
+    # where the log reconciliation and the ci-monitor override actually happen -
+    # Resolve-FmCrewRunState above covers the pure mapping only. The lookup is
+    # gated on a real no-mistakes being installed, so these skip where it is not;
+    # the bounded CLI call itself is mocked and no run is ever started.
+    BeforeDiscovery {
+        $script:HasNoMistakes = $null -ne (Get-Command -Name 'no-mistakes' -CommandType Application -ErrorAction SilentlyContinue)
+    }
+    BeforeEach {
+        $script:TestHome = New-FmTestHome
+        $script:Repo = New-FmTestProject -Root $script:TestHome.Path -Id 't1'
+        $script:Head = (Invoke-FmTestGit -RepoPath $script:Repo.Worktree rev-parse HEAD).Trim()
+        New-FmTestMeta -TestHome $script:TestHome -Id 't1' -Fields @{
+            worktree = $script:Repo.Worktree
+            window   = 'fleet:fm-t1'
+            kind     = 'ship'
+        } | Out-Null
+    }
+    AfterEach { Remove-FmTestHome -TestHome $script:TestHome }
+
+    It 'flags a needs-decision line the run has moved past as superseded' -Skip:(-not $script:HasNoMistakes) {
+        [System.IO.File]::WriteAllText((Join-Path $script:TestHome.State 't1.status'), "needs-decision: which shape?`n")
+        Mock Invoke-FmNoMistakes { "id: run-1`nbranch: fm/t1`nhead: $($script:Head)`nstatus: running`n" }
+        Get-FmCrewState -Id 't1' |
+            Should -Be 'state: working · source: run-step · validating (running) · status-log superseded by active run'
+    }
+
+    It 'leaves a needs-decision line alone when the run really is parked' -Skip:(-not $script:HasNoMistakes) {
+        [System.IO.File]::WriteAllText((Join-Path $script:TestHome.State 't1.status'), "needs-decision: which shape?`n")
+        Mock Invoke-FmNoMistakes { "id: run-1`nbranch: fm/t1`nhead: $($script:Head)`nstatus: awaiting_approval`n" }
+        $line = Get-FmCrewState -Id 't1'
+        $line | Should -Match '^state: parked'
+        $line | Should -Not -Match 'superseded'
+    }
+
+    It 'names a finished run as the source even after the endpoint has closed' -Skip:(-not $script:HasNoMistakes) {
+        # The run step is authoritative regardless of endpoint liveness, so a
+        # crew whose pane is gone still reports what its run says.
+        Mock Invoke-FmNoMistakes { "id: run-1`nbranch: fm/t1`nhead: $($script:Head)`nstatus: completed`noutcome: passed`n" }
+        Mock Get-FmCrewEndpointVerdict { throw 'the endpoint must not be probed while a run is attributed' }
+        Get-FmCrewState -Id 't1' | Should -Be 'state: done · source: run-step · run passed: PR merged/closed'
+    }
+
+    It 'falls back to the coarse runs list when axi status answers for another branch' -Skip:(-not $script:HasNoMistakes) {
+        Mock Invoke-FmNoMistakes {
+            param($WorktreePath, $TimeoutSeconds, $Arguments)
+            if ($Arguments -contains 'runs') { return "running fm/t1 $($script:Head) 2026-08-12`n" }
+            return "id: run-9`nbranch: fm/other`nhead: $($script:Head)`nstatus: running`n"
+        }
+        Get-FmCrewState -Id 't1' | Should -Be 'state: working · source: run-step · validating (background run)'
+    }
+
+    It 'skips a coarse row whose sha does not belong to this worktree' -Skip:(-not $script:HasNoMistakes) {
+        $stale = (Invoke-FmTestGit -RepoPath $script:Repo.Worktree rev-parse HEAD).Trim()
+        New-FmTestCommit -RepoPath $script:Repo.Worktree
+        Mock Invoke-FmNoMistakes {
+            param($WorktreePath, $TimeoutSeconds, $Arguments)
+            if ($Arguments -contains 'runs') { return "completed fm/t1 $stale 2026-08-12`n" }
+            return "id: run-9`nbranch: fm/other`nhead: $stale`nstatus: running`n"
+        }
+        Get-FmCrewState -Id 't1' | Should -Not -Match 'run-step'
+    }
+
+    It 'promotes a green ci log to done through the whole reader, not just the mapper' -Skip:(-not $script:HasNoMistakes) {
+        # End to end, because the wiring is what breaks: the ci-checks provider is
+        # handed to the mapper as a scriptblock, and a mis-scoped one throws here
+        # while every pure mapper test still passes.
+        Mock Invoke-FmNoMistakes {
+            param($WorktreePath, $TimeoutSeconds, $Arguments)
+            if ($Arguments -contains 'logs') { return "all CI checks passed - still monitoring until merged or closed`n" }
+            return "id: run-1`nbranch: fm/t1`nhead: $($script:Head)`nstatus: ci`nsteps[1]{step,status,findings}:`n  ci, running, 0`n"
+        }
+        Get-FmCrewState -Id 't1' |
+            Should -Be 'state: done · source: run-step · checks green: PR ready for review (still monitoring for merge/close)'
+    }
+
+    It 'accepts a done log reporting a green PR while the run keeps monitoring' -Skip:(-not $script:HasNoMistakes) {
+        # No ci step to read, so the run alone still says working; the worker's own
+        # "PR ... checks green" line is what closes it out.
+        [System.IO.File]::WriteAllText((Join-Path $script:TestHome.State 't1.status'), "done: PR ready, checks green`n")
+        Mock Invoke-FmNoMistakes {
+            param($WorktreePath, $TimeoutSeconds, $Arguments)
+            if ($Arguments -contains 'logs') { return '' }
+            return "id: run-1`nbranch: fm/t1`nhead: $($script:Head)`nstatus: running`n"
+        }
+        Get-FmCrewState -Id 't1' |
+            Should -Be 'state: done · source: status-log · PR ready, checks green · run still monitoring PR'
+    }
+
+    It 'never lets a fixing run read as done from that same log line' -Skip:(-not $script:HasNoMistakes) {
+        [System.IO.File]::WriteAllText((Join-Path $script:TestHome.State 't1.status'), "done: PR ready, checks green`n")
+        Mock Invoke-FmNoMistakes {
+            param($WorktreePath, $TimeoutSeconds, $Arguments)
+            if ($Arguments -contains 'logs') { return '' }
+            return "id: run-1`nbranch: fm/t1`nhead: $($script:Head)`nstatus: fixing`n"
+        }
+        Get-FmCrewState -Id 't1' | Should -Match '^state: working'
+    }
+}

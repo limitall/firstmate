@@ -88,6 +88,9 @@ governs the import.
   fleet sync, project add/create/remove, and the agent-memory file convention.
   It also states the v1 delivery-mode gate: `direct-PR` and `local-only` ship,
   and `no-mistakes` is **refused by name** rather than recorded and not run.
+- `docs/backlog-manual-windows.md` - the manual backlog backend: tasks-axi's
+  markdown grammar as the format contract, byte-exact round trip, and every
+  refusal.
 
 ## Cross-area composition
 
