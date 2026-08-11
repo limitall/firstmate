@@ -506,6 +506,11 @@ function Start-FmWatchFileNotifier {
         the sleep early; the next cycle still re-reads every size:mtime signature
         from disk. If registration fails - or fails repeatedly at runtime - the
         watcher drops to the pure sleep and behaves exactly like bin/fm-watch.sh.
+
+        # WINDOWS-UNVERIFIED: on Windows this sits on ReadDirectoryChangesW,
+        # whose kernel buffer silently DROPS events under a burst. That is
+        # precisely why the signature scan, not this notifier, decides what
+        # happened - a dropped event costs latency, never a wake.
     #>
     param([Parameter(Mandatory)][hashtable]$Context)
     if ((Get-FmEnvValue 'FM_WATCH_DISABLE_FSNOTIFY') -eq '1') { return $false }

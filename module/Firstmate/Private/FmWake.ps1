@@ -126,6 +126,13 @@ function Set-FmFileTextLf {
         Write $Text verbatim (LF preserved, no BOM, no trailing CRLF rewrite) to
         $Path, replacing it atomically. Every state file firstmate shares with
         the bash implementation goes through here.
+
+        Write-then-move rather than write-in-place: a reader either sees the old
+        file or the new one, never a half-written state record.
+        # WINDOWS-UNVERIFIED: Windows locks open files where POSIX does not, so
+        # the replacing move can fail while another process holds the target
+        # open. The temporary is removed and the error propagates rather than
+        # leaving a partial file behind.
     #>
     param(
         [Parameter(Mandatory)][string]$Path,
