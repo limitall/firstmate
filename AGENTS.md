@@ -72,10 +72,12 @@ governs the import.
   byte-exact wake-queue record, why locks are directories rather than symlinks,
   why the FileSystemWatcher may only shorten a wait, and the collaborating
   functions each other area may supply.
-- `docs/lifecycle.md` - briefs, the wake classifier, teardown and the local
-  merge: the landed-work test and the rule that every inconclusive answer
-  refuses, which task shapes teardown refuses rather than half-performs, and how
-  this area degrades when another area's owner is absent.
+- `docs/lifecycle.md` - briefs, the wake classifier and the local merge, plus
+  how that area degrades when another area's owner is absent.
+- `docs/teardown-windows.md` - teardown: the landed-work test (the one thing
+  that must never be relaxed), process custody via Win32 job objects instead of
+  `lsof` and process groups, the exclusive-open stale-lock probe, and the lease
+  rules for returning a worktree to the pool.
 
 ## Cross-area composition
 

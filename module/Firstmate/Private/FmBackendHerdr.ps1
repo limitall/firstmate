@@ -89,7 +89,13 @@ function Invoke-FmChildProcess {
         [string[]]$ArgumentList = @(),
         [hashtable]$Environment = @{},
         [string]$WorkingDirectory = '',
-        [double]$TimeoutSeconds = 0
+        [double]$TimeoutSeconds = 0,
+        # Text to hand the child on stdin before it is closed. Without it stdin
+        # is closed immediately, which is what every CLI call here wants; with
+        # it, a filter like `git patch-id --stable` can be fed without a shell
+        # pipe. Written before the output readers start, so it must stay small
+        # enough not to fill the pipe buffer - which is true of every use here.
+        [Parameter()][AllowNull()][AllowEmptyString()][string]$StandardInput
     )
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
@@ -100,6 +106,9 @@ function Invoke-FmChildProcess {
     $psi.RedirectStandardInput = $true
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
+    if ($PSBoundParameters.ContainsKey('StandardInput')) {
+        $psi.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
+    }
     if ($WorkingDirectory) { $psi.WorkingDirectory = $WorkingDirectory }
     foreach ($key in $Environment.Keys) {
         $psi.Environment[[string]$key] = [string]$Environment[$key]
@@ -121,9 +130,14 @@ function Invoke-FmChildProcess {
     }
 
     try {
-        $proc.StandardInput.Close()
+        # Readers first, THEN stdin: a child that writes while we are still
+        # feeding it would otherwise deadlock on a full stdout pipe.
         $outTask = $proc.StandardOutput.ReadToEndAsync()
         $errTask = $proc.StandardError.ReadToEndAsync()
+        if ($PSBoundParameters.ContainsKey('StandardInput') -and $null -ne $StandardInput) {
+            $proc.StandardInput.Write($StandardInput)
+        }
+        $proc.StandardInput.Close()
         $timedOut = $false
         if ($TimeoutSeconds -gt 0) {
             if (-not $proc.WaitForExit([int]([math]::Ceiling($TimeoutSeconds * 1000)))) {
