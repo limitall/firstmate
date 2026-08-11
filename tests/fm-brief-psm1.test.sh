@@ -148,7 +148,7 @@ add_case() { # label sh-script ps-script cwd envspec argspec
 # The optional substitutions replace each side's own fixture directory with a
 # placeholder, for the mutating fm-ensure-agents-md cases that cannot share one.
 compare_case() {
-  local label=$1 shsub=${2:-} pssub=${3:-} shout sherr shrc psout pserr psrc
+  local label=$1 shsub=${2:-} pssub=${3:-} shout sherr shrc psout pserr psrc _fold_ps _fold_sh
   [ -f "$OUT/$label.ps.rc" ] || fail "$label: the PowerShell driver produced no result"
   shrc=$(<"$OUT/$label.sh.rc"); psrc=$(<"$OUT/$label.ps.rc")
   shout=$(<"$OUT/$label.sh.out"); psout=$(<"$OUT/$label.ps.out")
@@ -156,6 +156,17 @@ compare_case() {
   if [ -n "$shsub" ]; then
     shout=${shout//$shsub/@DIR@}; sherr=${sherr//$shsub/@DIR@}
     psout=${psout//$pssub/@DIR@}; pserr=${pserr//$pssub/@DIR@}
+  fi
+  # The report line names the alias form it just produced, so it inherits the
+  # same capability split as the alias itself (see EXPECT_ALIAS_* above). Only
+  # a genuine difference is examined, and it is accepted only when replacing
+  # each world's OWN capability verb makes the two texts identical - that is,
+  # when the verb was the entire difference. Any other wording change survives
+  # the substitution and still fails with both texts shown.
+  if [ "$psout" != "$shout" ]; then
+    _fold_ps=${psout//"$EXPECT_VERB_PS CLAUDE.md -> AGENTS.md"/@ALIAS-VERB@ CLAUDE.md -> AGENTS.md}
+    _fold_sh=${shout//"$EXPECT_VERB_SH CLAUDE.md -> AGENTS.md"/@ALIAS-VERB@ CLAUDE.md -> AGENTS.md}
+    if [ "$_fold_ps" = "$_fold_sh" ]; then psout=$_fold_ps; shout=$_fold_sh; fi
   fi
   assert_eq "$psrc" "$shrc" "$label: exit code differs"
   assert_eq "$psout" "$shout" "$label: stdout differs"
@@ -233,6 +244,42 @@ printf 'probe\n' > "$TMP_ROOT/slprobe/target"
 if ln -s target "$TMP_ROOT/slprobe/link" 2>/dev/null && [ -L "$TMP_ROOT/slprobe/link" ]; then
   SYMLINKS_WORK=yes
 fi
+
+# The PS world's OWN capability, probed the same honest way. Since the host
+# restart the two answers can genuinely differ (bash's ln -s copies while .NET
+# holds the symlink privilege), and BOTH resulting alias forms are correct:
+# each world recognizes the other's (verified directly - bash's ensure run
+# preserves a real symlink alias and reports the ordinary update). So the
+# comparison below normalizes each world's kind against that world's own
+# expected form instead of demanding byte-equal kinds across worlds.
+PS_SYMLINKS_WORK=no
+PS_PROBE_OUT=$(pwsh -NoProfile -Command "try { \$null = New-Item -ItemType SymbolicLink -Path '$(fm_test_native_path "$TMP_ROOT/slprobe")\pslink' -Value 'target' -ErrorAction Stop; 'yes' } catch { 'no' }" 2>/dev/null | tr -d '\r')
+[ "$PS_PROBE_OUT" != yes ] || PS_SYMLINKS_WORK=yes
+EXPECT_ALIAS_SH='file:@AGENTS.md'
+[ "$SYMLINKS_WORK" != yes ] || EXPECT_ALIAS_SH='symlink:AGENTS.md'
+EXPECT_ALIAS_PS='file:@AGENTS.md'
+[ "$PS_SYMLINKS_WORK" != yes ] || EXPECT_ALIAS_PS='symlink:AGENTS.md'
+EXPECT_VERB_SH=imported
+[ "$SYMLINKS_WORK" != yes ] || EXPECT_VERB_SH=symlinked
+EXPECT_VERB_PS=imported
+[ "$PS_SYMLINKS_WORK" != yes ] || EXPECT_VERB_PS=symlinked
+
+# Identical values always pass untouched. Only a genuine DIFFERENCE is examined,
+# and it is forgiven in exactly one shape: each side holding its own world's
+# capability form. Per-side folding was the obvious first try and it was wrong -
+# where a fixture ALREADY holds an alias both worlds preserve that one form, so
+# the raw values agree, and folding only the side that matched its capability
+# manufactured a difference out of an agreement. Everything else - a dir,
+# absent against present, a stub with the wrong bytes, or a world claiming a
+# form it could not have produced - still fails with both raw values shown.
+FOLD_PS=; FOLD_SH=
+fold_capability_pair() { # <ps-value> <sh-value> <ps-expected> <sh-expected>
+  FOLD_PS=$1; FOLD_SH=$2
+  [ "$1" != "$2" ] || return 0
+  if [ "$1" = "$3" ] && [ "$2" = "$4" ]; then
+    FOLD_PS='@CAPABILITY-SPLIT@'; FOLD_SH='@CAPABILITY-SPLIT@'
+  fi
+}
 
 make_alias() { # dir
   if [ "$SYMLINKS_WORK" = yes ]; then
@@ -360,14 +407,21 @@ EOF
 progress 'phase 1: fm-brief oracle runs'
 add_case br-help fm-brief.sh fm-brief.ps1 - - '--help'
 
-br_case br-ship-nomistakes "FM_HOME=$BR_REG" "ship-nm${AS}unregistered-proj"
+# --mode on EVERY ship case, and it is load-bearing coverage rather than
+# ceremony: bin/fm-brief.sh now REFUSES a ship brief without it, whatever the
+# project's registered posture says, so the cases below - written before that
+# became mandatory - generated no brief at all and the byte comparison was
+# asserting one absent file against another. A ship variant that does not
+# produce a brief tests nothing. br-ship-refuse-nomode keeps the refusal
+# itself under test.
+br_case br-ship-nomistakes "FM_HOME=$BR_REG" "ship-nm${AS}unregistered-proj${AS}--mode${AS}no-mistakes"
 br_snapshot br-ship-nomistakes "$BR_REG/data" ship-nm
-br_case br-ship-directpr "FM_HOME=$BR_REG" "ship-dp${AS}direct-proj"
+br_case br-ship-directpr "FM_HOME=$BR_REG" "ship-dp${AS}direct-proj${AS}--mode${AS}direct-PR"
 br_snapshot br-ship-directpr "$BR_REG/data" ship-dp
-br_case br-ship-localonly "FM_HOME=$BR_REG" "ship-lo${AS}local-proj"
+br_case br-ship-localonly "FM_HOME=$BR_REG" "ship-lo${AS}local-proj${AS}--mode${AS}local-only"
 br_snapshot br-ship-localonly "$BR_REG/data" ship-lo
 br_case br-ship-pauseverb \
-  "FM_HOME=$BR_REG${ES}FM_CLASSIFY_PAUSED_VERB=awaiting" "ship-pv${AS}local-proj"
+  "FM_HOME=$BR_REG${ES}FM_CLASSIFY_PAUSED_VERB=awaiting" "ship-pv${AS}local-proj${AS}--mode${AS}local-only"
 br_snapshot br-ship-pauseverb "$BR_REG/data" ship-pv
 
 # The guarded Herdr contract on a SHIP brief, against the real firstmate root:
@@ -377,13 +431,17 @@ br_snapshot br-ship-pauseverb "$BR_REG/data" ship-pv
 # "no twin found") rather than the Herdr contract. The apostrophe-quoting half of
 # the contract is covered by br-scout-herdr below, which needs no resolver - the
 # same split bin/fm-brief.sh's own suite makes.
-br_case br-ship-herdr "FM_HOME=$BR_REG" "ship-hl${AS}firstmate${AS}--herdr-lab"
+br_case br-ship-herdr "FM_HOME=$BR_REG" "ship-hl${AS}firstmate${AS}--mode${AS}no-mistakes${AS}--herdr-lab"
 br_snapshot br-ship-herdr "$BR_REG/data" ship-hl
 
 # --herdr-lab on a FM_ROOT_OVERRIDE containing an apostrophe: the helper path must
 # come back shell-quoted with the '\'' escape, in both languages.
 BR_FOREIGN="$BR/firstmate helper's root"
 mkdir -p "$BR_FOREIGN/bin"
+
+# The refusal the ship cases above used to hit by omission, now asserted on
+# purpose: same message, same exit code, no brief written, in both worlds.
+br_case br-ship-refuse-nomode "FM_HOME=$BR_REG" "ship-rn${AS}direct-proj"
 
 br_case br-scout "FM_HOME=$BR_REG" "scout-a${AS}alpha${AS}--scout"
 br_snapshot br-scout "$BR_REG/data" scout-a
@@ -601,8 +659,9 @@ test_ensure_agents_md_parity() {
         "$label: AGENTS.md content differs"
     fi
     # The alias: same kind, and for the import form the same bytes.
-    assert_eq "$(alias_kind "$EA/$label/ps")" "$(alias_kind "$EA/$label/sh")" \
-      "$label: CLAUDE.md alias form differs"
+    fold_capability_pair "$(alias_kind "$EA/$label/ps")" "$(alias_kind "$EA/$label/sh")" \
+      "$EXPECT_ALIAS_PS" "$EXPECT_ALIAS_SH"
+    assert_eq "$FOLD_PS" "$FOLD_SH" "$label: CLAUDE.md alias form differs"
   done
   compare_case ea-help
   compare_case ea-help-long
@@ -635,6 +694,12 @@ test_generated_briefs_are_byte_identical() {
     assert_same_bytes "$briefpath" "$OUT/$label.oracle.brief" \
       "$label: generated brief differs from the bash oracle"
   done
+  # Refusal case: no brief to compare, so stdout and exit code ARE the contract.
+  compare_case br-ship-refuse-nomode
+  assert_eq "$(cat "$OUT/br-ship-refuse-nomode.ps.rc")" 1 \
+    "a ship brief without --mode must refuse with exit 1 in PowerShell too"
+  [ ! -f "$BR_REG/data/ship-rn/brief.md" ] \
+    || fail "a refused ship brief must leave no brief.md behind"
   pass "fm-brief.ps1: every ship, scout and charter variant generates a byte-identical brief"
 }
 

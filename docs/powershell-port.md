@@ -226,6 +226,42 @@ Same rule for `switch`, and for any statement used as an expression. Bitten
 for real in fm-project-mode while porting `--raw`, one hour after the
 consumer-shape sweep that documented the plain-return form of this trap.
 
+### Both return conventions are valid; MIXING them is the bug
+
+The two halves of the array contract have to be chosen together, per function.
+Measured in pwsh 7, with `$a` an array:
+
+| in the function | what the caller gets | the caller MUST write |
+| --- | --- | --- |
+| `return $a` | unrolled: empty -> `$null`, one element -> the bare element | `@(F)` |
+| `return , $a` | the array itself, always | plain `$x = F` |
+
+Both columns are correct code. `@(F)` around a comma-wrapped return NESTS one
+level (`.Count` becomes 1 for any input), and plain assignment from a bare
+return collapses the 0- and 1-element cases. Nothing warns; the failure shows
+up far away, as "this collection is empty" or "this count is 1".
+
+`bin/fm-herdr-session-cleanup.ps1` shipped with BOTH mistakes at once, in
+private copies of helpers whose originals in `bin/backends/herdr.psm1` had
+already been fixed - so a single-tab projection, the ORDINARY production
+shape, always read as an ambiguous candidate and could never be cleaned, and a
+home with no projections at all probed the session on every startup. Duplicated
+helpers do not inherit their original's fixes. Prefer exporting the original.
+
+A static sweep over `bin/` (both directions, plus the functions that return an
+array WITHOUT declaring `[OutputType([...[]])]` - the shape that hid this one,
+since `Get-FmHerdrCleanupNode` just returned whatever a JSON path held) found
+no other inconsistent pair: every remaining site either guards `$null`
+explicitly, consumes with `foreach ($x in (F))`, which unwraps exactly once and
+is correct for 0, 1 and N, or returns a fixed-length set. Two spots stay
+correct only by luck and are worth knowing before editing: the locale trim sets
+(`Get-FmClassifySpaceSet`, `Get-FmTmuxTrimSet`, `Get-FmComposerTrimSet`) are
+bare returns whose consumers plain-assign, which is safe ONLY because the sets
+are constants six characters long and every consumer calls `Trim`. `Trim`
+tolerates the resulting `Object[]`; `.Split` does NOT - it silently matches
+nothing, which is the same wrong-overload trap as `.Split(@(...))`. Feed
+`.Split` a real `[char[]]`.
+
 ### `printf '\uXXXX'` in a suite is locale-dependent, and MSYS2 has no locale
 
 The single most expensive false alarm of the port so far (2026-08). bash's
