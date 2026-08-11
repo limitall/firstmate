@@ -68,6 +68,10 @@ governs the import.
   prove.
 - `docs/foundation.md` - the module foundation: paths, state files, locks, and
   process identity, plus where this port deliberately differs from bash.
+- `docs/supervision.md` - the wake queue, the watcher and the guards: the
+  byte-exact wake-queue record, why locks are directories rather than symlinks,
+  why the FileSystemWatcher may only shorten a wait, and the collaborating
+  functions each other area may supply.
 
 ## Cross-area composition
 
