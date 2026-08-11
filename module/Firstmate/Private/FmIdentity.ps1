@@ -72,9 +72,27 @@ function Get-FmProcessIdentity {
         Returns $null - never a partial token - when the creation time cannot be
         read. Callers treat $null as "cannot prove anything", not as a mismatch.
 
+        THE TOKEN MUST NOT DEPEND ON WHO IS ASKING. A process records its own
+        identity into a lock, and a completely different process later compares
+        that recording against what it observes. Get-Process's StartTime is not
+        safe for that on Linux: it is derived from the boot time plus the
+        process's jiffies, and the boot time is re-read (and re-rounded) per
+        query, so the SAME process yields different values to itself and to an
+        observer. Measured here: a 2658-tick difference, which made every held
+        lock look like a recycled process id to a competitor and broke mutual
+        exclusion outright. bin/fm-wake-lib.sh documents the same hazard and
+        solves it the same way, by reading the raw value out of /proc.
+
+          Windows - Process.StartTime, which comes from GetProcessTimes as an
+                    absolute FILETIME and reads identically for everyone.
+          Linux   - /proc/<pid>/stat field 22, jiffies since boot, an integer
+                    the kernel reports the same way to every reader.
+          other   - StartTime truncated to whole seconds, which is coarse enough
+                    to absorb the rounding. Development convenience only.
+
         .EXAMPLE
         Get-FmProcessIdentity -Id $PID
-        linux-starttime=638... name=pwsh
+        proc-starttime=14134152 name=pwsh
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -83,20 +101,48 @@ function Get-FmProcessIdentity {
     $process = Get-FmProcess -Id $Id
     if (-not $process) { return $null }
 
-    try {
-        $start = $process.StartTime.ToUniversalTime().Ticks
-    } catch {
-        # Access denied, or the process exited between the two calls.
-        return $null
-    }
-
     $name = ''
     try { $name = [string]$process.ProcessName } catch { $name = '' }
     # Keep the token single-line and field-safe no matter what the process is called.
     $name = ($name -replace '[\t\r\n]', ' ').Trim()
 
-    $tag = if ($IsWindows) { 'windows-starttime' } else { 'proc-starttime' }
-    return "$tag=$start name=$name"
+    if ($IsWindows) {
+        try {
+            # WINDOWS-UNVERIFIED: no Windows box here to run it on. StartTime on
+            # Windows is an absolute FILETIME, so it does not carry the
+            # observer-dependence that forces the /proc path below.
+            $start = $process.StartTime.ToUniversalTime().Ticks
+        } catch {
+            return $null
+        }
+        return "windows-starttime=$start name=$name"
+    }
+
+    $stat = "/proc/$([int]$Id)/stat"
+    if (Test-Path -LiteralPath $stat) {
+        try {
+            $line = [System.IO.File]::ReadAllText($stat)
+        } catch {
+            return $null
+        }
+        # The comm field is parenthesized and may itself contain spaces and
+        # parentheses, so split only what follows its LAST ')'. Field 22
+        # (starttime) is then index 19 of the remainder.
+        $tail = $line.Substring($line.LastIndexOf(')') + 1).Trim()
+        $fields = $tail -split '\s+'
+        if ($fields.Count -ge 20 -and $fields[19] -match '^[0-9]+$') {
+            return "proc-starttime=$($fields[19]) name=$name"
+        }
+        return $null
+    }
+
+    try {
+        $elapsed = $process.StartTime.ToUniversalTime().Subtract([datetime]::UnixEpoch)
+        $start = [long][Math]::Floor($elapsed.TotalSeconds)
+    } catch {
+        return $null
+    }
+    return "starttime-seconds=$start name=$name"
 }
 
 function Test-FmProcessAlive {

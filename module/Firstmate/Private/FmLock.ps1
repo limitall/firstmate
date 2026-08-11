@@ -646,12 +646,13 @@ function Get-FmSessionLockStatus {
     }
 
     $status.ProcessId = [int]$trimmed
+    # Liveness is checked explicitly rather than left to Test-FmHarnessProcess to
+    # imply: a session is held only by a process that is BOTH alive and a
+    # harness, and each half must be stated.
+    $aliveArgs = @{ Id = $status.ProcessId }
     $identity = Read-FmStateFile -Path "$lockPath.identity"
-    $stillSameProcess = $true
-    if ($identity -and $identity.Trim()) {
-        $stillSameProcess = Test-FmProcessAlive -Id $status.ProcessId -Identity $identity.Trim()
-    }
-    if ($stillSameProcess -and (Test-FmHarnessProcess -Id $status.ProcessId)) {
+    if ($identity -and $identity.Trim()) { $aliveArgs['Identity'] = $identity.Trim() }
+    if ((Test-FmProcessAlive @aliveArgs) -and (Test-FmHarnessProcess -Id $status.ProcessId)) {
         $status.State = 'held'
         $status.Text = "lock: held by live harness pid $($status.ProcessId)"
     } else {

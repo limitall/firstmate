@@ -34,9 +34,35 @@ Describe 'Get-FmProcessIdentity' {
     }
 
     It 'pins the process creation time, so a recycled id cannot match' {
-        $token = Get-FmProcessIdentity -Id $PID
-        $expected = (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks
-        $token | Should -BeLike "*starttime=$expected*"
+        Get-FmProcessIdentity -Id $PID | Should -Match '^[a-z-]*starttime[a-z-]*=[0-9]+ name=.+$'
+    }
+
+    It 'reads the same for a process as for an observer of that process' {
+        # The regression test for the defect that broke mutual exclusion: a
+        # process records its identity into a lock and a DIFFERENT process
+        # compares it later, so a token that differs by who is asking makes every
+        # live holder look like a recycled process id. Get-Process's StartTime on
+        # Linux does exactly that, being re-derived from a re-rounded boot time.
+        $module = (Join-Path $PSScriptRoot '..' 'module' 'Firstmate' 'Firstmate.psd1')
+        $job = Start-Job -ArgumentList $module -ScriptBlock {
+            param($ModulePath)
+            Import-Module $ModulePath -Force
+            [pscustomobject]@{ ProcessId = $PID; Identity = (Get-FmProcessIdentity -Id $PID) }
+            Start-Sleep -Seconds 30
+        }
+        try {
+            $reported = $null
+            $deadline = [datetime]::UtcNow.AddSeconds(60)
+            while (-not $reported -and [datetime]::UtcNow -lt $deadline) {
+                $reported = $job | Receive-Job | Select-Object -First 1
+                if (-not $reported) { Start-Sleep -Milliseconds 100 }
+            }
+            $reported | Should -Not -BeNullOrEmpty
+            Get-FmProcessIdentity -Id $reported.ProcessId | Should -Be $reported.Identity
+        } finally {
+            $job | Stop-Job -ErrorAction SilentlyContinue
+            $job | Remove-Job -Force -ErrorAction SilentlyContinue
+        }
     }
 
     It 'differs between two different processes' {
