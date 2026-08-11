@@ -141,8 +141,74 @@ MOD_COMMON_N=$(fm_test_native_path "$ROOT/bin/fm-common.psm1")
 
 LF=$'\n'
 ESC=$(printf '\033')
-GLYPH_CLAUDE=$(printf '\u276F')
-SP_NBSP=$(printf '\u00A0')
+# --- FIXTURE BYTES, NEVER printf with a \u code-point escape -----------------
+#
+# bash's `printf` with a \u escape encodes the code point in the CURRENT
+# LOCALE's charset. Under C/POSIX - which is what MSYS2 gives every NON-LOGIN
+# shell, because only a login shell runs /etc/profile.d/lang.sh - it emits a
+# single 8-bit byte for U+0080..U+00FF and passes anything above U+00FF through
+# as the LITERAL SIX CHARACTERS of the escape. So a suite that builds fixtures
+# that way builds different bytes depending on how the shell that launched it
+# was started, and the resulting differential failures are unattributable: they
+# reproduce identically on commits where the suite passed (2026-08, task
+# ps-port-locale).
+#
+# ANSI-C \xNN quoting emits the byte verbatim in every locale - verified here
+# under C, C.UTF-8, en_GB.UTF-8 and unset - and keeps this file pure ASCII.
+GLYPH_CLAUDE=$'\xE2\x9D\xAF'   # U+276F
+SP_NBSP=$'\xC2\xA0'            # U+00A0
+
+# Box-drawing pieces for the pane fixtures, same byte discipline.
+BOX_TL=$'\xE2\x95\xAD'         # U+256D
+BOX_TR=$'\xE2\x95\xAE'         # U+256E
+BOX_BL=$'\xE2\x95\xB0'         # U+2570
+BOX_BR=$'\xE2\x95\xAF'         # U+256F
+BOX_H=$'\xE2\x94\x80'          # U+2500
+BOX_V=$'\xE2\x94\x82'          # U+2502
+
+# Kimi's busy signature. MOON is ASTRAL - four UTF-8 bytes - and that is the
+# whole subject of the grep divergence documented at its case, so a fixture that
+# had silently degraded to the escape's literal text would have "proved" that
+# divergence against nothing at all. Which is precisely what a non-login run did
+# before these fixtures were byte-built.
+MOON=$'\xF0\x9F\x8C\x91'       # U+1F311 NEW MOON
+MIDDOT=$'\xC2\xB7'             # U+00B7
+
+# --- the UTF-8 regime is PINNED, not inherited -------------------------------
+#
+# The NBSP row cases below assert BOTH [[:space:]] regimes: LC_ALL=C is carried
+# per case, and its UTF-8 counterpart used to ride on "the ambient locale",
+# which here is UTF-8 only when a login shell exported LANG. Left inherited, a
+# non-login run asserts the C rules twice and never exercises the Unicode trim
+# set - a coverage hole the differential cannot see, because both sides agree.
+#
+# The name is PROBED rather than assumed: an uninstallable locale name degrades
+# to C in bash while the PowerShell twin matches the NAME, so hard-coding one
+# would turn a missing locale into a differential failure that says nothing
+# about the code.
+fm_test_pick_utf8_locale() {
+  local cand had saved
+  had=${LC_ALL+set}; saved=${LC_ALL-}
+  for cand in C.UTF-8 en_US.UTF-8 en_GB.UTF-8 "${LANG:-}" "${LC_CTYPE:-}"; do
+    [ -n "$cand" ] || continue
+    export LC_ALL="$cand"
+    # All-whitespace under this locale iff the %%-strip removes nothing.
+    if [ "${SP_NBSP%%[![:space:]]*}" = "$SP_NBSP" ]; then
+      if [ -n "$had" ]; then export LC_ALL="$saved"; else unset LC_ALL; fi
+      printf '%s' "$cand"
+      return 0
+    fi
+  done
+  if [ -n "$had" ]; then export LC_ALL="$saved"; else unset LC_ALL; fi
+  return 0
+}
+
+FM_TEST_UTF8_LOCALE=$(fm_test_pick_utf8_locale)
+if [ -n "$FM_TEST_UTF8_LOCALE" ]; then
+  export LC_ALL="$FM_TEST_UTF8_LOCALE"
+else
+  echo "# note: no UTF-8 locale on this host - the UTF-8 trim regime is NOT exercised"
+fi
 
 # --- assertion bookkeeping ----------------------------------------------------
 #
@@ -515,12 +581,12 @@ install_tmux_fixtures() {
 
   # composer fixtures. cempty is a proven-empty bordered box; cpend holds text.
   printf '1\n' > "$d/cursor-cempty"
-  printf '\u256D\u2500\u2500\u2500\u2500\u2500\u256E\n\u2502 >   \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u256F\n' > "$d/pane-cempty"
+  printf '%s\n%s\n%s\n' "$BOX_TL${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}$BOX_TR" "$BOX_V >   $BOX_V" "$BOX_BL${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}$BOX_BR" > "$d/pane-cempty"
   printf '1\n' > "$d/cursor-cpend"
-  printf '\u256D\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256E\n\u2502 > fix \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256F\n' > "$d/pane-cpend"
+  printf '%s\n%s\n%s\n' "$BOX_TL${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}$BOX_TR" "$BOX_V > fix $BOX_V" "$BOX_BL${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}$BOX_BR" > "$d/pane-cpend"
   # A ghost-only composer: dim text must not read as pending input.
   printf '1\n' > "$d/cursor-cghost"
-  printf '\u256D\u2500\u2500\u2500\u2500\u2500\u256E\n\u2502 >\033[2mgh\033[0m \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u256F\n' > "$d/pane-cghost"
+  printf '%s\n%s\n%s\n' "$BOX_TL${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}$BOX_TR" "$BOX_V >${ESC}[2mgh${ESC}[0m $BOX_V" "$BOX_BL${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}$BOX_BR" > "$d/pane-cghost"
 
   # busy-footer fixtures for the 40-line tail read.
   printf '\n\nesc to interrupt\n' > "$d/tail-busyc"
@@ -530,8 +596,8 @@ install_tmux_fixtures() {
   # swallowed, and a busy tail - the opencode busy-queued case, where the
   # verdict must convert to `empty` only after the retry budget is spent.
   printf '1\n' > "$d/cursor-swal"
-  printf '\u256D\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256E\n\u2502 > fix \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256F\n' > "$d/pane-swal"
-  printf '\u256D\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256E\n\u2502 >     \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256F\n' > "$d/cleared-swal"
+  printf '%s\n%s\n%s\n' "$BOX_TL${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}$BOX_TR" "$BOX_V > fix $BOX_V" "$BOX_BL${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}$BOX_BR" > "$d/pane-swal"
+  printf '%s\n%s\n%s\n' "$BOX_TL${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}$BOX_TR" "$BOX_V >     $BOX_V" "$BOX_BL${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}$BOX_BR" > "$d/cleared-swal"
   : > "$d/swallow-swal"
   printf 'esc to interrupt\n' > "$d/tail-swal"
   : > "$d/sent-swal"
@@ -894,7 +960,7 @@ case_busyline 'kimi ignores the grok footer' 'Ctrl+c:cancel' kimi
 # divergence is asserted in BOTH directions instead, so it stays visible and so
 # a future grep that fixes this fails here rather than passing silently.
 ASSERTIONS=$((ASSERTIONS + 1))
-KIMI_SPIN=$(printf '\U0001F311 · thinking')
+KIMI_SPIN="$MOON $MIDDOT thinking"
 if printf '%s' "$KIMI_SPIN" | fm_busy_lines_match kimi >/dev/null 2>&1; then
   FAILURES=$((FAILURES + 1))
   FAILURE_TEXT="${FAILURE_TEXT}lib:busy-lines kimi: the bash twin now MATCHES the astral moon spinner on this host
@@ -902,7 +968,7 @@ if printf '%s' "$KIMI_SPIN" | fm_busy_lines_match kimi >/dev/null 2>&1; then
 "
 fi
 add_case 'lib:busy-lines kimi moon spinner is busy (PowerShell side of the documented grep divergence)' yes busyline '' "$KIMI_SPIN" kimi '' '' '' ''
-case_busyline 'a bare moon glyph without the separator is not busy' "$(printf '\U0001F311 thinking')" kimi
+case_busyline 'a bare moon glyph without the separator is not busy' "$MOON thinking" kimi
 case_busyline 'an unregistered harness borrows no signature' 'esc to interrupt' someharness
 case_busyline 'the no-harness default keeps the shared signature' 'Working...' ''
 case_busyline 'an FM_BUSY_REGEX override wins' 'custom marker' claude 'FM_BUSY_REGEX=custom marker'
@@ -1208,7 +1274,7 @@ if [ -n "$SAVED_HAD_TMUX" ]; then export TMUX="$SAVED_TMUX"; fi
 # bash resolves [[:space:]] against LC_CTYPE, so the trim inside the composer
 # row classifier is the one genuinely locale-dependent decision in this package,
 # and it is the difference between "empty, safe to inject into" and "pending,
-# leave alone". The fixtures were built above in the ambient locale so only the
+# leave alone". The fixtures were built above from FIXED BYTES so only the
 # CLASSIFIER's locale varies here; rebuilding them under C would change the
 # bytes and prove nothing.
 # =============================================================================
@@ -1232,10 +1298,14 @@ case_geomlocale() {  # <label> <content> <env>
 case_geomlocale 'C locale: a NBSP survives the blank-geometry sweep' " > $SP_NBSP" 'LC_ALL=C'
 
 
-# The same two rows under the ambient (UTF-8) locale, so the pair proves the
-# trim actually MOVES with the locale rather than being hard-coded either way.
-case_rowstate 'ambient locale: a NBSP-only bordered row' "$(printf '│ %s │' "$SP_NBSP")" 1 0
-case_geom 'ambient locale: a NBSP in the blank-geometry sweep' " > $SP_NBSP"
+# The same two rows under the UTF-8 locale PINNED at the top of this file, so
+# the pair proves the trim actually MOVES with the locale rather than being
+# hard-coded either way. These carry no per-case locale, so they inherit that
+# pin - which is exactly why it is a pin and not an inherited ambient value: a
+# non-login MSYS2 shell leaves every locale variable unset, and these two cases
+# would then silently re-assert the C rules the block above already covers.
+case_rowstate 'pinned UTF-8 locale: a NBSP-only bordered row' "$(printf '│ %s │' "$SP_NBSP")" 1 0
+case_geom 'pinned UTF-8 locale: a NBSP in the blank-geometry sweep' " > $SP_NBSP"
 
 # =============================================================================
 # THE POWERSHELL DRIVER

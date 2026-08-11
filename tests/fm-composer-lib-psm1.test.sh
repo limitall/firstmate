@@ -14,10 +14,19 @@
 # The two language trees must not be allowed to drift apart the way the four
 # adapters drifted before bin/fm-composer-lib.sh consolidated them.
 #
-# Fixtures are built from printf escapes rather than literal glyphs so this file
-# stays pure ASCII: the whole point of several cases is that U+276F and U+203A
-# survive intact, and a fixture that had itself been mangled by an editor or a
-# patch tool would silently weaken exactly those cases.
+# Fixtures are built from escapes rather than literal glyphs so this file stays
+# pure ASCII: the whole point of several cases is that U+276F and U+203A survive
+# intact, and a fixture that had itself been mangled by an editor or a patch
+# tool would silently weaken exactly those cases. They are BYTE escapes
+# ($'\xE2\x9D\xAF'), never `printf '\uXXXX'`, and that distinction is
+# load-bearing rather than stylistic - see the FIXTURE BYTES block below.
+#
+# The suite also PINS the UTF-8 locale it asserts under instead of inheriting
+# one, because on this platform the ambient locale depends on whether a LOGIN
+# shell ran /etc/profile.d/lang.sh. Both facts were learned from the same
+# incident (2026-08, task ps-port-locale): six differential failures that
+# reproduced identically on an older commit, because the shell that launched the
+# suite had changed, not the code.
 #
 # TRANSPORT. All cases of a batch are written to a file, evaluated by ONE pwsh
 # driver, and returned one result per record - so failures stay individually
@@ -75,25 +84,100 @@ ANSI_IN="$TMP_ROOT/ansi.in"
 ANSI_OUT="$TMP_ROOT/ansi.out"
 
 LF=$'\n'
-ESC=$(printf '\033')
-GLYPH_CLAUDE=$(printf '\u276F')   # claude's agent prompt
-GLYPH_CODEX=$(printf '\u203A')    # codex's agent prompt
+TAB=$'\t'
+ESC=$'\033'
+
+# --- FIXTURE BYTES ARE BUILT FROM UTF-8 BYTES, NEVER FROM \uXXXX -------------
+#
+# This is the single most important line of defence in this file, and it was
+# learned the expensive way (2026-08, task ps-port-locale). bash's
+# `printf '\uXXXX'` encodes the code point in the CURRENT LOCALE's charset, so
+# in a C/POSIX locale it does not produce UTF-8 at all:
+#
+#   locale        printf '\u00A0'   printf '\u276F'
+#   ------------  ---------------   ----------------------------------
+#   *.UTF-8       c2 a0  (correct)  e2 9d af  (correct)
+#   C / POSIX     a0     (1 byte!)  the LITERAL SIX CHARACTERS \u276F
+#   unset         a0     (1 byte!)  the LITERAL SIX CHARACTERS \u276F
+#
+# and MSYS2 leaves LC_ALL/LC_CTYPE/LANG unset unless a LOGIN shell ran
+# /etc/profile.d/lang.sh. So the same suite silently built DIFFERENT fixture
+# bytes depending on whether it was launched from `bash -lc` or `bash -c`,
+# which presented as six unattributable differential failures in code that had
+# not changed. ANSI-C quoting with \xNN emits the byte verbatim in every
+# locale - verified on this host under C, C.UTF-8, en_GB.UTF-8 and unset - so
+# every non-ASCII fixture below is spelled in bytes.
+#
+# The file still contains no literal non-ASCII character: several cases exist
+# precisely to prove U+276F survives intact, and a fixture an editor or a patch
+# tool had already mangled would silently weaken exactly those cases.
+GLYPH_CLAUDE=$'\xE2\x9D\xAF'      # U+276F, claude's agent prompt
+GLYPH_CODEX=$'\xE2\x80\xBA'       # U+203A, codex's agent prompt
 IDLE_RE='^Type a message\.\.\.$'  # the pattern the herdr, orca and cmux adapters ship
 
-# Whitespace boundary fixtures. Built ONCE here, in the ambient locale, so the
-# BYTES are fixed for every batch below: the C-locale batch must reclassify the
-# same bytes, not rebuild them under a locale that would encode them
-# differently. The trim these probe is the one locale-dependent decision in this
-# owner (bin/fm-composer-lib.psm1, Get-FmComposerTrimSet), and it is the
-# difference between "empty, safe to inject into" and "pending, leave alone".
-SP_NBSP=$(printf '\u00A0')      # trims under UTF-8, survives under C
-SP_EM=$(printf '\u2003')        # trims under UTF-8, survives under C
-SP_OGHAM=$(printf '\u1680')     # trims under UTF-8, survives under C
-SP_NNBSP=$(printf '\u202F')     # trims under UTF-8, survives under C
-SP_IDEO=$(printf '\u3000')      # trims under UTF-8, survives under C
-SP_NEL=$(printf '\u0085')       # whitespace to .NET, NOT to bash, under EITHER
-SP_ZWSP=$(printf '\u200B')      # whitespace to neither
-SP_BOM=$(printf '\uFEFF')       # whitespace to neither
+# Whitespace boundary fixtures. Built ONCE here, from fixed bytes, so they are
+# identical for every batch below AND for every shell this suite is launched
+# from: the C-locale batch must reclassify the same bytes, not rebuild them
+# under a locale that would encode them differently. The trim these probe is the
+# one locale-dependent decision in this owner (bin/fm-composer-lib.psm1,
+# Get-FmComposerTrimSet), and it is the difference between "empty, safe to
+# inject into" and "pending, leave alone".
+SP_NBSP=$'\xC2\xA0'          # U+00A0, trims under UTF-8, survives under C
+SP_EM=$'\xE2\x80\x83'        # U+2003, trims under UTF-8, survives under C
+SP_OGHAM=$'\xE1\x9A\x80'     # U+1680, trims under UTF-8, survives under C
+SP_NNBSP=$'\xE2\x80\xAF'     # U+202F, trims under UTF-8, survives under C
+SP_IDEO=$'\xE3\x80\x80'      # U+3000, trims under UTF-8, survives under C
+SP_NEL=$'\xC2\x85'           # U+0085, whitespace to .NET, NOT to bash, under EITHER
+SP_ZWSP=$'\xE2\x80\x8B'      # U+200B, whitespace to neither
+SP_BOM=$'\xEF\xBB\xBF'       # U+FEFF, whitespace to neither
+
+# The multibyte non-space fixtures, same byte discipline.
+CJK_LOGIN_ISSUE=$'\xE4\xBF\xAE\xE5\xA4\x8D\xE7\x99\xBB\xE5\xBD\x95\xE9\x97\xAE\xE9\xA2\x98'
+CJK_REPAIR=$'\xE4\xBF\xAE\xE5\xA4\x8D'   # U+4FEE U+590D
+EMOJI_WRENCH=$'\xF0\x9F\x94\xA7'         # U+1F527, the astral (surrogate-pair) case
+BOX_TOP=$'\xE2\x95\xAD\xE2\x94\x80\xE2\x94\x80\xE2\x95\xAE'  # U+256D U+2500 U+2500 U+256E
+MARK_2063=$'\xE2\x81\xA3'                # U+2063, the operational-input marker
+
+# --- the UTF-8 regime is PINNED, not inherited -------------------------------
+#
+# Half of this suite's locale coverage asserts the UTF-8 [[:space:]] class and
+# half asserts the C one. The C half is pinned explicitly (batch 4); the UTF-8
+# half used to ride on "the ambient locale", which on this platform is UTF-8
+# only when a login shell exported LANG. Left inherited, a non-login run would
+# quietly assert the C rules TWICE and never exercise the Unicode trim set at
+# all - a coverage hole that is invisible because the differential still passes.
+#
+# So the UTF-8 batches name their locale. The name is PROBED rather than
+# assumed: bash is asked which candidate it actually resolves to a locale whose
+# [[:space:]] contains U+00A0, so a host that lacks C.UTF-8 does not get an
+# unloadable name that bash silently degrades to C while the PowerShell twin
+# (which matches the NAME - see divergence (d) in the module header) reads it as
+# UTF-8. Empty means the host has no UTF-8 locale, which is announced rather
+# than papered over.
+fm_test_pick_utf8_locale() {
+  local cand had saved
+  had=${LC_ALL+set}; saved=${LC_ALL-}
+  for cand in C.UTF-8 en_US.UTF-8 en_GB.UTF-8 "${LANG:-}" "${LC_CTYPE:-}"; do
+    [ -n "$cand" ] || continue
+    export LC_ALL="$cand"
+    # All-whitespace under this locale iff no suffix begins with a non-space
+    # character, i.e. iff the %%-strip removes nothing.
+    if [ "${SP_NBSP%%[![:space:]]*}" = "$SP_NBSP" ]; then
+      if [ -n "$had" ]; then export LC_ALL="$saved"; else unset LC_ALL; fi
+      printf '%s' "$cand"
+      return 0
+    fi
+  done
+  if [ -n "$had" ]; then export LC_ALL="$saved"; else unset LC_ALL; fi
+  return 0
+}
+
+FM_TEST_UTF8_LOCALE=$(fm_test_pick_utf8_locale)
+if [ -n "$FM_TEST_UTF8_LOCALE" ]; then
+  export LC_ALL="$FM_TEST_UTF8_LOCALE"
+else
+  echo "# note: no UTF-8 locale on this host - the UTF-8 trim regime is NOT exercised"
+fi
 
 # --- assertion bookkeeping ---------------------------------------------------
 #
@@ -413,7 +497,7 @@ add_classify "a TAB-only row is empty" 0 "$(printf '\t')" '' '' ''
 add_classify "whitespace-padded claude glyph is pending, not empty" 0 "  $GLYPH_CLAUDE  " '' '' ''
 add_classify "whitespace-padded glyph stays pending when bordered" 1 "  $GLYPH_CLAUDE  " '' '' ''
 
-# --- The [[:space:]] trim boundary, at the ambient (UTF-8) locale ------------
+# --- The [[:space:]] trim boundary, at the PINNED UTF-8 locale ---------------
 # bash resolves [[:space:]] against LC_CTYPE, so these verdicts are locale
 # decisions, not constants - which is exactly why they are asserted rather than
 # assumed. NEL, ZWSP and BOM are the near-misses: .NET calls U+0085 whitespace
@@ -455,7 +539,7 @@ add_classify "bare '> ' (glyph plus space) is empty" 0 '> ' '' '' ''
 add_classify "bare '\$ ' (glyph plus space) is empty" 0 '$ ' '' '' ''
 add_classify "claude glyph plus space is empty" 0 "$GLYPH_CLAUDE " '' '' ''
 add_classify "codex glyph plus space is empty" 0 "$GLYPH_CODEX " '' '' ''
-add_classify "claude glyph plus TAB is empty" 0 "$(printf '\u276F\t')" '' '' ''
+add_classify "claude glyph plus TAB is empty" 0 "$GLYPH_CLAUDE$TAB" '' '' ''
 add_classify "doubled shell glyph '>>' is pending" 0 '>>' '' '' ''
 add_classify "doubled claude glyph is pending" 0 "$GLYPH_CLAUDE$GLYPH_CLAUDE" '' '' ''
 
@@ -481,8 +565,8 @@ add_classify "an invalid idle regex reads as no match" 1 'x' '[' '' ''
 add_classify "claude glyph plus text is pending" 0 "$GLYPH_CLAUDE fix findings 1 and 3" '' '' ''
 add_classify "bordered '> text' is pending" 1 '> deploy staging now' '' '' ''
 add_classify "a popup argument-hint fill is pending" 1 '/compact compaction instructions' '' '' ''
-add_classify "CJK text is pending" 1 "$(printf '\u4fee\u590d\u767b\u5f55\u95ee\u9898')" '' '' ''
-add_classify "emoji text is pending" 1 "$(printf 'fix the bug \U0001F527')" '' '' ''
+add_classify "CJK text is pending" 1 "$CJK_LOGIN_ISSUE" '' '' ''
+add_classify "emoji text is pending" 1 "fix the bug $EMOJI_WRENCH" '' '' ''
 add_classify "multi-line content is pending" 0 "$(printf 'a\nb')" '' '' ''
 add_classify "a multi-line idle match on the second line is empty" 1 "$(printf 'a\n$')" '^\$$' '' ''
 add_classify "raw ESC bytes in content are pending" 1 "${ESC}[2mx" '' '' ''
@@ -505,7 +589,7 @@ add_ghost "real text plus a trailing ghost completion" \
   "$GLYPH_CLAUDE deploy${ESC}[2m the staging environment now${ESC}[0m"
 add_ghost "a multibyte glyph inside a dim run drops whole" "${ESC}[2m$GLYPH_CLAUDE ghost${ESC}[0mX"
 add_ghost "CJK and emoji survive around a dim run" \
-  "${ESC}[2m$(printf '\u4fee\u590d')${ESC}[0m$(printf ' fix \U0001F527')"
+  "${ESC}[2m$CJK_REPAIR${ESC}[0m fix $EMOJI_WRENCH"
 
 # --- Get-FmComposerRealText: the `2` payload selector is not the dim attribute
 add_ghost "8-bit colour payload 2 is kept" "${ESC}[38;5;2mgreen typed${ESC}[0m"
@@ -559,7 +643,7 @@ add_ghost "empty input" ''
 add_ansi "colon-form SGR and a private sequence are stripped whole" \
   "x${ESC}[38:2::1:2:3my${ESC}[0m${ESC}[?25hz"
 add_ansi "ghost text is KEPT (structure, not content)" "$GLYPH_CLAUDE ${ESC}[2mghost${ESC}[0m"
-add_ansi "box-drawing borders are untouched" "$(printf '\u256D\u2500\u2500\u256E')"
+add_ansi "box-drawing borders are untouched" "$BOX_TOP"
 add_ansi "a non-m final byte is stripped too" "a${ESC}[2Kb"
 add_ansi "an incomplete CSI is LEFT ALONE, ESC included" "a${ESC}["
 add_ansi "a lone ESC is LEFT ALONE (unlike the ghost stripper)" "a${ESC}Xb"
@@ -594,7 +678,7 @@ add_idle "a glyph-prefixed placeholder matches an unanchored pattern" \
 add_codepoint "console encoding: PowerShell writes U+276F and U+203A intact" \
   "276F 203A" "$GLYPH_CLAUDE$GLYPH_CODEX"
 add_codepoint "console encoding: the U+2063 operational marker survives too" \
-  "2063 78" "$(printf '\u2063x')"
+  "2063 78" "${MARK_2063}x"
 
 batch_run "default"
 
@@ -633,15 +717,16 @@ unset FM_COMPOSER_GHOST_LUMA_MAX
 # =============================================================================
 # Batch 4 - the SAME whitespace bytes under LC_ALL=C.
 #
-# Every one of these fixtures was built above, in the ambient UTF-8 locale, so
-# only the classifier's locale changes here; rebuilding them under C would
-# change the bytes and prove nothing. bash's [[:space:]] narrows to the six
-# ASCII members, so the verdicts that read 'empty' in batch 1 must flip to
-# 'pending' on BOTH sides. A PowerShell twin that hard-coded either set would
-# pass one batch and fail the other.
+# Every one of these fixtures was built above from FIXED BYTES, so only the
+# classifier's locale changes here; a fixture rebuilt under C would change the
+# bytes and prove nothing. bash's [[:space:]] narrows to the six ASCII members,
+# so the verdicts that read 'empty' in batch 1 must flip to 'pending' on BOTH
+# sides. A PowerShell twin that hard-coded either set would pass one batch and
+# fail the other.
 #
 # LC_ALL is exported so the bash oracle and the pwsh child see the same locale.
-# It is set AFTER every fixture exists, and the ambient value is restored below.
+# The saved value is the UTF-8 locale pinned at the top of this file (or the
+# ambient one when no UTF-8 locale exists), and it is restored below.
 # =============================================================================
 batch_reset
 FM_TEST_SAVED_LC_ALL=${LC_ALL-}
@@ -655,7 +740,7 @@ add_classify "C locale: U+202F NARROW NBSP survives the trim" 1 "$SP_NNBSP" '' '
 add_classify "C locale: U+3000 IDEOGRAPHIC SPACE survives the trim" 1 "$SP_IDEO" '' '' ''
 add_classify "C locale: U+0085 NEL survives the trim" 1 "$SP_NEL" '' '' ''
 add_classify "C locale: ASCII space still trims" 1 '   ' '' '' ''
-add_classify "C locale: ASCII TAB still trims" 1 "$(printf '\t')" '' '' ''
+add_classify "C locale: ASCII TAB still trims" 1 "$TAB" '' '' ''
 add_classify "C locale: claude glyph then NBSP" 0 "$GLYPH_CLAUDE$SP_NBSP" '' '' ''
 add_classify "C locale: claude glyph plus ASCII space still empty" 0 "$GLYPH_CLAUDE " '' '' ''
 add_classify "C locale: the safety rule is unchanged" 0 '>' '' '' ''
@@ -672,12 +757,18 @@ add_classify "POSIX locale: U+3000 IDEOGRAPHIC SPACE survives the trim" 1 "$SP_I
 batch_run "LC_ALL=POSIX"
 
 # An EMPTY LC_ALL falls through to LC_CTYPE, then to LANG - bash's own
-# precedence, measured rather than assumed.
-batch_reset
-export LC_ALL='' LC_CTYPE='en_US.UTF-8'
-add_classify "empty LC_ALL falls through to a UTF-8 LC_CTYPE" 1 "$SP_NBSP" '' '' ''
-batch_run "LC_ALL= LC_CTYPE=en_US.UTF-8"
-unset LC_CTYPE
+# precedence, measured rather than assumed. The LC_CTYPE value is the PROBED
+# UTF-8 name rather than a hard-coded en_US.UTF-8: bash silently degrades an
+# uninstallable locale name to C while the twin matches the NAME (divergence (d)
+# in the module header), so a hard-coded name turns a missing locale into a
+# differential failure that says nothing about the code.
+if [ -n "$FM_TEST_UTF8_LOCALE" ]; then
+  batch_reset
+  export LC_ALL='' LC_CTYPE="$FM_TEST_UTF8_LOCALE"
+  add_classify "empty LC_ALL falls through to a UTF-8 LC_CTYPE" 1 "$SP_NBSP" '' '' ''
+  batch_run "LC_ALL= LC_CTYPE=$FM_TEST_UTF8_LOCALE"
+  unset LC_CTYPE
+fi
 
 if [ -n "$FM_TEST_HAD_LC_ALL" ]; then export LC_ALL="$FM_TEST_SAVED_LC_ALL"; else unset LC_ALL; fi
 

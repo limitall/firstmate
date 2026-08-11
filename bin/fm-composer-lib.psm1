@@ -118,6 +118,25 @@
 #    direction - with anything that pins LC_ALL=C. See Get-FmComposerTrimSet,
 #    whose two sets and precedence were measured against the bash twin.
 #
+#    WHICH SIDE FIRSTMATE'S OWN PROCESSES LAND ON, on this Windows host, is
+#    worth stating because it is not obvious and it decides a safety verdict.
+#    MSYS2 exports nothing: LC_ALL, LC_CTYPE and LANG are all unset unless a
+#    LOGIN shell ran /etc/profile.d/lang.sh, which derives LANG from the Windows
+#    terminal charset (here en_GB.UTF-8). Firstmate's hooks, the watcher and the
+#    supervise daemon are all launched WITHOUT a login shell, so in production
+#    every locale variable is unset, bash uses the six ASCII members, and a row
+#    holding only a non-breaking space classifies as `pending` - leave the pane
+#    alone. This module answers identically there, because unset resolves to the
+#    POSIX set below. Crewmate PANES are the opposite case (the herdr adapter
+#    starts them with `bash --login -i`), but a pane's own locale never reaches
+#    this classifier - the classifier runs in the watcher.
+#
+#    Do NOT "fix" that split by pinning a locale in this module. The bash twin
+#    is the oracle for four adapters and two operating systems; a pin here would
+#    make the two trees disagree on the same pane, which is the exact failure
+#    this owner was created to prevent. If the fleet ever wants the trim to be
+#    locale-independent, that is a change to bin/fm-composer-lib.sh first.
+#
 # KNOWN DIVERGENCES FROM THE BASH ORACLE (deliberate, and not silently
 # normalized away by the differential suite):
 #
@@ -150,6 +169,20 @@
 #      wholly non-numeric value as 0, so nothing is treated as dark. That is the
 #      safe direction the bash comments argue for ("real text wins:
 #      under-stripping merely defers"), and the knob is documented as numeric.
+#
+#   f. A ROW THAT IS NOT VALID UTF-8. Found while re-measuring the trim table
+#      (2026-08). Hand a bash trim a byte that cannot start a character in the
+#      current locale - a lone 0xA0, e.g. from a truncated capture - and the
+#      `[![:space:]]` glob matches nothing, so `%%` strips the WHOLE string and
+#      the row reads 'empty', i.e. safe to inject into. Verified live: byte 0xA0
+#      alone answers 'empty' under C/unset and 'pending' under UTF-8. A .NET
+#      string cannot hold an unpaired byte at all - the case file is decoded as
+#      UTF-8, so the byte arrives as U+FFFD, which is not whitespace - and this
+#      twin answers 'pending', leave the pane alone. The twin is the SAFE side
+#      here, so the divergence is recorded rather than reproduced, and it is not
+#      in the differential suite because the fixture cannot survive the framed
+#      transport (an invalid lead byte eats the record delimiter; the classify
+#      suite documents the same hazard).
 
 #Requires -Version 7.0
 
@@ -239,10 +272,23 @@ $script:FmComposerAllGlyphs = [string[]]($script:FmComposerAgentGlyphs + $script
 #
 # Both sets below were MEASURED against the bash twin on this host with the
 # fixture bytes held fixed and only the classifier's locale varied, rather than
-# assumed from any standard:
+# assumed from any standard. RE-MEASURED 2026-08 (task ps-port-locale), because
+# a suite failure was misread as this table having gone stale; it had not, and
+# the exact matrix is recorded here so the next reader does not have to guess
+# what "measured" covered:
 #
 #   LC_ALL/LC_CTYPE/LANG = C, POSIX, or unset -> the six ASCII members only.
 #   any UTF-8 locale, C.UTF-8 included        -> the Unicode set below.
+#   LC_ALL=C with LANG=<utf-8>                -> the six ASCII members (LC_ALL wins).
+#   LC_ALL='' with LC_CTYPE=<utf-8>           -> the Unicode set (`:-` fallthrough).
+#
+# What actually changed under that failure was the SHELL the differential suite
+# was launched from, not this table. On MSYS2 a NON-LOGIN shell has every locale
+# variable unset while a LOGIN shell has LANG set by /etc/profile.d/lang.sh, and
+# bash's `printf` with a \u escape encodes in the current locale - so the suite
+# was silently building different FIXTURE BYTES in the two shells. The suites now
+# build every non-ASCII fixture from explicit UTF-8 bytes and pin the UTF-8
+# locale they assert under; see the header of tests/fm-composer-lib-psm1.test.sh.
 #
 # The Unicode set is exactly .NET's Char.IsWhiteSpace MINUS U+0085 NEL, which
 # .NET calls whitespace and bash does not. U+200B ZERO WIDTH SPACE and U+FEFF
