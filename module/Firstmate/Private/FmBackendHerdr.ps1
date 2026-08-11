@@ -1426,6 +1426,13 @@ function Test-FmTaskEndpoint {
     if (-not $project) {
         return & $fail "REFUSED: task $TaskId has a missing, empty, or ambiguous project identity; preserving task state."
     }
+    # A tab or carriage return inside an endpoint field is malformed metadata,
+    # not a value to interpret: these fields are compared and re-emitted, and a
+    # stray control character means the record was written by something other
+    # than a spawn. (Embedded newlines cannot survive the line-based read.)
+    if (($window + $worktree + $project) -match "[`t`r]") {
+        return & $fail "REFUSED: task $TaskId has malformed endpoint metadata; preserving task state."
+    }
     $backend = Get-FmMetaBackend -Path $MetaPath
     $binding = Get-FmMetaExactValue -Path $MetaPath -Key 'endpoint_task_id'
     if ($binding -and $binding -ne $TaskId) {

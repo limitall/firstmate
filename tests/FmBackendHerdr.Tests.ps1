@@ -579,6 +579,13 @@ Describe 'task metadata' {
             Should -Match 'does not implement'
     }
 
+    It 'refuses an endpoint field carrying a stray control character' {
+        (Get-Content -LiteralPath $script:meta) -replace '^project=.*', "project=/proj`tinjected" |
+            Set-Content -LiteralPath $script:meta
+        (Test-FmTaskEndpoint -MetaPath $script:meta -TaskId 'alpha').Reason |
+            Should -Match 'malformed endpoint metadata'
+    }
+
     It 'refuses a missing record without touching task state' {
         (Test-FmTaskEndpoint -MetaPath (Join-Path $TestDrive 'nope.meta') -TaskId 'alpha').Reason |
             Should -Match 'preserving task state'
