@@ -19,7 +19,7 @@ function Invoke-FmNoMistakes {
         [Parameter(Mandatory)][string[]]$Arguments
     )
     if (-not (Get-Command -Name 'no-mistakes' -CommandType Application -ErrorAction SilentlyContinue)) { return '' }
-    $result = Invoke-FmLifecycleProcess -FilePath 'no-mistakes' -Arguments $Arguments -WorkingDirectory $WorktreePath -TimeoutSeconds $TimeoutSeconds
+    $result = Invoke-FmChildProcess -FilePath 'no-mistakes' -ArgumentList $Arguments -WorkingDirectory $WorktreePath -TimeoutSeconds $TimeoutSeconds
     if ($result.TimedOut -or $result.ExitCode -ne 0) { return '' }
     return $result.StdOut
 }
@@ -72,12 +72,12 @@ function Test-FmNmHeadMatchesWorktree {
         [Parameter(Mandatory)][AllowEmptyString()][string]$RunHead
     )
     if (-not $RunHead) { return $false }
-    $localFull = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $WorktreePath 'rev-parse' 'HEAD')
+    $localFull = Get-FmGitFirstLine (Invoke-FmGit -Directory $WorktreePath -Arguments @('rev-parse', 'HEAD'))
     if (-not $localFull) { return $false }
-    $runFull = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $WorktreePath 'rev-parse' '--verify' "$RunHead^{commit}")
+    $runFull = Get-FmGitFirstLine (Invoke-FmGit -Directory $WorktreePath -Arguments @('rev-parse', '--verify', "$RunHead^{commit}"))
     if (-not $runFull) { return $false }
     if ($runFull -eq $localFull) { return $true }
-    return (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath 'merge-base' '--is-ancestor' $localFull $runFull))
+    return ((Invoke-FmGit -Directory $WorktreePath -Arguments @('merge-base', '--is-ancestor', $localFull, $runFull)).Ok)
 }
 
 # Map a status-log verb onto a canonical state for the fallback path. `paused`

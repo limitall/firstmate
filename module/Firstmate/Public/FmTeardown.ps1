@@ -65,7 +65,7 @@ function Test-FmTeardownSafety {
         return $false
     }
 
-    $status = Invoke-FmGit -RepoPath $WorktreePath 'status' '--porcelain'
+    $status = Invoke-FmGit -Directory $WorktreePath -Arguments @('status', '--porcelain')
     if ($status.ExitCode -ne 0) {
         if (& $blockedByLock 'uncommitted changes') {
             return [pscustomobject]@{ Code = $script:FmTeardownSafetyLockBlocked; Messages = @($messages) }
@@ -84,7 +84,7 @@ function Test-FmTeardownSafety {
         break
     }
 
-    $unpushedResult = Invoke-FmGit -RepoPath $WorktreePath 'log' '--oneline' 'HEAD' '--not' '--remotes' '--'
+    $unpushedResult = Invoke-FmGit -Directory $WorktreePath -Arguments @('log', '--oneline', 'HEAD', '--not', '--remotes', '--')
     if ($unpushedResult.ExitCode -ne 0) {
         if (& $blockedByLock 'commits not on a remote') {
             return [pscustomobject]@{ Code = $script:FmTeardownSafetyLockBlocked; Messages = @($messages) }
@@ -96,12 +96,12 @@ function Test-FmTeardownSafety {
     $unpushed = @(($unpushedResult.StdOut -replace "`r`n", "`n").Split("`n") | Where-Object { $_ -ne '' } | Select-Object -First 5)
 
     if ($unpushed.Count -gt 0 -and $Mode -eq 'local-only') {
-        $default = Get-FmLifecycleDefaultBranch -RepoPath $ProjectPath
+        $default = Get-FmGitDefaultBranch -Directory $ProjectPath
         if (-not $default) {
             Refuse "REFUSED: cannot determine default branch for $ProjectPath; expected origin/HEAD, main, or master."
             return [pscustomobject]@{ Code = 1; Messages = @($messages) }
         }
-        $unmergedResult = Invoke-FmGit -RepoPath $WorktreePath 'log' '--oneline' 'HEAD' '--not' $default '--'
+        $unmergedResult = Invoke-FmGit -Directory $WorktreePath -Arguments @('log', '--oneline', 'HEAD', '--not', $default, '--')
         if ($unmergedResult.ExitCode -ne 0) {
             if (& $blockedByLock "commits not on $default") {
                 return [pscustomobject]@{ Code = $script:FmTeardownSafetyLockBlocked; Messages = @($messages) }
@@ -124,7 +124,7 @@ function Test-FmTeardownSafety {
         Refuse 'Commit them (or get the captain''s explicit OK to discard, then --force).'
         return [pscustomobject]@{ Code = 1; Messages = @($messages) }
     } elseif ($unpushed.Count -gt 0) {
-        $branch = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $WorktreePath 'rev-parse' '--abbrev-ref' 'HEAD')
+        $branch = Get-FmGitFirstLine (Invoke-FmGit -Directory $WorktreePath -Arguments @('rev-parse', '--abbrev-ref', 'HEAD'))
         if (-not $branch) { $branch = 'HEAD' }
         if (-not (Test-FmWorkIsLanded -WorktreePath $WorktreePath -ProjectPath $ProjectPath -Branch $branch -PrUrl $PrUrl)) {
             Refuse "REFUSED: worktree $WorktreePath has work not on any remote and not landed."
@@ -160,7 +160,7 @@ function Invoke-FmTeardownWorktreeReturn {
     $ageSecs = Get-FmTeardownStaleLockAgeSeconds
 
     $run = {
-        $result = Invoke-FmLifecycleProcess -FilePath 'treehouse' -Arguments @('return', '--force', $WorktreePath) -WorkingDirectory $WorkingDirectory
+        $result = Invoke-FmChildProcess -FilePath 'treehouse' -ArgumentList @('return', '--force', $WorktreePath) -WorkingDirectory $WorkingDirectory
         $text = (($result.StdOut + $result.StdErr) -replace "`r`n", "`n").Trim("`n")
         [pscustomobject]@{ ExitCode = $result.ExitCode; Text = $text }
     }
@@ -265,23 +265,23 @@ function Invoke-FmTeardown {
             return (Fail 1 "error: no meta for task $Id at $meta")
         }
 
-        $kind = Get-FmLifecycleMetaValue -Path $meta -Key 'kind'
+        $kind = Get-FmMetaValue -Path $meta -Key 'kind'
         if (-not $kind) { $kind = 'ship' }
-        $mode = Get-FmLifecycleMetaValue -Path $meta -Key 'mode'
+        $mode = Get-FmMetaValue -Path $meta -Key 'mode'
         if (-not $mode) { $mode = 'no-mistakes' }
-        $backend = Get-FmLifecycleMetaValue -Path $meta -Key 'backend'
+        $backend = Get-FmMetaValue -Path $meta -Key 'backend'
         if (-not $backend) { $backend = 'tmux' }
-        $worktree = Get-FmLifecycleMetaValue -Path $meta -Key 'worktree'
-        $project = Get-FmLifecycleMetaValue -Path $meta -Key 'project'
-        $prUrl = Get-FmLifecycleMetaValue -Path $meta -Key 'pr'
-        $taskTmp = Get-FmLifecycleMetaValue -Path $meta -Key 'tasktmp'
-        $target = Get-FmLifecycleMetaValue -Path $meta -Key 'window'
-        if (-not $target) { $target = Get-FmLifecycleMetaValue -Path $meta -Key 'terminal' }
+        $worktree = Get-FmMetaValue -Path $meta -Key 'worktree'
+        $project = Get-FmMetaValue -Path $meta -Key 'project'
+        $prUrl = Get-FmMetaValue -Path $meta -Key 'pr'
+        $taskTmp = Get-FmMetaValue -Path $meta -Key 'tasktmp'
+        $target = Get-FmMetaValue -Path $meta -Key 'window'
+        if (-not $target) { $target = Get-FmMetaValue -Path $meta -Key 'terminal' }
 
         # Fail closed on every task shape whose destructive machinery is not in
         # this module: refusing preserves the work and the records for a rerun
         # under the POSIX firstmate, while a partial teardown would not.
-        if (Get-FmLifecycleMetaValue -Path $meta -Key 'remote_host') {
+        if (Get-FmMetaValue -Path $meta -Key 'remote_host') {
             return (Fail 1 "REFUSED: task $Id is a remote-placed secondmate; its retirement is not part of the Windows lifecycle module. Retire it from the home that owns its route.")
         }
         if ($kind -eq 'secondmate') {
@@ -348,11 +348,11 @@ function Invoke-FmTeardown {
             if (-not (Get-Command -Name 'treehouse' -CommandType Application -ErrorAction SilentlyContinue)) {
                 return (Fail 1 "error: treehouse is not available; worktree $worktree was left in place and no task record was removed")
             }
-            $branch = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $worktree 'rev-parse' '--abbrev-ref' 'HEAD')
+            $branch = Get-FmGitFirstLine (Invoke-FmGit -Directory $worktree -Arguments @('rev-parse', '--abbrev-ref', 'HEAD'))
             if ($branch -and $branch -ne 'HEAD') {
-                if (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $worktree -Arguments @('checkout', '--detach', '-q'))) {
+                if ((Invoke-FmGit -Directory $worktree -Arguments @('checkout', '--detach', '-q')).Ok) {
                     # -Arguments explicitly: a bare -D would bind to the -Debug common parameter.
-                    [void](Invoke-FmGit -RepoPath $worktree -Arguments @('branch', '-D', $branch))
+                    [void](Invoke-FmGit -Directory $worktree -Arguments @('branch', '-D', $branch))
                 }
             }
             # Drop our hook files so a reused pool worktree cannot fire signals

@@ -49,14 +49,14 @@ function Get-FmCrewState {
 
     if (-not (Test-Path -LiteralPath $meta -PathType Leaf)) { return (& $emit 'unknown' 'none' "no metadata for $Id") }
 
-    $worktree = Get-FmLifecycleMetaValue -Path $meta -Key 'worktree'
-    $kind = Get-FmLifecycleMetaValue -Path $meta -Key 'kind'
+    $worktree = Get-FmMetaValue -Path $meta -Key 'worktree'
+    $kind = Get-FmMetaValue -Path $meta -Key 'kind'
     if (-not $kind) { $kind = 'ship' }
-    $harness = Get-FmLifecycleMetaValue -Path $meta -Key 'harness'
-    $backend = Get-FmLifecycleMetaValue -Path $meta -Key 'backend'
+    $harness = Get-FmMetaValue -Path $meta -Key 'harness'
+    $backend = Get-FmMetaValue -Path $meta -Key 'backend'
     if (-not $backend) { $backend = 'tmux' }
-    $target = Get-FmLifecycleMetaValue -Path $meta -Key 'window'
-    if (-not $target) { $target = Get-FmLifecycleMetaValue -Path $meta -Key 'terminal' }
+    $target = Get-FmMetaValue -Path $meta -Key 'window'
+    if (-not $target) { $target = Get-FmMetaValue -Path $meta -Key 'terminal' }
 
     # A torn-down (or never-created) worktree has no current state to read.
     if (-not $worktree -or -not (Test-Path -LiteralPath $worktree -PathType Container)) {
@@ -69,7 +69,7 @@ function Get-FmCrewState {
     # --- no-mistakes run lookup (authoritative when a run matches this branch)
     # A detached HEAD (a just-spawned crew, or a scout's scratch worktree) has no
     # branch, so there is no run to attribute to this crew.
-    $crewBranch = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $worktree 'symbolic-ref' '--quiet' '--short' 'HEAD')
+    $crewBranch = Get-FmGitFirstLine (Invoke-FmGit -Directory $worktree -Arguments @('symbolic-ref', '--quiet', '--short', 'HEAD'))
     $haveRun = $false
     $runSource = 'full'
     $coarseStatus = ''

@@ -36,8 +36,8 @@ function Invoke-FmMergeLocal {
         return (Fail "error: no meta for task $Id at $meta")
     }
 
-    $project = Get-FmLifecycleMetaValue -Path $meta -Key 'project'
-    $mode = Get-FmLifecycleMetaValue -Path $meta -Key 'mode'
+    $project = Get-FmMetaValue -Path $meta -Key 'project'
+    $mode = Get-FmMetaValue -Path $meta -Key 'mode'
     if ($mode -ne 'local-only') {
         return (Fail "error: task $Id is mode=$mode, not local-only; merge PR tasks with the PR merge path after approval")
     }
@@ -46,11 +46,11 @@ function Invoke-FmMergeLocal {
     }
 
     $branch = "fm/$Id"
-    if (-not (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $project 'rev-parse' '--verify' '--quiet' "refs/heads/$branch"))) {
+    if (-not ((Invoke-FmGit -Directory $project -Arguments @('rev-parse', '--verify', '--quiet', "refs/heads/$branch")).Ok)) {
         return (Fail "error: branch $branch does not exist in $project")
     }
 
-    $default = Get-FmLifecycleDefaultBranch -RepoPath $project
+    $default = Get-FmGitDefaultBranch -Directory $project
     if (-not $default) {
         return (Fail "error: cannot determine default branch for $project; expected origin/HEAD, main, or master")
     }
@@ -67,14 +67,14 @@ function Invoke-FmMergeLocal {
         return [pscustomobject]@{ ExitCode = 0; Messages = @($messages) }
     }
 
-    $before = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $project 'rev-parse' '--short' $default)
-    $merge = Invoke-FmGit -RepoPath $project 'merge' '--ff-only' $branch
+    $before = Get-FmGitFirstLine (Invoke-FmGit -Directory $project -Arguments @('rev-parse', '--short', $default))
+    $merge = Invoke-FmGit -Directory $project -Arguments @('merge', '--ff-only', $branch)
     if ($merge.ExitCode -ne 0) {
         $detail = (($merge.StdErr + $merge.StdOut) -replace "`r`n", "`n").Trim("`n")
         if ($detail) { [void](Fail $detail) }
         return (Fail "error: fast-forward merge of $branch into $default failed in $project")
     }
-    $after = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $project 'rev-parse' '--short' $default)
+    $after = Get-FmGitFirstLine (Invoke-FmGit -Directory $project -Arguments @('rev-parse', '--short', $default))
 
     $line = "merged $branch into local $default ($before -> $after) in $project"
     $messages.Add($line)

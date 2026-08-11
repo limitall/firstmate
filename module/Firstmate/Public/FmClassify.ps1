@@ -326,8 +326,8 @@ function Convert-FmWindowToTask {
     )
     if ($StatePath -and (Test-Path -LiteralPath $StatePath -PathType Container)) {
         foreach ($meta in (Get-ChildItem -LiteralPath $StatePath -Filter '*.meta' -File -Force -ErrorAction SilentlyContinue | Sort-Object Name)) {
-            $recordedWindow = Get-FmLifecycleMetaValue -Path $meta.FullName -Key 'window'
-            $recordedTerminal = Get-FmLifecycleMetaValue -Path $meta.FullName -Key 'terminal'
+            $recordedWindow = Get-FmMetaValue -Path $meta.FullName -Key 'window'
+            $recordedTerminal = Get-FmMetaValue -Path $meta.FullName -Key 'terminal'
             if ($recordedWindow -eq $Window -or $recordedTerminal -eq $Window) {
                 return $meta.Name.Substring(0, $meta.Name.Length - '.meta'.Length)
             }

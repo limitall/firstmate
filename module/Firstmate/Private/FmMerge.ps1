@@ -20,14 +20,14 @@ function Test-FmMergeProjectCheckoutReady {
         [Parameter(Mandatory)][string]$ProjectPath,
         [Parameter(Mandatory)][string]$DefaultBranch
     )
-    $current = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $ProjectPath 'symbolic-ref' '--short' 'HEAD')
+    $current = Get-FmGitFirstLine (Invoke-FmGit -Directory $ProjectPath -Arguments @('symbolic-ref', '--short', 'HEAD'))
     if ($current -ne $DefaultBranch) {
         return [pscustomobject]@{
             Ready  = $false
             Reason = "error: $ProjectPath is on '$current', expected default branch '$DefaultBranch'; cannot merge safely"
         }
     }
-    $status = Invoke-FmGit -RepoPath $ProjectPath 'status' '--porcelain'
+    $status = Invoke-FmGit -Directory $ProjectPath -Arguments @('status', '--porcelain')
     if ($status.ExitCode -ne 0) {
         return [pscustomobject]@{
             Ready  = $false
@@ -54,5 +54,5 @@ function Test-FmMergeIsFastForward {
         [Parameter(Mandatory)][string]$DefaultBranch,
         [Parameter(Mandatory)][string]$Branch
     )
-    return (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $ProjectPath 'merge-base' '--is-ancestor' $DefaultBranch $Branch))
+    return ((Invoke-FmGit -Directory $ProjectPath -Arguments @('merge-base', '--is-ancestor', $DefaultBranch, $Branch)).Ok)
 }

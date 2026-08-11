@@ -7,9 +7,11 @@
 # artifact depends on.
 #
 # Nothing here shells out to a POSIX tool. Git and the CLIs firstmate already
-# depends on (treehouse, gh, no-mistakes) are invoked through
-# Invoke-FmLifecycleProcess, which keeps stdout and stderr separate so a
-# refusal can quote the exact stderr the bash scripts quoted.
+# depends on (treehouse, gh, no-mistakes) run through the module's shared
+# Invoke-FmChildProcess / Invoke-FmGit, which keep stdout and stderr separate so
+# a refusal can quote the exact stderr the bash scripts quoted. The LF-only text
+# writer and the `fm_meta_get` reader are likewise the module's shared
+# Write-FmTextFileLf and Get-FmMetaValue rather than copies.
 
 Set-StrictMode -Version Latest
 
@@ -64,7 +66,7 @@ function Get-FmLifecyclePaths {
 
 # Read a text file as lines without inventing a trailing empty line, tolerating
 # CRLF so a file written by a Windows editor still parses. Firstmate's own
-# writes stay LF-only (Write-FmLifecycleText).
+# writes stay LF-only (Write-FmTextFileLf).
 function Get-FmLifecycleFileLines {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
@@ -75,35 +77,6 @@ function Get-FmLifecycleFileLines {
     $lines = $text.Split("`n")
     if ($lines[-1] -eq '') { $lines = $lines[0..($lines.Count - 2)] }
     return , [string[]]$lines
-}
-
-# Every firstmate artifact is LF-terminated UTF-8 without a BOM, on every
-# platform: a Linux firstmate and this one read each other's files.
-function Write-FmLifecycleText {
-    [CmdletBinding(SupportsShouldProcess)]
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][AllowEmptyString()][string]$Text
-    )
-    if (-not $PSCmdlet.ShouldProcess($Path, 'write')) { return }
-    $normalized = $Text -replace "`r`n", "`n"
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($Path, $normalized, $utf8NoBom)
-}
-
-# fm_meta_get (bin/fm-backend.sh): the LAST value of `key=` in a meta file, or
-# empty when the file or key is absent. Never throws.
-function Get-FmLifecycleMetaValue {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][AllowEmptyString()][string]$Path,
-        [Parameter(Mandatory)][string]$Key
-    )
-    $value = ''
-    foreach ($line in (Get-FmLifecycleFileLines -Path $Path)) {
-        if ($line.StartsWith("$Key=")) { $value = $line.Substring($Key.Length + 1) }
-    }
-    return $value
 }
 
 # fm_task_id_path_safe: a task id is a single path component, never a traversal.
@@ -117,73 +90,14 @@ function Test-FmLifecycleTaskIdPathSafe {
     return $true
 }
 
-# Run a native command with stdout and stderr kept apart. PowerShell's operator
-# redirection folds native stderr into the error stream, which loses the exact
-# text a refusal has to quote, so the lifecycle area uses Process directly.
-function Invoke-FmLifecycleProcess {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$FilePath,
-        [string[]]$Arguments = @(),
-        [string]$WorkingDirectory,
-        [int]$TimeoutSeconds = 0
-    )
-    $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = $FilePath
-    foreach ($a in $Arguments) { $psi.ArgumentList.Add($a) }
-    if ($WorkingDirectory) { $psi.WorkingDirectory = $WorkingDirectory }
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.UseShellExecute = $false
-
-    $proc = $null
-    try {
-        $proc = [System.Diagnostics.Process]::Start($psi)
-    } catch {
-        return [pscustomobject]@{ ExitCode = 127; StdOut = ''; StdErr = "$($_.Exception.Message)"; TimedOut = $false }
-    }
-    $outTask = $proc.StandardOutput.ReadToEndAsync()
-    $errTask = $proc.StandardError.ReadToEndAsync()
-    $timedOut = $false
-    if ($TimeoutSeconds -gt 0) {
-        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
-            $timedOut = $true
-            try { $proc.Kill($true) } catch { }
-        }
-    }
-    $proc.WaitForExit()
-    $stdout = $outTask.GetAwaiter().GetResult()
-    $stderr = $errTask.GetAwaiter().GetResult()
-    [pscustomobject]@{
-        ExitCode = $proc.ExitCode
-        StdOut   = $stdout
-        StdErr   = $stderr
-        TimedOut = $timedOut
-    }
-}
-
-# `git -C <dir> ...`, the one shape every lifecycle git read uses.
-function Invoke-FmGit {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][AllowEmptyString()][string]$RepoPath,
-        [Parameter(Mandatory, ValueFromRemainingArguments)][string[]]$Arguments
-    )
-    $argv = @('-C', $RepoPath) + $Arguments
-    return Invoke-FmLifecycleProcess -FilePath 'git' -Arguments $argv
-}
-
-function Test-FmGitSucceeded {
+# First line of a git read, or '' - the `$(git ...)` idiom. Distinct from the
+# shared Get-FmGitOutput, which returns the whole trimmed output: the lifecycle
+# reads that use this are single-value (`rev-parse`, `symbolic-ref`) or must take
+# only the first line the way the bash `| head -1` does.
+function Get-FmGitFirstLine {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Result)
-    return ($Result.ExitCode -eq 0)
-}
-
-# Trimmed first line of a git read, or '' - the `$(git ...)` idiom.
-function Get-FmGitOutputLine {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)]$Result)
-    if ($Result.ExitCode -ne 0) { return '' }
+    if (-not $Result.Ok) { return '' }
     $out = $Result.StdOut -replace "`r`n", "`n"
     $out = $out.Trim("`n")
     if ($out -eq '') { return '' }

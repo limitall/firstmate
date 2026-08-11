@@ -113,8 +113,12 @@ than piping.
 
 ## Platform notes
 
-- Every generated artifact is written LF-only UTF-8 without a BOM, on every
-  platform, so a Linux firstmate and this one read each other's files. Brief
+- Every generated artifact is written LF-only UTF-8 without a BOM through the
+  module's shared `Write-FmTextFileLf`, so a Linux firstmate and this one read
+  each other's files. Git and CLI calls go through the shared
+  `Invoke-FmGit`/`Invoke-FmChildProcess`, and meta reads through
+  `Get-FmMetaValue`; this area keeps only `Get-FmGitFirstLine`, which takes the
+  first line the way the bash `| head -1` does. Brief
   output is verified byte-identical to the bash scaffolder across all eight
   generated variants; the fixtures in `tests/fixtures/brief/` were captured from
   `bin/fm-brief.sh` itself.

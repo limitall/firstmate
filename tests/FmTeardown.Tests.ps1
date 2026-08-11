@@ -151,7 +151,7 @@ Describe 'Test-FmTeardownSafety - the landed-work test' {
             $lock = Get-FmTeardownWorktreeLockPath -Path $script:Repo.Worktree
             $lock | Should -Not -BeNullOrEmpty
             [System.IO.File]::WriteAllText((Join-Path $script:Repo.Worktree '.git'), (Get-Content -Raw -LiteralPath (Join-Path $script:Repo.Worktree '.git')))
-            $indexPath = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $script:Repo.Worktree 'rev-parse' '--git-path' 'index')
+            $indexPath = Get-FmGitFirstLine (Invoke-FmGit -Directory $script:Repo.Worktree -Arguments @('rev-parse', '--git-path', 'index'))
             [System.IO.File]::WriteAllText($indexPath, 'not an index')
             [System.IO.File]::WriteAllText($lock, '')
             $result = Test-FmTeardownSafety -WorktreePath $script:Repo.Worktree -ProjectPath $script:Repo.Project
@@ -379,8 +379,8 @@ Describe 'git invocation' {
         # parameter and never reaches git, which would silently leave the task
         # branch behind at teardown.
         Invoke-FmTestGit -RepoPath $script:Repo.Project branch 'side' | Out-Null
-        (Invoke-FmGit -RepoPath $script:Repo.Project -Arguments @('branch', '-D', 'side')).ExitCode | Should -Be 0
-        (Invoke-FmGit -RepoPath $script:Repo.Project -Arguments @('rev-parse', '--verify', '--quiet', 'refs/heads/side')).ExitCode | Should -Not -Be 0
+        (Invoke-FmGit -Directory $script:Repo.Project -Arguments @('branch', '-D', 'side')).ExitCode | Should -Be 0
+        (Invoke-FmGit -Directory $script:Repo.Project -Arguments @('rev-parse', '--verify', '--quiet', 'refs/heads/side')).ExitCode | Should -Not -Be 0
     }
 
     It 'confirms a commit object that is already present, and rejects one that is not' {

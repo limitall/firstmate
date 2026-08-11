@@ -55,21 +55,6 @@ function Get-FmTeardownLockRetryWaitSeconds {
     return 1
 }
 
-# The project's default branch: origin/HEAD when it is set, else main, else
-# master. Returns '' when none can be determined - the caller then refuses.
-function Get-FmLifecycleDefaultBranch {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][AllowEmptyString()][string]$RepoPath)
-    if (-not $RepoPath) { return '' }
-    $ref = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $RepoPath 'symbolic-ref' '--quiet' '--short' 'refs/remotes/origin/HEAD')
-    if ($ref) { return ($ref -replace '^origin/', '') }
-    foreach ($branch in @('main', 'master')) {
-        $result = Invoke-FmGit -RepoPath $RepoPath 'show-ref' '--verify' '--quiet' "refs/heads/$branch"
-        if (Test-FmGitSucceeded $result) { return $branch }
-    }
-    return ''
-}
-
 # Resolve a PR number for a worktree branch through gh-axi. Any failure means
 # "no PR found" (fail-safe: the caller falls through to the content check).
 function Get-FmTeardownPrNumberFromBranch {
@@ -79,7 +64,7 @@ function Get-FmTeardownPrNumberFromBranch {
         [Parameter(Mandatory)][AllowEmptyString()][string]$Branch
     )
     if (-not $Branch -or $Branch -eq 'HEAD') { return '' }
-    $result = Invoke-FmLifecycleProcess -FilePath 'gh-axi' -Arguments @('pr', 'list', '--state', 'all', '--head', $Branch, '--limit', '1') -WorkingDirectory $WorktreePath
+    $result = Invoke-FmChildProcess -FilePath 'gh-axi' -ArgumentList @('pr', 'list', '--state', 'all', '--head', $Branch, '--limit', '1') -WorkingDirectory $WorktreePath
     if ($result.ExitCode -ne 0) { return '' }
     foreach ($line in ($result.StdOut -replace "`r`n", "`n").Split("`n")) {
         if ($line -match '^\s*([0-9]+),') { return $Matches[1] }
@@ -108,12 +93,12 @@ function Confirm-FmTeardownCommitObject {
     )
     # -Arguments explicitly: a bare -e is an ambiguous prefix of the -ErrorAction
     # and -ErrorVariable common parameters and would fail to bind.
-    if (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath -Arguments @('cat-file', '-e', "$Commit^{commit}"))) { return $true }
+    if ((Invoke-FmGit -Directory $WorktreePath -Arguments @('cat-file', '-e', "$Commit^{commit}")).Ok) { return $true }
     $number = Get-FmTeardownPrNumberFromTarget -Target $Target
     if (-not $number) { return $false }
-    if (-not (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath 'remote' 'get-url' 'origin'))) { return $false }
-    if (-not (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath 'fetch' '--quiet' 'origin' "refs/pull/$number/head"))) { return $false }
-    return (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath -Arguments @('cat-file', '-e', "$Commit^{commit}")))
+    if (-not ((Invoke-FmGit -Directory $WorktreePath -Arguments @('remote', 'get-url', 'origin')).Ok)) { return $false }
+    if (-not ((Invoke-FmGit -Directory $WorktreePath -Arguments @('fetch', '--quiet', 'origin', "refs/pull/$number/head")).Ok)) { return $false }
+    return ((Invoke-FmGit -Directory $WorktreePath -Arguments @('cat-file', '-e', "$Commit^{commit}")).Ok)
 }
 
 function Get-FmTeardownPatchId {
@@ -122,7 +107,7 @@ function Get-FmTeardownPatchId {
         [Parameter(Mandatory)][string]$WorktreePath,
         [Parameter(Mandatory)][string]$Commit
     )
-    $show = Invoke-FmGit -RepoPath $WorktreePath 'show' '--pretty=medium' '--no-ext-diff' $Commit
+    $show = Invoke-FmGit -Directory $WorktreePath -Arguments @('show', '--pretty=medium', '--no-ext-diff', $Commit)
     if ($show.ExitCode -ne 0) { return '' }
     # `git patch-id` reads the diff on stdin; run it with the show output piped in.
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
@@ -160,14 +145,14 @@ function Test-FmTeardownUnpushedPatchesInPrHead {
         [Parameter(Mandatory)][string]$WorktreePath,
         [Parameter(Mandatory)][string]$PrHead
     )
-    $current = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $WorktreePath 'rev-parse' '--verify' 'HEAD')
+    $current = Get-FmGitFirstLine (Invoke-FmGit -Directory $WorktreePath -Arguments @('rev-parse', '--verify', 'HEAD'))
     if (-not $current) { return $false }
-    $baseResult = Invoke-FmGit -RepoPath $WorktreePath 'merge-base' $current $PrHead
+    $baseResult = Invoke-FmGit -Directory $WorktreePath -Arguments @('merge-base', $current, $PrHead)
     if ($baseResult.ExitCode -ne 0) { return $false }
-    $base = Get-FmGitOutputLine $baseResult
+    $base = Get-FmGitFirstLine $baseResult
     if (-not $base) { return $false }
 
-    $prCommits = Invoke-FmGit -RepoPath $WorktreePath 'log' '--format=%H' "$base..$PrHead" '--'
+    $prCommits = Invoke-FmGit -Directory $WorktreePath -Arguments @('log', '--format=%H', "$base..$PrHead", '--')
     if ($prCommits.ExitCode -ne 0) { return $false }
     $prPatchIds = [System.Collections.Generic.HashSet[string]]::new()
     foreach ($commit in ($prCommits.StdOut -replace "`r`n", "`n").Split("`n")) {
@@ -177,7 +162,7 @@ function Test-FmTeardownUnpushedPatchesInPrHead {
     }
     if ($prPatchIds.Count -eq 0) { return $false }
 
-    $unpushed = Invoke-FmGit -RepoPath $WorktreePath 'log' '--format=%H' 'HEAD' '--not' '--remotes' '--'
+    $unpushed = Invoke-FmGit -Directory $WorktreePath -Arguments @('log', '--format=%H', 'HEAD', '--not', '--remotes', '--')
     if ($unpushed.ExitCode -ne 0) { return $false }
     $unpushedCommits = @(($unpushed.StdOut -replace "`r`n", "`n").Split("`n") | Where-Object { $_.Trim() -ne '' })
     if ($unpushedCommits.Count -eq 0) { return $false }
@@ -204,7 +189,7 @@ function Test-FmTeardownPrIsMerged {
     )
     $target = if ($PrUrl) { $PrUrl } else { Get-FmTeardownPrNumberFromBranch -WorktreePath $WorktreePath -Branch $Branch }
     if (-not $target) { return $false }
-    $view = Invoke-FmLifecycleProcess -FilePath 'gh' -Arguments @('pr', 'view', $target, '--json', 'state,headRefOid', '-q', '.state + "\t" + .headRefOid') -WorkingDirectory $WorktreePath
+    $view = Invoke-FmChildProcess -FilePath 'gh' -ArgumentList @('pr', 'view', $target, '--json', 'state,headRefOid', '-q', '.state + "\t" + .headRefOid') -WorkingDirectory $WorktreePath
     if ($view.ExitCode -ne 0) { return $false }
     $line = ($view.StdOut -replace "`r`n", "`n").Trim("`n")
     if ($line -eq '') { return $false }
@@ -216,9 +201,9 @@ function Test-FmTeardownPrIsMerged {
     if ($state -ne 'MERGED' -and $state -ne 'merged') { return $false }
     if (-not $head) { return $false }
     if (-not (Confirm-FmTeardownCommitObject -WorktreePath $WorktreePath -Target $target -Commit $head)) { return $false }
-    $current = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $WorktreePath 'rev-parse' '--verify' 'HEAD')
+    $current = Get-FmGitFirstLine (Invoke-FmGit -Directory $WorktreePath -Arguments @('rev-parse', '--verify', 'HEAD'))
     if (-not $current) { return $false }
-    if (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath 'merge-base' '--is-ancestor' $current $head)) { return $true }
+    if ((Invoke-FmGit -Directory $WorktreePath -Arguments @('merge-base', '--is-ancestor', $current, $head)).Ok) { return $true }
     return (Test-FmTeardownUnpushedPatchesInPrHead -WorktreePath $WorktreePath -PrHead $head)
 }
 
@@ -235,22 +220,22 @@ function Test-FmTeardownContentInDefault {
         [Parameter(Mandatory)][string]$WorktreePath,
         [Parameter(Mandatory)][AllowEmptyString()][string]$ProjectPath
     )
-    $name = Get-FmLifecycleDefaultBranch -RepoPath $ProjectPath
+    $name = Get-FmGitDefaultBranch -Directory $ProjectPath
     if (-not $name) { return $false }
     $ref = ''
-    if (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath 'remote' 'get-url' 'origin')) {
-        if (-not (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath 'fetch' '--quiet' 'origin' "+refs/heads/${name}:refs/remotes/origin/$name"))) { return $false }
+    if ((Invoke-FmGit -Directory $WorktreePath -Arguments @('remote', 'get-url', 'origin')).Ok) {
+        if (-not ((Invoke-FmGit -Directory $WorktreePath -Arguments @('fetch', '--quiet', 'origin', "+refs/heads/${name}:refs/remotes/origin/$name")).Ok)) { return $false }
         $ref = "refs/remotes/origin/$name"
-    } elseif (Test-FmGitSucceeded (Invoke-FmGit -RepoPath $WorktreePath 'rev-parse' '--quiet' '--verify' "refs/heads/$name")) {
+    } elseif ((Invoke-FmGit -Directory $WorktreePath -Arguments @('rev-parse', '--quiet', '--verify', "refs/heads/$name")).Ok) {
         $ref = "refs/heads/$name"
     } else {
         return $false
     }
-    $defaultTree = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $WorktreePath 'rev-parse' '--quiet' '--verify' "$ref^{tree}")
+    $defaultTree = Get-FmGitFirstLine (Invoke-FmGit -Directory $WorktreePath -Arguments @('rev-parse', '--quiet', '--verify', "$ref^{tree}"))
     if (-not $defaultTree) { return $false }
-    $mergeResult = Invoke-FmGit -RepoPath $WorktreePath 'merge-tree' '--write-tree' $ref 'HEAD'
+    $mergeResult = Invoke-FmGit -Directory $WorktreePath -Arguments @('merge-tree', '--write-tree', $ref, 'HEAD')
     if ($mergeResult.ExitCode -ne 0) { return $false }
-    $mergedTree = Get-FmGitOutputLine $mergeResult
+    $mergedTree = Get-FmGitFirstLine $mergeResult
     if (-not $mergedTree) { return $false }
     return ($mergedTree -eq $defaultTree)
 }
@@ -283,7 +268,7 @@ function Get-FmTeardownWorktreeLockPath {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Container)) { return '' }
-    $lock = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $Path 'rev-parse' '--git-path' 'index.lock')
+    $lock = Get-FmGitFirstLine (Invoke-FmGit -Directory $Path -Arguments @('rev-parse', '--git-path', 'index.lock'))
     if (-not $lock) { return '' }
     if ([System.IO.Path]::IsPathRooted($lock)) { return $lock }
     return (Join-Path (Resolve-Path -LiteralPath $Path).ProviderPath $lock)
@@ -439,7 +424,7 @@ function Get-FmTaskParkedRunId {
         [Parameter(Mandatory)][AllowEmptyString()][string]$StatusOutput
     )
     if (-not $StatusOutput) { return '' }
-    $branch = Get-FmGitOutputLine (Invoke-FmGit -RepoPath $WorktreePath 'symbolic-ref' '--quiet' '--short' 'HEAD')
+    $branch = Get-FmGitFirstLine (Invoke-FmGit -Directory $WorktreePath -Arguments @('symbolic-ref', '--quiet', '--short', 'HEAD'))
     if (-not $branch) { return '' }
     $runId = Get-FmNmField -Output $StatusOutput -Key 'id'
     if (-not $runId) { return '' }

@@ -89,26 +89,3 @@ Describe 'Invoke-FmMergeLocal' {
         (Invoke-FmMergeLocal -Id '../escape' -Confirm:$false).ExitCode | Should -Be 1
     }
 }
-
-Describe 'default branch resolution' {
-    BeforeEach {
-        $script:TestHome = New-FmTestHome
-        $script:Repo = New-FmTestProject -Root $script:TestHome.Path -Id 't1'
-    }
-    AfterEach { Remove-FmTestHome -TestHome $script:TestHome }
-
-    It 'falls back to main when origin/HEAD is not set' {
-        Get-FmLifecycleDefaultBranch -RepoPath $script:Repo.Project | Should -Be 'main'
-    }
-
-    It 'prefers the recorded origin/HEAD' {
-        Invoke-FmTestGit -RepoPath $script:Repo.Project branch trunk | Out-Null
-        Invoke-FmTestGit -RepoPath $script:Repo.Project update-ref refs/remotes/origin/trunk refs/heads/trunk | Out-Null
-        Invoke-FmTestGit -RepoPath $script:Repo.Project symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk | Out-Null
-        Get-FmLifecycleDefaultBranch -RepoPath $script:Repo.Project | Should -Be 'trunk'
-    }
-
-    It 'reports nothing when there is no repository to ask' {
-        Get-FmLifecycleDefaultBranch -RepoPath (Join-Path $script:TestHome.Path 'nope') | Should -Be ''
-    }
-}

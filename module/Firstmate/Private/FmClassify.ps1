@@ -236,7 +236,7 @@ function Write-FmClassifyCursor {
     # new one and never a partial record.
     $tmp = "$CursorPath.tmp.$PID"
     try {
-        Write-FmLifecycleText -Path $tmp -Text $sb.ToString()
+        Write-FmTextFileLf -Path $tmp -Text $sb.ToString()
         Move-Item -LiteralPath $tmp -Destination $CursorPath -Force
     } catch {
         Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue

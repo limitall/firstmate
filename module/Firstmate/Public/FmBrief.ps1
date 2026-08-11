@@ -124,7 +124,7 @@ function New-FmBrief {
             return [pscustomobject]@{ ExitCode = 0; Path = $brief; Messages = @($messages) }
         }
         [void][System.IO.Directory]::CreateDirectory($briefDir)
-        Write-FmLifecycleText -Path $brief -Text ($text + "`n")
+        Write-FmTextFileLf -Path $brief -Text ($text + "`n")
         $note = if ($charterText -eq '{TASK}') { "scaffolded: $brief (secondmate charter; replace {TASK})" } else { "scaffolded: $brief (secondmate charter)" }
         $messages.Add($note)
         [Console]::Out.WriteLine($note)
@@ -157,7 +157,7 @@ function New-FmBrief {
             return [pscustomobject]@{ ExitCode = 0; Path = $brief; Messages = @($messages) }
         }
         [void][System.IO.Directory]::CreateDirectory($briefDir)
-        Write-FmLifecycleText -Path $brief -Text ($text + "`n")
+        Write-FmTextFileLf -Path $brief -Text ($text + "`n")
         $note = "scaffolded: $brief (scout; replace {TASK})"
         $messages.Add($note)
         [Console]::Out.WriteLine($note)
@@ -181,7 +181,7 @@ function New-FmBrief {
         return [pscustomobject]@{ ExitCode = 0; Path = $brief; Messages = @($messages) }
     }
     [void][System.IO.Directory]::CreateDirectory($briefDir)
-    Write-FmLifecycleText -Path $brief -Text ($text + "`n")
+    Write-FmTextFileLf -Path $brief -Text ($text + "`n")
     $note = "scaffolded: $brief (ship, mode=$Mode; replace {TASK})"
     $messages.Add($note)
     [Console]::Out.WriteLine($note)
