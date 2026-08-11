@@ -148,6 +148,59 @@ Describe 'no-mistakes run attribution' {
     }
 }
 
+Describe 'the run-step mapping' {
+    BeforeAll {
+        $script:NoCi = { param($runId) 'unknown' }
+        function Resolve { param([string]$Output, [string]$Source = 'full', [string]$Coarse = '', [scriptblock]$Ci = $script:NoCi)
+            Resolve-FmCrewRunState -Output $Output -RunSource $Source -CoarseStatus $Coarse -CiChecksStateProvider $Ci
+        }
+    }
+
+    It 'maps a terminal outcome' {
+        (Resolve -Output "outcome: passed`n").State | Should -Be 'done'
+        (Resolve -Output "outcome: checks-passed`n").Detail | Should -Be 'checks green: PR ready for review'
+        (Resolve -Output "outcome: failed`n").State | Should -Be 'failed'
+        (Resolve -Output "outcome: cancelled`n").State | Should -Be 'failed'
+        (Resolve -Output "outcome: something-new`n").State | Should -Be 'unknown'
+    }
+
+    It 'maps an active step to working' {
+        (Resolve -Output "status: running`n").State | Should -Be 'working'
+        (Resolve -Output "status: fixing`n").Detail | Should -Be 'validating (fixing)'
+        (Resolve -Output "status: `n").Detail | Should -Be 'run active'
+    }
+
+    It 'maps a gate to parked, with its findings count and ask-user marker' {
+        $out = "status: awaiting_approval`ngate:`n  step: review`nfindings[2]{id,title}:`n  1,ask-user thing`n"
+        $run = Resolve -Output $out
+        $run.State | Should -Be 'parked'
+        $run.Detail | Should -Be 'parked at review: 2 finding(s) (ask-user: authority decision)'
+    }
+
+    It 'parks on an awaiting_agent field even when the status word says otherwise' {
+        (Resolve -Output "status: running`nawaiting_agent: crew`n").State | Should -Be 'parked'
+    }
+
+    It 'promotes a green ci log to done, so a green PR never reads as still validating' {
+        $green = { param($runId) 'green' }
+        $run = Resolve -Output "id: run-1`nstatus: ci`n" -Ci $green
+        $run.State | Should -Be 'done'
+        $run.Detail | Should -Be 'checks green: PR ready for review (still monitoring for merge/close)'
+    }
+
+    It 'keeps a not-ready ci log as working' {
+        $notReady = { param($runId) 'not-ready' }
+        (Resolve -Output "id: run-1`nstatus: ci`n" -Ci $notReady).State | Should -Be 'working'
+    }
+
+    It 'maps the coarse runs-list statuses without step detail' {
+        (Resolve -Output '' -Source 'coarse' -Coarse 'running').Detail | Should -Be 'validating (background run)'
+        (Resolve -Output '' -Source 'coarse' -Coarse 'completed').State | Should -Be 'done'
+        (Resolve -Output '' -Source 'coarse' -Coarse 'cancelled').State | Should -Be 'failed'
+        (Resolve -Output '' -Source 'coarse' -Coarse 'weird').State | Should -Be 'unknown'
+    }
+}
+
 Describe 'TOON field reads' {
     It 'reads a scalar field and strips quotes' {
         $out = "id: `"run-9`"`nstatus: awaiting_approval`nbranch: fm/t1`n"

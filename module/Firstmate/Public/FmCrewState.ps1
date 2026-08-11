@@ -94,79 +94,30 @@ function Get-FmCrewState {
     }
 
     if ($haveRun) {
-        $runState = 'working'
-        $runDetail = ''
-        $ciStepStatus = ''
-        $ciLogState = ''
-        $runStatus = ''
-        if ($runSource -eq 'coarse') {
-            switch ($coarseStatus) {
-                'running' { $runState = 'working'; $runDetail = 'validating (background run)' }
-                'completed' { $runState = 'done'; $runDetail = 'run completed' }
-                'failed' { $runState = 'failed'; $runDetail = 'run failed' }
-                'cancelled' { $runState = 'failed'; $runDetail = 'run cancelled' }
-                default { $runState = 'unknown'; $runDetail = "runs list status: $coarseStatus" }
-            }
-        } else {
-            $runStatus = Get-FmNmField -Output $runOut -Key 'status'
-            $outcome = Get-FmNmField -Output $runOut -Key 'outcome'
-            $awaiting = ($runOut -match '(?m)^\s*awaiting_agent:')
-            $hasGate = ($runOut -match '(?m)^\s*gate:\s*')
-            $gateStatus = Get-FmNmGateStatus -Output $runOut
-
-            if ($outcome) {
-                switch ($outcome) {
-                    'passed' { $runState = 'done'; $runDetail = 'run passed: PR merged/closed' }
-                    'checks-passed' { $runState = 'done'; $runDetail = 'checks green: PR ready for review' }
-                    'failed' { $runState = 'failed'; $runDetail = 'run failed' }
-                    'cancelled' { $runState = 'failed'; $runDetail = 'run cancelled' }
-                    default { $runState = 'unknown'; $runDetail = "outcome: $outcome" }
-                }
-            } elseif ($awaiting -or $runStatus -eq 'awaiting_approval' -or $runStatus -eq 'fix_review' -or $gateStatus -or $hasGate) {
-                $gate = Get-FmNmGateName -Output $runOut
-                if (-not $gate) { $gate = $runStatus }
-                if (-not $gate) { $gate = 'gate' }
-                $runState = 'parked'
-                $runDetail = "parked at $gate"
-                $findings = Get-FmNmGateFindingsCount -Output $runOut
-                if ($findings) { $runDetail = "${runDetail}: $findings finding(s)" }
-                if ($runOut -match 'ask-user') { $runDetail = "$runDetail (ask-user: authority decision)" }
-            } else {
-                switch ($runStatus) {
-                    'ci' { $runState = 'working'; $runDetail = 'ci running' }
-                    { $_ -in @('running', 'fixing') } { $runState = 'working'; $runDetail = "validating ($runStatus)" }
-                    'completed' { $runState = 'done'; $runDetail = 'run completed' }
-                    'failed' { $runState = 'failed'; $runDetail = 'run failed' }
-                    'cancelled' { $runState = 'failed'; $runDetail = 'run cancelled' }
-                    '' { $runState = 'working'; $runDetail = 'run active' }
-                    default { $runState = 'working'; $runDetail = "run active ($runStatus)" }
-                }
-                if ($runState -eq 'working') {
-                    $ciStepStatus = Get-FmNmEffectiveCiStepStatus -Output $runOut -RunStatus $runStatus
-                    if ($ciStepStatus -eq 'running') {
-                        $ciLogState = Get-FmNmCiChecksState -WorktreePath $worktree -TimeoutSeconds $nmTimeout -RunId (Get-FmNmField -Output $runOut -Key 'id')
-                        if ($ciLogState -eq 'green') {
-                            $runState = 'done'
-                            $runDetail = 'checks green: PR ready for review (still monitoring for merge/close)'
-                        }
-                    } elseif ($ciStepStatus -eq 'fixing') {
-                        $ciLogState = 'not-ready'
-                    }
-                }
-            }
-        }
+        # The ci-step log tail is the only place no-mistakes records the
+        # "checks green, waiting on merge" transition, and it costs another
+        # bounded CLI call, so it is resolved lazily.
+        $ciChecks = {
+            param([string]$runId)
+            Get-FmNmCiChecksState -WorktreePath $worktree -TimeoutSeconds $nmTimeout -RunId $runId
+        }.GetNewClosure()
+        $run = Resolve-FmCrewRunState -Output $runOut -RunSource $runSource -CoarseStatus $coarseStatus -CiChecksStateProvider $ciChecks
+        $runState = $run.State
+        $runDetail = $run.Detail
 
         # A worker that already reported "PR ... checks green" is finished even
         # while the run keeps monitoring the PR for merge.
         $logReportsCiReady = ($logVerb -eq 'done' -and (Get-FmStatusLineNote -Line $logLine) -match 'PR.*checks green|checks green.*PR')
         if ($runState -eq 'working' -and $logReportsCiReady) {
+            $ciLogState = $run.CiLogState
             if ($runSource -eq 'coarse') {
                 return (& $emit 'done' 'status-log' ((Get-FmStatusLineNote -Line $logLine) + $sep + 'run still monitoring PR'))
             }
-            if (-not $ciStepStatus) { $ciStepStatus = Get-FmNmEffectiveCiStepStatus -Output $runOut -RunStatus $runStatus }
-            if ($runStatus -eq 'fixing') { $ciLogState = 'not-ready' }
+            $ciStepStatus = $run.CiStepStatus
+            if (-not $ciStepStatus) { $ciStepStatus = Get-FmNmEffectiveCiStepStatus -Output $runOut -RunStatus $run.RunStatus }
+            if ($run.RunStatus -eq 'fixing') { $ciLogState = 'not-ready' }
             elseif ($ciStepStatus -eq 'running' -and -not $ciLogState) {
-                $ciLogState = Get-FmNmCiChecksState -WorktreePath $worktree -TimeoutSeconds $nmTimeout -RunId (Get-FmNmField -Output $runOut -Key 'id')
+                $ciLogState = & $ciChecks (Get-FmNmField -Output $runOut -Key 'id')
             } elseif ($ciStepStatus -eq 'fixing') { $ciLogState = 'not-ready' }
             if ($ciLogState -ne 'not-ready') {
                 return (& $emit 'done' 'status-log' ((Get-FmStatusLineNote -Line $logLine) + $sep + 'run still monitoring PR'))

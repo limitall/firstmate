@@ -151,6 +151,99 @@ function Get-FmNmRunsStatusForBranch {
     return ''
 }
 
+# The run-step is AUTHORITATIVE when a run is attributed to this crew, so this
+# mapping decides what a supervisor acts on. Kept pure - the only outside call is
+# the caller-supplied ci-checks provider - so every branch is exercisable without
+# a no-mistakes install.
+#   running/fixing/ci -> working, awaiting_approval/fix_review/any gate -> parked,
+#   passed/checks-passed -> done, failed/cancelled -> failed.
+# The one exception is the ci step: `axi status` alone cannot tell "still waiting
+# on checks" from "checks green, waiting on merge", so a green ci log promotes
+# working -> done and a green PR is never read as still-validating.
+function Resolve-FmCrewRunState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Output,
+        [Parameter(Mandatory)][ValidateSet('full', 'coarse')][string]$RunSource,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$CoarseStatus,
+        [Parameter(Mandatory)][scriptblock]$CiChecksStateProvider
+    )
+    $state = 'working'
+    $detail = ''
+    $runStatus = ''
+    $ciStepStatus = ''
+    $ciLogState = ''
+
+    if ($RunSource -eq 'coarse') {
+        # The plain runs list carries no step or gate detail - only ever
+        # working, done, or failed. A crew genuinely parked at a gate still gets
+        # full detail once `axi status` reports its own branch again, and its own
+        # needs-decision append surfaces regardless, so a real gate is never
+        # silently missed.
+        switch ($CoarseStatus) {
+            'running' { $state = 'working'; $detail = 'validating (background run)' }
+            'completed' { $state = 'done'; $detail = 'run completed' }
+            'failed' { $state = 'failed'; $detail = 'run failed' }
+            'cancelled' { $state = 'failed'; $detail = 'run cancelled' }
+            default { $state = 'unknown'; $detail = "runs list status: $CoarseStatus" }
+        }
+    } else {
+        $runStatus = Get-FmNmField -Output $Output -Key 'status'
+        $outcome = Get-FmNmField -Output $Output -Key 'outcome'
+        $awaiting = ($Output -match '(?m)^\s*awaiting_agent:')
+        $hasGate = ($Output -match '(?m)^\s*gate:\s*')
+        $gateStatus = Get-FmNmGateStatus -Output $Output
+
+        if ($outcome) {
+            switch ($outcome) {
+                'passed' { $state = 'done'; $detail = 'run passed: PR merged/closed' }
+                'checks-passed' { $state = 'done'; $detail = 'checks green: PR ready for review' }
+                'failed' { $state = 'failed'; $detail = 'run failed' }
+                'cancelled' { $state = 'failed'; $detail = 'run cancelled' }
+                default { $state = 'unknown'; $detail = "outcome: $outcome" }
+            }
+        } elseif ($awaiting -or $runStatus -eq 'awaiting_approval' -or $runStatus -eq 'fix_review' -or $gateStatus -or $hasGate) {
+            $gate = Get-FmNmGateName -Output $Output
+            if (-not $gate) { $gate = $runStatus }
+            if (-not $gate) { $gate = 'gate' }
+            $state = 'parked'
+            $detail = "parked at $gate"
+            $findings = Get-FmNmGateFindingsCount -Output $Output
+            if ($findings) { $detail = "${detail}: $findings finding(s)" }
+            if ($Output -match 'ask-user') { $detail = "$detail (ask-user: authority decision)" }
+        } else {
+            switch ($runStatus) {
+                'ci' { $state = 'working'; $detail = 'ci running' }
+                { $_ -in @('running', 'fixing') } { $state = 'working'; $detail = "validating ($runStatus)" }
+                'completed' { $state = 'done'; $detail = 'run completed' }
+                'failed' { $state = 'failed'; $detail = 'run failed' }
+                'cancelled' { $state = 'failed'; $detail = 'run cancelled' }
+                '' { $state = 'working'; $detail = 'run active' }
+                default { $state = 'working'; $detail = "run active ($runStatus)" }
+            }
+            if ($state -eq 'working') {
+                $ciStepStatus = Get-FmNmEffectiveCiStepStatus -Output $Output -RunStatus $runStatus
+                if ($ciStepStatus -eq 'running') {
+                    $ciLogState = [string](& $CiChecksStateProvider (Get-FmNmField -Output $Output -Key 'id'))
+                    if ($ciLogState -eq 'green') {
+                        $state = 'done'
+                        $detail = 'checks green: PR ready for review (still monitoring for merge/close)'
+                    }
+                } elseif ($ciStepStatus -eq 'fixing') {
+                    $ciLogState = 'not-ready'
+                }
+            }
+        }
+    }
+    return [pscustomobject]@{
+        State        = $state
+        Detail       = $detail
+        RunStatus    = $runStatus
+        CiStepStatus = $ciStepStatus
+        CiLogState   = $ciLogState
+    }
+}
+
 # The endpoint reader is the backend area's contract. Absent it, the honest
 # answer is `unknown`, never `working`: absorb-only-when-provably-working means
 # a missing reader must surface the wake, not silence it.
