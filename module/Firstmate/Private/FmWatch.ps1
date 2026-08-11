@@ -182,8 +182,7 @@ function New-FmWakeDelivery {
     #>
     param(
         [Parameter(Mandatory)][string]$Reason,
-        [Parameter(Mandatory)][hashtable]$Context,
-        [scriptblock]$PostOutputAction
+        [Parameter(Mandatory)][hashtable]$Context
     )
     $streakFile = Join-Path $Context.State '.heartbeat-streak'
     if ($Reason.StartsWith('heartbeat')) {
@@ -202,9 +201,6 @@ function New-FmWakeDelivery {
     if ($outputStatus -eq 0) {
         Publish-FmWatchDelivery -Reason $Reason -Context $Context
         $script:FmWatchDeliveredReason = $Reason
-    }
-    if ($PostOutputAction) {
-        try { & $PostOutputAction $outputStatus } catch { }
     }
 
     $signal = [System.Exception]::new('fm-watch: actionable wake delivered')
@@ -275,7 +271,6 @@ function Invoke-FmProceventSurface {
     if (-not (Wait-FmLock -LockDir $Context.QueueLock -TimeoutSeconds 60)) { return }
 
     $surfaced = [System.Collections.Generic.List[string]]::new()
-    $released = $false
     try {
         foreach ($key in (Get-FmWakeQueuedKeysLocked -Kind check -Context $Context)) {
             if (-not $key.StartsWith('procevent:')) { continue }
@@ -286,22 +281,23 @@ function Invoke-FmProceventSurface {
         if ($surfaced.Count -eq 0) { return }
 
         $reason = 'check: process-event result captured:' + (($surfaced | ForEach-Object { " $_" }) -join '')
-        $post = {
-            param($outputStatus)
-            if ($outputStatus -eq 0) {
+        try {
+            New-FmWakeDelivery -Reason $reason -Context $Context
+        }
+        catch {
+            # The delivery unwinds by design. Write the surfaced markers only
+            # once the reason actually reached stdout, so a failed print is
+            # retried on the next cycle instead of being suppressed forever.
+            if ($_.Exception.Data.Contains('FmWakeExitCode') -and [int]$_.Exception.Data['FmWakeExitCode'] -eq 0) {
                 foreach ($key in $surfaced) {
-                    $marker = Get-FmProceventSurfacedMarker -Key $key -Context $Context
-                    try { Set-FmFileTextLf -Path $marker -Text '' } catch { }
+                    try { Set-FmFileTextLf -Path (Get-FmProceventSurfacedMarker -Key $key -Context $Context) -Text '' }
+                    catch { }
                 }
             }
-            Unlock-FmPath -LockDir $Context.QueueLock
-        }.GetNewClosure()
-        $released = $true
-        New-FmWakeDelivery -Reason $reason -Context $Context -PostOutputAction $post
+            throw
+        }
     }
-    finally {
-        if (-not $released) { Unlock-FmPath -LockDir $Context.QueueLock }
-    }
+    finally { Unlock-FmPath -LockDir $Context.QueueLock }
 }
 
 # --- wedge timer and pause cadence -------------------------------------------
