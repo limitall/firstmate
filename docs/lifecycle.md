@@ -1,4 +1,4 @@
-# Task lifecycle: briefs, classification, local merge
+# Task lifecycle: briefs and classification
 
 The Windows-native port of firstmate's task lifecycle. Source of truth for the
 behaviour is the bash original in the firstmate repo; this document records what
@@ -16,9 +16,18 @@ stale-lock proof and the pool return all live there now.
 | --- | --- |
 | `Private/FmBrief.ps1`, `Public/FmBrief.ps1`, `bin/fm-brief.ps1` | `bin/fm-brief.sh` |
 | `Private/FmClassify.ps1`, `Public/FmClassify.ps1` | `bin/fm-classify-lib.sh` |
-| `Private/FmMerge.ps1`, `Public/FmMerge.ps1`, `bin/fm-merge-local.ps1` | `bin/fm-merge-local.sh` |
 | `Private/FmCrewState.ps1`, `Public/FmCrewState.ps1`, `bin/fm-crew-state.ps1` | `bin/fm-crew-state.sh`, `bin/fm-nm-run-lib.sh` |
 | `Private/FmLifecycle.ps1` | the helpers the bash lifecycle scripts each carried inline |
+
+**The local merge is not here either.** This area also carried its own port of
+`bin/fm-merge-local.sh`; the captain's decision (2026-08-12) landed the delivery
+area's version, on the same rule that settled teardown - the area owner keeps
+the command. Its `ConfirmImpact = 'High'`, its refusal for a recorded project
+checkout that no longer exists, and its linked-worktree test topology were
+carried across first. See `docs/delivery-and-projects.md`; the guards, the
+fast-forward-only rule and the entry point all live there now.
+`tests/FmLifecycleCli.Tests.ps1` still drives `bin/fm-merge-local.ps1`, which is
+that area's script.
 
 ## Teardown
 

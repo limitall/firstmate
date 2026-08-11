@@ -192,8 +192,10 @@ Describe 'bin/fm-merge-local.ps1' {
         $result.StdOut | Should -Match 'merged fm/t1 into local main'
     }
 
-    It 'exits 1 without a task id' {
-        (Invoke-FmCli -Script 'fm-merge-local.ps1').ExitCode | Should -Be 1
+    It 'exits 2 without a task id' {
+        # 2 is this port's documented usage exit code; the delivery area owns
+        # this command now (docs/delivery-and-projects.md).
+        (Invoke-FmCli -Script 'fm-merge-local.ps1').ExitCode | Should -Be 2
     }
 }
 
