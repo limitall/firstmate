@@ -231,24 +231,35 @@ function Test-FmWakeSymlink {
 }
 
 function Initialize-FmWakeContext {
+    # EVERY inherited path is normalized to native BEFORE it reaches Join-Path,
+    # the same contract Get-FmContext already keeps. Join-Path is a pure string
+    # operation: given a POSIX '/f/x' it produces '\f\x', a DRIVE-RELATIVE path
+    # that .NET then resolves against whatever drive the process happens to be
+    # on - silently creating an F:\f\Plotex_projects\... phantom tree instead
+    # of touching the real home. Measured, and a real phantom tree was found on
+    # this host. MSYS converts FM_HOME at the bash->pwsh boundary, so this only
+    # bites when a POSIX value is set INSIDE pwsh or exported through a chain
+    # that skips that conversion - which is exactly what a bash caller driving a
+    # pwsh sibling does. ConvertTo-FmNativePath is idempotent (verified on
+    # native, mixed and empty input), so normalizing early is free.
     $defaultRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-    $rootOverride = Get-FmEnv -Name 'FM_ROOT_OVERRIDE'
-    $root = Get-FmEnv -Name 'FM_ROOT' -Default $defaultRoot
+    $rootOverride = ConvertTo-FmNativePath (Get-FmEnv -Name 'FM_ROOT_OVERRIDE')
+    $root = ConvertTo-FmNativePath (Get-FmEnv -Name 'FM_ROOT' -Default $defaultRoot)
     if ($rootOverride) { $root = $rootOverride }
 
-    $fmHome = Get-FmEnv -Name 'FM_HOME'
+    $fmHome = ConvertTo-FmNativePath (Get-FmEnv -Name 'FM_HOME')
     if (-not $fmHome) { $fmHome = if ($rootOverride) { $rootOverride } else { $root } }
 
-    $state = Get-FmEnv -Name 'STATE' -Default (Join-Path $fmHome 'state')
-    $stateOverride = Get-FmEnv -Name 'FM_STATE_OVERRIDE'
+    $state = ConvertTo-FmNativePath (Get-FmEnv -Name 'STATE' -Default (Join-Path $fmHome 'state'))
+    $stateOverride = ConvertTo-FmNativePath (Get-FmEnv -Name 'FM_STATE_OVERRIDE')
     if ($stateOverride) { $state = $stateOverride }
 
     $script:FmWakeContext = @{
         Root       = $root
         Home       = $fmHome
         State      = $state
-        Queue      = Get-FmEnv -Name 'FM_WAKE_QUEUE' -Default (Join-Path $state '.wake-queue')
-        QueueLock  = Get-FmEnv -Name 'FM_WAKE_QUEUE_LOCK' -Default (Join-Path $state '.wake-queue.lock')
+        Queue      = ConvertTo-FmNativePath (Get-FmEnv -Name 'FM_WAKE_QUEUE' -Default (Join-Path $state '.wake-queue'))
+        QueueLock  = ConvertTo-FmNativePath (Get-FmEnv -Name 'FM_WAKE_QUEUE_LOCK' -Default (Join-Path $state '.wake-queue.lock'))
         StaleAfter = Get-FmEnv -Name 'FM_LOCK_STALE_AFTER' -Default '2'
     }
 
