@@ -7,9 +7,13 @@
 
 BeforeAll {
     $script:ModuleRoot = Join-Path $PSScriptRoot '..' 'module' 'Firstmate'
-    . (Join-Path $script:ModuleRoot 'Private' 'FmBackendHerdr.ps1')
-    . (Join-Path $script:ModuleRoot 'Private' 'FmWorktree.ps1')
-    foreach ($public in Get-ChildItem -Path (Join-Path $script:ModuleRoot 'Public') -Filter '*.ps1') {
+    # Every Private file, not a hand-picked pair: Start-FmWorker composes the
+    # dispatch area (the delivery contract, harness resolution, the record's
+    # field order) as well as the backend and worktree ones.
+    foreach ($private in (Get-ChildItem -Path (Join-Path $script:ModuleRoot 'Private') -Filter '*.ps1' | Sort-Object Name)) {
+        . $private.FullName
+    }
+    foreach ($public in (Get-ChildItem -Path (Join-Path $script:ModuleRoot 'Public') -Filter '*.ps1' | Sort-Object Name)) {
         . $public.FullName
     }
 
@@ -73,7 +77,7 @@ Describe 'Start-FmWorker' {
 
     It 'creates the pane inside the leased worktree, not in the project' {
         $null = Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
-            -Harness 'claude' -LaunchCommand 'claude' -FirstmateHome $script:fmHome -Confirm:$false
+            -Harness 'claude' -LaunchCommand 'claude' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false
         Should -Invoke New-FmHerdrTask -Times 1 -ParameterFilter { $Cwd -eq $script:worktree -and $Label -eq 'fm-alpha' }
     }
 
@@ -96,15 +100,15 @@ Describe 'Start-FmWorker' {
 
     It 'writes a record the shared endpoint validation accepts' {
         $null = Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
-            -Harness 'claude' -LaunchCommand 'claude' -FirstmateHome $script:fmHome -Confirm:$false
+            -Harness 'claude' -LaunchCommand 'claude' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false
         $endpoint = Test-FmTaskEndpoint -MetaPath (Join-Path $script:stateDir 'alpha.meta') -TaskId 'alpha'
         $endpoint.Valid | Should -BeTrue
         $endpoint.Target | Should -Be 'default:w1:p5'
     }
 
-    It 'omits mode and yolo when they were not resolved, keeping the record byte-compatible' {
+    It 'omits mode and yolo for a kind that has no delivery contract, keeping the record byte-compatible' {
         $null = Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
-            -Harness 'claude' -LaunchCommand 'claude' -FirstmateHome $script:fmHome -Confirm:$false
+            -Harness 'claude' -LaunchCommand 'claude' -Kind 'scout' -FirstmateHome $script:fmHome -Confirm:$false
         $raw = [System.IO.File]::ReadAllText((Join-Path $script:stateDir 'alpha.meta'))
         $raw | Should -Not -Match '(?m)^mode='
         $raw | Should -Not -Match '(?m)^yolo='
@@ -113,7 +117,7 @@ Describe 'Start-FmWorker' {
     It 'stops the task and rolls back when the endpoint is not in the isolated copy' {
         Mock Confirm-FmWorkerWorktree { throw 'error: refusing to launch an agent outside the copy holding its work' }
         { Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
-                -Harness 'claude' -LaunchCommand 'claude' -FirstmateHome $script:fmHome -Confirm:$false } |
+                -Harness 'claude' -LaunchCommand 'claude' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false } |
             Should -Throw '*outside the copy holding its work*'
         Should -Invoke Remove-FmHerdrPane -Times 1
         Should -Invoke Remove-FmWorktreeLease -Times 1 -ParameterFilter { $IfLeaseId -eq 'L-7' }
@@ -123,7 +127,7 @@ Describe 'Start-FmWorker' {
     It 'releases the lease and leaves no record when the launch could not be delivered' {
         Mock Send-FmHerdrTextLine { $false }
         { Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
-                -Harness 'claude' -LaunchCommand 'claude' -FirstmateHome $script:fmHome -Confirm:$false } |
+                -Harness 'claude' -LaunchCommand 'claude' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false } |
             Should -Throw '*launch command could not be delivered*'
         Should -Invoke Remove-FmWorktreeLease -Times 1
         Test-Path -LiteralPath (Join-Path $script:stateDir 'alpha.meta') | Should -BeFalse
@@ -133,7 +137,7 @@ Describe 'Start-FmWorker' {
         Mock New-FmIsolatedWorktree { throw 'error: pool exhausted' }
         Mock New-FmHerdrContainer { throw 'container must not be ensured without a worktree' }
         { Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
-                -Harness 'claude' -LaunchCommand 'claude' -FirstmateHome $script:fmHome -Confirm:$false } |
+                -Harness 'claude' -LaunchCommand 'claude' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false } |
             Should -Throw '*pool exhausted*'
     }
 
@@ -141,7 +145,7 @@ Describe 'Start-FmWorker' {
         New-TaskRecord -StateDir $script:stateDir -TaskId 'alpha'
         Mock New-FmIsolatedWorktree { throw 'must not acquire a worktree for a duplicate launch' }
         { Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
-                -Harness 'claude' -LaunchCommand 'claude' -FirstmateHome $script:fmHome -Confirm:$false } |
+                -Harness 'claude' -LaunchCommand 'claude' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false } |
             Should -Throw '*refusing a duplicate launch*'
     }
 
@@ -167,16 +171,16 @@ Describe 'Start-FmWorker' {
             Should -Throw '*must name that secondmate*'
     }
 
-    It 'refuses an invalid task id, a missing brief, and a missing launch command' {
+    It 'refuses an invalid task id, a missing brief, and an adapter it cannot launch' {
         { Start-FmWorker -TaskId 'bad id' -Project $script:project -BriefPath $script:brief `
-                -Harness 'claude' -LaunchCommand 'claude' -FirstmateHome $script:fmHome -Confirm:$false } |
+                -Harness 'claude' -LaunchCommand 'claude' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false } |
             Should -Throw '*not a valid task id*'
         { Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath (Join-Path $TestDrive 'ghost.md') `
-                -Harness 'claude' -LaunchCommand 'claude' -FirstmateHome $script:fmHome -Confirm:$false } |
+                -Harness 'claude' -LaunchCommand 'claude' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false } |
             Should -Throw '*never launched without its instructions*'
         { Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
-                -Harness 'claude' -FirstmateHome $script:fmHome -Confirm:$false } |
-            Should -Throw '*never guesses how to start an agent*'
+                -Harness 'not-an-adapter' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*unknown harness*'
     }
 }
 
@@ -192,14 +196,39 @@ Describe 'Confirm-FmWorkerWorktree' {
 
     It 'refuses an endpoint sitting anywhere else, naming what it saw' {
         Mock Get-FmHerdrCurrentPath { '/somewhere/else' }
+        Mock Get-FmHerdrPaneCreationPath { '/wt/alpha' }
         { Confirm-FmWorkerWorktree -Target 'default:w1:p5' -Worktree '/wt/alpha' -Project '/proj' -Polls 2 } |
             Should -Throw "*reports '/somewhere/else'*"
     }
 
-    It 'refuses an endpoint that never reported a path at all' {
+    It 'falls back to the creation path when no live path is reported, and says the live check did not run' {
+        # WINDOWS: a live foreground_cwd is MEASURED empty on the Windows herdr
+        # preview, so an empty reading must not stop every spawn - but it must
+        # not silently pass either.
+        $wt = Join-Path $TestDrive 'confirm-created'
+        New-Item -ItemType Directory -Path $wt -Force | Out-Null
         Mock Get-FmHerdrCurrentPath { '' }
+        Mock Get-FmHerdrPaneCreationPath { $wt }.GetNewClosure()
+        $warnings = @()
+        Confirm-FmWorkerWorktree -Target 'default:w1:p5' -Worktree $wt -Project '/proj' -Polls 2 `
+            -WarningVariable warnings -WarningAction SilentlyContinue | Should -BeTrue
+        [string]$warnings[0] | Should -BeLike '*live-cwd confirmation did NOT run*'
+    }
+
+    It 'refuses when the creation path itself names somewhere else' {
+        Mock Get-FmHerdrCurrentPath { '' }
+        Mock Get-FmHerdrPaneCreationPath { '/proj' }
         { Confirm-FmWorkerWorktree -Target 'default:w1:p5' -Worktree '/wt/alpha' -Project '/proj' -Polls 2 } |
-            Should -Throw "*reports 'unknown'*"
+            Should -Throw "*reports '/proj' as its creation path*"
+    }
+
+    It 'reports that the check did not run when the endpoint answers nothing at all' {
+        Mock Get-FmHerdrCurrentPath { '' }
+        Mock Get-FmHerdrPaneCreationPath { '' }
+        $warnings = @()
+        Confirm-FmWorkerWorktree -Target 'default:w1:p5' -Worktree '/wt/alpha' -Project '/proj' -Polls 2 `
+            -WarningVariable warnings -WarningAction SilentlyContinue | Should -BeFalse
+        [string]$warnings[0] | Should -BeLike '*confirmation did NOT run*'
     }
 }
 

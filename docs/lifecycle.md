@@ -59,6 +59,19 @@ weight:
   decision. Reserved key namespaces (`pending-reply-`) only transition on a note
   that speaks their vocabulary, so no other writer into the same stream can claim
   or clear them.
+- **The key token is read in two positions**, which is a deliberate divergence
+  from `bin/fm-classify-lib.sh`. Bash looks only before the colon, but
+  `bin/fm-brief.sh` tells a worker to close with `resolved: {how it cleared}`
+  "(same `[key=<slug>]` if you opened it with one)", and read literally that
+  produces `resolved: [key=api-shape] …` - which bash folds as `default`, closing
+  whatever unrelated decision holds that key and leaving the real one open
+  forever. This port also honours a token in the LEADING position of the note,
+  and `Get-FmStatusLineNote` strips it so the recorded summary and the
+  reserved-namespace test do not depend on where the writer put it. A token
+  further inside the note is still prose (`working: added [key=foo] support` is
+  `default`), so nothing that parses today changes meaning. The fold version is
+  3, not bash's 2, because a cursor persisted under the old reading has to be
+  rebuilt rather than trusted.
 
 `Get-FmOpenDecisionIncremental` is the bounded-cost sibling: it folds only the
 bytes appended since its last call through the same per-line rule, so the two

@@ -24,16 +24,21 @@ WHAT IS PRESERVED (the guarantee, not the mechanism)
     keeps the bash field set and order byte-for-byte so a Linux firstmate can
     read it.
 
+  - The delivery contract, the harness, and the launch command are RESOLVED
+    BEFORE the fleet is touched, by Resolve-FmSpawnPlan (Private/FmDispatch.ps1).
+    Mode and yolo are never guessed, an unverified adapter never silently
+    becomes another one, and a missing executable refuses before an endpoint
+    exists.
+
 WHAT IS NOT PORTED HERE (each belongs to another area of the port, and each
-would be a guess if invented here; see docs/spawn-windows.md):
-  - harness launch-command templates, trust-dialog handling, and the per-
-    harness turn-end hook and busy-state wiring. Pass -LaunchCommand, or load
-    a module that provides Get-FmHarnessLaunchCommand and it will be used.
-  - relaunch, secondmate provisioning, remote placement, dispatch profiles,
-    trace-context propagation, and the herdr presentation projection.
+would be a guess if invented here; see docs/task-dispatch-windows.md):
+  - the per-harness turn-end hook and busy-state wiring, and trust-dialog
+    handling.
+  - relaunch, secondmate home provisioning, remote placement, trace-context
+    propagation, and the herdr presentation projection.
 
 .EXAMPLE
-Start-FmWorker -TaskId my-task -Project C:\repos\thing -BriefPath C:\fm\data\my-task\brief.md -Harness claude -LaunchCommand 'claude'
+Start-FmWorker -TaskId my-task -Project C:\repos\thing -BriefPath C:\fm\data\my-task\brief.md -Harness claude -Mode local-only -Yolo off
 #>
 function Start-FmWorker {
     [CmdletBinding(SupportsShouldProcess)]
@@ -41,22 +46,32 @@ function Start-FmWorker {
         [Parameter(Mandatory)][string]$TaskId,
         [Parameter(Mandatory)][string]$Project,
         [Parameter(Mandatory)][string]$BriefPath,
-        [Parameter(Mandatory)][string]$Harness,
+        [Parameter()][AllowEmptyString()][string]$Harness = '',
         [string]$LaunchCommand = '',
         [ValidateSet('ship', 'scout', 'secondmate')][string]$Kind = 'ship',
         [string]$Mode = '',
         [string]$Yolo = '',
         [string]$Model = '',
         [string]$Effort = '',
+        [string[]]$ProjectList = @(),
         [string]$FirstmateHome = '',
         [string]$LabelHome = '',
         [ValidateSet('herdr')][string]$Backend = 'herdr',
         [switch]$SkipBaseRefresh
     )
 
-    if (-not (Test-FmTaskIdShape -TaskId $TaskId)) {
-        throw "error: '$TaskId' is not a valid task id (allowed: A-Z a-z 0-9 . _ -, not starting with '.')"
+    # The foundation's id rule, not the backend's looser shape check: this call
+    # is about to create state files, and Test-FmTaskId is the owner that also
+    # rejects '.', '..' and a trailing dot (which Windows silently strips,
+    # aliasing two ids onto one record).
+    if (-not (Test-FmTaskId -TaskId $TaskId)) {
+        throw "error: '$TaskId' is not a valid task id (allowed: A-Z a-z 0-9 . _ -, and never '.', '..' or a trailing dot)"
     }
+    # A NAMED home is a request for that home's state; an ambient
+    # FM_STATE_OVERRIDE may only redirect the home this process inherited. That
+    # is Get-FmStateRoot's distinction, and going through it is what keeps the
+    # record where the watcher and the drain look for it.
+    $namedHome = [bool]$FirstmateHome
     if (-not $FirstmateHome) { $FirstmateHome = $env:FM_HOME }
     if (-not $FirstmateHome) {
         throw 'error: FM_HOME is not set; fm-spawn refuses to publish a task record without an explicit firstmate home'
@@ -72,7 +87,7 @@ function Start-FmWorker {
         throw "error: brief '$BriefPath' does not exist; a worker is never launched without its instructions"
     }
 
-    $stateDir = Join-Path $FirstmateHome 'state'
+    $stateDir = if ($namedHome) { Get-FmStateRoot -HomePath $FirstmateHome } else { Get-FmStateRoot }
     if (-not (Test-Path -LiteralPath $stateDir -PathType Container)) {
         $null = New-Item -ItemType Directory -Path $stateDir -Force
     }
@@ -81,12 +96,17 @@ function Start-FmWorker {
         throw "error: task $TaskId already has a durable record at $metaPath; refusing a duplicate launch"
     }
 
-    if (-not $LaunchCommand) {
-        $resolver = Get-Command -Name Get-FmHarnessLaunchCommand -ErrorAction SilentlyContinue
-        if ($resolver) {
-            $LaunchCommand = [string](& $resolver -Harness $Harness -BriefPath $BriefPath -Model $Model -Effort $Effort)
-        }
-    }
+    # Everything a spawn must DECIDE, decided before the fleet is touched: the
+    # delivery contract, the harness, the profile axes, and the launch command.
+    # Every refusal in there happens while nothing has been created yet, so a
+    # refused spawn leaves no worktree leased and no endpoint behind.
+    $plan = Resolve-FmSpawnPlan -TaskId $TaskId -Kind $Kind -BriefPath $BriefPath -Project $projectReal `
+        -ConfigDir (Join-Path $FirstmateHome 'config') -Harness $Harness -LaunchCommand $LaunchCommand `
+        -Mode $Mode -Yolo $Yolo -Model $Model -Effort $Effort
+    $Harness = $plan.Harness
+    $LaunchCommand = $plan.LaunchCommand
+    $Model = $plan.Model
+    $Effort = $plan.Effort
     if (-not $LaunchCommand) {
         throw "error: no launch command for harness '$Harness'; pass -LaunchCommand, because this port never guesses how to start an agent"
     }
@@ -153,31 +173,16 @@ function Start-FmWorker {
         $taskTmp = Join-Path ([System.IO.Path]::GetTempPath()) "fm-$TaskId"
         $null = New-Item -ItemType Directory -Path (Join-Path $taskTmp 'gotmp') -Force
 
-        # 6. Publish the durable record. Field set and ORDER follow
-        #    bin/fm-spawn.sh exactly; `backend=` is written only because this
-        #    is a non-default backend, and the four herdr_* fields are what the
-        #    shared endpoint validation binds against.
-        $fields = [ordered]@{
-            window           = $created.Target
-            endpoint_task_id = $TaskId
-            worktree         = $worktree
-            project          = $projectReal
-            harness          = $Harness
-            kind             = $Kind
-        }
-        if ($Mode) { $fields['mode'] = $Mode }
-        if ($Yolo) { $fields['yolo'] = $Yolo }
-        $fields['tasktmp'] = $taskTmp
-        $fields['model'] = $(if ($Model) { $Model } else { 'default' })
-        $fields['effort'] = $(if ($Effort) { $Effort } else { 'default' })
-        $fields['backend'] = 'herdr'
-        $fields['herdr_session'] = $container.Session
-        $fields['herdr_workspace_id'] = $container.WorkspaceId
-        $fields['herdr_tab_id'] = $created.TabId
-        $fields['herdr_pane_id'] = $created.PaneId
-        if ($lease.LeaseId) { $fields['treehouse_lease_id'] = $lease.LeaseId }
+        # 6. Publish the durable record. Field set and ORDER are owned by
+        #    ConvertTo-FmTaskRecordField, which follows bin/fm-spawn.sh exactly so a
+        #    Linux firstmate reads this file unchanged.
+        $fields = ConvertTo-FmTaskRecordField -TaskId $TaskId -Window $created.Target -Worktree $worktree `
+            -Project $projectReal -Harness $Harness -Kind $Kind -Mode $Mode -Yolo $Yolo -TaskTmp $taskTmp `
+            -Model $Model -Effort $Effort -Backend 'herdr' -HerdrSession $container.Session `
+            -HerdrWorkspaceId $container.WorkspaceId -HerdrTabId $created.TabId -HerdrPaneId $created.PaneId `
+            -ProjectList (@($ProjectList | Where-Object { $_ }) -join ' ') -LeaseId $lease.LeaseId
 
-        Write-FmTaskMeta -Path $metaPath -Fields $fields
+        Write-FmTaskRecord -Path $metaPath -Fields $fields -Confirm:$false
 
         # 7. Hand the worker its brief. `pane run` types and submits in one
         #    call, so there is no unsubmitted-launch state to recover from.
@@ -185,6 +190,9 @@ function Start-FmWorker {
             throw "error: the launch command could not be delivered to $($created.Target)"
         }
 
+        # The success line is bin/fm-spawn.sh's, so a Windows home's spawn output
+        # reads the same as a Linux one's in a shared log or transcript.
+        $contract = if ($Kind -eq 'ship') { " mode=$Mode yolo=$Yolo" } else { '' }
         [pscustomobject]@{
             TaskId      = $TaskId
             Target      = $created.Target
@@ -198,6 +206,11 @@ function Start-FmWorker {
             Project     = $projectReal
             MetaPath    = $metaPath
             Label       = $label
+            Harness     = $Harness
+            Kind        = $Kind
+            Mode        = $Mode
+            Yolo        = $Yolo
+            Message     = "spawned $TaskId harness=$Harness kind=$Kind$contract window=$($created.Target) worktree=$worktree"
         }
     } catch {
         # Rollback, most recent first. Every step is best-effort and none of
@@ -224,6 +237,18 @@ function Start-FmWorker {
 # transiently stale first read by requiring two consecutive agreeing reads;
 # here the answer is already known from the lease, so a disagreement is not
 # ambiguity to resolve - it is a refusal.
+#
+# WINDOWS: a pane's live `foreground_cwd` is MEASURED to come back EMPTY on the
+# Windows herdr preview (data/fmwin-design/report.md section 3.2). An empty
+# reading is NO INFORMATION, not evidence the pane is elsewhere, so treating it
+# as a refusal would stop every Windows spawn while adding nothing - the copy was
+# already proven isolated, and the pane was created IN it rather than told to
+# walk into it. The fallback is a real second reading rather than a shrug: the
+# pane's own creation `cwd`, which herdr freezes at creation time and which
+# therefore still answers "was this pane created where we asked". Only when
+# neither field is readable does this report that the check did NOT run - never
+# that it passed - and the brief's own isolation assertion remains the worker-side
+# backstop for exactly that case.
 function Confirm-FmWorkerWorktree {
     [CmdletBinding()]
     param(
@@ -234,6 +259,11 @@ function Confirm-FmWorkerWorktree {
         [double]$PollSeconds = 0.5
     )
     $wantReal = Resolve-FmPhysicalPathOrRaw -Path $Worktree
+    $refusal = "not its leased isolated copy '$Worktree' (primary checkout '$Project'); refusing to launch an " +
+        'agent outside the copy holding its work'
+
+    # Poll while the reading disagrees, exactly as the bash spawn does: a pane's
+    # shell may report its starting directory for a moment before it settles.
     $seen = ''
     for ($i = 0; $i -lt $Polls; $i++) {
         $seen = Get-FmHerdrCurrentPath -Target $Target
@@ -242,26 +272,22 @@ function Confirm-FmWorkerWorktree {
         }
         Start-Sleep -Seconds $PollSeconds
     }
-    $shown = if ($seen) { $seen } else { 'unknown' }
-    throw ("error: the worker's endpoint $Target reports '$shown', not its leased isolated copy '$Worktree' " +
-        "(primary checkout '$Project'); refusing to launch an agent outside the copy holding its work")
-}
-
-# Write-FmTaskMeta: publish state/<id>.meta atomically and with LF endings.
-# Atomic because a half-written record is a task that claims an endpoint it may
-# not have; LF because the record is a shared file contract with a Linux
-# firstmate, and Windows PowerShell would otherwise write CRLF.
-function Write-FmTaskMeta {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$Fields
-    )
-    $sb = [System.Text.StringBuilder]::new()
-    foreach ($key in $Fields.Keys) {
-        $null = $sb.Append([string]$key).Append('=').Append([string]$Fields[$key]).Append("`n")
+    if ($seen) {
+        throw "error: the worker's endpoint $Target reports '$seen' as its live foreground path, $refusal"
     }
-    $tmp = "$Path.tmp.$PID"
-    Write-FmTextFileLf -Path $tmp -Text $sb.ToString()
-    Move-Item -LiteralPath $tmp -Destination $Path -Force
+
+    $created = Get-FmHerdrPaneCreationPath -Target $Target
+    if ($created) {
+        if (-not (Test-FmPathEqual -Left (Resolve-FmPhysicalPathOrRaw -Path $created) -Right $wantReal)) {
+            throw "error: the worker's endpoint $Target reports '$created' as its creation path, $refusal"
+        }
+        Write-Warning ("the endpoint $Target reported no live foreground path within $Polls polls, so the " +
+            "live-cwd confirmation did NOT run; it was confirmed against the pane's creation path instead")
+        return $true
+    }
+
+    Write-Warning ("the endpoint $Target reported neither a live foreground path nor a creation path, so the " +
+        "endpoint-side worktree confirmation did NOT run for $Worktree; the lease and the isolation assertion " +
+        "stand, and the brief's own isolation assertion is the worker-side backstop")
+    $false
 }

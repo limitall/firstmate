@@ -766,6 +766,21 @@ function Get-FmHerdrCurrentPath {
     [string](Get-FmJsonValue -InputObject $json -Path 'result.pane.foreground_cwd')
 }
 
+# Get-FmHerdrPaneCreationPath: the pane's `cwd`, which herdr freezes at creation
+# and does not move on a `cd`. That makes it useless for "where is this shell
+# now" - the reason Get-FmHerdrCurrentPath reads foreground_cwd instead - but it
+# is exactly the right field for "was this pane created where we asked", and it
+# is the only reading available on a platform whose live foreground cwd comes
+# back empty (MEASURED on Windows herdr; data/fmwin-design/report.md section 3.2).
+function Get-FmHerdrPaneCreationPath {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Target)
+    if (-not (Test-FmHerdrTargetReady -Target $Target)) { return '' }
+    $parsed = Split-FmHerdrTarget -Target $Target
+    $json = Invoke-FmHerdrCliJson -Session $parsed.Session -Arguments @('pane', 'get', $parsed.PaneId)
+    [string](Get-FmJsonValue -InputObject $json -Path 'result.pane.cwd')
+}
+
 # --- task creation -----------------------------------------------------------
 
 # Get-FmHerdrPaneForTab: the root pane id for <TabId>, via one pane list call
@@ -1308,6 +1323,11 @@ function Add-FmTextLineLf {
 # Add-FmStatusEvent: append one "<state>: <note>" wake event to
 # state/<id>.status. A status line is a wake EVENT, not current-state truth -
 # the same contract as the bash side.
+#
+# Add-FmTaskStatus (dispatch area) is the one owner of how a status line is
+# formed, because it also owns the keyed decision grammar the fold reads. This
+# delegates rather than keeping a second copy; it stays as the name the control
+# plane already calls.
 function Add-FmStatusEvent {
     [CmdletBinding()]
     param(
@@ -1316,6 +1336,11 @@ function Add-FmStatusEvent {
         [Parameter(Mandatory)][string]$State,
         [Parameter(Mandatory)][AllowEmptyString()][string]$Note
     )
+    $owner = Get-Command -Name Add-FmTaskStatus -CommandType Function -ErrorAction SilentlyContinue
+    if ($owner) {
+        $null = & $owner -StateDir $StateDir -TaskId $TaskId -State $State -Note $Note -Confirm:$false
+        return
+    }
     $path = Join-Path $StateDir "$TaskId.status"
     Add-FmTextLineLf -Path $path -Line "$State`: $Note"
 }

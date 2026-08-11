@@ -390,3 +390,68 @@ Describe 'absorb classification' {
         Test-FmSignalCrewProvablyWorking -Path @('/s/notes.txt') -StateLineProvider $working | Should -BeFalse
     }
 }
+
+Describe 'a key written after the verb colon' {
+    # bin/fm-brief.sh tells a worker to close a blocker with
+    # `resolved: {how it cleared}` "(same [key=<slug>] if you opened it with
+    # one)". Read literally that puts the token after the colon, where the bash
+    # parser cannot see it: it folds the line as `default`, closes whatever
+    # unrelated decision holds that key, and leaves the real one open forever.
+    BeforeEach {
+        $script:TestHome = New-FmTestHome
+        $script:KeyStatus = Join-Path $script:TestHome.State 't1.status'
+    }
+    AfterEach { Remove-FmTestHome -TestHome $script:TestHome }
+
+    It 'is read as that key, not as default' {
+        Get-FmStatusDecisionKey 'resolved: [key=api-shape] captain chose flat' | Should -Be 'api-shape'
+        Get-FmStatusDecisionKey 'needs-decision: [key=api-shape] flat or nested' | Should -Be 'api-shape'
+    }
+
+    It 'leaves the note as prose, with the token removed' {
+        Get-FmStatusLineNote 'resolved: [key=api-shape] captain chose flat' | Should -Be 'captain chose flat'
+        Get-FmStatusLineNote 'resolved: [key=api-shape]captain chose flat' | Should -Be 'captain chose flat'
+    }
+
+    It 'closes the decision it names and leaves the unrelated one open' {
+        New-StatusFile -Path $script:KeyStatus -Line @(
+            'blocked: the pool is empty',
+            'needs-decision [key=api-shape]: flat or nested',
+            'resolved: [key=api-shape] captain chose flat')
+        $open = Get-FmOpenDecision -Path $script:KeyStatus
+        $open.Count | Should -Be 1
+        $open[0].Key | Should -Be 'default'
+        $open[0].Verb | Should -Be 'blocked'
+    }
+
+    It 'still treats a token further inside the note as prose' {
+        Get-FmStatusDecisionKey 'working: added [key=foo] support' | Should -Be 'default'
+        Get-FmStatusLineNote 'working: added [key=foo] support' | Should -Be 'added [key=foo] support'
+        New-StatusFile -Path $script:KeyStatus -Line @(
+            'needs-decision [key=foo]: which way',
+            'resolved: cleared the [key=foo] confusion')
+        # The bare resolution closes `default`, not foo, exactly as bash folds it.
+        (Get-FmOpenDecision -Path $script:KeyStatus).Count | Should -Be 1
+    }
+
+    It 'applies the reserved-namespace rule to the same note' {
+        New-StatusFile -Path $script:KeyStatus -Line @(
+            'blocked [key=pending-reply-7]: pending-reply-escalation: no answer yet',
+            'resolved: [key=pending-reply-7] cleared it myself')
+        (Get-FmOpenDecision -Path $script:KeyStatus).Count | Should -Be 1
+        Add-StatusLine -Path $script:KeyStatus -Line @('resolved: [key=pending-reply-7] pending-reply-resolved: answered')
+        (Get-FmOpenDecision -Path $script:KeyStatus).Count | Should -Be 0
+    }
+
+    It 'rebuilds a cursor written under the older reading' {
+        # The persisted open set was folded under the old interpretation, so the
+        # fold version has to invalidate it rather than carry it forward.
+        New-StatusFile -Path $script:KeyStatus -Line @('needs-decision [key=api-shape]: flat or nested')
+        $cursorPath = Get-FmClassifyCursorPath -StatusFile $script:KeyStatus
+        [System.IO.File]::WriteAllText($cursorPath, "version=2`noffset=0`nident=stale`napi-shape`tblocked`tstale note`n")
+        $open = Get-FmOpenDecisionIncremental -Path $script:KeyStatus
+        $open.Count | Should -Be 1
+        $open[0].Verb | Should -Be 'needs-decision'
+        $open[0].Note | Should -Be 'flat or nested'
+    }
+}

@@ -30,8 +30,13 @@ function Get-FmStatusLineVerb {
 
 <#
 .SYNOPSIS
-Text after the first colon of a status line, with leading whitespace trimmed.
-A line with no colon is its own note.
+Text after the first colon of a status line, with leading whitespace trimmed and
+a LEADING [key=<slug>] token removed. A line with no colon is its own note.
+.DESCRIPTION
+The token is metadata, not prose: dropping it here is what keeps the note of
+`resolved: [key=api-shape] captain chose flat` equal to the note of
+`resolved [key=api-shape]: captain chose flat`, so the reserved-namespace rule
+and the recorded summary do not depend on where the writer put the key.
 #>
 function Get-FmStatusLineNote {
     [CmdletBinding()]
@@ -40,14 +45,33 @@ function Get-FmStatusLineNote {
     if ([string]::IsNullOrEmpty($Line)) { return '' }
     $colon = $Line.IndexOf(':')
     if ($colon -lt 0) { return $Line }
-    return $Line.Substring($colon + 1).TrimStart()
+    $note = $Line.Substring($colon + 1).TrimStart()
+    if ($note -match '^\[key=[^\]]*\]\s*') { $note = $note.Substring($Matches[0].Length) }
+    return $note
 }
 
 <#
 .SYNOPSIS
-Decision key of a status line: the [key=<slug>] token before the colon, or
-"default" when there is none. Returns $null for a malformed key, which the fold
-treats as "not a decision transition".
+Decision key of a status line: the [key=<slug>] token, or "default" when there is
+none. Returns $null for a malformed key, which the fold treats as "not a decision
+transition".
+.DESCRIPTION
+The token is read from the text before the colon - the documented grammar - OR
+from the LEADING position of the note.
+
+That second position is a deliberate divergence from bin/fm-classify-lib.sh,
+which looks before the colon only. bin/fm-brief.sh tells a worker to close with
+`resolved: {how it cleared}` "(same [key=<slug>] if you opened it with one)", and
+the natural reading of that produces
+
+    resolved: [key=api-shape] captain chose the flat one
+
+which the bash parser folds as the key `default`. That is not a cosmetic parse
+difference: it CLOSES whatever unrelated decision holds `default` and leaves
+api-shape open forever, defeating the one guarantee this fold exists to make -
+that a decision closes only on a line naming it. A key token further inside the
+note stays prose (`working: added [key=foo] support` is still `default`), exactly
+as bash has it, so no line that parses today changes meaning.
 #>
 function Get-FmStatusDecisionKey {
     [CmdletBinding()]
@@ -56,14 +80,20 @@ function Get-FmStatusDecisionKey {
     if ([string]::IsNullOrEmpty($Line)) { return 'default' }
     $colon = $Line.IndexOf(':')
     $prefix = if ($colon -ge 0) { $Line.Substring(0, $colon) } else { $Line }
+    $raw = $null
     $start = $prefix.IndexOf('[key=')
-    if ($start -lt 0) { return 'default' }
-    $rest = $prefix.Substring($start + '[key='.Length)
-    $end = $rest.IndexOf(']')
-    if ($end -lt 0) { return 'default' }
-    $key = $rest.Substring(0, $end)
-    if ($key -eq '' -or $key -notmatch '^[A-Za-z0-9._-]+$') { return $null }
-    return $key
+    if ($start -ge 0) {
+        $rest = $prefix.Substring($start + '[key='.Length)
+        $end = $rest.IndexOf(']')
+        if ($end -lt 0) { return 'default' }
+        $raw = $rest.Substring(0, $end)
+    } elseif ($colon -ge 0) {
+        $note = $Line.Substring($colon + 1).TrimStart()
+        if ($note -match '^\[key=([^\]]*)\]') { $raw = $Matches[1] }
+    }
+    if ($null -eq $raw) { return 'default' }
+    if ($raw -eq '' -or $raw -notmatch '^[A-Za-z0-9._-]+$') { return $null }
+    return $raw
 }
 
 <#

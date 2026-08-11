@@ -22,9 +22,13 @@ $script:FmClassifyCaptainHeldVerbDefault = 'captain-held'
 $script:FmClassifyReservedKeyPrefixesDefault = 'pending-reply-'
 $script:FmClassifyPauseResurfaceSecsDefault = 3600
 # Bump only when the per-line fold semantics change, so a cursor persisted under
-# an older interpretation is discarded and rebuilt from byte 0. Kept at the bash
-# library's value because the semantics below are the same.
-$script:FmOpenDecisionsFoldVersion = 2
+# an older interpretation is discarded and rebuilt from byte 0.
+#
+# 3, not the bash library's 2: Get-FmStatusDecisionKey also honours a key token
+# written in the leading position of the note, which bash folds as `default`
+# (see its header). A cursor written under the old reading holds an open set
+# derived from it, and only a version bump rebuilds that set from byte 0.
+$script:FmOpenDecisionsFoldVersion = 3
 
 function Get-FmClassifyPausedVerb { if ($env:FM_CLASSIFY_PAUSED_VERB) { $env:FM_CLASSIFY_PAUSED_VERB } else { $script:FmClassifyPausedVerbDefault } }
 function Get-FmClassifyResolveVerb { if ($env:FM_CLASSIFY_RESOLVE_VERB) { $env:FM_CLASSIFY_RESOLVE_VERB } else { $script:FmClassifyResolveVerbDefault } }

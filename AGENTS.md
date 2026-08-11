@@ -78,6 +78,9 @@ governs the import.
   that must never be relaxed), process custody via Win32 job objects instead of
   `lsof` and process groups, the exclusive-open stale-lock probe, and the lease
   rules for returning a worktree to the pool.
+- `docs/task-dispatch-windows.md` - the dispatch half of the spawn: the refusals
+  that make it stop instead of guess (delivery contract, brief agreement,
+  unverified adapter, missing dependency), and the `state/<id>.meta` field order.
 
 ## Cross-area composition
 
