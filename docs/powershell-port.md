@@ -247,8 +247,18 @@ rather than "the fixture is locale-dependent". Three suites lost a combined 17
 assertions to this, all attributed at first to the locale-aware trim sets in
 `fm-composer-lib.psm1` / `fm-classify-lib.psm1`, which turned out to be correct.
 
-Two rules follow, and both are now in force in the composer, classify and
-backend-core suites:
+It recurred (2026-08, after a host restart) in four more suites - herdr
+backend, herdr ops, follow-up and marker-session - because the rule above was
+written as advice for the suites that had already been burned rather than
+applied to every suite that builds a non-ASCII fixture. The tell is worth
+memorizing: the fixtures degrade CONSISTENTLY, so the suite's own expectations
+degrade with them and stay self-consistent, and the code-point-built
+PowerShell twin is left as the only honest participant. **A differential
+failure where the twin looks wrong and the fixture contains a `\u` escape is
+the fixture, until proven otherwise.**
+
+Two rules follow, and both are now in force in every suite that builds a
+non-ASCII fixture:
 
 - **Build every non-ASCII fixture from explicit UTF-8 BYTES** - `$'\xE2\x9D\xAF'`,
   never `printf '\u276F'`. ANSI-C `\xNN` quoting emits the byte verbatim in
@@ -270,6 +280,36 @@ it were whitespace, so a lone `0xA0` row classifies `empty` - "safe to inject
 into" - under C. .NET cannot hold an unpaired byte, so the PowerShell twins
 answer `pending` there. The twins are the safe side; the divergence is recorded
 in `bin/fm-composer-lib.psm1` (divergence (f)) rather than reproduced.
+
+### A capability the two worlds do not share is a PROTOCOL question
+
+Windows can grant the symlink privilege to one world and not the other: .NET's
+`New-Item -ItemType SymbolicLink` succeeds where MSYS `ln -s` silently COPIES
+(MSYS only makes real links when `MSYS=winsymlinks:native` asks it to). After
+the reference host gained Developer Mode this split appeared for real, and it
+does not have one blanket answer - it has two, decided by who else reads the
+artifact:
+
+- **Private artifact, each world its own** - `CLAUDE.md` beside a project's
+  `AGENTS.md`. Each world may use its best available form, because both forms
+  are valid aliases and each world RECOGNIZES the other's (verified directly:
+  a bash ensure run over a real symlink alias preserves it and reports the
+  ordinary update). The differential must then compare each world against ITS
+  OWN expected form - `tests/fm-brief-psm1.test.sh` normalizes the two kinds
+  through `norm_alias_kind` - or it fails on a difference that is not a defect.
+- **Shared durable state, one representation** - the fleet lock. The question
+  is never "can this world create a link" but "can every co-owner of this home
+  READ what I publish". A native-link lock is unreadable to the bash tree that
+  co-owns the same `FM_HOME`: the differential caught bash reporting the owner
+  token as absent and denying the lock points at its owner. So
+  `Test-FmLockSymlinksWork` mirrors BASH'S effective capability on Windows -
+  yes only when `MSYS=winsymlinks:native`, exactly when bash itself would make
+  a real link - rather than its own. Off Windows nothing changes.
+
+The general rule: **before letting the twin use a capability bash lacks, ask
+what reads the result.** Anything a bash-side script, hook or sibling home
+parses is a wire format, and the twin's job there is compatibility, not
+capability.
 
 ### MSYS rewrites pwsh argv, and only in SOME shells
 

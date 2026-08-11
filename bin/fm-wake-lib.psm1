@@ -1039,6 +1039,26 @@ function Test-FmLockSymlinksWork {
         return $script:FmLockSymlinkOk
     }
 
+    # THE TRANSITION RULE, learned the hard way (task ps-port-symlinks): a lock
+    # is SHARED DURABLE STATE, so the question is never "can .NET make a link"
+    # but "can every co-owner of this home read what I publish". On Windows the
+    # bash twin's `ln -s` copies unless MSYS requests native links, so bash
+    # answers no and publishes the fallback shape - and the differential's
+    # interop probes showed bash failing to read a native-link lock outright
+    # (owner token NONE, points=no). While the bash tree co-owns these homes,
+    # the twin therefore mirrors BASH'S effective capability: yes on Windows
+    # only when MSYS opts into native links, exactly when bash itself would
+    # make a real link. Off Windows the native probe below is the same answer
+    # bash gets from ln -s, so nothing changes there.
+    if ($IsWindows) {
+        $msys = Get-FmEnv -Name 'MSYS' -Default ''
+        if ($msys -notmatch 'winsymlinks:native') {
+            $script:FmLockSymlinkDir = $dir
+            $script:FmLockSymlinkOk = $false
+            return $false
+        }
+    }
+
     $ok = $false
     $probe = "$dir/.fm-lock-symprobe.$PID.$(Get-Random)"
     if (Test-FmWakePathPresent -Path $probe) { Remove-FmWakeFileQuiet -Path $probe }
