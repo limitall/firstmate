@@ -237,15 +237,15 @@ Describe 'Get-FmSessionStartDigest' {
 
     It 'lists every in-flight task with its endpoint verdict and status tail' {
         New-TestHome -Populated | Out-Null
-        function Get-FmBackendOfMeta { param($Path) 'tmux' }
-        function Get-FmBackendTargetOfMeta { param($Path) '' }
+        function Get-FmMetaBackend { param($Path) 'tmux' }
+        function Get-FmMetaTarget { param($Path) '' }
         function Test-FmBackendTargetExists { param($Backend, $Target, $Name) $false }
         try {
             $digest = @(Get-FmSessionStartDigest)
             $digest | Should -Contain '--- task-a ---'
             $digest | Should -Contain 'endpoint: dead (backend=tmux window=fm-task-a)'
         } finally {
-            Remove-Item -Path 'function:Get-FmBackendOfMeta', 'function:Get-FmBackendTargetOfMeta', 'function:Test-FmBackendTargetExists' -ErrorAction SilentlyContinue
+            Remove-Item -Path 'function:Get-FmMetaBackend', 'function:Get-FmMetaTarget', 'function:Test-FmBackendTargetExists' -ErrorAction SilentlyContinue
         }
     }
 
@@ -375,5 +375,31 @@ Describe 'Invoke-FmSessionLockStage' {
         } finally {
             Remove-Item -Path 'function:Invoke-FmLock' -ErrorAction SilentlyContinue
         }
+    }
+}
+
+Describe 'Get-FmSessionEndpointLine' {
+    # The endpoint read is a fast PRESENCE check the backend area owns. What
+    # matters here is that the digest binds to the probe that area actually
+    # publishes, and reports "unknown" rather than guessing when none fits.
+    It 'uses the herdr presence probe for a herdr endpoint' {
+        New-TestHome -Populated | Out-Null
+        $meta = Join-Path $env:FM_HOME 'state' 'task-a.meta'
+        [System.IO.File]::WriteAllText($meta, "window=fm-task-a`nbackend=herdr`n")
+        function Test-FmHerdrTargetExists { param($Target) $true }
+        try {
+            Get-FmSessionEndpointLine -MetaPath $meta -TaskId 'task-a' -Window 'fm-task-a' |
+                Should -Be 'endpoint: alive (backend=herdr window=fm-task-a)'
+        } finally {
+            Remove-Item -Path 'function:Test-FmHerdrTargetExists' -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'reports unknown, naming the backend, when no probe for it is loaded' {
+        New-TestHome -Populated | Out-Null
+        $meta = Join-Path $env:FM_HOME 'state' 'task-a.meta'
+        [System.IO.File]::WriteAllText($meta, "window=fm-task-a`nbackend=zellij`n")
+        Get-FmSessionEndpointLine -MetaPath $meta -TaskId 'task-a' -Window 'fm-task-a' |
+            Should -Be "endpoint: unknown (no endpoint probe is loaded for backend 'zellij'; window=fm-task-a)"
     }
 }

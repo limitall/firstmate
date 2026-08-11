@@ -83,10 +83,13 @@ function Get-FmSessionMetaValue {
     if ($shared) { return (& $shared -Path $Path -Key $Key) }
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+    # Last value wins, matching Get-FmMetaValue, so the fallback and the shared
+    # owner cannot disagree about a meta file carrying a repeated key.
+    $value = ''
     foreach ($line in (Get-FmSessionFileLines -Path $Path)) {
-        if ($line.StartsWith("$Key=")) { return $line.Substring($Key.Length + 1) }
+        if ($line.StartsWith("$Key=")) { $value = $line.Substring($Key.Length + 1) }
     }
-    return ''
+    return $value
 }
 
 # Read a text file as LF-delimited lines with no trailing-empty artifact, so a
@@ -107,6 +110,10 @@ function Get-FmSessionFileLines {
 # Write a state/config file with LF endings and no BOM on every platform. The
 # byte-for-byte file contract with a Linux firstmate depends on this, so no
 # caller in this area may use Set-Content/Out-File for a contract file.
+#
+# Write-FmTextFileLf owns that rule for the module. This delegates to it so the
+# rule has ONE owner, and keeps an identical local implementation for the case
+# where this area is loaded on its own - which is how it was developed.
 function Write-FmSessionTextFile {
     [CmdletBinding()]
     param(
@@ -114,6 +121,11 @@ function Write-FmSessionTextFile {
         [Parameter(Mandatory)][AllowEmptyString()][string]$Content
     )
 
+    $shared = Resolve-FmSessionCommand -Name 'Write-FmTextFileLf'
+    if ($shared) {
+        & $shared -Path $Path -Text $Content
+        return
+    }
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText($Path, ($Content -replace "`r`n", "`n"), $utf8NoBom)
 }
@@ -528,6 +540,56 @@ function Invoke-FmSessionComposedStep {
     }
 }
 
+# One cheap alive/dead read of a task's recorded backend endpoint. This is a fast
+# PRESENCE check only, never a full state read: the digest deliberately skips the
+# deeper per-task read so it stays bounded, and Get-FmCrewState is what answers
+# "what is this crew actually doing".
+#
+# The backend area owns every probe here. It ships one session provider, so a
+# meta naming an unported backend is reported as unknown rather than guessed at -
+# the same refuse-loudly-never-guess rule that area applies elsewhere.
+function Get-FmSessionEndpointLine {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$MetaPath,
+        [Parameter(Mandatory)][string]$TaskId,
+        [Parameter(Mandatory)][string]$Window
+    )
+
+    $backend = 'unknown'
+    $backendOf = Resolve-FmSessionCommand -Name 'Get-FmMetaBackend'
+    if ($backendOf) {
+        try { $backend = [string](& $backendOf -Path $MetaPath) } catch { $backend = 'unknown' }
+    }
+
+    $target = ''
+    $targetOf = Resolve-FmSessionCommand -Name 'Get-FmMetaTarget'
+    if ($targetOf) {
+        try { $target = [string](& $targetOf -Path $MetaPath) } catch { $target = '' }
+    }
+    if ([string]::IsNullOrEmpty($target)) { $target = $Window }
+
+    # A generic cross-backend predicate is preferred if one is ever published;
+    # otherwise the probe of the resolved backend is used.
+    $probe = Resolve-FmSessionCommand -Name 'Test-FmBackendTargetExists'
+    if ($probe) {
+        $alive = $false
+        try { $alive = [bool](& $probe -Backend $backend -Target $target -Name "fm-$TaskId") } catch { $alive = $false }
+        return $(if ($alive) { "endpoint: alive (backend=$backend window=$Window)" } else { "endpoint: dead (backend=$backend window=$Window)" })
+    }
+
+    if ($backend -eq 'herdr') {
+        $probe = Resolve-FmSessionCommand -Name 'Test-FmHerdrTargetExists'
+        if ($probe) {
+            $alive = $false
+            try { $alive = [bool](& $probe -Target $target) } catch { $alive = $false }
+            return $(if ($alive) { "endpoint: alive (backend=$backend window=$Window)" } else { "endpoint: dead (backend=$backend window=$Window)" })
+        }
+    }
+
+    return "endpoint: unknown (no endpoint probe is loaded for backend '$backend'; window=$Window)"
+}
+
 # The lock stage gets its own handling rather than the generic composed step,
 # because it is the one stage whose RESULT decides what the rest of the digest is
 # allowed to do. Refusal is honoured in all three shapes an owner might use:
@@ -763,26 +825,7 @@ function Get-FmSessionStartDigest {
 
         $window = Get-FmSessionMetaValue -Path $meta.FullName -Key 'window'
         if (-not [string]::IsNullOrEmpty($window)) {
-            $backend = 'unknown'
-            $backendOf = Resolve-FmSessionCommand -Name 'Get-FmBackendOfMeta'
-            if ($backendOf) { try { $backend = [string](& $backendOf -Path $meta.FullName) } catch { $backend = 'unknown' } }
-            $target = ''
-            $targetOf = Resolve-FmSessionCommand -Name 'Get-FmBackendTargetOfMeta'
-            if ($targetOf) { try { $target = [string](& $targetOf -Path $meta.FullName) } catch { $target = '' } }
-            if ([string]::IsNullOrEmpty($target)) { $target = $window }
-
-            $exists = Resolve-FmSessionCommand -Name 'Test-FmBackendTargetExists'
-            if ($exists) {
-                $alive = $false
-                try { $alive = [bool](& $exists -Backend $backend -Target $target -Name "fm-$id") } catch { $alive = $false }
-                if ($alive) {
-                    $out += "endpoint: alive (backend=$backend window=$window)"
-                } else {
-                    $out += "endpoint: dead (backend=$backend window=$window)"
-                }
-            } else {
-                $out += "endpoint: unknown (Test-FmBackendTargetExists is not available in this module build; window=$window)"
-            }
+            $out += Get-FmSessionEndpointLine -MetaPath $meta.FullName -TaskId $id -Window $window
         } else {
             $out += 'endpoint: unknown (no window recorded)'
         }

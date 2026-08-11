@@ -58,8 +58,9 @@ fails closed to a read-only session.
 | `Get-FmSupervisionRepairLine -Afk -XMode` | `fm-supervision-instructions.sh --repair-line` | turn-end guard banner |
 | `Get-FmHarness` | `bin/fm-harness.sh` | digest stages 4 and 9 |
 | `Get-FmBackendName`, `Get-FmBackendRequiredTool -Backend`, `Get-FmBackendKnown`, `Test-FmBackendRequiredToolAvailable` | `bin/fm-backend.sh` | bootstrap tool detection |
-| `Get-FmBackendOfMeta -Path`, `Get-FmBackendTargetOfMeta -Path`, `Test-FmBackendTargetExists -Backend -Target -Name` | `bin/fm-backend.sh` | digest stage 6 endpoint liveness |
-| `Get-FmMetaValue -Path -Key` | `fm_meta_get` | digest stage 6 |
+| `Get-FmMetaBackend -Path`, `Get-FmMetaTarget -Path` (backend area, landed) | `bin/fm-backend.sh` | digest stage 6 endpoint liveness |
+| `Test-FmHerdrTargetExists -Target` (backend area, landed), or a generic `Test-FmBackendTargetExists -Backend -Target -Name` if one is ever published | `fm_backend_target_exists` | digest stage 6 endpoint liveness |
+| `Get-FmMetaValue -Path -Key` (landed), `Write-FmTextFileLf -Path -Text` (landed) | `fm_meta_get`, LF-only writes | digest stage 6, every contract-file write |
 | `Test-FmWatcherHealthy -State -Grace` | `fm_watcher_healthy` | turn-end guard, Stop auto-arm |
 | `Get-FmSupervisionStatus -State -Grace` | `fm_supervision_status` | turn-end guard, Stop auto-arm |
 | `Invoke-FmWatchArm` | `bin/fm-watch-arm.sh` | Stop auto-arm |

@@ -59,6 +59,27 @@ governs the import.
   empirical quirks that must not be "cleaned up".
 - `docs/worktree-isolation-windows.md` - worktree isolation via
   `treehouse get --lease`, and why that replaced scraping a pane's cwd.
+- `docs/session-start.md` - the startup digest and bootstrap detection, plus the
+  table of function names one area resolves from another. **Read that table
+  before naming a cross-area function**: areas are built in parallel and bind to
+  each other by name at call time, so a rename is a silent break.
+- `docs/claude-hooks-windows.md` - the Claude hook surface, and the line between
+  what is `# WINDOWS-UNVERIFIED:` documentation and what the tests actually
+  prove.
+
+## Cross-area composition
+
+Areas resolve each other by name at call time and degrade explicitly when an
+owner is absent, so any one area can be developed and tested alone. Two rules
+follow:
+
+- **Say when a step did not run.** A missing owner is reported as a step that did
+  NOT run, never as one that passed. Which direction the degradation takes is
+  chosen per step: a hook that cannot evaluate its predicate fails OPEN, while a
+  session that cannot verify lock ownership falls back to READ-ONLY.
+- **One owner per rule.** When a shared helper exists, delegate to it rather than
+  keeping a second copy (`Write-FmTextFileLf`, `Get-FmMetaValue`,
+  `Test-FmPathEqual`, `Get-FmJsonValue`).
 
 ## Maintaining this file
 
