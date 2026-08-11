@@ -104,8 +104,13 @@ unesc() {
   v=${v//@LF@/$'\n'}
   v=${v//@CR@/$'\r'}
   v=${v//@SP@/ }
-  v=${v//@ACUTE@/$'\u00E9'}
-  v=${v//@EMDASH@/$'\u2014'}
+  # Byte escapes, never $'\uXXXX': under the C-default locale firstmate's
+  # hooks run in, bash renders \u below 256 as a bare Latin-1 byte and
+  # \u above it as the LITERAL backslash-u text, so the two worlds hash
+  # different bytes. Same incident and fix as the other suites
+  # (task ps-port-locale).
+  v=${v//@ACUTE@/$'\xc3\xa9'}
+  v=${v//@EMDASH@/$'\xe2\x80\x94'}
   UNESC=$v
 }
 
