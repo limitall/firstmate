@@ -323,6 +323,17 @@ Describe 'Invoke-FmClaudeTurnEndGuard' {
     }
 
     It 'FAILS OPEN when the watcher predicate owner is not loaded, rather than wedging every turn end' {
+        # The watcher area ships a real Test-FmWatcherHealthy, so withhold that
+        # one name at the resolution seam and let every other owner resolve
+        # normally. Leaving it to "the function happens not to exist" stopped
+        # working when the watcher landed, and the failure mode was invisible:
+        # the call threw, this hook read the throw as "no owner", and the guard
+        # failed open on EVERY turn while this test still passed.
+        $realResolve = (Get-Command -Name 'Resolve-FmSessionCommand').ScriptBlock
+        Mock Resolve-FmSessionCommand {
+            if ($Name -contains 'Test-FmWatcherHealthy') { return $null }
+            return (& $realResolve -Name $Name)
+        }
         New-TestPrimaryHome -InFlight | Out-Null
         (Invoke-FmClaudeTurnEndGuard -Payload (New-StopPayload) -ClaudeMode).ExitCode | Should -Be 0
     }
@@ -341,6 +352,30 @@ Describe 'Invoke-FmClaudeTurnEndGuard' {
         $decision.Stderr | Should -Contain '●  TURN WOULD END BLIND - SUPERVISION IS OFF'
         $decision.Stderr | Should -Contain '●  1 task(s) in flight, but no live watcher holds this home lock (last beat: never).'
         $decision.Stderr | Should -Contain '●  The Stop-owned auto-arm did not claim this home either, so recovery is NOT already under way.'
+    }
+
+    It 'delivers the turn-end context to the repair-line renderer, not just a line' {
+        # End to end across three areas: the hook resolves the watcher area's
+        # Get-FmSupervisionRepairLine by name and calls it the way the cross-area
+        # table publishes it (-Afk -XMode), which forwards to whichever area
+        # renders the harness-specific instruction. Assert the VALUES arrive, not
+        # merely that some line comes back. Get-FmSupervisionRepairLine is a
+        # simple function, so arguments it does not declare are dropped into
+        # $args silently - the renderer would still answer, just with none of the
+        # context it was given, and no caller could tell.
+        New-TestPrimaryHome -InFlight | Out-Null
+        function Test-FmWatcherHealthy { param($State, $Grace) $false }
+        function Get-FmSupervisionInstructions {
+            param($Options)
+            "REPAIR afk=$($Options['Afk']) xmode=$($Options['XMode']) repairline=$($Options['RepairLine'])"
+        }
+        try {
+            $decision = Invoke-FmClaudeTurnEndGuard -Payload (New-StopPayload) -ClaudeMode
+            $decision.ExitCode | Should -Be 2
+            $decision.Stderr | Should -Contain '●  REPAIR afk=False xmode=False repairline=True'
+        } finally {
+            Remove-Item -Path 'function:Get-FmSupervisionInstructions' -ErrorAction SilentlyContinue
+        }
     }
 
     It 'names the relay poll rather than a task when that is the actual supervision need' {

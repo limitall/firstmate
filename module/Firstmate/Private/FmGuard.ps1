@@ -220,9 +220,31 @@ function Get-FmSupervisionRepairLine {
         instruction renderer elsewhere in the module; this is the same fallback
         sentence the bash guards use when that renderer cannot be reached, so the
         banner is never emitted without a next action.
+
+        Two shapes bind on purpose. This area calls it with -Options; the hook
+        area calls it as `-Afk -XMode`, which is what the cross-area table in
+        docs/session-start.md publishes, passing 0/1. Declaring only -Options
+        does not reject that caller - this is a simple function, not an advanced
+        one, so the two unmatched arguments land in $args and are dropped without
+        a word. The call then succeeds having discarded exactly the context it
+        was given, and the renderer below cannot tell an away-mode turn end from
+        an ordinary one.
     #>
     [OutputType([string])]
-    param([hashtable]$Options = @{})
+    param(
+        [hashtable]$Options = @{},
+        [AllowNull()][object]$Afk,
+        [AllowNull()][object]$XMode
+    )
+    if ($PSBoundParameters.ContainsKey('Afk') -or $PSBoundParameters.ContainsKey('XMode')) {
+        # Same options this area's own turn-end caller builds: that call site and
+        # the hook's are the same banner, so they must render the same line.
+        $merged = @{ RepairLine = $true; TurnEnd = $true }
+        foreach ($key in $Options.Keys) { $merged[$key] = $Options[$key] }
+        if ($PSBoundParameters.ContainsKey('Afk')) { $merged['Afk'] = [bool][int]$Afk }
+        if ($PSBoundParameters.ContainsKey('XMode')) { $merged['XMode'] = [bool][int]$XMode }
+        $Options = $merged
+    }
     $line = Invoke-FmSeam -Name 'Get-FmSupervisionInstructions' -Arguments @($Options) -Default $null
     if ($line) { return [string]$line }
     return 'Repair missing watcher supervision according to the session-start operating block.'

@@ -1246,15 +1246,24 @@ function Test-FmWatcherHealthy {
         identity-matched watcher PROCESS holds this home's lock AND the beacon is
         fresh. The arm layer and the turn-end guard need exactly this: a leftover
         beacon must never satisfy them.
+
+        -WatchPath and -FmHome both default from the wake context, because the
+        cross-area contract in docs/session-start.md publishes this as
+        `Test-FmWatcherHealthy -State -Grace` and the hook area calls exactly
+        that. A mandatory -WatchPath does not fail that caller loudly: the call
+        throws, the hook's resolver catches it and reports "predicate owner not
+        loaded", and the turn-end guard then fails OPEN on every single turn
+        while looking perfectly healthy.
     #>
     param(
         [Parameter(Mandatory)][string]$State,
-        [Parameter(Mandatory)][string]$WatchPath,
+        [string]$WatchPath,
         [int]$Grace = 0,
         [string]$FmHome
     )
     if ($Grace -le 0) { $Grace = Get-FmGuardGrace }
     if (-not $FmHome) { $FmHome = (Get-FmWakeContext).Home }
+    if (-not $WatchPath) { $WatchPath = Get-FmWatchPath }
     $lockDir = Join-Path $State '.watch.lock'
     $watcherPid = Get-FmLockPid -LockDir $lockDir
     if (-not (Test-FmProcessAlive $watcherPid)) { return $false }
