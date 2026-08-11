@@ -37,7 +37,12 @@ environment contract the bash scripts use.
 Invoke-FmMergeLocal -TaskId my-task
 #>
 function Invoke-FmMergeLocal {
-    [CmdletBinding(SupportsShouldProcess)]
+    # ConfirmImpact = 'High': this is the one sanctioned state-changing git
+    # action inside projects/, so a captain calling it directly is asked before
+    # firstmate writes to a project checkout. The entry point passes
+    # -Confirm:$false, because the approval that authorizes the merge happened
+    # before the command was ever run.
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory, Position = 0)][string]$TaskId,
@@ -64,8 +69,12 @@ function Invoke-FmMergeLocal {
         throw ("error: task $TaskId is mode=$mode, not local-only; a PR task lands through its PR after " +
             'approval (this port has no PR-merge command - merge it with gh-axi, or from a Linux firstmate home)')
     }
-    if (-not $project) {
-        throw "error: task $TaskId records no project in $metaPath; refusing to guess where to merge"
+    # The recorded project must exist as a checkout before anything else is
+    # asked of it. Named with the task AND the path, because the two failures
+    # behind this - a meta with no project field, and a meta pointing at a
+    # checkout that has since been removed - are read from the same line.
+    if (-not $project -or -not (Test-Path -LiteralPath $project -PathType Container)) {
+        throw "error: no project checkout recorded for task $TaskId at '$project'"
     }
 
     $branch = "fm/$TaskId"

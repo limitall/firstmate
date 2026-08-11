@@ -176,12 +176,67 @@ Describe 'Invoke-FmMergeLocal' {
             'id=task1', "project=$($fx.Project)", 'kind=ship', 'mode=local-only', 'yolo=off')
         $before = Get-FmGitOutput -Directory $fx.Project -Arguments @('rev-parse', 'main')
 
-        $result = Invoke-FmMergeLocal -TaskId 'task1' -StateDir $fx.State
+        $result = Invoke-FmMergeLocal -TaskId 'task1' -StateDir $fx.State -Confirm:$false
         $result.Merged | Should -BeTrue
         $result.Message | Should -BeLike "merged fm/task1 into local main (* -> *) in $($fx.Project)"
         Get-FmGitOutput -Directory $fx.Project -Arguments @('rev-parse', 'main') |
             Should -Be (Get-FmGitOutput -Directory $fx.Project -Arguments @('rev-parse', 'fm/task1'))
         Get-FmGitOutput -Directory $fx.Project -Arguments @('rev-parse', 'main') | Should -Not -Be $before
+    }
+
+    It 'fast-forwards when the task branch is checked out in a LINKED WORKTREE' {
+        # The real spawn topology: the crewmate works in a pooled worktree with
+        # fm/<id> checked out there, while the project checkout stays on its
+        # default branch. Carried over from the lifecycle area's fixture, which
+        # modelled this shape; the merge must land the same way.
+        $root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $state = Join-Path $root 'state'
+        New-Item -ItemType Directory -Path $state -Force | Out-Null
+        $project = New-TestRepo -Path (Join-Path $root 'projects/thing')
+        $worktree = Join-Path $root 'wt'
+        $null = Invoke-FmGit -Directory $project -Arguments @('worktree', 'add', '-q', '-b', 'fm/task1', $worktree, 'main')
+        New-TestCommit -Path $worktree -Name 'work.txt'
+        $head = Get-FmGitOutput -Directory $worktree -Arguments @('rev-parse', 'HEAD')
+        $null = New-TestTaskMeta -StateDir $state -TaskId 'task1' -Lines @(
+            'id=task1', "project=$project", "worktree=$worktree", 'kind=ship', 'mode=local-only')
+
+        $result = Invoke-FmMergeLocal -TaskId 'task1' -StateDir $state -Confirm:$false
+        $result.Merged | Should -BeTrue
+        Get-FmGitOutput -Directory $project -Arguments @('rev-parse', 'main') | Should -Be $head
+    }
+
+    It 'refuses when the recorded project checkout is missing or absent from the meta' {
+        $fx = New-TestFixture
+        $null = New-TestTaskMeta -StateDir $fx.State -TaskId 'gone' -Lines @(
+            'id=gone', "project=$(Join-Path $fx.Root 'removed-checkout')", 'mode=local-only')
+        { Invoke-FmMergeLocal -TaskId 'gone' -StateDir $fx.State } |
+            Should -Throw '*no project checkout recorded for task gone*'
+
+        $null = New-TestTaskMeta -StateDir $fx.State -TaskId 'blank' -Lines @('id=blank', 'mode=local-only')
+        { Invoke-FmMergeLocal -TaskId 'blank' -StateDir $fx.State } |
+            Should -Throw '*no project checkout recorded for task blank*'
+    }
+
+    It 'refuses when the working tree state cannot be read at all' {
+        # An unreadable index is not "clean". It must refuse exactly like a dirty
+        # tree, never fall through to the merge. Corrupted for real rather than
+        # mocked: this refusal exists for a repository git itself cannot read.
+        $fx = New-TestFixture
+        $before = Get-FmGitOutput -Directory $fx.Project -Arguments @('rev-parse', 'main')
+        [System.IO.File]::WriteAllText((Join-Path $fx.Project '.git/index'), 'garbage')
+        $null = New-TestTaskMeta -StateDir $fx.State -TaskId 'task1' -Lines @(
+            'id=task1', "project=$($fx.Project)", 'mode=local-only')
+        { Invoke-FmMergeLocal -TaskId 'task1' -StateDir $fx.State -Confirm:$false } |
+            Should -Throw '*cannot inspect*for uncommitted changes; refusing to merge into it*'
+        Get-FmGitOutput -Directory $fx.Project -Arguments @('rev-parse', 'main') | Should -Be $before
+    }
+
+    It 'asks before writing into a project checkout unless the caller has already approved' {
+        # ConfirmImpact=High, so a direct caller is prompted; the entry point
+        # passes -Confirm:$false because reaching it IS the approved action.
+        (Get-Command Invoke-FmMergeLocal).ScriptBlock.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.CmdletBindingAttribute] } |
+            ForEach-Object { $_.ConfirmImpact } | Should -Be 'High'
     }
 
     It 'refuses a task that is not mode=local-only' {
@@ -249,7 +304,7 @@ Describe 'Invoke-FmMergeLocal' {
         $null = New-TestTaskMeta -StateDir $fx.State -TaskId 'task1' -Lines @(
             'id=task1', "project=$($fx.Project)", 'mode=local-only')
         $before = Get-FmGitOutput -Directory $fx.Project -Arguments @('rev-parse', 'main')
-        Invoke-FmMergeLocal -TaskId 'task1' -StateDir $fx.State -WhatIf | Should -BeNullOrEmpty
+        Invoke-FmMergeLocal -TaskId 'task1' -StateDir $fx.State -WhatIf -Confirm:$false | Should -BeNullOrEmpty
         Get-FmGitOutput -Directory $fx.Project -Arguments @('rev-parse', 'main') | Should -Be $before
     }
 

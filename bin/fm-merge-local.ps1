@@ -35,7 +35,10 @@ if (-not $TaskId) {
 }
 
 try {
-    $result = Invoke-FmMergeLocal -TaskId $TaskId -StateDir $StateDir
+    # -Confirm:$false: the cmdlet is ConfirmImpact=High so a direct caller is
+    # asked first, but reaching this entry point IS the approved action - the
+    # captain's merge decision was made before it was run.
+    $result = Invoke-FmMergeLocal -TaskId $TaskId -StateDir $StateDir -Confirm:$false
     if ($null -eq $result) { exit 0 }
     [Console]::Out.Write("$($result.Message)`n")
     exit 0

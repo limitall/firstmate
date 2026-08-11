@@ -82,6 +82,41 @@ One message changed: the bash points a non-`local-only` task at
 `bin/fm-pr-merge.sh`, which this port does not have. The refusal names what a
 Windows captain can actually do instead of a script that is not on the platform.
 
+`Invoke-FmMergeLocal` is `ConfirmImpact = 'High'`: a captain calling the cmdlet
+directly is asked before firstmate writes into a project checkout. The entry
+point passes `-Confirm:$false`, because reaching it *is* the approved action -
+the merge decision was made before the command ran. Any programmatic caller must
+do the same.
+
+### Ownership: one merge-local, and what came from the lifecycle area
+
+The lifecycle area also ported `bin/fm-merge-local.sh`. The captain's ruling is
+that the area owner keeps the command, so this is the only `Invoke-FmMergeLocal`
+and `Private/FmMerge.ps1`, `Public/FmMerge.ps1` and `tests/FmMerge.Tests.ps1`
+are gone. Before deleting them, every guard, refusal and test case in that
+implementation was inventoried against this one. Three things it had that this
+one did not were carried over rather than lost:
+
+- `ConfirmImpact = 'High'` (above).
+- The refusal for a task whose recorded project checkout is **missing**, not
+  merely unrecorded, naming the task and the path: `no project checkout recorded
+  for task <id> at '<path>'`. This one had the check but split across two
+  messages that each said less.
+- Its test fixture's topology - the task branch checked out in a **linked
+  worktree** while the project stays on its default branch, which is the real
+  spawn shape - is now a test here.
+
+Everything else it guarded was already guarded here, including the
+unreadable-working-tree refusal, which now has a test on both sides of the swap
+(driven by a genuinely corrupt index rather than a mock).
+
+Two of its behaviours were dropped deliberately: its `{ExitCode, Messages}`
+return shape, because every public function in this port throws and lets the
+entry point map exit codes; and its `-h`/`--help` flag, because PowerShell's own
+`-?` already prints this script's help and a bash-style long flag is the Linux
+idiom this port exists to leave behind. Its usage exit code was `1`; this port's
+documented convention is `2` for usage.
+
 ## Promotion
 
 `Invoke-FmPromote` flips `kind=scout` to `kind=ship` and writes the decided
