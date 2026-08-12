@@ -43,10 +43,18 @@
 #   - JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE is deliberately NOT set. It would kill
 #     the worker the moment the spawner exits. Teardown terminates explicitly.
 #
-# WINDOWS-UNVERIFIED: every P/Invoke in this file. Job objects are documented
-# Win32 with stable semantics, but nothing here has run on a Windows host. On
-# non-Windows the whole surface reports 'unsupported' - it never emulates, and
-# never claims custody it does not have.
+# PARTLY VERIFIED ON WINDOWS 11 NOW. CreateKillOnClose is: it was run on the
+# laptop, it FAILED (ERROR_BAD_LENGTH from a hand-computed struct size), and it
+# passes since the structs were declared properly - see CreateKillOnClose. The
+# fact that a documented, stable Win32 API can still be called wrongly is the
+# whole argument for the marker: this file carried it for months, the note was
+# correct, and the first real execution found a defect that no Linux run could.
+#
+# WINDOWS-UNVERIFIED: every OTHER P/Invoke here - the named custody job, Assign,
+# TerminateJobObject, the job process-id query, and the Restart Manager calls.
+# They have still never run on a Windows host. On non-Windows the whole surface
+# reports 'unsupported' - it never emulates, and never claims custody it does
+# not have.
 
 Set-StrictMode -Version Latest
 

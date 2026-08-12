@@ -19,11 +19,17 @@
     Firstmate.JobCustody::CreateKillOnClose rather than declaring a second set
     of imports for the same kernel APIs.
 
-    # WINDOWS-UNVERIFIED: like every job-object call in this module, the shim has
-    # never executed on Windows in this repo. Everywhere else - and whenever it
-    # cannot load - the fallback is .NET's Process.Kill($true), which walks the
-    # child list at kill time. That is the weaker "taskkill /T" guarantee, which
-    # is why the job object is the primary path rather than the only one.
+    VERIFIED ON WINDOWS 11. This shim now genuinely creates and uses a job
+    object there; before, the custody type's hand-computed struct size made
+    CreateKillOnClose fail on every call, and this file silently took the
+    fallback on the one platform the job object exists for. The bounded-run
+    tests assert Mechanism = 'job-object' on Windows precisely so that
+    downgrade cannot happen quietly again.
+
+    Whenever the shim cannot load, the fallback is still .NET's
+    Process.Kill($true), which walks the child list at kill time. That is the
+    weaker "taskkill /T" guarantee - a child can escape it by re-parenting -
+    which is why the job object is the primary path rather than the only one.
 #>
 
 Set-StrictMode -Version Latest
