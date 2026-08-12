@@ -55,6 +55,13 @@
 #          network sweep rechecks state/.lock against it first, so a worker whose
 #          session already handed the lock on refuses the sweep loudly rather than
 #          racing the new owner.
+#          Set FM_BOOTSTRAP_LOCKED=1 alongside detect-only when the sweeps are
+#          skipped because THIS session already ran them while holding the fleet
+#          lock, rather than because it has no lock at all. The two cases differ
+#          in exactly one place: repair ownership. A locked session is told to
+#          restore a tangled primary checkout itself, while an unlocked one is
+#          told to leave that work to the lock holder. Unset/0 (the default)
+#          keeps detect-only meaning unlocked.
 #        fm-bootstrap.ps1 install <tool>...
 #          Install the named tools (only ones the captain approved).
 #
@@ -75,10 +82,11 @@
 # emission order is the bash file's top-to-bottom order:
 #
 #   pr-check migration -> startup memory budget -> backend validity -> backend
-#   tools -> common tools -> treehouse lease -> no-mistakes -> quota-axi ->
-#   tasks-axi -> gh auth -> tangle -> windows stubs -> crew harness fact ->
-#   crew dispatch -> tasks-axi fact -> liveness -> secondmate sync -> pending
-#   handoff delivery -> X mode -> fleet sync -> pending handoff detection.
+#   tools -> common tools -> treehouse lease -> no-mistakes -> gh-axi ->
+#   lavish-axi -> quota-axi -> tasks-axi -> gh auth -> tangle -> windows stubs ->
+#   crew harness fact -> crew dispatch -> tasks-axi fact -> liveness ->
+#   secondmate sync -> pending handoff delivery -> X mode -> fleet sync ->
+#   pending handoff detection.
 #
 # A phase-split run is that same sequence with one half's lines removed, never a
 # reshuffle: `gh auth` sits between the two local blocks because that is where it
@@ -198,7 +206,11 @@ function Test-FmNetworkSweepAuthorized {
     return $false
 }
 
+# Both messages are wire text: bin/fm-secondmate-nudge-lib.sh publishes them as
+# FM_SECOND_MATE_NUDGE_MESSAGE / FM_REMOTE_SECOND_MATE_NUDGE_MESSAGE, and a
+# retry marker written by either world is validated against them by the other.
 $script:FmSecondmateNudgeMessage = 'firstmate was updated to the latest - please re-read your AGENTS.md to pick up the new instructions.'
+$script:FmRemoteSecondmateNudgeMessage = 'Firstmate instructions or inherited config changed on this host. Re-read AGENTS.md and the inherited config files before further work.'
 $script:FmRespawnedSecondmateIds = @()
 
 # --- small primitives ---------------------------------------------------------
@@ -700,6 +712,138 @@ function Initialize-FmBootstrapStartupMemoryBudget {
     }
 }
 
+# --- remote secondmate transport ----------------------------------------------
+#
+# THE REMOTE SUBSYSTEM ITSELF STAYS BASH. There is no PowerShell twin of fm-on,
+# fm-remote-doctor, fm-remote-secondmate-control, fm-remote-inherit-push or
+# fm-procevent-remote-reply, so every hop below resolves through Invoke-FmScript
+# and falls back to the `.sh` (contract 7). What is ported here is the BRANCHING
+# and the exact reported text, not the transport.
+#
+# Stream merging carries the same caveat fm-ff-lib.psm1 records: bash captures
+# `2>&1`, which interleaves the two streams in real time, while Invoke-FmTool
+# keeps them separate and this file concatenates stdout then stderr before taking
+# a first line. For the failures these paths actually report - a single
+# `error: ...` line on one stream - the result is identical.
+
+# `"$bin_dir/fm-on.sh" <id> <command...> < /dev/null`. StdIn is passed as the
+# empty string so the child sees a closed stdin exactly as the bash redirect
+# gives it, rather than inheriting this process's console.
+function Invoke-FmRemoteOn {
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][string]$BinDir,
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][string[]]$Command
+    )
+    return (Invoke-FmScript -Name 'fm-on' -BinDir $BinDir -Arguments (@($Id) + @($Command)) -StdIn '')
+}
+
+# Twin of fm_remote_readiness_ensure (bin/fm-remote-readiness-lib.sh, which has
+# no module twin). Read-only doctor run; on any gap a --fix run; then a THIRD
+# read-only run whose verdict is final, so a repair is never trusted on its own
+# word. Code is 0 ready, 1 gap remains, 255 SSH could not complete - and 255
+# means unknown remote completion, so the caller preserves its route rather than
+# treating it as a refusal. Out always holds the LAST run's output.
+function Invoke-FmRemoteReadinessEnsure {
+    [OutputType([hashtable])]
+    param([Parameter(Mandatory)][string]$BinDir, [Parameter(Mandatory)][string]$Id)
+
+    $run = Invoke-FmRemoteOn -BinDir $BinDir -Id $Id -Command @('fm-remote-doctor.sh')
+    $out = ($run.StdOut + $run.StdErr).TrimEnd("`n")
+    if ($run.ExitCode -eq 0) { return @{ Code = 0; Out = $out } }
+    if ($run.ExitCode -eq 255) { return @{ Code = 255; Out = $out } }
+
+    $run = Invoke-FmRemoteOn -BinDir $BinDir -Id $Id -Command @('fm-remote-doctor.sh', '--fix')
+    $out = ($run.StdOut + $run.StdErr).TrimEnd("`n")
+    if ($run.ExitCode -eq 255) { return @{ Code = 255; Out = $out } }
+
+    $run = Invoke-FmRemoteOn -BinDir $BinDir -Id $Id -Command @('fm-remote-doctor.sh')
+    $out = ($run.StdOut + $run.StdErr).TrimEnd("`n")
+    if ($run.ExitCode -eq 255) { return @{ Code = 255; Out = $out } }
+    if ($run.ExitCode -ne 0) { return @{ Code = 1; Out = $out } }
+    return @{ Code = 0; Out = $out }
+}
+
+# `awk '/^check [^=]+=(fixable|human):|^action:|^error:/ { print; exit }'` - the
+# FIRST line matching any of the three anchored alternatives, whole. Matching is
+# case-SENSITIVE, as awk's is.
+function Get-FmRemoteReadinessReason {
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    foreach ($line in ($Text -split "`n")) {
+        if (($line -cmatch '^check [^=]+=(fixable|human):') -or
+            $line.StartsWith('action:', [System.StringComparison]::Ordinal) -or
+            $line.StartsWith('error:', [System.StringComparison]::Ordinal)) {
+            return $line
+        }
+    }
+    return ''
+}
+
+# `$(cmd)` strips trailing newlines and `| tail -1` then takes the last line, so
+# an EMPTY capture yields an empty string rather than no line at all - which is
+# what routes an unreadable probe into the invalid-state arm.
+function Get-FmRemoteLastLine {
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    $trimmed = $Text.TrimEnd("`n")
+    $lines = @($trimmed -split "`n")
+    return [string]$lines[$lines.Count - 1]
+}
+
+# `$state/.remote-inherit-<id>.lock` and the generation counter beside it, from
+# bin/fm-secondmate-nudge-lib.sh. $null is the bash `return 1`.
+function Test-FmSecondmateIdSafe {
+    [OutputType([bool])]
+    param([AllowEmptyString()][AllowNull()][string]$Id)
+    if ([string]::IsNullOrEmpty($Id)) { return $false }
+    if ($Id -notmatch '^[/A-Za-z0-9._-]+$') { return $false }
+    if ($Id.Contains('/')) { return $false }
+    return $true
+}
+
+function Get-FmRemoteInheritLockPath {
+    param([Parameter(Mandatory)][string]$StateDir, [AllowEmptyString()][AllowNull()][string]$Id)
+    if (-not (Test-FmSecondmateIdSafe $Id)) { return $null }
+    return (Join-Path $StateDir ".remote-inherit-$Id.lock")
+}
+
+# Twin of fm_remote_inherit_generation_next: publish current+1 atomically and
+# return it, or $null when anything about the existing record is unsafe. The
+# 17-digit bound is the bash twin's, and an unparseable or empty existing file is
+# a refusal rather than a reset to 1.
+function Step-FmRemoteInheritGeneration {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'SupportsShouldProcess is for user-facing cmdlets that need -WhatIf/-Confirm. This is a private helper inside a non-interactive bootstrap whose bash twin writes unconditionally.')]
+    param([Parameter(Mandatory)][string]$StateDir, [AllowEmptyString()][AllowNull()][string]$Id)
+    if (-not (Test-FmSecondmateIdSafe $Id)) { return $null }
+    $stateNative = ConvertTo-FmNativePath $StateDir
+    if (-not [System.IO.Directory]::Exists($stateNative)) { return $null }
+    if (Test-FmSymlink $stateNative) { return $null }
+
+    $path = Join-Path $StateDir ".remote-inherit-$Id.generation"
+    $native = ConvertTo-FmNativePath $path
+    $current = [long]0
+    $present = [System.IO.File]::Exists($native) -or [System.IO.Directory]::Exists($native) -or
+        (Test-FmSymlink $native)
+    if ($present) {
+        if (-not [System.IO.File]::Exists($native)) { return $null }
+        if (Test-FmSymlink $native) { return $null }
+        # `IFS= read -r current < "$path"` FAILS on an empty file, so an empty
+        # record refuses rather than reading as 0.
+        $lines = @(Get-FmFileLines $path)
+        if ($lines.Count -lt 1) { return $null }
+        $first = [string]$lines[0]
+        if ($first -notmatch '^[0-9]+$') { return $null }
+        if ($first.Length -gt 17) { return $null }
+        $current = [long]$first
+    }
+    $next = $current + 1
+    if (-not (Set-FmFileTextAtomic -Path $path -Text "$next`n" -NoNewline)) { return $null }
+    return [string]$next
+}
+
 # --- secondmate liveness ------------------------------------------------------
 
 # `for f in "$STATE"/*.meta` - sorted, dot-prefixed leaves excluded (a bash glob
@@ -731,10 +875,99 @@ function Test-FmMetaHasLinePrefix {
     return $false
 }
 
+# One remote secondmate's liveness check. Split out of the sweep exactly as the
+# bash twin splits secondmate_liveness_one's remote half: every `return` here was
+# a `continue` in the loop and means the same thing - move on to the next
+# secondmate. SECONDMATE_RESPAWNED ids stay a script-scope accumulator this
+# appends to, so the hand-off to the convergence sweep is unchanged.
+function Invoke-FmSecondmateLivenessRemote {
+    param(
+        [Parameter(Mandatory)][string]$BinDir,
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][string]$RemoteHost,
+        [bool]$VerboseFacts
+    )
+    $readiness = Invoke-FmRemoteReadinessEnsure -BinDir $BinDir -Id $Id
+    if ($readiness.Code -eq 255) {
+        Write-FmOut "SECONDMATE_LIVENESS: secondmate ${Id}: skipped: remote host unavailable or endpoint state unknown; route preserved on $RemoteHost"
+        return
+    }
+    if ($readiness.Code -ne 0) {
+        $reason = Get-FmRemoteReadinessReason $readiness.Out
+        if ($reason -eq '') { $reason = Get-FmFfFirstLine -Text $readiness.Out }
+        if ($reason -eq '') { $reason = 'unknown readiness failure' }
+        Write-FmOut "SECONDMATE_LIVENESS: secondmate ${Id}: skipped: remote readiness failed on ${RemoteHost}: $reason"
+        return
+    }
+
+    # `2>/dev/null` on the state and route probes: only stdout carries the answer.
+    $probe = Invoke-FmRemoteOn -BinDir $BinDir -Id $Id -Command @('fm-remote-secondmate-control.sh', 'state', $Id)
+    if ($probe.ExitCode -eq 255) {
+        Write-FmOut "SECONDMATE_LIVENESS: secondmate ${Id}: skipped: remote host unavailable or endpoint state unknown; route preserved on $RemoteHost"
+        return
+    }
+    if ($probe.ExitCode -ne 0) {
+        Write-FmOut "SECONDMATE_LIVENESS: secondmate ${Id}: skipped: remote endpoint probe unreadable on $RemoteHost"
+        return
+    }
+    $agentState = Get-FmRemoteLastLine $probe.StdOut
+
+    switch -CaseSensitive ($agentState) {
+        'alive' {
+            $route = Invoke-FmRemoteOn -BinDir $BinDir -Id $Id -Command @('fm-remote-secondmate-control.sh', 'route', $Id)
+            if ($route.ExitCode -eq 255) {
+                Write-FmOut "SECONDMATE_LIVENESS: secondmate ${Id}: skipped: remote host unavailable or endpoint route unknown; route preserved on $RemoteHost"
+                return
+            }
+            if ($route.ExitCode -ne 0) {
+                Write-FmOut "SECONDMATE_LIVENESS: secondmate ${Id}: skipped: alive remote endpoint route is unreadable on $RemoteHost; inspect and migrate or retire it explicitly"
+                return
+            }
+            # `sed -n 's/^backend=//p' | tail -1` - the LAST such line wins.
+            $remoteBackend = ''
+            foreach ($line in ($route.StdOut -split "`n")) {
+                if ($line.StartsWith('backend=', [System.StringComparison]::Ordinal)) {
+                    $remoteBackend = $line.Substring('backend='.Length)
+                }
+            }
+            if ($remoteBackend -cne 'herdr') {
+                $shown = if ($remoteBackend -eq '') { 'missing' } else { $remoteBackend }
+                Write-FmOut "SECONDMATE_LIVENESS: secondmate ${Id}: skipped: alive remote endpoint is recorded on backend '$shown'; migrate or retire it explicitly"
+                return
+            }
+            if ($VerboseFacts) {
+                Write-FmOut "BOOTSTRAP_INFO: remote secondmate $Id already live (host=$RemoteHost)"
+            }
+        }
+        { $_ -ceq 'dead' -or $_ -ceq 'missing' } {
+            $cause = "remote endpoint $agentState on its configured host"
+            $spawn = Invoke-FmBootstrapChild -Name 'fm-spawn' -BinDir (Join-Path $Root 'bin') `
+                -Arguments @($Id, '--secondmate') -Environment @{ FM_SPAWN_NO_GUARD = '1' }
+            if ($spawn.Ok) {
+                $script:FmRespawnedSecondmateIds += $Id
+                if ($VerboseFacts -or -not (Test-FmLocalPhase)) {
+                    Write-FmOut "BOOTSTRAP_INFO: secondmate $Id relaunched after $cause (host=$RemoteHost)"
+                }
+            } else {
+                $detail = Get-FmFfFirstLine -Text (($spawn.StdOut + $spawn.StdErr).TrimEnd("`n"))
+                Write-FmOut "SECONDMATE_LIVENESS: secondmate ${Id}: respawn failed after ${cause}: $detail"
+            }
+        }
+        { $_ -ceq 'ambiguous' -or $_ -ceq 'unreadable' -or $_ -ceq 'unverified' } {
+            Write-FmOut "SECONDMATE_LIVENESS: secondmate ${Id}: skipped: remote endpoint state is $agentState on $RemoteHost"
+        }
+        default {
+            Write-FmOut "SECONDMATE_LIVENESS: secondmate ${Id}: skipped: remote endpoint returned an invalid state"
+        }
+    }
+}
+
 function Invoke-FmSecondmateLivenessSweep {
     param(
         [Parameter(Mandatory)][string]$StateDir,
-        [Parameter(Mandatory)][string]$Root
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$BinDir
     )
     # SESSION START ONLY. The detailed state machine and its only
     # recovery-authorizing states are owned by Get-FmBackendAgentState: a missing
@@ -751,6 +984,15 @@ function Invoke-FmSecondmateLivenessSweep {
         $window = Get-FmMetaValue -MetaPath $meta -Key 'window'
         if ([string]::IsNullOrEmpty($window)) { continue }
         $harness = Get-FmMetaValue -MetaPath $meta -Key 'harness'
+        # A remote route is reconciled on its OWN host and never through a local
+        # backend probe: the local classifier would read every remote endpoint as
+        # unreadable and its recovery states mean something else there.
+        $remoteHost = Get-FmMetaValue -MetaPath $meta -Key 'remote_host'
+        if (-not [string]::IsNullOrEmpty($remoteHost)) {
+            Invoke-FmSecondmateLivenessRemote -BinDir $BinDir -Root $Root -Id $id `
+                -RemoteHost $remoteHost -VerboseFacts $verbose
+            continue
+        }
         $backend = Get-FmBackendOfMeta $meta
         $target = Get-FmBackendTargetOfMeta $meta
         if ([string]::IsNullOrEmpty($target)) { $target = $window }
@@ -826,14 +1068,20 @@ function Save-FmSecondmateNudgeMarker {
         [Parameter(Mandatory)][string]$Id,
         [AllowEmptyString()][string]$HomePath,
         [AllowEmptyString()][string]$Commit,
-        [AllowEmptyString()][string]$Instructions
+        [AllowEmptyString()][string]$Instructions,
+        [AllowEmptyString()][string]$Message = '',
+        [ValidateSet(0, 1)][int]$Remote = 0
     )
+    if ($Message -eq '') { $Message = $script:FmSecondmateNudgeMessage }
     $marker = Get-FmSecondmateNudgeMarkerPath $PendingDir $Id
     if ($null -eq $marker) { return $false }
     try {
         $null = [System.IO.Directory]::CreateDirectory((ConvertTo-FmNativePath $PendingDir))
     } catch { return $false }
-    $body = "id=$Id`nselector=fm-$Id`nhome=$HomePath`ncommit=$Commit`ninstructions=$Instructions`nmessage=$script:FmSecondmateNudgeMessage`n"
+    # `remote=` is the LAST field, exactly as fm_secondmate_nudge_write writes
+    # it: a marker one world leaves behind is validated field-by-field by the
+    # other, and the placement decides which message is legal for it.
+    $body = "id=$Id`nselector=fm-$Id`nhome=$HomePath`ncommit=$Commit`ninstructions=$Instructions`nmessage=$Message`nremote=$Remote`n"
     return (Set-FmFileTextAtomic -Path $marker -Text $body -NoNewline)
 }
 
@@ -902,14 +1150,40 @@ function Invoke-FmSecondmateRetryPendingNudge {
         $markerHome = Get-FmMetaValue -MetaPath $marker -Key 'home'
         $commit = Get-FmMetaValue -MetaPath $marker -Key 'commit'
         $message = Get-FmMetaValue -MetaPath $marker -Key 'message'
+        # An older marker predates the field; bash reads it as 0 (local).
+        $remote = Get-FmMetaValue -MetaPath $marker -Key 'remote'
+        if ([string]::IsNullOrEmpty($remote)) { $remote = '0' }
         if ($selector -cne "fm-$id") {
             Write-FmOut "NUDGE_SECONDMATES: secondmate ${idLabel}: send failed: retry marker selector mismatch"
             continue
         }
-        if ($message -cne $script:FmSecondmateNudgeMessage) {
-            Write-FmOut "NUDGE_SECONDMATES: secondmate ${idLabel}: send failed: retry marker message mismatch"
-            continue
+        # The legal message depends on the PLACEMENT the marker records, and an
+        # unrecognized placement is refused rather than defaulted.
+        $placementBad = $false
+        switch -CaseSensitive ($remote) {
+            '0' {
+                if ($message -cne $script:FmSecondmateNudgeMessage) {
+                    Write-FmOut "NUDGE_SECONDMATES: secondmate ${idLabel}: send failed: retry marker message mismatch"
+                    $placementBad = $true
+                }
+            }
+            '1' {
+                if ($message -cne $script:FmRemoteSecondmateNudgeMessage) {
+                    Write-FmOut "NUDGE_SECONDMATES: secondmate ${idLabel}: send failed: remote retry marker message mismatch"
+                    $placementBad = $true
+                }
+            }
+            default {
+                Write-FmOut "NUDGE_SECONDMATES: secondmate ${idLabel}: send failed: retry marker placement is invalid"
+                $placementBad = $true
+            }
         }
+        if ($placementBad) { continue }
+        # A remote marker is owned by the remote convergence sweep below, which
+        # rewrites it every run and clears it on success. Retrying it from here
+        # would send the local message to a host that never received the local
+        # convergence.
+        if ($remote -ceq '1') { continue }
         $meta = Join-Path $Ctx.State "$id.meta"
         if (-not ([System.IO.File]::Exists((ConvertTo-FmNativePath $meta)) -and
                 ((Get-FmMetaValue -MetaPath $meta -Key 'kind') -ceq 'secondmate'))) {
@@ -952,6 +1226,109 @@ function Invoke-FmSecondmateRetryPendingNudge {
             $detail = Get-FmFfFirstLine -Text (($send.StdOut + $send.StdErr).TrimEnd("`n"))
             Write-FmOut "NUDGE_SECONDMATES: secondmate ${id}: send failed: $detail"
         }
+    }
+}
+
+# One remote secondmate's convergence, split out of the loop exactly as the bash
+# twin splits secondmate_sync_remote_one: every `return` here was a `continue`
+# and still means "move on to the next secondmate".
+function Invoke-FmSecondmateSyncRemoteOne {
+    param(
+        [Parameter(Mandatory)][hashtable]$Ctx,
+        [Parameter(Mandatory)][string]$Id,
+        [AllowEmptyString()][AllowNull()][string]$HomePath,
+        [Parameter(Mandatory)][string]$RemoteHost
+    )
+    $verboseFacts = ((Get-FmEnv 'FM_BOOTSTRAP_VERBOSE_FACTS' '0') -ceq '1')
+    $remoteLock = Get-FmRemoteInheritLockPath $Ctx.State $Id
+    if ($null -eq $remoteLock) {
+        Write-FmOut "NUDGE_SECONDMATES: secondmate ${Id}: send failed: cannot lock remote inheritance transaction"
+        return
+    }
+    # Wait-FmLock BLOCKS until it holds the lock and returns void, so unlike the
+    # bash `|| { ...; return; }` there is no failure arm to branch on - and the
+    # bash arm is unreachable for the same reason, since its twin also loops
+    # until it succeeds.
+    Wait-FmLock -LockPath $remoteLock
+    try {
+        $arm = Invoke-FmScript -Name 'fm-procevent-remote-reply' -BinDir $Ctx.BinDir -Arguments @('arm', $Id)
+        if (-not $arm.Ok) {
+            Write-FmOut "SECONDMATE_LIVENESS: secondmate ${Id}: skipped: remote reply source could not be registered"
+        }
+        $generation = Step-FmRemoteInheritGeneration $Ctx.State $Id
+        if ([string]::IsNullOrEmpty($generation)) {
+            Write-FmOut "SECONDMATE_SYNC: secondmate ${Id}: skipped: remote inheritance generation could not be published"
+            return
+        }
+
+        # A marker LEFT BEHIND by an earlier unconverged run means a nudge is
+        # still owed, so this run must send one even when nothing changed today.
+        $remoteMarker = Get-FmSecondmateNudgeMarkerPath $Ctx.PendingDir $Id
+        $remotePending = $false
+        if ($null -ne $remoteMarker) {
+            $markerNative = ConvertTo-FmNativePath $remoteMarker
+            if ([System.IO.File]::Exists($markerNative) -and
+                ((Get-FmMetaValue -MetaPath $remoteMarker -Key 'remote') -ceq '1')) {
+                $remotePending = $true
+            }
+        }
+        if (-not (Save-FmSecondmateNudgeMarker $Ctx.PendingDir $Id $HomePath '' 'remote' `
+                    $script:FmRemoteSecondmateNudgeMessage 1)) {
+            Write-FmOut "NUDGE_SECONDMATES: secondmate ${Id}: send failed: cannot record remote retry marker"
+            return
+        }
+
+        $nudgeNeeded = $false
+        $converged = $true
+        $sync = Invoke-FmRemoteOn -BinDir $Ctx.BinDir -Id $Id `
+            -Command @('fm-remote-secondmate-control.sh', 'sync', $Id)
+        $syncOut = ($sync.StdOut + $sync.StdErr).TrimEnd("`n")
+        if ($sync.Ok) {
+            if ($syncOut.StartsWith('synced:', [System.StringComparison]::Ordinal)) { $nudgeNeeded = $true }
+        } else {
+            Write-FmOut ("SECONDMATE_SYNC: secondmate ${Id}: skipped: remote tracked-file sync failed on " +
+                "${RemoteHost}: " + (Get-FmFfFirstLine -Text $syncOut))
+            $converged = $false
+        }
+
+        $push = Invoke-FmBootstrapChild -Name 'fm-remote-inherit-push' -BinDir $Ctx.BinDir `
+            -Arguments @($Id, $generation) -Environment @{ FM_CONFIG_INHERIT_LIVE = '1' }
+        $pushOut = ($push.StdOut + $push.StdErr).TrimEnd("`n")
+        if ($push.Ok) {
+            foreach ($line in ($pushOut -split "`n")) {
+                if ($line -cmatch '^(pushed|removed):') { $nudgeNeeded = $true; break }
+            }
+        } else {
+            Write-FmOut ("SECONDMATE_SYNC: secondmate ${Id}: skipped: remote inheritance failed on " +
+                "${RemoteHost}: " + (Get-FmFfFirstLine -Text $pushOut))
+            $converged = $false
+        }
+
+        if ($remotePending) { $nudgeNeeded = $true }
+        if ($converged -and $nudgeNeeded) {
+            $send = Invoke-FmBootstrapChild -Name 'fm-send' -BinDir $Ctx.BinDir `
+                -Arguments @("fm-$Id", $script:FmRemoteSecondmateNudgeMessage) `
+                -Environment @{
+                    FM_HOME           = $Ctx.PosixHome
+                    FM_ROOT_OVERRIDE  = $Ctx.PosixRoot
+                    FM_STATE_OVERRIDE = $Ctx.PosixState
+                }
+            if ($send.Ok) {
+                if ($null -ne $remoteMarker) {
+                    try { [System.IO.File]::Delete((ConvertTo-FmNativePath $remoteMarker)) } catch { $null = $_ }
+                }
+                if ($verboseFacts) { Write-FmOut "BOOTSTRAP_INFO: nudged remote fm-$Id after convergence" }
+            } else {
+                $detail = Get-FmFfFirstLine -Text (($send.StdOut + $send.StdErr).TrimEnd("`n"))
+                Write-FmOut "NUDGE_SECONDMATES: secondmate ${Id}: send failed: $detail"
+            }
+        } elseif ($converged) {
+            if ($null -ne $remoteMarker) {
+                try { [System.IO.File]::Delete((ConvertTo-FmNativePath $remoteMarker)) } catch { $null = $_ }
+            }
+        }
+    } finally {
+        try { $null = Unlock-FmLock -LockPath $remoteLock } catch { $null = $_ }
     }
 }
 
@@ -1110,6 +1487,16 @@ function Invoke-FmSecondmateSync {
         } finally {
             try { $null = Unlock-FmLock -LockPath $homeLock } catch { $null = $_ }
         }
+    }
+
+    # Remote routes converge through the generic transport. Their code root and
+    # inherited files are authoritative on that host, so no local path probe and
+    # no local fast-forward is attempted for them - which is also why they never
+    # appear in the SeenHomes set the propagation loop above walks.
+    foreach ($record in (Get-FmFfLiveSecondmateMetaRecord -StateDir $Ctx.State -Registry $Ctx.Registry)) {
+        $recordHost = Get-FmMetaValue -MetaPath $record.Meta -Key 'remote_host'
+        if ([string]::IsNullOrEmpty($recordHost)) { continue }
+        Invoke-FmSecondmateSyncRemoteOne -Ctx $Ctx -Id $record.Id -HomePath $record.Home -RemoteHost $recordHost
     }
 }
 
@@ -1548,6 +1935,7 @@ Invoke-FmMain -UnexpectedCode 70 {
 
     $detectOnly = ((Get-FmEnv 'FM_BOOTSTRAP_DETECT_ONLY' '0') -ceq '1')
     $verboseFacts = ((Get-FmEnv 'FM_BOOTSTRAP_VERBOSE_FACTS' '0') -ceq '1')
+    $bootstrapLocked = ((Get-FmEnv 'FM_BOOTSTRAP_LOCKED' '0') -ceq '1')
 
     # The FIRST mutating sweep at a locked session boundary: it neutralizes legacy
     # PR checks before any later bootstrap mutation can leave old artifacts
@@ -1576,6 +1964,17 @@ Invoke-FmMain -UnexpectedCode 70 {
     $backendToolList = @($backendTools -split '\s+' | Where-Object { $_ -ne '' })
     $allTools = (@($backendToolList) + @($commonTools)) -join ' '
     $noMistakesMin = '1.31.2'
+    # AXI-FAMILY FLOOR POLICY. Every axi-family floor is the CURRENT LATEST
+    # published version of that tool, captain-bumped periodically to keep the
+    # whole fleet on the newest axi tools. It is NOT the minimum
+    # feature-introduced version, and these floors are expected to drift upward
+    # as new versions ship. Never lower a floor to the earliest release that
+    # happens to satisfy some depended-on behavior. The tasks-axi feature probes
+    # are an independent defense-in-depth concern, not part of its floor.
+    # Values are mirrored from GH_AXI_MIN / LAVISH_AXI_MIN in the bash twin,
+    # which stays the single owner of the policy prose.
+    $ghAxiMin = '0.1.29'
+    $lavishAxiMin = '0.1.46'
 
     # Local detection: presence, version floors, and configuration. Nothing here
     # leaves this machine, so it stays on the session-start critical path.
@@ -1598,6 +1997,15 @@ Invoke-FmMain -UnexpectedCode 70 {
         }
         if ((Test-FmCommand 'no-mistakes') -and -not (Test-FmToolVersionAtLeast 'no-mistakes' $noMistakesMin)) {
             Write-FmOut "MISSING: no-mistakes (install: $(Get-FmInstallCommand 'no-mistakes'))"
+        }
+        # An installed axi-family build below its floor reports MISSING exactly
+        # like no-mistakes does, so the operator is asked to upgrade rather than
+        # silently running an older tool.
+        if ((Test-FmCommand 'gh-axi') -and -not (Test-FmToolVersionAtLeast 'gh-axi' $ghAxiMin)) {
+            Write-FmOut "MISSING: gh-axi (install: $(Get-FmInstallCommand 'gh-axi'))"
+        }
+        if ((Test-FmCommand 'lavish-axi') -and -not (Test-FmToolVersionAtLeast 'lavish-axi' $lavishAxiMin)) {
+            Write-FmOut "MISSING: lavish-axi (install: $(Get-FmInstallCommand 'lavish-axi'))"
         }
         if ((Test-FmCommand 'quota-axi') -and -not (Test-FmQuotaAxiCompatible)) {
             Write-FmOut "MISSING: quota-axi (install: $(Get-FmInstallCommand 'quota-axi'))"
@@ -1625,7 +2033,12 @@ Invoke-FmMain -UnexpectedCode 70 {
             $tangleDefault = ''
             try { $tangleDefault = Get-FmDefaultBranch -Directory $ctx.Root } catch { $tangleDefault = '' }
             if ([string]::IsNullOrEmpty($tangleDefault)) { $tangleDefault = 'main' }
-            if ($detectOnly) {
+            # Repair OWNERSHIP, not detection, is what the two wordings differ
+            # on. Detect-only alone means "this session has no lock", so the
+            # restore belongs to whoever holds it; detect-only PLUS
+            # FM_BOOTSTRAP_LOCKED means "this session already swept while
+            # holding the lock", so it owns the restore and gets the command.
+            if ($detectOnly -and -not $bootstrapLocked) {
                 Write-FmOut "TANGLE: primary checkout on feature branch '$tangleBranch' (expected '$tangleDefault'); the work is safe on that ref - read-only session must leave restore work to the session holding the fleet lock"
             } else {
                 Write-FmOut "TANGLE: primary checkout on feature branch '$tangleBranch' (expected '$tangleDefault'); the work is safe on that ref - restore the primary with: git -C $($ctx.PosixRoot) checkout $tangleDefault, then re-validate the branch in a proper worktree"
@@ -1653,7 +2066,7 @@ Invoke-FmMain -UnexpectedCode 70 {
         # sweep, so those two always run together in the same phase.
         if (Test-FmNetworkPhase) {
             if (Test-FmNetworkSweepAuthorized -StateDir $ctx.State -Label 'dead-secondmate relaunch') {
-                Invoke-FmSecondmateLivenessSweep -StateDir $ctx.State -Root $ctx.Root
+                Invoke-FmSecondmateLivenessSweep -StateDir $ctx.State -Root $ctx.Root -BinDir $ctx.BinDir
             }
             if (Test-FmNetworkSweepAuthorized -StateDir $ctx.State -Label 'secondmate convergence') {
                 Invoke-FmSecondmateSync -Ctx $ctx

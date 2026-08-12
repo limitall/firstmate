@@ -21,9 +21,11 @@
 #   2. fm-bootstrap's DIAGNOSTIC LINES ARE A PARSED INTERFACE.
 #      .agents/skills/bootstrap-diagnostics dispatches on their prefixes, so the
 #      cases below drive every branch whose text a skill reads: BACKEND_INVALID,
-#      MISSING/MISSING_MANUAL, NEEDS_GH_AUTH, TANGLE (both wordings),
-#      WINDOWS_SETUP, CREW_DISPATCH (four distinct validator verdicts), and the
-#      three `install` refusals.
+#      MISSING/MISSING_MANUAL (absent AND below-floor), NEEDS_GH_AUTH, TANGLE
+#      (both wordings, and both of the lock states that SELECT between them),
+#      WINDOWS_SETUP, CREW_DISPATCH (four distinct validator verdicts),
+#      SECONDMATE_LIVENESS / SECONDMATE_SYNC / NUDGE_SECONDMATES on a remote
+#      route, and the three `install` refusals.
 #   3. fm-session-start COMPOSES all of the above, so one end-to-end case
 #      compares the whole ordered digest - section rules, labels, ABSENT
 #      markers, the compact backlog rendering, the endpoint line, the status
@@ -233,6 +235,53 @@ if [ -n "$JQ_BIN" ]; then
   chmod +x "$TMP_ROOT/jqbin/jq"
   MIN_BASH_PATH="$MIN_BASH_PATH:$TMP_ROOT/jqbin"
 fi
+
+# --- axi-family version-floor fakebins ----------------------------------------
+#
+# The version FLOORS (no-mistakes, gh-axi, lavish-axi) are a different branch
+# from the absent-tool one every other bootstrap case drives: the tool is
+# PRESENT and reports a version, and the diagnostic is an upgrade demand rather
+# than an install. Driving it needs a tool on PATH that both worlds can run, and
+# the two worlds resolve differently: bash finds an extensionless script with a
+# shebang, while PowerShell resolves through PATHEXT and cannot execute one. So
+# each stem is published TWICE in the same directory - `<tool>` for bash and
+# `<tool>.cmd` for PowerShell - which is the only shape that gives both worlds a
+# runnable fake of the same name. (Verified on this host: Get-Command returns
+# the .cmd first, and fm-common's Invoke-FmTool runs a resolved .cmd through
+# cmd.exe /c.)
+#
+# The versions are chosen against the floors the bash twin declares - GH_AXI_MIN
+# 0.1.29 and LAVISH_AXI_MIN 0.1.46 - so the pair of cases pins the CONSTANTS and
+# not merely the comparison: one build below each floor must report, and a build
+# exactly AT each floor must stay silent. A floor bump therefore fails this
+# suite until both twins are bumped together, which is the point.
+mk_axi_fakebin() {  # <dir> <gh-axi version> <lavish-axi version>
+  local dir=$1 gv=$2 lv=$3 tool ver
+  mkdir -p "$dir"
+  for tool in gh-axi lavish-axi; do
+    if [ "$tool" = gh-axi ]; then ver=$gv; else ver=$lv; fi
+    printf '#!/usr/bin/env bash\nprintf "%s %s\\n"\n' "$tool" "$ver" > "$dir/$tool"
+    chmod +x "$dir/$tool"
+    printf '@echo off\r\necho %s %s\r\n' "$tool" "$ver" > "$dir/$tool.cmd"
+  done
+}
+mk_axi_fakebin "$TMP_ROOT/axi-below" 0.1.28 0.1.45
+mk_axi_fakebin "$TMP_ROOT/axi-at" 0.1.29 0.1.46
+
+axi_path_pair() {  # <dir> - appends it to both worlds' minimal PATH spellings
+  AXI_BASH_PATH="$MIN_BASH_PATH:$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    AXI_PS_PATH="$MIN_PS_PATH;$(cygpath -w "$1")"
+  else
+    AXI_PS_PATH="$MIN_PS_PATH:$1"
+  fi
+}
+axi_path_pair "$TMP_ROOT/axi-below"
+MIN_BASH_PATH_AXI_BELOW=$AXI_BASH_PATH
+MIN_PS_PATH_AXI_BELOW=$AXI_PS_PATH
+axi_path_pair "$TMP_ROOT/axi-at"
+MIN_BASH_PATH_AXI_AT=$AXI_BASH_PATH
+MIN_PS_PATH_AXI_AT=$AXI_PS_PATH
 PATH=$MIN_BASH_PATH command -v git >/dev/null 2>&1 || {
   echo "skip: git is not reachable from the minimal PATH this suite pins"
   exit 0
@@ -321,6 +370,77 @@ printf '{"rules":[{"when":"x","use":{"harness":"kimi","effort":"low"}}]}\n' \
 printf '{"rules":[{"when":"x","select":"round-robin","use":[{"harness":"claude"}]}]}\n' \
   > "$TMP_ROOT/boot-dispatch-select/config/crew-dispatch.json"
 
+# --- remote-secondmate fixtures -----------------------------------------------
+#
+# The remote route is the one secondmate placement bootstrap reconciles WITHOUT
+# a local backend probe and without a local fast-forward: readiness, endpoint
+# state, tracked-file sync and inherited-material push all happen on the
+# configured host, reached through bin/fm-on.sh. The remote subsystem stays bash
+# in both worlds (there is no PowerShell twin of fm-on or of any fm-remote-*
+# script), so what these two cases compare is the BRANCHING and the reported
+# text, which is what the PowerShell twin owns.
+#
+# NO NETWORK IS INVOLVED, deliberately. FM_ROOT_OVERRIDE points at the scratch
+# fixture repo, so fm-on refuses the hop before it ever dials - "remote command
+# is not a genuine tracked executable in this Firstmate checkout" - which drives
+# the readiness-failure and sync-failure arms deterministically and instantly.
+#
+# The homes are SHARED between the two worlds, unlike the session-start case,
+# because every write these paths perform is idempotent: the generation counter
+# is not printed, and the remote retry marker is rewritten every run and only
+# removed on a converged one, which this fixture never is. Verified directly by
+# running the twin a second time against the home the bash oracle had already
+# written and getting byte-identical output.
+#
+# The meta deliberately carries NO home= field. bin/fm-ff-lib.psm1's sweep does
+# not yet skip remote metas the way sweep_live_secondmate_metas does in bash
+# (an open gap in a file this change does not own), so a remote meta carrying a
+# home= would draw an extra local "unsafe home" line from the PowerShell side
+# alone. With no home=, both worlds' LOCAL sweep is silent and the case isolates
+# the remote branches it exists to test.
+mk_home "$TMP_ROOT/boot-remote"
+printf 'tmux\n' > "$TMP_ROOT/boot-remote/config/backend"
+{
+  printf 'window=fm-sm1\n'
+  printf 'kind=secondmate\n'
+  printf 'harness=claude\n'
+  printf 'remote_host=example.invalid\n'
+  printf 'backend=herdr\n'
+} > "$TMP_ROOT/boot-remote/state/sm1.meta"
+
+# The retry-marker placement gate. A durable nudge marker records which
+# PLACEMENT it was written for, and the legal message differs between them; a
+# marker whose placement is unrecognized is refused rather than defaulted, and a
+# well-formed REMOTE marker is skipped silently here because the remote
+# convergence sweep owns it. All four are driven at once, in one run, because
+# the loop is ordered and each arm is a `continue`:
+#   sm2 remote=1 carrying the LOCAL message  -> remote message mismatch
+#   sm3 remote=2                             -> placement is invalid
+#   sm4 remote=1 carrying the REMOTE message -> silent (owned by the remote sweep)
+#   sm5 remote=0 carrying the LOCAL message  -> reaches the live-metadata check
+# sm4 is the control that proves the remote guard actually short-circuits: with
+# it absent, sm4 would produce sm5's line too.
+mk_home "$TMP_ROOT/boot-remote-markers"
+printf 'tmux\n' > "$TMP_ROOT/boot-remote-markers/config/backend"
+mkdir -p "$TMP_ROOT/boot-remote-markers/state/.secondmate-nudge-pending"
+LOCAL_NUDGE_MSG='firstmate was updated to the latest - please re-read your AGENTS.md to pick up the new instructions.'
+REMOTE_NUDGE_MSG='Firstmate instructions or inherited config changed on this host. Re-read AGENTS.md and the inherited config files before further work.'
+mk_nudge_marker() {  # <id> <remote> <message>
+  {
+    printf 'id=%s\n' "$1"
+    printf 'selector=fm-%s\n' "$1"
+    printf 'home=/nowhere\n'
+    printf 'commit=\n'
+    printf 'instructions=remote\n'
+    printf 'message=%s\n' "$3"
+    printf 'remote=%s\n' "$2"
+  } > "$TMP_ROOT/boot-remote-markers/state/.secondmate-nudge-pending/$1.pending"
+}
+mk_nudge_marker sm2 1 "$LOCAL_NUDGE_MSG"
+mk_nudge_marker sm3 2 "$REMOTE_NUDGE_MSG"
+mk_nudge_marker sm4 1 "$REMOTE_NUDGE_MSG"
+mk_nudge_marker sm5 0 "$LOCAL_NUDGE_MSG"
+
 # --- case plumbing ------------------------------------------------------------
 
 ORACLE_FILE="$TMP_ROOT/oracle.tsv"
@@ -328,9 +448,18 @@ CASE_FILE="$TMP_ROOT/cases.tsv"
 : > "$ORACLE_FILE"
 : > "$CASE_FILE"
 
+# Every name any case may set. run_case unsets the whole list before each case,
+# so a value set by one can never leak into the next. FM_BOOTSTRAP_NETWORK and
+# FM_BOOTSTRAP_LOCKED belong here for a concrete reason: the network cases
+# already set the first one, and without the unset the LAST value assigned
+# ("SKIP") stayed exported for every later bash case. That was harmless only
+# because an unrecognized value resolves to `all`, which is also the default -
+# the moment a case sets `only`, as the remote cases do, the leak would silently
+# put every case after it into the network-only phase.
 TOUCHED_ENV="CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT FM_HOME
 FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE
 FM_PROJECTS_OVERRIDE FM_BOOTSTRAP_DETECT_ONLY FM_BOOTSTRAP_VERBOSE_FACTS
+FM_BOOTSTRAP_NETWORK FM_BOOTSTRAP_LOCKED
 FM_CODEX_WATCH_CHECKPOINT FM_SESSION_START_STATUS_TAIL
 FM_SESSION_START_BACKLOG_LIMIT FM_SESSION_START_QUEUED_LIMIT
 FM_SESSION_START_TIMEOUT FM_SESSION_START_STAGE_FILE
@@ -354,7 +483,11 @@ run_case() {
     name=${kv%%=*}
     value=${kv#*=}
     if [ -n "$env_raw" ]; then env_raw="$env_raw$US$kv"; else env_raw=$kv; fi
-    if [ "$value" = '%MINPATH%' ]; then value=$MIN_BASH_PATH; fi
+    case "$value" in
+      '%MINPATH%') value=$MIN_BASH_PATH ;;
+      '%MINPATH_AXI_BELOW%') value=$MIN_BASH_PATH_AXI_BELOW ;;
+      '%MINPATH_AXI_AT%') value=$MIN_BASH_PATH_AXI_AT ;;
+    esac
     export "$name=$value"
   done
 
@@ -540,7 +673,47 @@ boot_env "$TMP_ROOT/boot-base"; CASE_ENV+=(FM_BOOTSTRAP_NETWORK=SKIP)
 run_case boot-network-unrecognized fm-bootstrap
 
 boot_env "$TMP_ROOT/boot-base" "$TANGLE_REPO"; run_case boot-tangle-detect fm-bootstrap
+# TANGLE has TWO wordings and detect-only alone does not choose between them:
+# FM_BOOTSTRAP_LOCKED does. Detect-only alone means "this session holds no
+# lock", so the restore belongs to whoever does and the line carries no command;
+# detect-only PLUS locked means "this session already swept while holding the
+# lock", so it owns the restore and the line names the exact checkout command.
+# The PowerShell twin emitted only the advisory form and ignored the variable
+# outright, so a locked read-only session was told to defer to itself. The
+# no-flag case above and this one pin both halves of that selector.
+boot_env "$TMP_ROOT/boot-base" "$TANGLE_REPO"; CASE_ENV+=(FM_BOOTSTRAP_LOCKED=1)
+run_case boot-tangle-locked fm-bootstrap
 boot_env "$TMP_ROOT/boot-base" "$STUB_REPO"; run_case boot-windows-stub fm-bootstrap
+
+# The axi-family VERSION FLOORS. An installed build below its floor reports
+# MISSING exactly like an absent tool, so the operator is asked to upgrade
+# rather than silently running an older tool - and the PowerShell twin checked
+# no-mistakes, quota-axi and tasks-axi but neither gh-axi nor lavish-axi, so
+# those two upgrade demands were simply never made on Windows. The pair below
+# pins both the branch and the constants: below the floor must report, exactly
+# at it must not.
+CASE_ENV=("FM_HOME=$TMP_ROOT/boot-base" "FM_ROOT_OVERRIDE=$BOOT_REPO"
+          FM_BOOTSTRAP_DETECT_ONLY=1 'PATH=%MINPATH_AXI_BELOW%')
+run_case boot-axi-floor-below fm-bootstrap
+CASE_ENV=("FM_HOME=$TMP_ROOT/boot-base" "FM_ROOT_OVERRIDE=$BOOT_REPO"
+          FM_BOOTSTRAP_DETECT_ONLY=1 'PATH=%MINPATH_AXI_AT%')
+run_case boot-axi-floor-at fm-bootstrap
+
+# The REMOTE secondmate placement. These two are the only bootstrap cases that
+# are NOT detect-only, because the liveness and convergence sweeps are mutating
+# ones; FM_BOOTSTRAP_NETWORK=only confines them to the network half, so no
+# PR-check migration, no startup-memory-budget materialization and no X-mode
+# write happens and the fixture homes stay comparable. See the fixture block
+# above for why no network is reached and why the homes may be shared.
+# Before this, the PowerShell twin had no remote branch at all: it ran a remote
+# endpoint through the LOCAL backend classifier and reported "endpoint probe
+# unreadable", losing every readiness, route and convergence diagnostic.
+CASE_ENV=("FM_HOME=$TMP_ROOT/boot-remote" "FM_ROOT_OVERRIDE=$BOOT_REPO"
+          FM_BOOTSTRAP_NETWORK=only 'PATH=%MINPATH%')
+run_case boot-remote-sweep fm-bootstrap
+CASE_ENV=("FM_HOME=$TMP_ROOT/boot-remote-markers" "FM_ROOT_OVERRIDE=$BOOT_REPO"
+          FM_BOOTSTRAP_NETWORK=only 'PATH=%MINPATH%')
+run_case boot-remote-markers fm-bootstrap
 # The verbose-facts surface: a crew-harness override fact plus the dispatch
 # rendering, both of which are silent by default.
 CASE_ENV=("FM_HOME=$TMP_ROOT/boot-base" "FM_CONFIG_OVERRIDE=$CFG_DIR/crew-codex"
@@ -697,6 +870,8 @@ DRIVER="$TMP_ROOT/driver.ps1"
   printf "\$OutFile  = '%s'\n" "$(to_native "$TMP_ROOT/ps-answers.tsv")"
   printf "\$BinDir   = '%s'\n" "$(to_native "$ROOT/bin")"
   printf "\$MinPath  = '%s'\n" "${MIN_PS_PATH//\'/\'\'}"
+  printf "\$MinPathAxiBelow = '%s'\n" "${MIN_PS_PATH_AXI_BELOW//\'/\'\'}"
+  printf "\$MinPathAxiAt    = '%s'\n" "${MIN_PS_PATH_AXI_AT//\'/\'\'}"
 } > "$DRIVER"
 cat >> "$DRIVER" <<'PSEOF'
 
@@ -728,6 +903,7 @@ foreach ($m in @('fm-common', 'fm-psproc-lib', 'fm-session-lock-lib', 'fm-wake-l
 $TouchedNames = @('CLAUDECODE', 'PI_CODING_AGENT', 'FM_PI_HARNESS', 'GROK_AGENT', 'FM_HOME',
     'FM_ROOT_OVERRIDE', 'FM_STATE_OVERRIDE', 'FM_DATA_OVERRIDE', 'FM_CONFIG_OVERRIDE',
     'FM_PROJECTS_OVERRIDE', 'FM_BOOTSTRAP_DETECT_ONLY', 'FM_BOOTSTRAP_VERBOSE_FACTS',
+    'FM_BOOTSTRAP_NETWORK', 'FM_BOOTSTRAP_LOCKED',
     'FM_CODEX_WATCH_CHECKPOINT', 'FM_SESSION_START_STATUS_TAIL',
     'FM_SESSION_START_BACKLOG_LIMIT', 'FM_SESSION_START_QUEUED_LIMIT',
     'FM_SESSION_START_TIMEOUT', 'FM_SESSION_START_STAGE_FILE',
@@ -775,7 +951,11 @@ foreach ($line in [System.IO.File]::ReadAllLines($CaseFile)) {
             $value = $kv.Substring($eq + 1)
             # The two worlds cannot share one PATH string, so each substitutes
             # its own spelling of the same directories.
-            if ($value -ceq '%MINPATH%') { $value = $MinPath }
+            switch -CaseSensitive ($value) {
+                '%MINPATH%' { $value = $MinPath }
+                '%MINPATH_AXI_BELOW%' { $value = $MinPathAxiBelow }
+                '%MINPATH_AXI_AT%' { $value = $MinPathAxiAt }
+            }
             Set-Item -LiteralPath "env:$name" -Value $value
         }
     }
