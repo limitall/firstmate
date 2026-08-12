@@ -46,6 +46,7 @@ $script:FmFleetSyncLockRetryWaitDefault = 1
 $script:FmFleetSyncLockAgeDefault = 30
 
 function Get-FmFleetSyncKnob {
+    [OutputType([double])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowNull()][AllowEmptyString()][string]$Value,
@@ -63,6 +64,7 @@ function Get-FmFleetSyncKnob {
 # path can appear anywhere in the message (git prefixes it with the failed ref
 # op), and other "File exists" errors must NOT match.
 function Test-FmFleetSyncPackedRefsLockError {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
     if (-not $Text) { return $false }
@@ -70,6 +72,7 @@ function Test-FmFleetSyncPackedRefsLockError {
 }
 
 function Get-FmFleetSyncPackedRefsLockPath {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Project)
 
@@ -100,6 +103,7 @@ function Get-FmFleetSyncPackedRefsLockPath {
 # because a fleet refresh must not become more willing to delete a lock just
 # because another area is absent.
 function Test-FmFleetSyncStaleLock {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -201,6 +205,7 @@ function Invoke-FmFleetSyncFetch {
 }
 
 function Get-FmFleetSyncFirstLine {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
     if (-not $Text) { return '' }
@@ -210,6 +215,7 @@ function Get-FmFleetSyncFirstLine {
 
 # The branches some worktree of this clone has checked out, as short names.
 function Get-FmFleetSyncWorktreeBranch {
+    [OutputType([array])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Project)
     @((Get-FmGitOutput -Directory $Project -Arguments @('worktree', 'list', '--porcelain')) -split "`r?`n" |
@@ -227,6 +233,7 @@ function Get-FmFleetSyncWorktreeBranch {
 # merged branch is never an ancestor and such a check would prune nothing. The
 # no-worktree guard is the real safety net.
 function Remove-FmFleetSyncGoneBranch {
+    [OutputType([object[]])]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$Project,
@@ -260,6 +267,7 @@ function Remove-FmFleetSyncGoneBranch {
 # Human-readable name for the unsafe state a clone is in, used in the STUCK
 # warning: the most informative description available, in the bash's own order.
 function Get-FmFleetSyncStuckState {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Project,
@@ -291,6 +299,7 @@ function Get-FmFleetSyncStuckState {
 # attach to it here. The current worktree is detached when this is consulted, so
 # any match is necessarily another worktree.
 function Test-FmFleetSyncDefaultCheckedOutElsewhere {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Project,
@@ -300,6 +309,7 @@ function Test-FmFleetSyncDefaultCheckedOutElsewhere {
 }
 
 function Test-FmFleetSyncLocalDefaultRecoverable {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Project,
@@ -316,6 +326,7 @@ function Test-FmFleetSyncLocalDefaultRecoverable {
 # far behind origin/<default> the clone is, so a chronically-stuck clone is
 # visibly distinct from a benign one-off skip.
 function Get-FmFleetSyncStuckReport {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Project,
@@ -330,6 +341,7 @@ function Get-FmFleetSyncStuckReport {
 
 # Sync ONE clone. Returns the lines the bash prints on stdout for it, in order.
 function Sync-FmProjectClone {
+    [OutputType([object[]])]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$Path,

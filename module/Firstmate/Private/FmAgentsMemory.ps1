@@ -62,6 +62,7 @@ $script:FmAgentsSkeletonLines = @(
 # one place in the port that deliberately writes CRLF, because this file belongs
 # to the project being worked in, not to firstmate's LF-only state contract.
 function Add-FmAgentsMaintenanceSection {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
@@ -93,6 +94,7 @@ function Write-FmAgentsSkeleton {
 # real symlink whose target IS this AGENTS.md - the literal 'AGENTS.md' and
 # './AGENTS.md' targets, or any target that resolves to the same file.
 function Test-FmAgentsClaudeLink {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$ClaudePath,
@@ -115,6 +117,7 @@ function Test-FmAgentsClaudeLink {
 # second, independent memory file - and therefore safe to re-sync instead of
 # refusing over.
 function Test-FmAgentsMirror {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$AgentsPath,
@@ -138,7 +141,8 @@ function New-FmAgentsClaudeLink {
     # No ShouldProcess: the public cmdlet gates this, and this helper must
     # RETURN the kind of link it created so the caller can report it honestly -
     # a preview-shaped $null return would produce a wrong message.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'No ShouldProcess: the public cmdlet gates this, and this helper must RETURN the kind of link it created so the caller can report it honestly - a preview-shaped $null return would produce a wrong message.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Directory,
@@ -181,6 +185,7 @@ function New-FmAgentsClaudeLink {
 # The verb used when reporting a created link. Only a real symlink is called
 # "symlinked".
 function Get-FmAgentsLinkVerb {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Kind)
     switch ($Kind) {
@@ -200,6 +205,7 @@ function Get-FmAgentsLinkVerb {
 # mismatch on both filesystem kinds; the caller surfaces it for manual
 # reconciliation instead of linking blindly.
 function Test-FmAgentsCaseVariant {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Directory)
 

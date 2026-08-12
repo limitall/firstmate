@@ -12,6 +12,12 @@
         ran by watching for a canary the check would have written.
 #>
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+    Justification = 'Pester fixtures that build and remove disposable temp homes and repos. -WhatIf on a fixture would leave the test asserting against a home that was never created.')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '',
+    Justification = 'Test seam stubs must declare their owner''s full published parameter list without using it: a stub that dropped a name would make the caller''s by-name invocation throw and its catch read that as "no owner".')]
+param()
+
 BeforeAll {
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     foreach ($area in @('Private', 'Public')) {

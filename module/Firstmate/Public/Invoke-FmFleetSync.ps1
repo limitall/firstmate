@@ -30,7 +30,7 @@ Invoke-FmFleetSync -Project dotfiles-private
 #>
 function Invoke-FmFleetSync {
     [CmdletBinding(SupportsShouldProcess)]
-    [OutputType([string])]
+    [OutputType([string], [object[]])]
     param(
         [Parameter(Position = 0)][string]$Project = '',
         [string]$ProjectsDir = '',

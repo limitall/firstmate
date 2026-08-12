@@ -49,6 +49,8 @@
     Add-FmBacklogTask -Id fmwin-backlog -Title 'Port the backlog surface' -Repo firstmate-win
 #>
 function Add-FmBacklogTask {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Body',
+        Justification = 'Body is read inside the $action closure, which the analyzer cannot see through; verified end to end that it reaches the file.')]
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([pscustomobject])]
     param(

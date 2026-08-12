@@ -21,7 +21,9 @@ BeforeAll {
 
     function New-TestRepo {
         # A Pester fixture builder: it writes only into TestDrive.
-        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+        [OutputType([string])]
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'A Pester fixture builder: it writes only into TestDrive.')]
         [CmdletBinding()]
         param(
             [Parameter(Mandatory)][string]$Path,
@@ -43,7 +45,8 @@ BeforeAll {
     # clone from so no test reaches the network.
     function New-TestHome {
         # A Pester fixture builder: it writes only into TestDrive.
-        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'A Pester fixture builder: it writes only into TestDrive.')]
         [CmdletBinding()]
         param()
         $root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())

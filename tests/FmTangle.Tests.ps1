@@ -13,6 +13,10 @@
     the banner a captain actually sees.
 #>
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+    Justification = 'Pester fixtures that build and remove disposable temp homes and repos. -WhatIf on a fixture would leave the test asserting against a home that was never created.')]
+param()
+
 BeforeAll {
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     foreach ($area in @('Private', 'Public')) {

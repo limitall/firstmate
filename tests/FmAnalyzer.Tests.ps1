@@ -46,14 +46,38 @@ BeforeAll {
     # keeps the analyzer away from that state. The retry below covers what is
     # left, because the fault is inside the analyzer and cannot be configured
     # away from here.
+    # THE SWEPT SET IS ENUMERATED HERE, not left to -Recurse.
+    #
+    # A clean result is only worth anything if it covered everything, and
+    # "-Recurse found nothing to complain about" and "-Recurse looked at four
+    # files" produce the identical empty list. Driving the sweep from an explicit
+    # file list makes the swept set a value the tests can assert on, so covering
+    # a subset is a failure rather than a pass. Costs about the same as -Recurse.
+    function Get-FmAnalysableFile {
+        param([Parameter(Mandatory)][string]$Root)
+        return @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force |
+                Where-Object { $_.Extension -in '.ps1', '.psm1', '.psd1' } |
+                Where-Object { $_.FullName -notmatch '[/\\]\.git[/\\]' } |
+                ForEach-Object { $_.FullName } | Sort-Object)
+    }
+
     $script:SweepScript = Join-Path ([System.IO.Path]::GetTempPath()) ('fm-analyzer-sweep-' + [guid]::NewGuid().ToString('N') + '.ps1')
     [System.IO.File]::WriteAllText($script:SweepScript, @'
 param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Settings)
 $ErrorActionPreference = 'Continue'
 Import-Module PSScriptAnalyzer -ErrorAction Stop
-$sweepErrors = $null
-$findings = @(Invoke-ScriptAnalyzer -Path $Root -Recurse -Settings $Settings -ErrorVariable sweepErrors -ErrorAction SilentlyContinue)
+# $Root is a file holding one path per line - the list the caller enumerated.
+$targets = @([System.IO.File]::ReadAllLines($Root) | Where-Object { $_ })
+$findings = @()
+$sweepErrors = @()
+$analysed = @()
+foreach ($target in $targets) {
+    $fileErrors = $null
+    $findings += @(Invoke-ScriptAnalyzer -Path $target -Settings $Settings -ErrorVariable fileErrors -ErrorAction SilentlyContinue)
+    if (@($fileErrors).Count -gt 0) { $sweepErrors += @($fileErrors) } else { $analysed += $target }
+}
 [pscustomobject]@{
+    Analysed = @($analysed)
     Findings = @($findings | ForEach-Object {
             [pscustomobject]@{
                 ScriptName = [string]$_.ScriptName
@@ -86,14 +110,17 @@ $findings = @(Invoke-ScriptAnalyzer -Path $Root -Recurse -Settings $Settings -Er
         #>
         param(
             [Parameter(Mandatory)][int]$Attempts,
-            [string]$ScriptPath
+            [string]$ScriptPath,
+            [string]$ListPath
         )
         if (-not $ScriptPath) { $ScriptPath = $script:SweepScript }
+        if (-not $ListPath) { $ListPath = $script:ListPath }
         $result = $null
         for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
-            $raw = (& pwsh -NoProfile -File $ScriptPath -Root $script:RepoRoot -Settings $script:SettingsPath) -join ''
+            $raw = (& pwsh -NoProfile -File $ScriptPath -Root $ListPath -Settings $script:SettingsPath) -join ''
             if ([string]::IsNullOrWhiteSpace($raw)) {
                 $result = [pscustomobject]@{
+                    Analysed = @()
                     Findings = @()
                     Errors   = @([pscustomobject]@{ Target = '(whole sweep)'; Rule = 'none'; Message = "the sweep process produced no output (exit code $LASTEXITCODE)" })
                     Attempts = $attempt
@@ -102,6 +129,7 @@ $findings = @(Invoke-ScriptAnalyzer -Path $Root -Recurse -Settings $Settings -Er
             }
             $parsed = $raw | ConvertFrom-Json
             $result = [pscustomobject]@{
+                Analysed = @($parsed.Analysed)
                 Findings = @($parsed.Findings)
                 Errors   = @($parsed.Errors)
                 Attempts = $attempt
@@ -111,8 +139,13 @@ $findings = @(Invoke-ScriptAnalyzer -Path $Root -Recurse -Settings $Settings -Er
         return $result
     }
 
+    $script:Expected = Get-FmAnalysableFile -Root $script:RepoRoot
+    $script:ListPath = Join-Path ([System.IO.Path]::GetTempPath()) ('fm-analyzer-list-' + [guid]::NewGuid().ToString('N') + '.txt')
+    [System.IO.File]::WriteAllLines($script:ListPath, $script:Expected)
+
     $script:Findings = @()
     $script:SweepErrors = @()
+    $script:Analysed = @()
     $script:SweepAttemptsUsed = 0
     # Re-tested here rather than reusing the discovery-time value above: the two
     # phases have separate script scopes, and reading the discovery one from the
@@ -122,6 +155,7 @@ $findings = @(Invoke-ScriptAnalyzer -Path $Root -Recurse -Settings $Settings -Er
         $sweep = Invoke-FmAnalyzerSweep -Attempts $script:SweepAttempts
         $script:Findings = @($sweep.Findings)
         $script:SweepErrors = @($sweep.Errors)
+        $script:Analysed = @($sweep.Analysed)
         $script:SweepAttemptsUsed = $sweep.Attempts
     }
 
@@ -134,8 +168,10 @@ $findings = @(Invoke-ScriptAnalyzer -Path $Root -Recurse -Settings $Settings -Er
 }
 
 AfterAll {
-    if ($script:SweepScript -and (Test-Path -LiteralPath $script:SweepScript)) {
-        Remove-Item -LiteralPath $script:SweepScript -Force -ErrorAction SilentlyContinue
+    foreach ($temp in @($script:SweepScript, $script:ListPath)) {
+        if ($temp -and (Test-Path -LiteralPath $temp)) {
+            Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -176,12 +212,48 @@ Describe 'repository analyzer bar' {
         (Format-FmFinding -Findings $hits) | Should -Be '' -Because 'the whole repository is held to PSScriptAnalyzerSettings.psd1, and a new finding is fixed rather than re-baselined'
     }
 
-    It 'actually reaches bin/, module/ and tests/' {
-        # A clean result proves nothing if the sweep matched no files. The sweep
-        # is rooted at the repo, so assert each area still has PowerShell in it.
-        foreach ($dir in @('bin', 'module', 'tests')) {
-            @(Get-ChildItem -LiteralPath (Join-Path $script:RepoRoot $dir) -Recurse -Filter '*.ps1' -File).Count |
-                Should -BeGreaterThan 0 -Because "$dir must contain PowerShell for a clean sweep to mean anything"
+    It 'analyses EVERY analysable file in the repository, not a subset' -Skip:(-not $script:HasAnalyzer) {
+        # The assertions above cannot tell "nothing to report" from "almost
+        # nothing was read". This one can: the sweep reports back which files it
+        # actually analysed, and that set must equal the set on disk exactly.
+        # A file the sweep skipped is a hole in the bar, so it is a failure here
+        # rather than an invisible pass above.
+        $missed = @($script:Expected | Where-Object { $_ -notin $script:Analysed })
+        ($missed -join "`n") | Should -Be '' -Because 'every .ps1, .psm1 and .psd1 in the repository is held to the bar'
+
+        $extra = @($script:Analysed | Where-Object { $_ -notin $script:Expected })
+        ($extra -join "`n") | Should -Be '' -Because 'the sweep must analyse the repository, not something else'
+        $script:Analysed.Count | Should -Be $script:Expected.Count
+    }
+
+    It 'covers every area, including ones added after this check was written' -Skip:(-not $script:HasAnalyzer) {
+        # Named by DIRECTORY, never by file list: an area that lands tomorrow is
+        # covered the moment its files exist, with nothing here to update. The
+        # counts are asserted from the swept set, not from a fresh enumeration,
+        # so this cannot pass while the sweep quietly read nothing.
+        foreach ($area in @('bin', 'module/Firstmate/Private', 'module/Firstmate/Public', 'tests')) {
+            $prefix = Join-Path $script:RepoRoot ($area -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+            @($script:Analysed | Where-Object { $_.StartsWith($prefix) }).Count |
+                Should -BeGreaterThan 0 -Because "$area must be inside the swept set"
+        }
+        # The module manifest and loader are the two files most likely to be
+        # skipped by an extension filter that only thought about .ps1.
+        @($script:Analysed | Where-Object { $_ -like '*Firstmate.psd1' }).Count | Should -Be 1
+        @($script:Analysed | Where-Object { $_ -like '*Firstmate.psm1' }).Count | Should -Be 1
+    }
+
+    It 'picks up a file that did not exist when the sweep list was built' {
+        # Proves the enumeration is live rather than a snapshot someone has to
+        # remember to extend - the property that makes the two tests above hold
+        # for an area that lands later. The file is created inside the repo and
+        # removed in the same test, so nothing is left behind for the next run.
+        $planted = Join-Path $script:RepoRoot 'tests' ('fm-coverage-canary-' + [guid]::NewGuid().ToString('N') + '.ps1')
+        try {
+            [System.IO.File]::WriteAllText($planted, "function Get-FmCanary { 'x' }`n")
+            $refreshed = Get-FmAnalysableFile -Root $script:RepoRoot
+            $refreshed | Should -Contain $planted -Because 'a newly added file must be swept without anyone editing this test'
+        } finally {
+            Remove-Item -LiteralPath $planted -Force -ErrorAction SilentlyContinue
         }
     }
 }

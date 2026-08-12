@@ -28,7 +28,8 @@ BeforeAll {
 
     function New-TestCommit {
         # A Pester fixture builder: it writes only into TestDrive.
-        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'A Pester fixture builder: it writes only into TestDrive.')]
         [CmdletBinding()]
         param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Name)
         Set-Content -LiteralPath (Join-Path $Path $Name) -Value $Name
@@ -39,7 +40,8 @@ BeforeAll {
     # An upstream repository plus a clone of it under <root>/projects/<name>.
     function New-TestFleet {
         # A Pester fixture builder: it writes only into TestDrive.
-        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'A Pester fixture builder: it writes only into TestDrive.')]
         [CmdletBinding()]
         param([string]$Name = 'thing')
         $root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
@@ -71,7 +73,8 @@ BeforeAll {
 
     function Set-TestRegistry {
         # A Pester fixture builder: it writes only into TestDrive.
-        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'A Pester fixture builder: it writes only into TestDrive.')]
         [CmdletBinding()]
         param([Parameter(Mandatory)]$Fleet, [Parameter(Mandatory)][string]$Mode)
         [System.IO.File]::WriteAllText($Fleet.Registry,

@@ -29,7 +29,7 @@
 #>
 function Get-FmBacklog {
     [CmdletBinding()]
-    [OutputType([object[]])]
+    [OutputType([object[]], [array])]
     param(
         [string]$Path,
         [ValidateSet('queued', 'in_flight', 'done')][string]$State,
@@ -97,7 +97,7 @@ function Get-FmBacklogTask {
 #>
 function Get-FmBacklogReady {
     [CmdletBinding()]
-    [OutputType([object[]])]
+    [OutputType([object[]], [array])]
     param(
         [string]$Path,
         [string]$Repo,
@@ -123,7 +123,7 @@ function Get-FmBacklogReady {
 #>
 function Get-FmBacklogHeld {
     [CmdletBinding()]
-    [OutputType([object[]])]
+    [OutputType([object[]], [array])]
     param(
         [string]$Path,
         [string]$Today = ''
@@ -141,7 +141,7 @@ function Get-FmBacklogHeld {
 #>
 function Get-FmBacklogBlocked {
     [CmdletBinding()]
-    [OutputType([object[]])]
+    [OutputType([object[]], [array])]
     param([string]$Path)
 
     $tasks = @(Get-FmBacklog -Path $Path)

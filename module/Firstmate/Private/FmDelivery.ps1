@@ -88,6 +88,7 @@ function Get-FmDeliveryModeSupport {
 # refusal behaves identically whatever the caller's $ErrorActionPreference is
 # (the module's own is 'Stop', a caller's may be 'Continue').
 function Assert-FmDeliveryModeSupported {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Mode,
@@ -106,6 +107,7 @@ function Assert-FmDeliveryModeSupported {
 # owned by another area; when it is absent the step simply did not run, which is
 # the correct direction for an advisory check (it never gates anything here).
 function Invoke-FmDeliveryGuard {
+    [OutputType([object[]])]
     [CmdletBinding()]
     param()
     $cmd = Resolve-FmSessionCommand -Name 'Invoke-FmGuard'
@@ -228,6 +230,7 @@ function Test-FmMergeLocalReady {
 # firstmate writes. Every OTHER field, and its order, is preserved exactly: only
 # kind=, mode= and yolo= are dropped and re-appended, in that order.
 function Set-FmTaskPromotionMeta {
+    [OutputType([bool])]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$MetaPath,
@@ -257,6 +260,7 @@ function Set-FmTaskPromotionMeta {
 # PowerShell equivalent, because a command a Windows captain cannot paste is not
 # a next step.
 function Get-FmPromotionNextStep {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$TaskId,

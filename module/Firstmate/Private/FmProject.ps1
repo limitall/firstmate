@@ -99,7 +99,9 @@ function Get-FmProjectAddedStamp {
 function New-FmProjectRegistryLine {
     # It renders a string and changes nothing; the verb is about what the line
     # is FOR, not about a state change this function performs.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+    [OutputType([string])]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'It renders a string and changes nothing; the verb is about what the line is FOR, not about a state change this function performs.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Name,

@@ -8,6 +8,10 @@
 # resulting files are compared byte for byte, because tasks-axi's markdown
 # backend is the format owner and this port has to stay readable by it.
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+    Justification = 'Pester fixtures that build and remove disposable temp homes and repos. -WhatIf on a fixture would leave the test asserting against a home that was never created.')]
+param()
+
 BeforeAll {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
@@ -523,6 +527,57 @@ Describe 'concurrent writers' {
         $path = New-BacklogFile
         $null = Start-FmBacklogTask -Id 'task-b' -Path $path
         Test-Path -LiteralPath "$path.lock" | Should -BeFalse
+    }
+}
+
+Describe 'archive rollback' {
+    It 'restores the archive to its pre-prune size' {
+        $archive = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        [System.IO.File]::WriteAllText($archive, "# Archive`n")
+        $point = Get-FmBacklogArchiveRestorePoint -Path $archive
+        [System.IO.File]::AppendAllText($archive, "- [x] pruned - row that must be undone (done 2026-08-12)`n")
+
+        Restore-FmBacklogArchive -Point $point
+        (Get-Item -LiteralPath $archive).Length | Should -Be $point.Length
+        [System.IO.File]::ReadAllText($archive) | Should -Not -BeLike '*must be undone*'
+    }
+
+    It 'removes an archive that did not exist before the prune' {
+        $archive = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $point = Get-FmBacklogArchiveRestorePoint -Path $archive
+        [System.IO.File]::WriteAllText($archive, "- [x] pruned - created by the prune`n")
+
+        Restore-FmBacklogArchive -Point $point
+        Test-Path -LiteralPath $archive | Should -BeFalse
+    }
+
+    It 'WARNS when it cannot roll back, instead of leaving the rows in two places silently' {
+        # THE DEFECT THIS PINS. The caller appends to the archive BEFORE
+        # rewriting the backlog and rolls the append back when that rewrite
+        # fails, "so a failed prune never leaves a record in two places or in
+        # none". A swallowed rollback failure broke exactly that invariant while
+        # the caller rethrew the original save error, so the operator was told
+        # the save failed and never told the archive had drifted.
+        $archive = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        [System.IO.File]::WriteAllText($archive, "# Archive`n")
+        $point = Get-FmBacklogArchiveRestorePoint -Path $archive
+        # The restore point says the file was there; it is gone by rollback time.
+        Remove-Item -LiteralPath $archive -Force
+
+        $warnings = @()
+        Restore-FmBacklogArchive -Point $point -WarningVariable warnings -WarningAction SilentlyContinue
+        $warnings.Count | Should -BeGreaterThan 0 -Because 'a rollback that did not happen must be reported, not swallowed'
+        [string]$warnings[0] | Should -BeLike '*BOTH*'
+    }
+
+    It 'does not throw out of a rollback, because the caller is already rethrowing the real error' {
+        $archive = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        [System.IO.File]::WriteAllText($archive, "# Archive`n")
+        $point = Get-FmBacklogArchiveRestorePoint -Path $archive
+        Remove-Item -LiteralPath $archive -Force
+
+        { Restore-FmBacklogArchive -Point $point -WarningAction SilentlyContinue } |
+            Should -Not -Throw -Because 'losing the original save error to a secondary rollback failure would be the worse trade'
     }
 }
 

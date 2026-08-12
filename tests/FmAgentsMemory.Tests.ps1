@@ -22,7 +22,8 @@ BeforeAll {
 
     function New-TestDir {
         # A Pester fixture builder: it writes only into TestDrive.
-        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'A Pester fixture builder: it writes only into TestDrive.')]
         [CmdletBinding()]
         param()
         $dir = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())

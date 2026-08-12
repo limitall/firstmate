@@ -178,6 +178,8 @@ function ConvertFrom-FmBacklogConfigToml {
 }
 
 function Remove-FmBacklogTomlComment {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Trims a comment off a TOML string in memory and changes nothing.')]
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
@@ -256,7 +258,7 @@ function Assert-FmBacklogId {
 # they are never duplicated or relocated on re-render.
 function Get-FmBacklogLink {
     [CmdletBinding()]
-    [OutputType([object[]])]
+    [OutputType([object[]], [array])]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
 
     $links = [System.Collections.Generic.List[object]]::new()
@@ -410,6 +412,8 @@ function Get-FmBacklogClosureVerb {
 # after the parenthetical tags, so a re-parse strips the parentheticals first and
 # the reason never swallows a trailing tag.
 function New-FmBacklogTaskProse {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Formats a task line in memory and changes nothing.')]
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)]$Task)
@@ -460,7 +464,7 @@ function Get-FmBacklogBulletPrefix {
 # Render a task to its canonical source lines: bullet, typed metadata, body.
 function Get-FmBacklogTaskLine {
     [CmdletBinding()]
-    [OutputType([string[]])]
+    [OutputType([string[]], [array])]
     param([Parameter(Mandatory)]$Task)
 
     $lines = [System.Collections.Generic.List[string]]::new()
@@ -534,6 +538,8 @@ function Get-FmBacklogStructuredBody {
 }
 
 function New-FmBacklogTask {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Builds an in-memory task record and changes nothing.')]
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
@@ -588,7 +594,7 @@ function New-FmBacklogTask {
 
 function ConvertFrom-FmBacklogEntry {
     [CmdletBinding()]
-    [OutputType([object[]])]
+    [OutputType([object[]], [array])]
     param(
         [AllowEmptyCollection()][AllowEmptyString()][string[]]$Line = @(),
         [Parameter(Mandatory)][AllowEmptyString()][string]$State
@@ -721,7 +727,7 @@ function ConvertTo-FmBacklogMarkdown {
 
 function Get-FmBacklogDocumentTask {
     [CmdletBinding()]
-    [OutputType([object[]])]
+    [OutputType([object[]], [array])]
     param([Parameter(Mandatory)]$Document)
 
     $tasks = [System.Collections.Generic.List[object]]::new()
@@ -817,6 +823,8 @@ function Add-FmBacklogSectionEntry {
 }
 
 function Remove-FmBacklogSectionEntry {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Removes an entry from the in-memory document; the file is written later by Save-FmBacklogDocument, which is where the decision belongs.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Section,
@@ -1007,7 +1015,8 @@ function Enter-FmBacklogLock {
     }
 
     $age = $null
-    try { $age = ([datetime]::UtcNow - (Get-Item -LiteralPath $lockPath -Force).LastWriteTimeUtc).TotalMilliseconds } catch { }
+    try { $age = ([datetime]::UtcNow - (Get-Item -LiteralPath $lockPath -Force).LastWriteTimeUtc).TotalMilliseconds }
+    catch { Write-Debug "backlog: could not age the lock at $lockPath; reporting it as contended rather than stale: $_" }
     if ($null -ne $age -and $age -gt $script:FmBacklogLockStaleMs) {
         throw "backlog lock looks stale: $lockPath (if no tasks-axi process is running, remove it and retry)"
     }
@@ -1101,7 +1110,7 @@ function Assert-FmBacklogDependencyExists {
 
 function Get-FmBacklogActiveDependent {
     [CmdletBinding()]
-    [OutputType([string[]])]
+    [OutputType([string[]], [array])]
     param(
         [Parameter(Mandatory)]$Document,
         [Parameter(Mandatory)][string]$Id
@@ -1129,7 +1138,7 @@ function Get-FmBacklogActiveDependent {
 # blocker almost always means it is done.
 function Get-FmBacklogBlockedId {
     [CmdletBinding()]
-    [OutputType([string[]])]
+    [OutputType([string[]], [array])]
     param([AllowEmptyCollection()][object[]]$Task = @())
 
     if ($null -eq $Task) { $Task = @() }
@@ -1172,7 +1181,7 @@ function Test-FmBacklogHoldActive {
 
 function Get-FmBacklogHeldTask {
     [CmdletBinding()]
-    [OutputType([object[]])]
+    [OutputType([object[]], [array])]
     param(
         [AllowEmptyCollection()][object[]]$Task = @(),
         [string]$Today = ''
@@ -1186,7 +1195,7 @@ function Get-FmBacklogHeldTask {
 # dispatchable and are excluded here by design.
 function Get-FmBacklogReadyTask {
     [CmdletBinding()]
-    [OutputType([object[]])]
+    [OutputType([object[]], [array])]
     param(
         [AllowEmptyCollection()][object[]]$Task = @(),
         [switch]$IncludeHeld,
@@ -1209,7 +1218,7 @@ function Get-FmBacklogReadyTask {
 # The unresolved blocked-by edges for one task.
 function Get-FmBacklogActiveBlocker {
     [CmdletBinding()]
-    [OutputType([string[]])]
+    [OutputType([string[]], [array])]
     param(
         [Parameter(Mandatory)]$Task,
         [AllowEmptyCollection()][object[]]$AllTask = @()
@@ -1230,6 +1239,8 @@ function Get-FmBacklogActiveBlocker {
 # --- transitions and retention -------------------------------------------------
 
 function Invoke-FmBacklogTransition {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '',
+        Justification = 'Id, To, Pr, Report, Note and Date are all read inside the $action closure, which the analyzer cannot see through; verified end to end that each one reaches the file.')]
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
@@ -1286,6 +1297,8 @@ function Invoke-FmBacklogTransition {
 # whether it was already in that state (the idempotent no-op), the resulting
 # task, and how many Done rows retention archived.
 function New-FmBacklogResult {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Builds an in-memory result record and changes nothing.')]
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
@@ -1359,7 +1372,20 @@ function Restore-FmBacklogArchive {
     try {
         $stream = [System.IO.File]::Open($Point.Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write)
         try { $stream.SetLength($Point.Length) } finally { $stream.Dispose() }
-    } catch { }
+    } catch {
+        # This rollback is what makes the caller's invariant true: the archive is
+        # appended BEFORE the backlog is rewritten, so a failed rewrite must undo
+        # the append or the same rows exist in two places. Swallowing a failed
+        # undo left that broken silently, while the caller rethrew the original
+        # save error and nobody learned the archive had drifted.
+        #
+        # Warn rather than throw: the caller is already unwinding a failed save
+        # and rethrows it, and that original error is the actionable one. Losing
+        # it to a secondary rollback failure would be a worse trade.
+        Write-Warning ("backlog: could not roll the archive back to its pre-prune size " +
+            "($($Point.Path), $($Point.Length) bytes): $_. Those rows are now in BOTH the " +
+            'archive and the backlog - reconcile before pruning again.')
+    }
 }
 
 function Add-FmBacklogArchiveBlock {
