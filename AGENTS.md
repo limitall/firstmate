@@ -29,6 +29,15 @@ lists the state-file formats).
   hard-requirement checks `Assert-*`, not `Test-*`.
 - Every public function gets Pester tests. Run them: `pwsh -NoProfile -Command
   'Invoke-Pester -Path ./tests/'`. Do not hand back unexecuted PowerShell.
+  **Run the whole directory, never one file.** Pester containers share one
+  process, so an `$env:FM_*` override left set by one file decides another
+  file's behaviour; that has already produced two failures that passed in
+  isolation. Save and restore every environment key your tests touch.
+- `tests/FmModuleAssembly.Tests.ps1` mechanises the cross-area rules below: no
+  duplicate function name, the manifest imports, every `Public/` function is
+  exported, and every `Fm` function a `bin/` entry point calls is exported.
+  It enumerates the tree, so a new area or entry point is covered as soon as it
+  exists - nothing to add to a list.
 - Mark anything provable only on Windows with a `# WINDOWS-UNVERIFIED:` comment
   and a one-line reason. Where behaviour must differ by platform, branch on
   `$IsWindows`; the Linux path is a development convenience, not the product.
@@ -91,6 +100,15 @@ governs the import.
 - `docs/backlog-manual-windows.md` - the manual backlog backend: tasks-axi's
   markdown grammar as the format contract, byte-exact round trip, and every
   refusal.
+- `docs/windows-install.md` - `fm-setup.ps1` and `fm-doctor.ps1`: why the wiring
+  is a managed PowerShell-profile block rather than a User environment variable,
+  and why setup writes `config/backend=herdr` (without it a fresh home resolves
+  to `tmux` and the captain's first digest asks Windows to install it).
+- `docs/windows-quickstart.md` - the captain-facing path. Keep it short and keep
+  it true: it is the only doc written for someone who has not read the others.
+- **`docs/windows-e2e-evidence.md` - what has actually been executed, and
+  where.** Update it whenever an area lands; it is the one place that
+  distinguishes proven from merely implemented, and its honesty is the point.
 
 ## Cross-area composition
 

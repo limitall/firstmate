@@ -9,9 +9,22 @@
 # Areas are built in parallel by separate workers, so the collision is a
 # structural hazard, not a one-off mistake - it needs a test, not a habit.
 #
-# The teardown area and the delivery area each wrote one of these independently,
-# and they landed on the same file. This is the UNION of both: no check from
-# either was dropped in the merge.
+# The teardown, delivery, backlog and install areas each wrote one of these
+# independently, and they all landed on this file. This is the UNION of all
+# four: no check from any of them was dropped in the merge.
+#
+# The same reasoning covers the other cross-area breaks, each invisible until
+# two areas are combined:
+#   - a bin/ entry point calling a function the manifest does not export, which
+#     works while the entry point dot-sources the module and stops working the
+#     moment the manifest governs the import,
+#   - a manifest that does not import at all,
+#   - a Public file whose functions never reach the exported surface,
+#   - a by-name cross-area call whose owner does not declare the parameters the
+#     caller passes.
+#
+# Everything here is derived by parsing the tree, so a new area is covered the
+# moment its files exist.
 
 BeforeAll {
     Set-StrictMode -Version Latest
@@ -20,15 +33,17 @@ BeforeAll {
     $script:RepoRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')
     $script:ModuleRoot = Join-Path $script:RepoRoot 'module' 'Firstmate'
     $script:BinRoot = Join-Path $script:RepoRoot 'bin'
+    $script:Manifest = Join-Path $script:ModuleRoot 'Firstmate.psd1'
+
+    function Get-FmModuleScriptFile {
+        param([string]$Subdir)
+        $dir = Join-Path $script:ModuleRoot $Subdir
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return @() }
+        @(Get-ChildItem -LiteralPath $dir -Filter '*.ps1' -File | Sort-Object -Property Name)
+    }
 
     function Get-FmModuleFunctionDefinition {
-        $files = @(
-            foreach ($subdir in @('Private', 'Public')) {
-                $dir = Join-Path $script:ModuleRoot $subdir
-                if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
-                Get-ChildItem -LiteralPath $dir -Filter '*.ps1' -File | Sort-Object Name
-            }
-        )
+        $files = @(Get-FmModuleScriptFile -Subdir 'Private') + @(Get-FmModuleScriptFile -Subdir 'Public')
         foreach ($file in $files) {
             $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
             $predicate = { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }
@@ -95,9 +110,7 @@ Describe 'module assembly' {
     It 'parses every module file without a syntax error' {
         $errors = [System.Collections.Generic.List[string]]::new()
         foreach ($subdir in @('Private', 'Public')) {
-            $dir = Join-Path $script:ModuleRoot $subdir
-            if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
-            foreach ($file in (Get-ChildItem -LiteralPath $dir -Filter '*.ps1' -File)) {
+            foreach ($file in (Get-FmModuleScriptFile -Subdir $subdir)) {
                 $parseErrors = $null
                 $null = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$parseErrors)
                 foreach ($parseError in @($parseErrors)) {
@@ -159,7 +172,58 @@ foreach (`$name in @('Invoke-FmTeardown', 'Invoke-FmMergeLocal', 'Invoke-FmPromo
     }
 }
 
+Describe 'the module manifest' {
+    It 'has a manifest and a loader' {
+        Test-Path -LiteralPath $script:Manifest -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path -Path $script:ModuleRoot -ChildPath 'Firstmate.psm1') -PathType Leaf |
+            Should -BeTrue
+    }
+
+    It 'imports from the manifest without error' {
+        { Import-Module -Name $script:Manifest -Force -ErrorAction Stop } | Should -Not -Throw
+    }
+
+    It 'every function it exports is actually defined in the tree' {
+        Import-Module -Name $script:Manifest -Force -ErrorAction Stop
+        $defined = @(Get-FmModuleFunctionDefinition).Name
+        $exported = @(Get-Command -Module Firstmate -CommandType Function)
+        $exported.Count | Should -BeGreaterThan 0
+        foreach ($cmd in $exported) {
+            $defined | Should -Contain $cmd.Name -Because "$($cmd.Name) is exported"
+        }
+    }
+
+    It 'exports every top-level function defined in Public/' {
+        # The loader discovers the exported set by parsing Public/*.ps1, so a
+        # Public file that never reaches the surface means the manifest and the
+        # loader disagree.
+        Import-Module -Name $script:Manifest -Force -ErrorAction Stop
+        $exported = @(Get-Command -Module Firstmate -CommandType Function).Name
+        foreach ($file in (Get-FmModuleScriptFile -Subdir 'Public')) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+            $predicate = { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }
+            foreach ($fn in $ast.FindAll($predicate, $false)) {
+                $exported | Should -Contain $fn.Name -Because "$($file.Name) is a Public file"
+            }
+        }
+    }
+}
+
 Describe 'entry points' {
+    BeforeAll {
+        Import-Module -Name $script:Manifest -Force -ErrorAction Stop
+        $script:Exported = @(Get-Command -Module Firstmate -CommandType Function).Name
+
+        # fm-module-load.ps1 is a shared prelude that entry points dot-source,
+        # not an entry point itself.
+        $script:EntryPoints = @(Get-ChildItem -LiteralPath $script:BinRoot -Filter 'fm-*.ps1' -File |
+                Where-Object { $_.Name -ne 'fm-module-load.ps1' } | Sort-Object -Property Name)
+    }
+
+    It 'there is at least one entry point' {
+        $script:EntryPoints.Count | Should -BeGreaterThan 0
+    }
+
     It 'parses every bin script' {
         foreach ($file in @(Get-ChildItem -LiteralPath $script:BinRoot -Filter '*.ps1' -File)) {
             $parseErrors = $null
@@ -257,5 +321,33 @@ Describe 'entry points' {
             if ($file.Name -eq 'fm-module-load.ps1') { continue }
             $text | Should -Match 'Set-StrictMode -Version Latest' -Because $file.Name
         }
+    }
+
+    It 'every entry point calls only EXPORTED functions' {
+        # AGENTS.md: an entry point may only call exported functions, because a
+        # private helper becomes unreachable as soon as the manifest governs the
+        # import rather than a dot-source fallback. Enumerated from the tree, so
+        # a new entry point is covered the moment it exists.
+        $unreachable = [System.Collections.Generic.List[string]]::new()
+        foreach ($script in $script:EntryPoints) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$null, [ref]$null)
+            # A helper the entry point DEFINES is not a module call at all, so it
+            # needs no export - fm-backlog.ps1's own usage and formatting helpers
+            # are the live example. Without this the check reports them as
+            # unreachable and the real finding is lost in the noise.
+            $ownFunctions = @($ast.FindAll(
+                    { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+                    ForEach-Object { $_.Name })
+            $predicate = { param($node) $node -is [System.Management.Automation.Language.CommandAst] }
+            $calls = @($ast.FindAll($predicate, $true) |
+                    ForEach-Object { $_.GetCommandName() } |
+                    Where-Object { $_ -and $_ -match '^[A-Za-z]+-Fm' } |
+                    Select-Object -Unique)
+            foreach ($call in $calls) {
+                if ($ownFunctions -contains $call) { continue }
+                if ($script:Exported -notcontains $call) { $unreachable.Add("$($script.Name) calls $call") }
+            }
+        }
+        ($unreachable -join '; ') | Should -Be '' -Because 'only exported functions are reachable through the manifest'
     }
 }

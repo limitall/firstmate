@@ -1,0 +1,703 @@
+#requires -Version 7.0
+# FmInstall.ps1 - the setup path and the environment doctor.
+#
+# This area answers one question: what has to be true on a bare Windows 11
+# machine before the captain can run firstmate, and how does one command make it
+# true without ever half-doing it.
+#
+# THREE RULES SHAPE EVERYTHING BELOW.
+#
+# 1. DETECT BEFORE MUTATE. Install-FmHome runs the hard-prerequisite checks
+#    first and refuses the whole run if one fails, before a single directory or
+#    file is written. A machine that cannot run firstmate is left exactly as it
+#    was, with the reasons printed. That is the difference between "not
+#    installed" (recoverable by reading one line) and "half installed"
+#    (recoverable by knowing what the installer does).
+#
+# 2. IDEMPOTENT BY CONSTRUCTION, NOT BY LUCK. Every step is a converge, not an
+#    append: directories are created only when absent, the profile wiring lives
+#    inside one delimited block that is replaced wholesale, and the hook
+#    registration rewrites exactly the three events this port owns. Running
+#    setup twice produces byte-identical files, and the second run reports
+#    'already' for every step. tests/FmInstall.Tests.ps1 pins that.
+#
+# 3. ONE MECHANISM PER JOB. `Import-Module Firstmate` from any session and
+#    `fm-doctor.ps1` on PATH are both achieved by ONE mechanism - a managed block
+#    in the user's PowerShell profile that prepends the checkout's module/ to
+#    PSModulePath and bin/ to PATH, and exports FM_HOME.
+#
+#    The rejected alternative was the Windows User environment variables
+#    (`[Environment]::SetEnvironmentVariable(..., 'User')`). It reaches cmd.exe
+#    too, but it is silently a no-op on non-Windows .NET, so the development
+#    path would report success while doing nothing, and it cannot express
+#    "prepend to whatever this session already has". The profile block behaves
+#    identically on both platforms, needs no admin rights and no Developer Mode,
+#    and re-running setup after moving the checkout fixes it. firstmate is driven
+#    from PowerShell, so a PowerShell-session mechanism is the whole requirement.
+#
+# The module is NOT copied into a modules directory. It is used from the
+# checkout, so `git pull` updates the installed firstmate and there is no second
+# copy to drift.
+
+Set-StrictMode -Version Latest
+
+# --- layout -------------------------------------------------------------------
+
+# The four directories a firstmate home is made of. Get-FmSessionPaths resolves
+# the same four from the environment contract; this is the creation side of that
+# same list, and the foundation area's Get-FmHomeLayout owns it when loaded.
+$script:FmInstallHomeDirectories = @('config', 'data', 'projects', 'state')
+
+# Delimiters of the managed profile block. Matched literally, so a profile the
+# captain has edited around the block keeps every other line untouched.
+$script:FmInstallProfileBeginMarker = '# >>> firstmate-win >>>'
+$script:FmInstallProfileEndMarker = '# <<< firstmate-win <<<'
+
+# The three Claude hook events this port owns. Everything else in a project's
+# settings.json - other events, other top-level keys - is preserved verbatim.
+$script:FmInstallOwnedHookEvents = @('SessionStart', 'PreToolUse', 'Stop')
+
+# The checkout this module was loaded from. Every wiring path is derived from it
+# rather than from the caller's cwd, so setup run from anywhere wires the
+# checkout that is actually being installed.
+function Get-FmInstallRepoRoot {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+    # module/Firstmate/Private/<this file> -> the checkout is three levels up.
+    (Resolve-Path -LiteralPath (Join-Path -Path $PSScriptRoot -ChildPath '..' -AdditionalChildPath '..', '..')).Path
+}
+
+# The four home directories as { Name; Path } records.
+#
+# PATHS, NOT NAMES, AND FROM THE OWNER. The foundation area's Get-FmHomeLayout
+# is authoritative once loaded, and it honours FM_STATE_OVERRIDE and friends -
+# so state/ can legitimately sit outside the home and only the owner knows
+# where. Joining a name onto the home would quietly create the wrong directory
+# and leave the real one missing.
+#
+# Get-FmHomeLayout returns ONE pscustomobject with Home/State/Data/Config/
+# Projects properties. An earlier revision of this function treated its output
+# as a list of directory names, which stringified the whole object into a single
+# bogus name like '@{Root=...; Home=...}'. That passed every test for as long as
+# the foundation area was unlanded and broke the moment it landed - the by-name
+# binding hazard AGENTS.md describes. Hence the explicit per-property read, and
+# the test that asserts the four leaf names.
+function Get-FmInstallHomeDirectory {
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param([Parameter(Mandatory)][string]$FirstmateHome)
+
+    $shared = Resolve-FmSessionCommand -Name 'Get-FmHomeLayout'
+    if ($shared) {
+        try {
+            $layout = & $shared -HomePath $FirstmateHome
+            $properties = @($layout.PSObject.Properties.Name)
+            $records = @()
+            foreach ($name in $script:FmInstallHomeDirectories) {
+                $property = $name.Substring(0, 1).ToUpperInvariant() + $name.Substring(1)
+                if ($properties -notcontains $property) { break }
+                $path = [string]$layout.$property
+                if ([string]::IsNullOrWhiteSpace($path)) { break }
+                $records += [pscustomobject]@{ Name = $name; Path = $path }
+            }
+            # All four or none: a partial answer means the owner's shape is not
+            # what this code was written against, and half a home is worse than
+            # the local fallback.
+            if ($records.Count -eq $script:FmInstallHomeDirectories.Count) { return $records }
+            Write-Verbose 'Get-FmHomeLayout did not expose all four home directories; using the local layout.'
+        } catch {
+            Write-Verbose "Get-FmHomeLayout failed, using the local home layout: $_"
+        }
+    }
+    return @($script:FmInstallHomeDirectories | ForEach-Object {
+            [pscustomobject]@{ Name = $_; Path = (Join-Path -Path $FirstmateHome -ChildPath $_) }
+        })
+}
+
+# Where a home lives when the captain does not name one. FM_HOME wins, because a
+# session that already has a home must never be given a second one.
+function Get-FmInstallDefaultHome {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    if (-not [string]::IsNullOrWhiteSpace($env:FM_HOME)) { return $env:FM_HOME }
+    Join-Path ([System.Environment]::GetFolderPath('UserProfile')) 'firstmate'
+}
+
+# --- step records --------------------------------------------------------------
+#
+# Both halves of this area report the same way: a flat list of records that a
+# formatter turns into lines. Install-FmHome emits Action records ('created',
+# 'already', 'updated', 'skipped'), Invoke-FmDoctor emits Status records
+# ('ok', 'warn', 'missing'). Keeping them separate matters: a doctor check that
+# did not run must never be printed as one that passed.
+
+# A record constructor, not a state change - the analyzer reads the verb only.
+function New-FmInstallStep {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Builds an in-memory record; nothing outside the pipeline changes.')]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][ValidateSet('created', 'already', 'updated', 'skipped')][string]$Action,
+        [string]$Detail = ''
+    )
+    [pscustomobject]@{ Name = $Name; Action = $Action; Detail = $Detail }
+}
+
+function New-FmInstallCheck {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Builds an in-memory record; nothing outside the pipeline changes.')]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][ValidateSet('ok', 'warn', 'missing')][string]$Status,
+        [string]$Detail = '',
+        [string]$Fix = '',
+        [switch]$Required
+    )
+    [pscustomobject]@{
+        Name     = $Name
+        Status   = $Status
+        Detail   = $Detail
+        Fix      = $Fix
+        Required = [bool]$Required
+    }
+}
+
+function Format-FmInstallCheckLine {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory)]$Check)
+
+    $lines = @("  [$($Check.Status)]".PadRight(12) + $Check.Name + $(if ($Check.Detail) { " - $($Check.Detail)" } else { '' }))
+    if ($Check.Status -ne 'ok' -and $Check.Fix) { $lines += ('              fix: ' + $Check.Fix) }
+    $lines
+}
+
+function Format-FmInstallStepLine {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)]$Step)
+
+    "  [$($Step.Action)]".PadRight(12) + $Step.Name + $(if ($Step.Detail) { " - $($Step.Detail)" } else { '' })
+}
+
+# --- the home layout ------------------------------------------------------------
+
+function New-FmInstallHomeLayout {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([object[]])]
+    param([Parameter(Mandatory)][string]$FirstmateHome)
+
+    if (-not $PSCmdlet.ShouldProcess($FirstmateHome, 'create the firstmate home layout')) { return @() }
+
+    $steps = @()
+    if (Test-Path -LiteralPath $FirstmateHome -PathType Container) {
+        $steps += New-FmInstallStep -Name 'home' -Action 'already' -Detail $FirstmateHome
+    } else {
+        if (Test-Path -LiteralPath $FirstmateHome) {
+            throw "error: firstmate home '$FirstmateHome' exists but is not a directory; refusing to install over it"
+        }
+        $null = New-Item -ItemType Directory -Path $FirstmateHome -Force
+        $steps += New-FmInstallStep -Name 'home' -Action 'created' -Detail $FirstmateHome
+    }
+
+    foreach ($entry in (Get-FmInstallHomeDirectory -FirstmateHome $FirstmateHome)) {
+        $name = $entry.Name
+        $dir = $entry.Path
+        # Name the path whenever an override has moved it out of the home, so
+        # "home/state" never silently means somewhere else.
+        $detail = if ((Join-Path -Path $FirstmateHome -ChildPath $name) -eq $dir) { '' } else { $dir }
+        if (Test-Path -LiteralPath $dir -PathType Container) {
+            $steps += New-FmInstallStep -Name "home/$name" -Action 'already' -Detail $detail
+            continue
+        }
+        if (Test-Path -LiteralPath $dir) {
+            throw "error: '$dir' exists but is not a directory; refusing to install over it"
+        }
+        $null = New-Item -ItemType Directory -Path $dir -Force
+        $steps += New-FmInstallStep -Name "home/$name" -Action 'created' -Detail $detail
+    }
+    $steps
+}
+
+# The home's config directory, from the layout owner when it is loaded, so
+# FM_CONFIG_OVERRIDE moves config/backend and the doctor's backend check
+# together rather than one of them.
+function Get-FmInstallConfigDirectory {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$FirstmateHome)
+
+    $entry = @(Get-FmInstallHomeDirectory -FirstmateHome $FirstmateHome |
+            Where-Object { $_.Name -eq 'config' })
+    if ($entry.Count -eq 1) { return [string]$entry[0].Path }
+    Join-Path -Path $FirstmateHome -ChildPath 'config'
+}
+
+# --- the default backend --------------------------------------------------------
+
+# THE ONLY SESSION PROVIDER THIS PORT DRIVES IS HERDR. Start-FmWorker's -Backend
+# is [ValidateSet('herdr')], and the design report drops the tmux/zellij/orca/
+# cmux adapters for Windows outright.
+#
+# A home with no config/backend resolves to 'tmux' (bin/fm-backend.sh's default,
+# preserved by Get-FmBootstrapBackendName), so the captain's very first session
+# digest would open with "MISSING: tmux" on a machine where tmux does not exist
+# and would not help if it did. Writing the backend this port can actually drive
+# is part of producing a WORKING home, not a preference.
+#
+# An existing config/backend is never overwritten: which backend a home uses is
+# the captain's decision, and setup only supplies the answer when none was given.
+$script:FmInstallDefaultBackend = 'herdr'
+
+function Set-FmInstallDefaultBackend {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$FirstmateHome)
+
+    $path = Join-Path -Path (Get-FmInstallConfigDirectory -FirstmateHome $FirstmateHome) -ChildPath 'backend'
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        $current = ([System.IO.File]::ReadAllText($path) -replace '\s', '')
+        return [pscustomobject]@{ Action = 'already'; Detail = "config/backend=$current" }
+    }
+    if (-not $PSCmdlet.ShouldProcess($path, "write the default backend '$script:FmInstallDefaultBackend'")) {
+        return [pscustomobject]@{ Action = 'skipped'; Detail = 'WhatIf' }
+    }
+    # LF-only and no BOM: config/backend is read by a Linux firstmate sharing
+    # this home, so Write-FmSessionTextFile owns the write.
+    Write-FmSessionTextFile -Path $path -Content "$script:FmInstallDefaultBackend`n"
+    [pscustomobject]@{ Action = 'created'; Detail = "config/backend=$script:FmInstallDefaultBackend" }
+}
+
+function Get-FmInstallBackendCheck {
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param([Parameter(Mandatory)][string]$FirstmateHome)
+
+    $configDir = Get-FmInstallConfigDirectory -FirstmateHome $FirstmateHome
+    $backend = Get-FmBootstrapBackendName -ConfigDir $configDir
+    if ($backend -eq $script:FmInstallDefaultBackend) {
+        return @(New-FmInstallCheck -Name 'backend' -Status 'ok' -Detail $backend)
+    }
+    # Not a refusal: the captain may be sharing this home with a Linux firstmate
+    # that runs another backend. It is a warning because nothing in THIS port
+    # can dispatch onto it.
+    return @(New-FmInstallCheck -Name 'backend' -Status 'warn' `
+            -Detail "resolves to '$backend'; this port drives '$script:FmInstallDefaultBackend' only, so it cannot dispatch a worker here" `
+            -Fix ("set it with: Set-Content -Path '" + (Join-Path $configDir 'backend') + "' -Value $script:FmInstallDefaultBackend"))
+}
+
+# --- the managed profile block --------------------------------------------------
+
+function Get-FmInstallProfilePath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+    # CurrentUserAllHosts: the console host, the ISE-equivalents, and an editor's
+    # integrated terminal all load it, which is what "from any session" means.
+    $PROFILE.CurrentUserAllHosts
+}
+
+# The literal text of the managed block. A pure function of the three paths, so
+# two runs with the same inputs produce identical bytes and the second run can
+# report 'already' by comparing text rather than by guessing.
+function Get-FmInstallProfileBlock {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][string]$FirstmateHome
+    )
+
+    $quote = { param([string]$value) "'" + ($value -replace "'", "''") + "'" }
+    $moduleDir = Join-Path $RepoRoot 'module'
+    $binDir = Join-Path $RepoRoot 'bin'
+
+    @(
+        $script:FmInstallProfileBeginMarker
+        '# Managed by Install-FmHome (bin/fm-setup.ps1). Re-run setup to update it;'
+        '# everything outside these two markers is left alone.'
+        "`$env:FM_HOME = $(& $quote $FirstmateHome)"
+        "`$fmwinModuleDir = $(& $quote $moduleDir)"
+        "`$fmwinBinDir = $(& $quote $binDir)"
+        "`$fmwinSep = [System.IO.Path]::PathSeparator"
+        'if (($env:PSModulePath -split $fmwinSep) -notcontains $fmwinModuleDir) {'
+        '    $env:PSModulePath = $fmwinModuleDir + $fmwinSep + $env:PSModulePath'
+        '}'
+        'if (($env:PATH -split $fmwinSep) -notcontains $fmwinBinDir) {'
+        '    $env:PATH = $fmwinBinDir + $fmwinSep + $env:PATH'
+        '}'
+        'Remove-Variable -Name fmwinModuleDir, fmwinBinDir, fmwinSep -ErrorAction SilentlyContinue'
+        $script:FmInstallProfileEndMarker
+    ) -join "`n"
+}
+
+# Splice the managed block into a profile, replacing any previous one.
+#
+# The surrounding text is written back BYTE-FOR-BYTE, including its line
+# endings: this is the captain's own file, not a firstmate contract file, so
+# normalizing it would be an uninvited edit. Only the block itself is authored
+# here, and it is authored with LF.
+function Set-FmInstallProfileBlock {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Block
+    )
+
+    $existing = ''
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        $existing = [System.IO.File]::ReadAllText($Path)
+    }
+
+    $pattern = '(?s)' + [regex]::Escape($script:FmInstallProfileBeginMarker) + '.*?' +
+        [regex]::Escape($script:FmInstallProfileEndMarker)
+    $match = [regex]::Match($existing, $pattern)
+
+    if ($match.Success) {
+        if ($match.Value -eq $Block) { return 'already' }
+        $updated = $existing.Remove($match.Index, $match.Length).Insert($match.Index, $Block)
+        $action = 'updated'
+    } else {
+        $separator = if ([string]::IsNullOrEmpty($existing)) { '' } elseif ($existing.EndsWith("`n")) { '' } else { "`n" }
+        $updated = $existing + $separator + $Block + "`n"
+        $action = if ([string]::IsNullOrEmpty($existing)) { 'created' } else { 'updated' }
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($Path, 'write the managed firstmate profile block')) { return 'skipped' }
+
+    $parent = Split-Path -Parent $Path
+    if ($parent -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        $null = New-Item -ItemType Directory -Path $parent -Force
+    }
+    [System.IO.File]::WriteAllText($Path, $updated, [System.Text.UTF8Encoding]::new($false))
+    $action
+}
+
+function Test-FmInstallProfileBlockCurrent {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Block
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $text = [System.IO.File]::ReadAllText($Path)
+    $pattern = '(?s)' + [regex]::Escape($script:FmInstallProfileBeginMarker) + '.*?' +
+        [regex]::Escape($script:FmInstallProfileEndMarker)
+    $match = [regex]::Match($text, $pattern)
+    return ($match.Success -and $match.Value -eq $Block)
+}
+
+# --- Claude hook registration ---------------------------------------------------
+
+function Get-FmInstallHookSettingsPath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$RepoRoot)
+    Join-Path -Path $RepoRoot -ChildPath '.claude' -AdditionalChildPath 'settings.json'
+}
+
+# Merge the port's hook block into a project settings.json.
+#
+# SCOPE IS DELIBERATELY NARROW. The three events in $FmInstallOwnedHookEvents are
+# replaced with what Get-FmClaudeHookSettings emits, because this port owns their
+# wiring and a stale half-registration is worse than none. Every other event and
+# every other top-level key in the file is carried through untouched, so a
+# project that also registers UserPromptSubmit keeps it.
+function Set-FmInstallHookRegistration {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$Path)
+
+    $owner = Resolve-FmSessionCommand -Name 'Get-FmClaudeHookSettingsObject', 'Get-FmClaudeHookSettings'
+    if (-not $owner) {
+        # The hook area owns the settings shape. Without it this step did NOT
+        # run - it is never reported as registered.
+        return [pscustomobject]@{ Action = 'skipped'; Detail = 'the Claude hook area is not loaded (Get-FmClaudeHookSettingsObject is absent)' }
+    }
+    $wanted = if ($owner.Name -eq 'Get-FmClaudeHookSettings') { & $owner -AsObject } else { & $owner }
+    if ($null -eq $wanted -or -not $wanted.Contains('hooks')) {
+        return [pscustomobject]@{ Action = 'skipped'; Detail = 'the Claude hook area returned no hooks block' }
+    }
+
+    $document = [ordered]@{}
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        $text = [System.IO.File]::ReadAllText($Path)
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            try {
+                $parsed = $text | ConvertFrom-Json -AsHashtable
+            } catch {
+                throw "error: '$Path' is not valid JSON; refusing to overwrite a settings file firstmate cannot read"
+            }
+            if ($parsed -isnot [System.Collections.IDictionary]) {
+                throw "error: '$Path' does not contain a JSON object; refusing to overwrite it"
+            }
+            foreach ($key in $parsed.Keys) { $document[$key] = $parsed[$key] }
+        }
+    }
+
+    $hooks = [ordered]@{}
+    if ($document.Contains('hooks') -and $document['hooks'] -is [System.Collections.IDictionary]) {
+        foreach ($hookEvent in $document['hooks'].Keys) {
+            if ($script:FmInstallOwnedHookEvents -notcontains $hookEvent) { $hooks[$hookEvent] = $document['hooks'][$hookEvent] }
+        }
+    }
+    foreach ($hookEvent in $wanted['hooks'].Keys) { $hooks[$hookEvent] = $wanted['hooks'][$hookEvent] }
+    $document['hooks'] = $hooks
+
+    # LF here as well as in the write: ConvertTo-Json emits the platform newline,
+    # and the comparison that decides 'already' has to be against the bytes
+    # Write-FmSessionTextFile will actually put on disk.
+    $json = ((($document | ConvertTo-Json -Depth 12) -replace "`r`n", "`n") + "`n")
+    if ((Test-Path -LiteralPath $Path -PathType Leaf) -and ([System.IO.File]::ReadAllText($Path) -replace "`r`n", "`n") -eq $json) {
+        return [pscustomobject]@{ Action = 'already'; Detail = $Path }
+    }
+    if (-not $PSCmdlet.ShouldProcess($Path, 'register the firstmate Claude hooks')) {
+        return [pscustomobject]@{ Action = 'skipped'; Detail = 'WhatIf' }
+    }
+
+    $parent = Split-Path -Parent $Path
+    if ($parent -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        $null = New-Item -ItemType Directory -Path $parent -Force
+    }
+    $action = if (Test-Path -LiteralPath $Path -PathType Leaf) { 'updated' } else { 'created' }
+    Write-FmSessionTextFile -Path $Path -Content $json
+    [pscustomobject]@{ Action = $action; Detail = $Path }
+}
+
+# Is every event this port owns present in the settings file, pointing at this
+# port's hook entry point? Deliberately a shape check, not a byte comparison: a
+# captain who raised a timeout has still registered the hooks.
+function Test-FmInstallHookRegistered {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    try {
+        $document = [System.IO.File]::ReadAllText($Path) | ConvertFrom-Json -AsHashtable
+    } catch {
+        return $false
+    }
+    if ($document -isnot [System.Collections.IDictionary]) { return $false }
+    if (-not $document.Contains('hooks') -or $document['hooks'] -isnot [System.Collections.IDictionary]) { return $false }
+
+    foreach ($hookEvent in $script:FmInstallOwnedHookEvents) {
+        if (-not $document['hooks'].Contains($hookEvent)) { return $false }
+        $rendered = $document['hooks'][$hookEvent] | ConvertTo-Json -Depth 12 -Compress
+        if ($rendered -notmatch 'fm-claude-hook\.ps1') { return $false }
+    }
+    $true
+}
+
+# --- doctor checks ----------------------------------------------------------------
+
+function Get-FmInstallToolFix {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Tool)
+
+    # Install commands have ONE owner: the bootstrap area, which already keeps a
+    # platform-aware table whose line shape the diagnostics skill matches on.
+    $manual = Get-FmBootstrapManualInstallUrl -Tool $Tool
+    if ($manual) { return "install it manually: $manual" }
+    $cmd = Get-FmBootstrapInstallCommand -Tool $Tool
+    if ($cmd) { return $cmd }
+    ''
+}
+
+function Get-FmInstallCommandVersion {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        [string[]]$Arguments = @('--version')
+    )
+
+    $res = Invoke-FmSessionCommandLine -Command $Command -Arguments $Arguments
+    if ($res.ExitCode -ne 0) { return '' }
+    $line = @($res.Output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+    if ($line.Count -eq 0) { return '' }
+    ([string]$line[0]).Trim()
+}
+
+function Get-FmInstallPrerequisiteCheck {
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param()
+
+    $checks = @()
+
+    # PowerShell 7 is the platform, not a dependency: nothing else in this port
+    # runs without it, so it is the one check that cannot be warned past.
+    $psVersion = $PSVersionTable.PSVersion
+    if ($psVersion.Major -ge 7) {
+        $checks += New-FmInstallCheck -Name 'PowerShell 7' -Status 'ok' -Detail $psVersion.ToString() -Required
+    } else {
+        $checks += New-FmInstallCheck -Name 'PowerShell 7' -Status 'missing' -Required `
+            -Detail "this session is PowerShell $psVersion" `
+            -Fix 'winget install Microsoft.PowerShell, then re-run this from pwsh (not Windows PowerShell)'
+    }
+
+    if (Get-Command -Name 'git' -CommandType Application -ErrorAction SilentlyContinue) {
+        $checks += New-FmInstallCheck -Name 'git' -Status 'ok' -Detail (Get-FmInstallCommandVersion -Command 'git') -Required
+    } else {
+        $checks += New-FmInstallCheck -Name 'git' -Status 'missing' -Required `
+            -Detail 'not on PATH' -Fix (Get-FmInstallToolFix -Tool 'git')
+    }
+
+    $pester = @(Get-Module -ListAvailable -Name 'Pester' | Sort-Object Version -Descending | Select-Object -First 1)
+    if ($pester.Count -gt 0 -and $pester[0].Version.Major -ge 5) {
+        $checks += New-FmInstallCheck -Name 'Pester 5+' -Status 'ok' -Detail $pester[0].Version.ToString()
+    } elseif ($pester.Count -gt 0) {
+        $checks += New-FmInstallCheck -Name 'Pester 5+' -Status 'warn' -Detail "found $($pester[0].Version)" `
+            -Fix 'Install-Module Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force'
+    } else {
+        $checks += New-FmInstallCheck -Name 'Pester 5+' -Status 'warn' -Detail 'not installed (needed to run the suite, not to run firstmate)' `
+            -Fix 'Install-Module Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force'
+    }
+
+    # herdr is the only session provider this port drives. Without it a worker
+    # cannot be dispatched, but a home is still installable and inspectable, so
+    # it is a warn and not a hard prerequisite.
+    if (Get-Command -Name 'herdr' -CommandType Application -ErrorAction SilentlyContinue) {
+        $checks += New-FmInstallCheck -Name 'herdr' -Status 'ok' -Detail (Get-FmInstallCommandVersion -Command 'herdr')
+    } else {
+        $checks += New-FmInstallCheck -Name 'herdr' -Status 'warn' `
+            -Detail 'not on PATH - no worker can be dispatched without the session provider' `
+            -Fix (Get-FmInstallToolFix -Tool 'herdr')
+    }
+
+    if (-not (Get-Command -Name 'treehouse' -CommandType Application -ErrorAction SilentlyContinue)) {
+        $checks += New-FmInstallCheck -Name 'treehouse' -Status 'warn' `
+            -Detail 'not on PATH - no worker can be given an isolated worktree' `
+            -Fix (Get-FmInstallToolFix -Tool 'treehouse')
+    } elseif (-not (Test-FmBootstrapTreehouseSupportsLease)) {
+        $checks += New-FmInstallCheck -Name 'treehouse' -Status 'warn' `
+            -Detail "installed build has no 'get --lease'; this port acquires worktrees with a durable lease" `
+            -Fix (Get-FmInstallToolFix -Tool 'treehouse')
+    } else {
+        $checks += New-FmInstallCheck -Name 'treehouse' -Status 'ok' `
+            -Detail ((Get-FmInstallCommandVersion -Command 'treehouse') + ' (get --lease supported)').Trim()
+    }
+
+    if (Get-Command -Name 'claude' -CommandType Application -ErrorAction SilentlyContinue) {
+        $checks += New-FmInstallCheck -Name 'Claude CLI' -Status 'ok' -Detail (Get-FmInstallCommandVersion -Command 'claude')
+    } else {
+        $checks += New-FmInstallCheck -Name 'Claude CLI' -Status 'warn' `
+            -Detail 'not on PATH - the hooks are registered but nothing will run them' `
+            -Fix 'npm install -g @anthropic-ai/claude-code'
+    }
+
+    $checks
+}
+
+function Get-FmInstallHomeCheck {
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param([Parameter(Mandatory)][string]$FirstmateHome)
+
+    $checks = @()
+    if ([string]::IsNullOrWhiteSpace($env:FM_HOME)) {
+        $checks += New-FmInstallCheck -Name 'FM_HOME' -Status 'missing' -Required `
+            -Detail 'not set in this session' `
+            -Fix 'run bin/fm-setup.ps1, then open a new PowerShell session'
+    } else {
+        $checks += New-FmInstallCheck -Name 'FM_HOME' -Status 'ok' -Detail $env:FM_HOME -Required
+    }
+
+    if (-not (Test-Path -LiteralPath $FirstmateHome -PathType Container)) {
+        $checks += New-FmInstallCheck -Name 'home layout' -Status 'missing' -Required `
+            -Detail "'$FirstmateHome' does not exist" `
+            -Fix "bin/fm-setup.ps1 -FirstmateHome '$FirstmateHome'"
+        return $checks
+    }
+
+    $directories = @(Get-FmInstallHomeDirectory -FirstmateHome $FirstmateHome)
+    $absent = @()
+    foreach ($entry in $directories) {
+        if (-not (Test-Path -LiteralPath $entry.Path -PathType Container)) { $absent += $entry.Name }
+    }
+    if ($absent.Count -gt 0) {
+        $checks += New-FmInstallCheck -Name 'home layout' -Status 'missing' -Required `
+            -Detail ("'$FirstmateHome' is missing " + ($absent -join ', ')) `
+            -Fix "bin/fm-setup.ps1 -FirstmateHome '$FirstmateHome'"
+    } else {
+        $checks += New-FmInstallCheck -Name 'home layout' -Status 'ok' -Required `
+            -Detail ($FirstmateHome + ' (' + (($directories | ForEach-Object { $_.Name }) -join ', ') + ')')
+    }
+    $checks += Get-FmInstallBackendCheck -FirstmateHome $FirstmateHome
+    $checks
+}
+
+function Get-FmInstallWiringCheck {
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][string]$FirstmateHome,
+        [Parameter(Mandatory)][string]$ProfilePath,
+        [Parameter(Mandatory)][string]$HookSettingsPath
+    )
+
+    $checks = @()
+
+    # The proof that `Import-Module Firstmate` resolves is that PowerShell's own
+    # discovery finds it on PSModulePath - not that a manifest file exists
+    # somewhere. Get-Module -ListAvailable is that discovery.
+    $manifest = Join-Path -Path $RepoRoot -ChildPath 'module' -AdditionalChildPath 'Firstmate', 'Firstmate.psd1'
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+        $checks += New-FmInstallCheck -Name 'Firstmate module' -Status 'missing' -Required `
+            -Detail "no manifest at '$manifest'" -Fix 'this checkout is incomplete; re-clone it'
+    } elseif (@(Get-Module -ListAvailable -Name 'Firstmate' -ErrorAction SilentlyContinue).Count -gt 0) {
+        $checks += New-FmInstallCheck -Name 'Firstmate module' -Status 'ok' -Required `
+            -Detail 'Import-Module Firstmate resolves on PSModulePath'
+    } else {
+        $checks += New-FmInstallCheck -Name 'Firstmate module' -Status 'missing' -Required `
+            -Detail 'not on PSModulePath in this session' `
+            -Fix 'run bin/fm-setup.ps1, then open a new PowerShell session'
+    }
+
+    $binDir = Join-Path $RepoRoot 'bin'
+    $onPath = @($env:PATH -split [System.IO.Path]::PathSeparator |
+            Where-Object { $_ } | Where-Object { Test-FmPathEqual -Left $_ -Right $binDir })
+    if ($onPath.Count -gt 0) {
+        $checks += New-FmInstallCheck -Name 'fm-* entry points' -Status 'ok' -Required -Detail "$binDir is on PATH"
+    } else {
+        $checks += New-FmInstallCheck -Name 'fm-* entry points' -Status 'missing' -Required `
+            -Detail "$binDir is not on PATH in this session" `
+            -Fix 'run bin/fm-setup.ps1, then open a new PowerShell session'
+    }
+
+    $block = Get-FmInstallProfileBlock -RepoRoot $RepoRoot -FirstmateHome $FirstmateHome
+    if (Test-FmInstallProfileBlockCurrent -Path $ProfilePath -Block $block) {
+        $checks += New-FmInstallCheck -Name 'profile wiring' -Status 'ok' -Detail $ProfilePath
+    } elseif (Test-Path -LiteralPath $ProfilePath -PathType Leaf) {
+        $checks += New-FmInstallCheck -Name 'profile wiring' -Status 'warn' `
+            -Detail "$ProfilePath has no current firstmate block (the checkout or the home may have moved)" `
+            -Fix "bin/fm-setup.ps1 -FirstmateHome '$FirstmateHome'"
+    } else {
+        $checks += New-FmInstallCheck -Name 'profile wiring' -Status 'missing' -Required `
+            -Detail "no profile at $ProfilePath" -Fix "bin/fm-setup.ps1 -FirstmateHome '$FirstmateHome'"
+    }
+
+    if (Test-FmInstallHookRegistered -Path $HookSettingsPath) {
+        $checks += New-FmInstallCheck -Name 'Claude hooks' -Status 'ok' `
+            -Detail ("SessionStart, PreToolUse, Stop registered in " + $HookSettingsPath)
+    } else {
+        $checks += New-FmInstallCheck -Name 'Claude hooks' -Status 'missing' `
+            -Detail "not registered in $HookSettingsPath" `
+            -Fix 'bin/fm-setup.ps1'
+    }
+
+    $checks
+}

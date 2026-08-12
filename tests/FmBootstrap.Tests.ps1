@@ -54,6 +54,15 @@ BeforeAll {
     }
 }
 
+AfterAll {
+    # Reset-TestEnvironment runs per-Describe, and the last Describe in this file
+    # has no BeforeEach - so without this the FM_BACKEND override set by
+    # 'reports an unresolvable backend' escaped into every test FILE that runs
+    # after this one, where Get-FmBootstrapBackendName honours it ahead of
+    # config/backend. Env vars are process-wide; Pester containers are not.
+    Reset-TestEnvironment
+}
+
 Describe 'Get-FmBootstrapCrewDispatchDiagnostic' {
     BeforeEach {
         $script:TestHome = New-TestHome
