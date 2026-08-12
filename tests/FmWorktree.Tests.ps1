@@ -18,6 +18,8 @@
     Justification = 'Test seam stubs must declare their owner''s full published parameter list without using it; see the comment above.')]
 param()
 BeforeAll {
+    . (Join-Path $PSScriptRoot 'FmSymlink.TestHelpers.ps1')
+
     $script:ModuleRoot = Join-Path $PSScriptRoot '..' 'module' 'Firstmate'
     . (Join-Path $script:ModuleRoot 'Private' 'FmBackendHerdr.ps1')
     . (Join-Path $script:ModuleRoot 'Private' 'FmWorktree.ps1')
@@ -43,6 +45,7 @@ Describe 'Resolve-FmPhysicalPath' {
     }
 
     It 'resolves an INTERMEDIATE symlinked component, not just the leaf' {
+        Set-FmTestSymlinkSkip
         # This is the case that makes a leaf-only resolve compare unequal
         # against an OS-level cwd read and misfire the isolation guard.
         $real = Join-Path $TestDrive 'real'

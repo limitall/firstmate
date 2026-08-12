@@ -127,7 +127,10 @@ function Assert-FmDeliveryContract {
     )
     if ($Kind -eq 'ship') {
         if (-not $Mode) {
-            throw ('error: ship spawns require --mode <no-mistakes|direct-PR|local-only>; resolve it at intake ' +
+            # The prompt names only the modes this port can actually deliver.
+            # Offering no-mistakes here and refusing it two lines later would
+            # send the caller round a loop the port can never close.
+            throw ('error: ship spawns require --mode <direct-PR|local-only>; resolve it at intake ' +
                 "from the captain's instruction and the project's registered posture in data/projects.md")
         }
         if (-not $Yolo) {
@@ -141,6 +144,16 @@ function Assert-FmDeliveryContract {
         if ((Get-FmDeliveryModeName) -notcontains $Mode) {
             throw "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$Mode')"
         }
+        # A REAL mode this port cannot run is a different problem from an
+        # unknown one, and AGENTS.md section 7 states that brief and spawn
+        # refuse it BY NAME. They did not: only Invoke-FmPromote and project
+        # registration consulted the support gate, so a ship task could be
+        # scaffolded and launched as no-mistakes and every consumer downstream
+        # would read it as pipeline-gated work while nothing on this platform
+        # would ever run that pipeline. The refusal belongs at intake, where it
+        # costs nothing, rather than at promotion after the work is done.
+        # Get-FmDeliveryModeSupport stays the ONE owner of the reason text.
+        $null = Assert-FmDeliveryModeSupported -Mode $Mode
         if ($Yolo -ne 'on' -and $Yolo -ne 'off') {
             throw "error: --yolo must be on or off (got '$Yolo')"
         }

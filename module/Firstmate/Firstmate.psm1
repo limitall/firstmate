@@ -49,6 +49,7 @@ $script:FmFoundationExports = @(
     'Get-FmProcessAncestry'
     'Get-FmProcessCommandLine'
     'Test-FmHarnessProcess'
+    'Test-FmHarnessPidAlive'
     'Get-FmHarnessAncestry'
     'Get-FmHarnessAncestryPid'
     # FmState

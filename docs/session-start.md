@@ -47,16 +47,22 @@ before the other areas exist. **A missing owner is reported in the digest as a
 step that did NOT run - never as one that passed**, and the lock specifically
 fails closed to a read-only session.
 
+**Which of these have owners is no longer a matter of reading this table.**
+`tests/FmModuleAssembly.Tests.ps1` derives every by-name target in the module
+from the source and fails on any one that is neither defined nor listed in its
+registry of deliberate absences, each with a written reason. This table records
+the SHAPE each caller expects; that test records what actually exists.
+
 | Expected function | Replaces | Consumed by |
 | --- | --- | --- |
-| `Invoke-FmLock` | `bin/fm-lock.sh` | digest stage 1, Stop auto-arm recovery |
+| `Invoke-FmLock` (LANDED - `Public/Invoke-FmLock.ps1`, `bin/fm-lock.ps1`) | `bin/fm-lock.sh` | digest stage 1, Stop auto-arm recovery |
 | `Start-FmStartupNetwork -Locked -HarvestPid` | `fm-startup-network.sh start` | digest stage 1 |
 | `Invoke-FmStartupNetworkHarvest -HarvestPid` | `fm-startup-network.sh harvest` | digest stage 7 |
 | `Invoke-FmWakeDrain` | `bin/fm-wake-drain.sh` | digest stage 3 |
 | `Invoke-FmGuard` | `bin/fm-guard.sh` | digest stage 3, read-only path |
-| `Get-FmSupervisionInstructions -Harness -ReadOnly -Afk -XMode` | `fm-supervision-instructions.sh` | digest stage 4 |
+| `Get-FmSupervisionInstructions -Harness -ReadOnly -Afk -XMode` (LANDED - `Public/FmSupervision.ps1`; ALSO takes one positional options hashtable, which is the guard seam's shape) | `fm-supervision-instructions.sh` | digest stage 4, every guard repair line |
 | `Get-FmSupervisionRepairLine -Afk -XMode` | `fm-supervision-instructions.sh --repair-line` | turn-end guard banner |
-| `Get-FmHarness` | `bin/fm-harness.sh` | digest stages 4 and 9 |
+| `Get-FmHarness` (LANDED - `Public/Get-FmHarness.ps1`) | `bin/fm-harness.sh` (own-harness detection only; the crew and secondmate resolutions are `Get-FmConfiguredHarness`'s) | digest stages 4 and 9, every spawn |
 | `Get-FmBackendName`, `Get-FmBackendRequiredTool -Backend`, `Get-FmBackendKnown`, `Test-FmBackendRequiredToolAvailable` | `bin/fm-backend.sh` | bootstrap tool detection |
 | `Get-FmMetaBackend -Path`, `Get-FmMetaTarget -Path` (backend area, landed) | `bin/fm-backend.sh` | digest stage 6 endpoint liveness |
 | `Test-FmHerdrTargetExists -Target` (backend area, landed), or a generic `Test-FmBackendTargetExists -Backend -Target -Name` if one is ever published | `fm_backend_target_exists` | digest stage 6 endpoint liveness |
@@ -64,21 +70,30 @@ fails closed to a read-only session.
 | `Test-FmWatcherHealthy -State -Grace` | `fm_watcher_healthy` | turn-end guard, Stop auto-arm |
 | `Get-FmSupervisionStatus -State -Grace` | `fm_supervision_status` | turn-end guard, Stop auto-arm |
 | `Invoke-FmWatchArm` | `bin/fm-watch-arm.sh` | Stop auto-arm |
-| `Test-FmSessionLockOwnedBySelf -State`, `Test-FmHarnessPidAlive -ProcessId` | `fm-session-lock-lib.sh` | Stop auto-arm, SessionStart routing |
-| `Invoke-FmSessionStartNudge` | `bin/fm-sessionstart-nudge.sh` | SessionStart resume/reload/fork |
+| `Test-FmSessionLockOwnedBySelf -State`, `Test-FmHarnessPidAlive -ProcessId` (both LANDED) | `fm-session-lock-lib.sh` | Stop auto-arm, SessionStart routing |
+| `Invoke-FmSessionStartNudge` (LANDED - `Public/Invoke-FmSessionStart.ps1`) | `bin/fm-sessionstart-nudge.sh` | SessionStart resume/reload/fork |
 | `Test-FmGateAgent -Root` | `fm_is_gate_agent` | SessionStart eligibility |
 | `Test-FmArmCommandPolicy -Command`, `Test-FmCdCommandPolicy -Command` (cd-guard area, LANDED - `-Root` is defaulted), `Test-FmSubagentPolicy -Payload` | the PreToolUse policy owners | PreToolUse hook |
 | `Invoke-FmPrCheckMigrate`, `Invoke-FmSecondmateLivenessSweep`, `Invoke-FmSecondmateSync`, `Invoke-FmSecondmateHandoffResume`, `Set-FmXModeArtifact`, `Invoke-FmFleetSync` (delivery area, landed - callable with no arguments), `Invoke-FmHerdrSessionCleanup` | bootstrap's six mutating sweeps plus Herdr cleanup | `Invoke-FmBootstrap` |
 | `Test-FmTasksAxiCompatible`, `Test-FmQuotaAxiCompatible`, `Test-FmBacklogBackendManual -ConfigDir` | the axi compatibility probes | bootstrap, backlog listing |
 | `Set-FmStartupMemoryBudget -ConfigDir`, `Set-FmTraceContextSessionStart`, `Get-FmPublicFollowupPending`, `Get-FmPrimaryTangleBranch -Root`, `Get-FmDefaultBranch -Root` | their bash libraries | bootstrap, digest |
 
-Two return shapes matter:
+Three shapes matter:
 
-- **`Invoke-FmLock`** may report refusal by throwing, or by returning an object
-  carrying `Acquired = $false`. Both are honoured, and so is not existing at all.
-  All three land on a read-only session, because a session that cannot verify
-  lock ownership must not mutate shared fleet state. Whatever else it returns is
-  printed verbatim under the `LOCK` subsection.
+- **`Invoke-FmLock`** may report refusal by throwing, by writing an error
+  record, or by returning an object carrying `Acquired = $false`. All are
+  honoured, and so is not existing at all. Every one lands on a read-only
+  session, because a session that cannot verify lock ownership must not mutate
+  shared fleet state. What it returns is printed verbatim under the `LOCK`
+  subsection, which is why the landed owner emits TEXT unless asked for
+  `-PassThru`: an object emitted by default would reach the captain as a
+  stringified hashtable.
+- **`Get-FmSupervisionInstructions`** has two callers with two shapes - the
+  digest's named parameters and the guard seam's ONE positional hashtable
+  (`Invoke-FmSeam` splats an argument array and cannot bind a named one).
+  Declaring only the named form would not fail loudly: the seam call would throw,
+  the guard's catch would read that as "no owner", and every banner would keep
+  its generic fallback sentence for ever.
 - **The three PreToolUse policy predicates** return an object (or hashtable) with
   `Deny`, `Code`, and `Reason`. An invalid verdict fails open, because only the
   policy owner may decide deny.
@@ -124,6 +139,20 @@ read, so a file an operator edited with a Windows editor still parses.
 
 **Dot-prefixed files are hidden on Unix**, so every `Get-Item` on a state record
 passes `-Force`. This bit in practice and is covered by tests.
+
+## The stages that write through the console, not the pipeline
+
+Two owners this digest composes are entry-point shaped: their report goes to the
+console and their return value is an exit code. Calling them like an ordinary
+step got both halves wrong - the report bypassed the digest completely (in the
+bounded child it went straight past the output file the parent streams, so it
+landed in the terminal out of order or not at all) and the exit code was
+stringified into the digest as a bare `0` where the queue should have been.
+
+`Invoke-FmSessionConsoleStep` runs those two - the wake drain and the read-only
+guard - with the console redirected into memory, reports what they wrote, and
+drops the exit code. The wake queue is the turn's FIRST work queue, so losing it
+is not a cosmetic defect.
 
 ## Bootstrap: detect, ask, then install
 

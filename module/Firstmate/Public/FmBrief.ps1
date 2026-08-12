@@ -71,7 +71,17 @@ function New-FmBrief {
     # value stops the scaffold rather than silently defaulting.
     if ($kind -eq 'ship') {
         switch ($Mode) {
-            'no-mistakes' { }
+            'no-mistakes' {
+                # AGENTS.md section 7 promises this is refused by name at the
+                # BRIEF as well as the spawn, and it was not: a brief scaffolded
+                # here carries a "Delivery contract: mode=no-mistakes" line and
+                # a definition of done built around a pipeline nothing on this
+                # platform runs, and the spawn's own refusal then arrives after
+                # the instructions are already written. Get-FmDeliveryModeSupport
+                # stays the one owner of the reason text.
+                $verdict = Get-FmDeliveryModeSupport -Mode $Mode
+                return (Fail "error: $($verdict.Reason)")
+            }
             'direct-PR' { }
             'local-only' { }
             'no-mistakes-prod-only' {

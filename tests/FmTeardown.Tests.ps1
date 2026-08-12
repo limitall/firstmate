@@ -13,6 +13,8 @@
 # machine state.
 
 BeforeAll {
+    . (Join-Path $PSScriptRoot 'FmSymlink.TestHelpers.ps1')
+
     $script:ModuleRoot = Join-Path $PSScriptRoot '..' 'module' 'Firstmate'
     . (Join-Path $script:ModuleRoot 'Private' 'FmBackendHerdr.ps1')
     . (Join-Path $script:ModuleRoot 'Private' 'FmWorktree.ps1')
@@ -916,6 +918,7 @@ Describe 'Invoke-FmTeardown' {
     }
 
     It 'REFUSES a PR-check artifact that is a symlink out of the state directory' {
+        Set-FmTestSymlinkSkip
         $outside = Join-Path $script:iRoot 'outside.txt'
         Set-Content -LiteralPath $outside -Value 'keep me'
         $link = Join-Path $script:stateDir 'alpha.check.sh'
@@ -1057,6 +1060,7 @@ Describe 'Remove-FmTaskPrPollArtifact' {
     }
 
     It 'REFUSES an artifact that is a symlink out of the state directory' {
+        Set-FmTestSymlinkSkip
         $outside = Join-Path $TestDrive 'pr-outside.txt'
         Set-Content -LiteralPath $outside -Value 'keep me'
         $link = Join-Path $script:prState 't1.check.sh'
@@ -1088,6 +1092,7 @@ Describe 'Test-FmTeardownTasksAxiBacklog' {
 
 Describe 'the stale-lock symlink refusal' {
     It 'never treats a SYMLINKED index.lock as stale' {
+        Set-FmTestSymlinkSkip
         # Removing it would follow the link and delete something else entirely.
         $target = Join-Path $TestDrive 'lock-target.txt'
         Set-Content -LiteralPath $target -Value ''

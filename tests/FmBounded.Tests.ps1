@@ -19,6 +19,8 @@
 param()
 
 BeforeAll {
+    . (Join-Path $PSScriptRoot 'FmSymlink.TestHelpers.ps1')
+
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     foreach ($area in @('Private', 'Public')) {
         Get-ChildItem -Path (Join-Path $script:RepoRoot 'module' 'Firstmate' $area) -Filter '*.ps1' |
@@ -169,6 +171,7 @@ Describe 'Invoke-FmValidatedCheck refusals' {
     }
 
     It 'refuses a check that is a link, because a link points somewhere nobody authenticated' {
+        Set-FmTestSymlinkSkip
         function Test-FmCheckRegistered { param($Path, $State) $true }
         $real = Join-Path $script:TestHome 'real.ps1'
         Set-FmFileTextLf -Path $real -Text "Write-Output linked`n"

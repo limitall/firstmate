@@ -128,12 +128,32 @@ Describe 'The delivery contract' {
             Should -Throw '*must be on or off*'
     }
 
-    It 'accepts every valid ship combination' {
-        foreach ($mode in @('no-mistakes', 'direct-PR', 'local-only')) {
+    It 'accepts every ship combination this port can actually deliver' {
+        foreach ($mode in @('direct-PR', 'local-only')) {
             foreach ($yolo in @('on', 'off')) {
                 { Assert-FmDeliveryContract -Kind 'ship' -Mode $mode -Yolo $yolo } | Should -Not -Throw
             }
         }
+    }
+
+    It 'refuses no-mistakes BY NAME at intake, as AGENTS.md section 7 promises' {
+        # The promise was documented and not enforced: a ship task could be
+        # scaffolded and launched in a mode whose pipeline nothing here runs,
+        # and only promotion - after the work - would refuse it.
+        foreach ($yolo in @('on', 'off')) {
+            { Assert-FmDeliveryContract -Kind 'ship' -Mode 'no-mistakes' -Yolo $yolo } |
+                Should -Throw '*not supported by this Windows port*'
+        }
+        # And it is refused as a REAL mode this port cannot run, never as an
+        # unknown one: the two have different fixes.
+        $thrown = { Assert-FmDeliveryContract -Kind 'ship' -Mode 'no-mistakes' -Yolo 'off' } |
+            Should -Throw -PassThru
+        [string]$thrown | Should -Not -BeLike '*must be one of*'
+    }
+
+    It 'offers only the deliverable modes when a ship spawn names none' {
+        { Assert-FmDeliveryContract -Kind 'ship' -Mode '' -Yolo 'off' } |
+            Should -Throw '*--mode <direct-PR|local-only>*'
     }
 
     It 'refuses a delivery contract on a kind that has none' {

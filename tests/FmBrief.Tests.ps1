@@ -81,7 +81,6 @@ Describe 'New-FmBrief generated text' {
     AfterEach { Remove-FmTestHome -TestHome $script:TestHome }
 
     It 'matches the bash scaffolder for <Fixture>' -ForEach @(
-        @{ Fixture = 'ship-no-mistakes'; Params = @{ Repo = 'acme/widget'; Mode = 'no-mistakes' } }
         @{ Fixture = 'ship-direct-pr'; Params = @{ Repo = 'acme/widget'; Mode = 'direct-PR' } }
         @{ Fixture = 'ship-local-only'; Params = @{ Repo = 'acme/widget'; Mode = 'local-only' } }
         @{ Fixture = 'ship-direct-pr-herdr'; Params = @{ Repo = 'acme/widget'; Mode = 'direct-PR'; HerdrLab = $true } }
@@ -99,6 +98,36 @@ Describe 'New-FmBrief generated text' {
         $actual | Should -BeExactly $expected
     }
 
+    It 'refuses to scaffold a no-mistakes ship brief, by name' {
+        # AGENTS.md section 7 promises brief AND spawn refuse this mode. The
+        # spawn did; the brief did not, so the captain's own session scaffolded
+        # instructions whose definition of done is a pipeline nothing on this
+        # platform runs - and only the later spawn would have said so.
+        $result = New-FmBrief -Id 't1' -Repo 'acme/widget' -Mode 'no-mistakes'
+        $result.ExitCode | Should -Be 1
+        $result.Path | Should -Be ''
+        ($result.Messages -join ' ') | Should -BeLike '*not supported by this Windows port*'
+        Test-Path -LiteralPath (Join-Path $script:TestHome.Path 'data' 't1' 'brief.md') | Should -BeFalse
+    }
+
+    It 'keeps the refused mode''s sections pinned to the bash scaffolder' {
+        # Unreachable through New-FmBrief now, and deliberately still pinned:
+        # when the pipeline gains Windows support the port should carry the
+        # scaffold the reference implementation writes, not one re-derived from
+        # memory under pressure.
+        $sections = Get-FmBriefModeSections -Mode 'no-mistakes' -Id 't1'
+        $expected = Get-ExpectedBrief -Name 'ship-no-mistakes' -TestHome $script:TestHome -Root $script:Root -Id 't1'
+        # .Contains, not -BeLike: these sections are full of backticks, which a
+        # double-quoted wildcard pattern would read as escape sequences.
+        $expected.Contains($sections.Rule1) | Should -BeTrue -Because 'the rule line is pinned'
+        $expected.Contains($sections.Setup2.Trim()) | Should -BeTrue -Because 'the setup step is pinned'
+        # The definition of done carries per-task substitutions, so it is
+        # compared line by line rather than as one block.
+        foreach ($line in @($sections.Dod -split "`n" | Where-Object { $_ -notmatch '\{' -and $_.Trim() })) {
+            $expected.Contains($line) | Should -BeTrue -Because "the definition of done keeps: $line"
+        }
+    }
+
     It 'writes LF-only UTF-8 with no BOM' {
         $result = New-FmBrief -Id 't1' -Repo 'acme/widget' -Mode 'direct-PR'
         $bytes = [System.IO.File]::ReadAllBytes($result.Path)
@@ -108,7 +137,7 @@ Describe 'New-FmBrief generated text' {
     }
 
     It 'keeps the worktree-isolation assertion in every ship brief' -ForEach @(
-        @{ Mode = 'no-mistakes' }, @{ Mode = 'direct-PR' }, @{ Mode = 'local-only' }
+        @{ Mode = 'direct-PR' }, @{ Mode = 'local-only' }
     ) {
         $result = New-FmBrief -Id 't1' -Repo 'acme/widget' -Mode $Mode
         $text = [System.IO.File]::ReadAllText($result.Path)

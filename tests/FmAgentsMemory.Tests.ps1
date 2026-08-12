@@ -11,6 +11,8 @@
 # run in any worktree at any time.
 
 BeforeAll {
+    . (Join-Path $PSScriptRoot 'FmSymlink.TestHelpers.ps1')
+
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
 
@@ -73,7 +75,18 @@ Describe 'Set-FmAgentsMemory in an empty worktree' {
         $before = [System.IO.File]::ReadAllText((Join-Path $dir 'AGENTS.md'))
         $result = Set-FmAgentsMemory -Path $dir
         $result.Action | Should -Be 'unchanged'
-        $result.Message | Should -Be "unchanged: AGENTS.md with CLAUDE.md -> AGENTS.md in $dir"
+        # The message names the link kind the host actually produced, which is
+        # the honest-reporting rule this command is built on: where symlinks
+        # are unavailable the second name is a hardlink or a copy, and calling
+        # that "CLAUDE.md -> AGENTS.md" would claim a link that is not there.
+        # Asserting one wording regardless is what made a stock, non-elevated
+        # Windows run look like a defect.
+        $expected = if ((Get-Item -LiteralPath (Join-Path $dir 'CLAUDE.md') -Force).LinkTarget) {
+            "unchanged: AGENTS.md with CLAUDE.md -> AGENTS.md in $dir"
+        } else {
+            "unchanged: AGENTS.md with a CLAUDE.md mirror of it in $dir"
+        }
+        $result.Message | Should -Be $expected
         [System.IO.File]::ReadAllText((Join-Path $dir 'AGENTS.md')) | Should -Be $before
     }
 
@@ -101,6 +114,7 @@ Describe 'Set-FmAgentsMemory with an existing AGENTS.md' {
     }
 
     It 'injects the section into an existing pair without touching the link' {
+        Set-FmTestSymlinkSkip
         $dir = New-TestDir
         [System.IO.File]::WriteAllText((Join-Path $dir 'AGENTS.md'), "# Notes`n")
         $null = New-Item -ItemType SymbolicLink -Path (Join-Path $dir 'CLAUDE.md') -Value 'AGENTS.md'
@@ -135,6 +149,7 @@ Describe 'Set-FmAgentsMemory with an existing AGENTS.md' {
     }
 
     It 'refuses a CLAUDE.md symlink that points somewhere else' {
+        Set-FmTestSymlinkSkip
         $dir = New-TestDir
         [System.IO.File]::WriteAllText((Join-Path $dir 'AGENTS.md'), "# Agents`n")
         [System.IO.File]::WriteAllText((Join-Path $dir 'OTHER.md'), "# Other`n")
@@ -143,6 +158,7 @@ Describe 'Set-FmAgentsMemory with an existing AGENTS.md' {
     }
 
     It 'refuses when AGENTS.md is itself a symlink' {
+        Set-FmTestSymlinkSkip
         $dir = New-TestDir
         [System.IO.File]::WriteAllText((Join-Path $dir 'REAL.md'), "# Real`n")
         $null = New-Item -ItemType SymbolicLink -Path (Join-Path $dir 'AGENTS.md') -Value 'REAL.md'
@@ -171,6 +187,7 @@ Describe 'Set-FmAgentsMemory promoting a lone CLAUDE.md' {
     }
 
     It 'creates AGENTS.md and keeps an already-correct dangling link' {
+        Set-FmTestSymlinkSkip
         $dir = New-TestDir
         $null = New-Item -ItemType SymbolicLink -Path (Join-Path $dir 'CLAUDE.md') -Value 'AGENTS.md'
         $result = Set-FmAgentsMemory -Path $dir
@@ -179,6 +196,7 @@ Describe 'Set-FmAgentsMemory promoting a lone CLAUDE.md' {
     }
 
     It 'refuses a dangling CLAUDE.md symlink that points elsewhere' {
+        Set-FmTestSymlinkSkip
         $dir = New-TestDir
         $null = New-Item -ItemType SymbolicLink -Path (Join-Path $dir 'CLAUDE.md') -Value 'SOMEWHERE.md'
         { Set-FmAgentsMemory -Path $dir } | Should -Throw '*AGENTS.md is missing and the link does not point to AGENTS.md*'
@@ -202,6 +220,7 @@ Describe 'the case-variant guard' {
 
 Describe 'the link strategies' {
     It 'creates a real symlink when one is allowed' {
+        Set-FmTestSymlinkSkip
         $dir = New-TestDir
         [System.IO.File]::WriteAllText((Join-Path $dir 'AGENTS.md'), "# Agents`n")
         New-FmAgentsClaudeLink -Directory $dir -Strategy Symlink | Should -Be 'symlink'

@@ -268,10 +268,20 @@ function Write-FmOpenDecisionsSection {
 
         The fold itself is owned by the classifier elsewhere in the module; when
         that seam is absent this prints nothing rather than guessing.
+
+        The INCREMENTAL variant is what bash's drain uses, and it is asked for by
+        name here rather than through Invoke-FmSeam: -Incremental is a switch,
+        and the seam helper splats an argument array, which cannot bind one. A
+        positional call would have silently taken the whole-file fold and paid
+        every task's entire status history on every wake.
     #>
     param([Parameter(Mandatory)][hashtable]$Context)
 
-    $open = @(Invoke-FmSeam -Name 'Get-FmOpenDecisions' -Arguments @($Context.State) -Default @())
+    $open = @()
+    $scan = Get-Command -Name 'Get-FmOpenDecisionScan' -ErrorAction SilentlyContinue
+    if ($scan) {
+        try { $open = @(& $scan -StatePath $Context.State -Incremental) } catch { $open = @() }
+    }
     if ($open.Count -eq 0) { return }
 
     $itemBytes = 220

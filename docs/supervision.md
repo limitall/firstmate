@@ -141,8 +141,8 @@ staleness but can never swallow a wake.
 | `Get-FmLastStatusLine`, `Test-FmStatusPaused`, `Test-FmStatusPausedOrCaptainHeld` | no declared pause |
 | `Get-FmCaptainRelevantStatuses`, `Set-FmStatusSurfaced` | heartbeat backstop finds nothing |
 | `Get-FmOpenDecisions` | the drain prints no OPEN DECISIONS section |
-| `Get-FmSupervisionInstructions` | guards fall back to the generic repair sentence |
-| `Get-FmHarness` | supervision model defaults to `persistent` (the stricter one) |
+| `Get-FmSupervisionInstructions` (LANDED - see below) | guards fall back to the generic repair sentence |
+| `Get-FmHarness` (LANDED - `Public/Get-FmHarness.ps1`) | supervision model defaults to `persistent` (the stricter one) |
 | `Get-FmPrimaryTangleBranch`, `Get-FmDefaultBranch` (owned since `Public/FmTangle.ps1` landed - see below) | no worktree-tangle alarm |
 | `Invoke-FmPrCheckMigration`, `Repair-FmPrPollRetirementAll`, `Publish-FmPrPollRetirement` | migration assumed done, no retirement recovery |
 | `Invoke-FmPendingReplyTick`, `Invoke-FmProceventReconcile` | no-op |
@@ -234,3 +234,46 @@ pwsh -NoProfile -c 'Invoke-Pester -Path ./tests'
 157 tests across `FmWake.Tests.ps1`, `FmWatch.Tests.ps1` and
 `FmGuard.Tests.ps1`. `FmWatch.Tests.ps1` drives `bin/fm-watch.ps1` and
 `bin/fm-wake-drain.ps1` out-of-process, the way a harness arms them.
+
+## The emitted supervision block
+
+`Public/FmSupervision.ps1` publishes `Get-FmSupervisionInstructions`, the port of
+`bin/fm-supervision-instructions.sh`. It renders stage 4 of the session-start
+digest and the one repair sentence every guard and turn-end banner ends with.
+
+**The protocol it emits is selected from the seams present at run time, not from
+a constant.** On Linux this renderer picks between six harness protocols; this
+port dispatches one harness, so the axis that actually matters here is whether an
+automatic re-arm owner exists in the build at all. It does not
+(`Invoke-FmWatchArm` is in the registry of deliberate absences), so the Claude
+Stop auto-arm is registered and inert, and the block says so and hands the
+session the foreground cycle. Emitting the Stop-owned protocol in that state
+would tell the captain a mechanism is running when nothing is.
+
+Two call shapes bind, and both are load-bearing:
+
+```powershell
+Get-FmSupervisionInstructions -Harness claude -ReadOnly 0 -Afk 0 -XMode 0  # the digest
+Get-FmSupervisionInstructions @{ RepairLine = $true; Afk = $false }        # the guard seam
+```
+
+The second is `Get-FmSupervisionRepairLine` reaching it through `Invoke-FmSeam`,
+which splats an argument ARRAY. A named-only signature would throw there, the
+guard's catch would read the throw as "no owner", and every banner would keep its
+generic fallback sentence for ever without a word.
+
+## The window contract the pane layer needs
+
+`Public/FmBackendWindow.ps1` publishes `Get-FmRecordedWindows`,
+`Get-FmBackendCapture`, `Get-FmWindowKind`, `Get-FmWindowBackend`,
+`Test-FmWindowBusy`, `Get-FmBackendAgentAlive` and `Get-FmBackendBusyVerdict`.
+
+These are the names the seam table above lists, and until they existed the
+watcher skipped its ENTIRE layer-1 staleness backbone on every cycle: the herdr
+adapter had landed with every primitive underneath them under its own names, and
+nobody published the generic ones. A dispatched crewmate could wedge and no wake
+would ever be raised, while every test stayed green.
+
+The capture is gated on the read-only existence probe rather than the ready
+probe, because readiness starts a stopped session server and a watcher poll must
+never resurrect an endpoint it is only observing.

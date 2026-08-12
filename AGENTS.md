@@ -122,12 +122,12 @@ If the session lock cannot be acquired and verified, report its exact diagnostic
 A lock-refused session must not spawn, steer, merge, drain the wake queue, repair supervision, repair a checkout, or perform any other fleet mutation.
 
 The digest itself makes no external-network call and never waits for one.
-Every network check a session start owes - GitHub auth, pending handoff delivery, and project clone refresh - runs concurrently in a bounded worker and is reported in the digest's own `NETWORK CHECKS` section.
-When that section reports its checks still in progress it names exactly what is unconfirmed; treat none of those as passed until the result lands.
+**On this port it makes none at all**: the deferred network stage is not ported (section 14), so the `NETWORK CHECKS` section reports that GitHub authentication and the project clone refresh are UNVERIFIED this session and names them.
+Treat none of them as passed. When a session needs them, run them deliberately - `bin/fm-bootstrap.ps1 -Network only` for GitHub authentication, `bin/fm-fleet-sync.ps1` for the clone refresh - and do that before dispatching work that depends on either.
 
 The nine stages, in order:
 
-1. **Lock** - acquires the per-home session lock first, before anything mutates shared state, then starts the deferred network stage.
+1. **Lock** - acquires the per-home session lock first, before anything mutates shared state.
 2. **Bootstrap** - detect-only checks (tool and version problems, the worktree-tangle check, harness override, dispatch-profile validation, backlog-backend status) always run, but routine confirmations stay silent by default.
    When the lock could not be acquired, the worktree-tangle check uses read-only advisory wording without a checkout repair command.
    The mutating sweeps run only when this session actually holds the lock from step 1.
@@ -138,8 +138,8 @@ The nine stages, in order:
    The script itself never starts supervision; the emitted protocol owns the exact wait or wake mechanism.
 5. **Fleet-state digest** - the compact backlog listing; every `state/<id>.meta`; a bounded tail of each task's `state/<id>.status` (labeled as wake-EVENT history, not current state); and one cheap alive/dead read of each task's recorded endpoint.
    That liveness line is a fast presence check only: when you need a crew's actual current state, read it with `bin/fm-crew-state.ps1 <id>`.
-6. **Network checks** - the deferred stage's result, or an explicit statement of what it has not confirmed yet.
-   A read-only session runs no network checks at all and says so.
+6. **Network checks** - an explicit statement of what this session has not confirmed, because the stage that would confirm it is not ported.
+   A read-only session says so for its own reason as well.
 7. **Context digest and next step** - the full contents of `data/projects.md`, `data/secondmates.md`, `data/captain.md`, and `data/learnings.md`, each clearly delimited, followed by the closing reminder.
    A file that does not exist prints an explicit `ABSENT` marker, never confused with an empty-but-present file.
 
@@ -323,10 +323,12 @@ Fleet supervision is an always-loaded operational contract; the emitted session-
 Whenever work is under way, keep exactly one live supervision cycle using the emitted protocol for this primary harness.
 Do not substitute another harness's wait shape, use a backgrounded job, or create a second cycle when a healthy one already exists.
 
-**When the digest emits no protocol, say so and supervise by hand.**
-The supervision-instructions owner is not ported yet, so the digest prints `SUPERVISION INSTRUCTIONS: NOT EMITTED` and hands the obligation back to you rather than silently dropping it.
-That is a step that did not run, never one that passed: keep the cycle yourself by running `bin/fm-watch.ps1` in the foreground when work is under way, handling the wake it exits on, and draining the queue at the start of that turn.
+**The digest emits that protocol, and it reports what this build actually has.**
+There is no automatic re-arm here (section 14), so the block names the arm as unavailable and gives you the session-kept cycle instead: run `bin/fm-watch.ps1` in the FOREGROUND while work is under way, handle the wake it exits on, and drain the queue at the start of that turn.
+It is selected from the seams present at run time rather than from a constant, so the day an arm owner lands the emitted protocol changes with it.
+Never background the watcher with `&`, `Start-Job`, or `Start-Process`: a child reaped when the tool call returns leaves no watcher running and a false "already running" read off the dying process.
 Never end a turn with work in flight on the assumption that something else is watching.
+If the digest ever prints `SUPERVISION INSTRUCTIONS: NOT EMITTED`, that is a step that did not run rather than one that passed - keep the foreground cycle yourself and report the gap.
 For every actionable wake, follow the ordinary-wake continuation in the emitted protocol; use its repair action only when the live cycle is missing or failed.
 No turn ends blind while work is under way, including turns described as holding or waiting.
 
@@ -486,7 +488,9 @@ Each is a plain absence, not a degraded imitation: never simulate one, and tell 
 - **The voice channel.** No spoken escalation and no spoken question.
 - **Remote secondmates.** Secondmate spawning and charter briefs work locally; the seeding, convergence, liveness sweep, cross-home handoff, and every remote route are absent, and `data/secondmates.md` is hand-maintained.
 - **Harnesses other than `claude`, and backends other than `herdr`** (section 4).
-- **Harness detection and the emitted supervision protocol.** No area owns either yet, so the digest reports the primary harness as `unknown` and prints `SUPERVISION INSTRUCTIONS: NOT EMITTED`. Section 8 owns what you do instead, and `harness-adapters` owns the detection half. Keep exactly one live supervision cycle regardless.
+- **The automatic watcher arm.** The Claude Stop auto-arm hook is registered but has no arm owner to call, so nothing re-arms the watcher between turns. The emitted supervision block names this and gives the session-kept foreground cycle instead (section 8). Harness detection and the supervision block themselves ARE ported.
+- **The deferred network stage.** No session start makes a network call here, so GitHub authentication and the project clone refresh are unverified until you run them deliberately (section 3). The digest's `NETWORK CHECKS` section names exactly what it has not confirmed.
+- **The session-start trace context, the PR-check area, and the quota-axi compatibility probe.** Each is bound by name somewhere and defined nowhere, deliberately; `tests/FmModuleAssembly.Tests.ps1` carries the full registry with a written reason for every one, and refuses any new undefined by-name call.
 - **The `relaunch` control verb.** Refused by name; `stuck-crewmate-recovery` owns the explicit exit-then-respawn replacement.
 - **The crewmate turn-end hook.** A worker's own Stop hook is not installed, so `state/<id>.turn-ended` is never touched by a crewmate turn. Wakes still arrive from every `state/<id>.status` append and from the stale cadence; what is lost is the immediate per-turn notification. `harness-adapters` owns the consequence.
 - **Structured decision holds.** `decision-hold-lifecycle`'s policy is in force, but there is no `fm-decision-hold` command; holds are ordinary held backlog items.

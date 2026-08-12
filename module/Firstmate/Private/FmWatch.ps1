@@ -443,9 +443,9 @@ function Invoke-FmNonTerminalStaleSurface {
     $sinceFile = Join-Path $Context.State ".stale-since-$key"
     try { Remove-FmStateFile -Path $sinceFile } catch { Write-Debug "watch: could not clear wedge timer $sinceFile; the next cycle re-reads the old start time: $_" }
 
-    $task = Invoke-FmSeam -Name 'Get-FmWindowTask' -Arguments @($Window, $Context.State) -Default ''
+    $task = Invoke-FmSeam -Name 'Convert-FmWindowToTask' -Arguments @($Window, $Context.State) -Default ''
     $last = Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @((Join-Path $Context.State "$task.status")) -Default ''
-    $held = Invoke-FmSeam -Name 'Test-FmStatusPausedOrCaptainHeld' -Arguments @($last) -Default $false
+    $held = Invoke-FmSeam -Name 'Test-FmStatusIsPausedOrCaptainHeld' -Arguments @($last) -Default $false
     if ($held) {
         Set-FmFileTextLf -Path (Join-Path $Context.State ".paused-$key") -Text ''
         Set-FmFileTextLf -Path (Join-Path $Context.State ".paused-rechecked-$key") -Text ((Get-FmUnixTime).ToString() + "`n")
@@ -469,6 +469,32 @@ function Get-FmHeartbeatSurfacedPath {
     return (Join-Path $Context.State ('.hb-surfaced-' + ($Task -replace '[:/.]', '_')))
 }
 
+function Set-FmStatusSurfaced {
+    <#
+        mark_status_surfaced: record ONE status file's current last line as
+        already surfaced, so the heartbeat backstop does not raise a second wake
+        for a line the signal or stale path has just enqueued.
+
+        This was reached by name as if it belonged to another area, and no area
+        owned it - so every wake the per-wake paths raised stayed unmarked and
+        the backstop could surface it again. It is a write into this area's own
+        marker namespace (Get-FmHeartbeatSurfacedPath, three lines up), so it
+        lives here and is called directly.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal marker write inside a poll cycle that has already enqueued the durable wake.')]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Path,
+        [Parameter(Mandatory)][hashtable]$Context
+    )
+    if ([string]::IsNullOrEmpty($Path)) { return }
+    $name = [System.IO.Path]::GetFileName($Path)
+    if (-not $name.EndsWith('.status')) { return }
+    $task = $name.Substring(0, $name.Length - '.status'.Length)
+    $last = Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @($Path) -Default ''
+    Set-FmFileTextLf -Path (Get-FmHeartbeatSurfacedPath -Task $task -Context $Context) -Text ([string]$last)
+}
+
 function Test-FmHeartbeatFindsActionable {
     <#
         heartbeat_scan_finds_actionable. Pure detect, no side effects: the caller
@@ -477,11 +503,11 @@ function Test-FmHeartbeatFindsActionable {
         captain-relevant status the per-wake path absorbed by mistake.
     #>
     param([Parameter(Mandatory)][hashtable]$Context)
-    $statuses = @(Invoke-FmSeam -Name 'Get-FmCaptainRelevantStatuses' -Arguments @($Context.State) -Default @())
+    $statuses = @(Invoke-FmSeam -Name 'Get-FmCaptainRelevantStatus' -Arguments @($Context.State) -Default @())
     foreach ($s in $statuses) {
         if (-not $s) { continue }
         $surfaced = Get-FmFileTextOrEmpty -Path (Get-FmHeartbeatSurfacedPath -Task $s.Task -Context $Context)
-        if ($surfaced -ne $s.Last) { return $true }
+        if ($surfaced -ne $s.Line) { return $true }
     }
     return $false
 }
@@ -491,10 +517,10 @@ function Set-FmAllCaptainRelevantSurfaced {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Internal marker write inside a poll cycle that has already classified the wake.')]
     param([Parameter(Mandatory)][hashtable]$Context)
-    $statuses = @(Invoke-FmSeam -Name 'Get-FmCaptainRelevantStatuses' -Arguments @($Context.State) -Default @())
+    $statuses = @(Invoke-FmSeam -Name 'Get-FmCaptainRelevantStatus' -Arguments @($Context.State) -Default @())
     foreach ($s in $statuses) {
         if (-not $s) { continue }
-        Set-FmFileTextLf -Path (Get-FmHeartbeatSurfacedPath -Task $s.Task -Context $Context) -Text $s.Last
+        Set-FmFileTextLf -Path (Get-FmHeartbeatSurfacedPath -Task $s.Task -Context $Context) -Text $s.Line
     }
 }
 

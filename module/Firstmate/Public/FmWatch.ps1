@@ -368,7 +368,7 @@ function Invoke-FmWatchSignalCycle {
     $actionable = $false
     if (Test-FmAfk -Context $Context) { $actionable = $true }
     if (-not $actionable) {
-        $actionable = [bool](Invoke-FmSeam -Name 'Test-FmSignalActionable' -Arguments @(, $files.ToArray()) -Default $true)
+        $actionable = [bool](Invoke-FmSeam -Name 'Test-FmSignalReasonIsActionable' -Arguments @(, $files.ToArray()) -Default $true)
     }
     if (-not $actionable) {
         # The only costly test, so it runs ONLY for a non-afk, no-captain-verb
@@ -388,7 +388,7 @@ function Invoke-FmWatchSignalCycle {
         # exist, so a crash between the two re-surfaces rather than swallows.
         foreach ($change in $all) {
             Set-FmSignalSeen -Change $change
-            $null = Invoke-FmSeam -Name 'Set-FmStatusSurfaced' -Arguments @($change.Path, $Context.State) -Default $null
+            Set-FmStatusSurfaced -Path $change.Path -Context $Context
         }
         New-FmWakeDelivery -Reason $reason -Context $Context
     }
@@ -428,18 +428,18 @@ function Invoke-FmWatchStaleCycle {
     foreach ($window in @(Invoke-FmSeam -Name 'Get-FmRecordedWindows' -Arguments @($Context.State) -Default @())) {
         if (-not $window) { continue }
         $kind = Invoke-FmSeam -Name 'Get-FmWindowKind' -Arguments @($window, $Context.State) -Default 'unknown'
-        $task = Invoke-FmSeam -Name 'Get-FmWindowTask' -Arguments @($window, $Context.State) -Default ''
+        $task = Invoke-FmSeam -Name 'Convert-FmWindowToTask' -Arguments @($window, $Context.State) -Default ''
         $key = Get-FmWindowKey -Window $window
         $last = Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @((Join-Path $Context.State "$task.status")) -Default ''
         $pausedFlag = Join-Path $Context.State ".paused-$key"
 
-        $heldNow = [bool](Invoke-FmSeam -Name 'Test-FmStatusPausedOrCaptainHeld' -Arguments @($last) -Default $false)
+        $heldNow = [bool](Invoke-FmSeam -Name 'Test-FmStatusIsPausedOrCaptainHeld' -Arguments @($last) -Default $false)
         if (-not $heldNow -and [System.IO.File]::Exists($pausedFlag)) {
             Clear-FmPauseTracking -Window $window -Context $Context
         }
         # A secondmate endpoint is supervised through its status writes, not its
         # pane: an idle or blocked secondmate agent pane is healthy by design.
-        if ($kind -eq 'secondmate' -and -not (Invoke-FmSeam -Name 'Test-FmStatusPaused' -Arguments @($last) -Default $false)) {
+        if ($kind -eq 'secondmate' -and -not (Invoke-FmSeam -Name 'Test-FmStatusIsPaused' -Arguments @($last) -Default $false)) {
             continue
         }
 
@@ -479,7 +479,7 @@ function Invoke-FmWatchStaleCycle {
                     Remove-FmStateFile -Path $sinceFile
                     Remove-FmStateFile -Path $escalationFile
                 }
-                $stillHeld = [bool](Invoke-FmSeam -Name 'Test-FmStatusPausedOrCaptainHeld' `
+                $stillHeld = [bool](Invoke-FmSeam -Name 'Test-FmStatusIsPausedOrCaptainHeld' `
                         -Arguments @((Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @((Join-Path $Context.State "$task.status")) -Default '')) -Default $false)
                 if ([System.IO.File]::Exists($pausedFlag) -and ($n -ge 2 -or -not $stillHeld)) {
                     Clear-FmPauseTracking -Window $window -Context $Context
@@ -498,7 +498,7 @@ function Invoke-FmWatchStaleCycle {
                 Remove-FmStateFile -Path $escalationFile
             }
             $lastNow = Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @((Join-Path $Context.State "$task.status")) -Default ''
-            $heldNow = [bool](Invoke-FmSeam -Name 'Test-FmStatusPausedOrCaptainHeld' -Arguments @($lastNow) -Default $false)
+            $heldNow = [bool](Invoke-FmSeam -Name 'Test-FmStatusIsPausedOrCaptainHeld' -Arguments @($lastNow) -Default $false)
             if (-not (Test-FmAfk -Context $Context) -and $heldNow -and -not $busyNow) {
                 if ((Get-FmPauseStateClass -Window $window -Task $task -Context $Context -Settings $Settings) -eq 'paused') {
                     Invoke-FmPausedStale -Window $window -Task $task -Hash $hash -Context $Context -Settings $Settings
@@ -574,7 +574,7 @@ function Invoke-FmWatchStaleTriage {
                 }
                 Set-FmFileTextLf -Path $StaleFile -Text $Hash
                 Remove-FmStateFile -Path $SinceFile
-                $null = Invoke-FmSeam -Name 'Set-FmStatusSurfaced' -Arguments @((Join-Path $Context.State "$Task.status"), $Context.State) -Default $null
+                Set-FmStatusSurfaced -Path (Join-Path $Context.State "$Task.status") -Context $Context
                 New-FmWakeDelivery -Reason "stale: $Window" -Context $Context
             }
         }
@@ -614,7 +614,7 @@ function Invoke-FmWatchStaleTriage {
     }
 
     $lastNow = Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @((Join-Path $Context.State "$Task.status")) -Default ''
-    $heldNow = [bool](Invoke-FmSeam -Name 'Test-FmStatusPausedOrCaptainHeld' -Arguments @($lastNow) -Default $false)
+    $heldNow = [bool](Invoke-FmSeam -Name 'Test-FmStatusIsPausedOrCaptainHeld' -Arguments @($lastNow) -Default $false)
     if ([System.IO.File]::Exists($PausedFlag) -or $heldNow) {
         switch (Get-FmPauseStateClass -Window $Window -Task $Task -Context $Context -Settings $Settings) {
             'working' {
@@ -741,7 +741,7 @@ function Get-FmPauseStateClass {
     $recheckFile = Join-Path $Context.State ".paused-rechecked-$key"
     $last = Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @((Join-Path $Context.State "$Task.status")) -Default ''
 
-    if (-not (Invoke-FmSeam -Name 'Test-FmStatusPausedOrCaptainHeld' -Arguments @($last) -Default $false)) {
+    if (-not (Invoke-FmSeam -Name 'Test-FmStatusIsPausedOrCaptainHeld' -Arguments @($last) -Default $false)) {
         Remove-FmStateFile -Path $recheckFile
         return [string](Invoke-FmSeam -Name 'Get-FmCrewAbsorbClass' -Arguments @($Task) -Default 'none')
     }

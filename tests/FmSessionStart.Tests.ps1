@@ -193,11 +193,51 @@ Describe 'Get-FmSessionStartDigest' {
     }
 
     It 'declares itself read-only and skips every mutating step when the lock owner is unavailable' {
+        # The lock owner has LANDED, so this degradation is now STAGED rather
+        # than assumed. A test that assumes it stops exercising the read-only
+        # path the moment the owner appears - and an assumed absence is exactly
+        # what let the missing owner ship in the first place.
         New-TestHome -Populated | Out-Null
+        Mock Resolve-FmSessionCommand {
+            # One mock, not a filtered pair: Pester has no fall-through to the
+            # real command for an unmatched filter, and this stage resolves
+            # several other owners in the same run.
+            if ($Name -contains 'Invoke-FmLock') { return $null }
+            foreach ($n in $Name) {
+                $c = Get-Command -Name $n -CommandType Function, Cmdlet, Alias -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+                if ($c) { return $c }
+            }
+            return $null
+        }
         $digest = @(Get-FmSessionStartDigest)
         $digest | Should -Contain '●  READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED'
         @($digest | Where-Object { $_ -like 'skipped (read-only session) - * record(s) remain queued*' }).Count | Should -Be 1
         $digest | Should -Contain 'skipped (read-only session) - GitHub authentication, project clone refresh,'
+    }
+
+    It 'acquires the lock through the REAL owner and is not read-only' {
+        # The headline regression: every session on this port came up
+        # read-only because the digest resolved a name nothing defined. No
+        # stub here on purpose - a stub is what hid it.
+        $home_ = New-TestHome -Populated
+        function Get-FmHarnessAncestryPid { $PID }
+        try {
+            $digest = @(Get-FmSessionStartDigest)
+            $digest | Should -Contain "lock acquired: harness pid $PID"
+            $digest | Should -Not -Contain '●  READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED'
+            @($digest | Where-Object { $_ -like 'lock: NOT ACQUIRED*' }).Count | Should -Be 0
+            [System.IO.File]::ReadAllText((Join-Path $home_ 'state' '.lock')) | Should -Be "$PID`n"
+        } finally {
+            Remove-Item -Path 'function:Get-FmHarnessAncestryPid' -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'emits a supervision operating block, never the not-emitted degradation' {
+        New-TestHome -Populated | Out-Null
+        $digest = @(Get-FmSessionStartDigest)
+        @($digest | Where-Object { $_ -like 'SUPERVISION INSTRUCTIONS: NOT EMITTED*' }).Count | Should -Be 0
+        @($digest | Where-Object { $_ -like 'SUPERVISION OPERATING INSTRUCTIONS - primary harness:*' }).Count | Should -Be 1
     }
 
     It 'runs the locked path, drains the queue and records completion when the lock owner is loaded' {
@@ -361,9 +401,36 @@ Describe 'Invoke-FmSessionLockStage' {
     # digest may do, so every shape of refusal has to land on read-only.
     It 'is read-only when the lock owner is not loaded at all' {
         New-TestHome | Out-Null
+        Mock Resolve-FmSessionCommand {
+            # One mock, not a filtered pair: Pester has no fall-through to the
+            # real command for an unmatched filter, and this stage resolves
+            # several other owners in the same run.
+            if ($Name -contains 'Invoke-FmLock') { return $null }
+            foreach ($n in $Name) {
+                $c = Get-Command -Name $n -CommandType Function, Cmdlet, Alias -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+                if ($c) { return $c }
+            }
+            return $null
+        }
         $lock = Invoke-FmSessionLockStage
         $lock.Acquired | Should -BeFalse
         $lock.Output[0] | Should -BeLike 'lock: NOT ACQUIRED - *'
+    }
+
+    It 'reads the REAL owner refusal as read-only, with its reason verbatim' {
+        # Invoke-FmLock reports refusal on the error stream and returns no
+        # object, so this stage's "an error record means not acquired" branch
+        # is the one that actually runs in production.
+        New-TestHome | Out-Null
+        function Get-FmHarnessAncestryPid { $null }
+        try {
+            $lock = Invoke-FmSessionLockStage
+            $lock.Acquired | Should -BeFalse
+            ($lock.Output -join ' ') | Should -BeLike '*cannot locate harness process in ancestry*'
+        } finally {
+            Remove-Item -Path 'function:Get-FmHarnessAncestryPid' -Force -ErrorAction SilentlyContinue
+        }
     }
 
     It 'is read-only when the lock owner throws' {

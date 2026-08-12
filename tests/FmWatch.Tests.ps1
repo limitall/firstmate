@@ -424,12 +424,15 @@ Describe 'Signal triage with the classifier present' {
         fail-closed surfacing is tested above, deliberate absorption here.
     #>
     BeforeAll {
-        function Test-FmSignalActionable { param($Files) return $script:StubActionable }
-        function Test-FmSignalCrewProvablyWorking { param($Files) return $script:StubWorking }
-        function Set-FmStatusSurfaced { param($Path, $State) $script:StubSurfaced += @($Path) }
+        # The names are the classifier's real ones. They used to be spelled
+        # Test-FmSignalActionable here, which no owner has ever defined, so
+        # these stubs stood in for nothing and the triage under test ran
+        # against the real classifier while the assertions described the stub.
+        function Test-FmSignalReasonIsActionable { param($Path) return $script:StubActionable }
+        function Test-FmSignalCrewProvablyWorking { param($Path) return $script:StubWorking }
     }
     AfterAll {
-        foreach ($n in @('Test-FmSignalActionable', 'Test-FmSignalCrewProvablyWorking', 'Set-FmStatusSurfaced')) {
+        foreach ($n in @('Test-FmSignalReasonIsActionable', 'Test-FmSignalCrewProvablyWorking')) {
             Remove-Item -Path "function:$n" -ErrorAction SilentlyContinue
         }
     }
@@ -439,7 +442,6 @@ Describe 'Signal triage with the classifier present' {
         $script:Settings = Get-FmWatchSettings
         $script:StubActionable = $false
         $script:StubWorking = $true
-        $script:StubSurfaced = @()
         Set-FmFileTextLf -Path (Join-Path $script:Ctx.State 'alpha.status') -Text "working: still going`n"
     }
     AfterEach { Remove-TestHome -Path $script:TestHome }
@@ -461,7 +463,10 @@ Describe 'Signal triage with the classifier present' {
 
         { Invoke-FmWatchSignalCycle -Context $script:Ctx -Settings $script:Settings } | Should -Throw
         @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 1
-        $script:StubSurfaced.Count | Should -Be 1
+        # The surfaced marker is what stops the heartbeat backstop raising a
+        # second wake for the line this cycle just enqueued.
+        (Get-FmFileTextOrEmpty -Path (Get-FmHeartbeatSurfacedPath -Task 'alpha' -Context $script:Ctx)) |
+            Should -Be 'working: still going'
     }
 
     It 'surfaces a no-verb signal whose crew stopped without a captain-relevant status' {

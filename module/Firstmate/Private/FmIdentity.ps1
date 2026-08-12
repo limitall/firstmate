@@ -341,6 +341,35 @@ function Test-FmHarnessProcess {
     return $null -ne (Get-FmHarnessName -Id $Id)
 }
 
+function Test-FmHarnessPidAlive {
+    <#
+        .SYNOPSIS
+        True when a process id is BOTH alive and a verified harness.
+
+        .DESCRIPTION
+        Port of fm_harness_pid_alive, and the exact predicate bin/fm-lock.sh
+        applies to a lock it found: a session lock is held only by a process
+        that is alive AND is an agent, and each half has to be stated. A pid
+        that is alive but is no longer a harness - the classic recycled id - is
+        NOT a holder, and reporting it as one would strand every later session
+        in read-only mode behind a lock nobody owns.
+
+        The hook area resolves this by name and calls it as `-ProcessId`, the
+        spelling published in the cross-area table in docs/session-start.md.
+
+        Fails SAFE toward alive, like the rest of this file: Test-FmProcessAlive
+        reports an unreadable process as alive, because a wrong "dead" steals a
+        lock from a live holder while a wrong "alive" only waits.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory, Position = 0)][AllowNull()][object]$ProcessId)
+
+    if (-not (Test-FmProcessId -Id $ProcessId)) { return $false }
+    if (-not (Test-FmProcessAlive -Id $ProcessId)) { return $false }
+    return (Test-FmHarnessProcess -Id $ProcessId)
+}
+
 function Get-FmProcessAncestry {
     <#
         .SYNOPSIS

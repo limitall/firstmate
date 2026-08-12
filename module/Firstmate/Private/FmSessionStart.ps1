@@ -561,6 +561,71 @@ function Invoke-FmSessionComposedStep {
     }
 }
 
+# Some owners this digest composes are ENTRY-POINT shaped: their report goes to
+# the console and their return value is an exit code, not text. Two of them run
+# inside the digest - the wake drain and the read-only guard - and calling them
+# like an ordinary step gets both halves wrong: the report bypasses the digest
+# entirely (in the bounded child, straight past the output file the parent
+# streams, so it lands in the terminal out of order or not at all) and the exit
+# code is stringified into the digest as a bare "0" where the queue should be.
+#
+# The wake queue is the turn's FIRST work queue, so losing it is not cosmetic.
+# This runs such an owner with the console redirected into memory and reports
+# what it wrote, dropping the exit code.
+function Invoke-FmSessionConsoleStep {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string[]]$CommandName,
+        [hashtable]$Parameters = @{},
+        [Parameter(Mandatory)][string]$UnavailableLine
+    )
+
+    $cmd = Resolve-FmSessionCommand -Name $CommandName
+    if (-not $cmd) {
+        return [pscustomobject]@{ Available = $false; Success = $false; Output = @($UnavailableLine) }
+    }
+
+    $capturedOut = [System.IO.StringWriter]::new()
+    $capturedError = [System.IO.StringWriter]::new()
+    $previousOut = [Console]::Out
+    $previousError = [Console]::Error
+    $piped = @()
+    $success = $true
+    try {
+        [Console]::SetOut($capturedOut)
+        [Console]::SetError($capturedError)
+        try {
+            $piped = @(& $cmd @Parameters 2>&1)
+        } catch {
+            $success = $false
+            $piped = @([string]$_)
+        }
+    } finally {
+        [Console]::SetOut($previousOut)
+        [Console]::SetError($previousError)
+        $capturedOut.Flush()
+        $capturedError.Flush()
+    }
+
+    $out = @()
+    foreach ($writer in @($capturedOut, $capturedError)) {
+        $text = $writer.ToString()
+        if ([string]::IsNullOrEmpty($text)) { continue }
+        $text = ($text -replace "`r`n", "`n").TrimEnd("`n")
+        if ($text.Length -eq 0) { continue }
+        $out += ($text -split "`n")
+    }
+    foreach ($item in $piped) {
+        if ($null -eq $item) { continue }
+        # The exit code, not digest text. Every other pipeline value is kept, so
+        # an owner that reports through the pipeline is not silently dropped.
+        if ($item -is [int] -or $item -is [long]) { continue }
+        $out += [string]$item
+    }
+
+    [pscustomobject]@{ Available = $true; Success = $success; Output = @($out) }
+}
+
 # One cheap alive/dead read of a task's recorded backend endpoint. This is a fast
 # PRESENCE check only, never a full state read: the digest deliberately skips the
 # deeper per-task read so it stays bounded, and Get-FmCrewState is what answers
@@ -765,18 +830,15 @@ function Get-FmSessionStartDigest {
             $qlen = @(Get-FmSessionFileLines -Path $queueFile | Where-Object { $_ -ne '' }).Count
         }
         $out += "skipped (read-only session) - $qlen record(s) remain queued because this session lacks verified fleet-lock ownership."
-        $guard = Resolve-FmSessionCommand -Name 'Invoke-FmGuard'
-        if ($guard) {
-            $previousGuardReadOnly = $env:FM_GUARD_READ_ONLY
-            try {
-                $env:FM_GUARD_READ_ONLY = '1'
-                $guardOut = @(& $guard 2>&1 | ForEach-Object { [string]$_ })
-                if ($guardOut.Count -gt 0) { $out += $guardOut }
-            } catch { Write-Debug "session-start: the read-only guard probe failed; its lines are absent from this digest: $_" }
-            finally { $env:FM_GUARD_READ_ONLY = $previousGuardReadOnly }
-        }
+        $previousGuardReadOnly = $env:FM_GUARD_READ_ONLY
+        try {
+            $env:FM_GUARD_READ_ONLY = '1'
+            $guard = Invoke-FmSessionConsoleStep -CommandName @('Invoke-FmGuard') `
+                -UnavailableLine 'guard: NOT RUN - Invoke-FmGuard is not available in this module build, so the tangle and watcher-liveness alarms were not evaluated.'
+            if ($guard.Available -and @($guard.Output).Count -gt 0) { $out += $guard.Output }
+        } finally { $env:FM_GUARD_READ_ONLY = $previousGuardReadOnly }
     } else {
-        $drain = Invoke-FmSessionComposedStep -CommandName @('Invoke-FmWakeDrain') `
+        $drain = Invoke-FmSessionConsoleStep -CommandName @('Invoke-FmWakeDrain') `
             -UnavailableLine 'wake queue: NOT DRAINED - Invoke-FmWakeDrain is not available in this module build, so queued wakes were neither presented nor acknowledged.'
         if (@($drain.Output).Count -gt 0) { $out += $drain.Output } else { $out += '(no queued wakes)' }
     }

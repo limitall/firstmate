@@ -521,8 +521,132 @@ Describe 'cross-area bindings' {
             $sites
         }
 
+        # Every LITERAL by-name target in the tree, whatever mechanism binds it.
+        # Four are in use and each one is a live hazard, so all four are read:
+        #   Resolve-Fm*Command -Name 'X'         (the session/bootstrap seam)
+        #   Invoke-FmSeam / Test-FmSeam -Name 'X' (the watcher seam)
+        #   -CommandName 'X' / @('X', 'Y')       (the composed-step helpers)
+        #   Get-Command -Name X-FmY              (the direct probe)
+        function Get-FmByNameTarget {
+            $found = [System.Collections.Generic.List[object]]::new()
+            $patterns = @(
+                "Resolve-Fm\w*Command\s+-Name\s+(?<names>('[^']+'\s*,?\s*)+)"
+                "Invoke-FmSeam\s+-Name\s+(?<names>'[^']+')"
+                "Test-FmSeam\s+-Name\s+(?<names>'[^']+')"
+                "-CommandName\s+(?<names>@\(\s*('[^']+'\s*,?\s*)+\)|'[^']+')"
+                "Get-Command\s+-Name\s+'?(?<names>[A-Za-z]+-Fm[A-Za-z]+)'?\b"
+            )
+            foreach ($subdir in @('Private', 'Public')) {
+                foreach ($file in (Get-FmModuleScriptFile -Subdir $subdir)) {
+                    $text = [System.IO.File]::ReadAllText($file.FullName)
+                    foreach ($pattern in $patterns) {
+                        foreach ($m in [regex]::Matches($text, $pattern)) {
+                            $raw = $m.Groups['names'].Value
+                            $names = @([regex]::Matches($raw, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
+                            if ($names.Count -eq 0) { $names = @($raw) }
+                            $line = ($text.Substring(0, $m.Index) -split "`n").Count
+                            foreach ($name in $names) {
+                                if ($name -notmatch '^[A-Za-z]+-Fm') { continue }
+                                $found.Add([pscustomobject]@{ Name = $name; File = $file.Name; Line = $line })
+                            }
+                        }
+                    }
+                }
+            }
+            $found
+        }
+
+
+    $script:DeclaredAbsentOwner = [ordered]@{
+        # --- PREFERRED: a complete local fallback is already in place -----
+        'Get-FmBackendName' = 'PREFERRED. Bootstrap prefers a shared backend-area resolver and falls back to FM_BACKEND, then config/backend. docs/session-start.md records the seam.'
+        'Get-FmBackendRequiredTool' = 'PREFERRED. Falls back to bootstrap''s own backend/tool table, which covers every backend it knows.'
+        'Get-FmBackendKnown' = 'PREFERRED. Falls back to the same local table, so BACKEND_INVALID still names the known set.'
+        'Test-FmBackendRequiredToolAvailable' = 'PREFERRED. Falls back to a PATH lookup, which is what the shared owner does anyway.'
+        'Set-FmStartupMemoryBudget' = 'PREFERRED. Set-FmBootstrapStartupMemoryBudget materializes and validates config/startup-memory-budget itself.'
+        'Test-FmBackendTargetExists' = 'PREFERRED. A generic cross-backend probe would be used first if one were ever published; the digest falls through to Test-FmHerdrTargetExists, which is loaded.'
+        'Get-FmComposerState' = 'PREFERRED. The fleet-wide composer-shape classifier. The herdr adapter reports "unknown" rather than growing a private, drift-prone copy of the shape catalogue.'
+        'Test-FmCheckRegistered' = 'PREFERRED. Fail-closed: without the check registry Invoke-FmValidatedCheck refuses to execute ANY state check, which is the safe direction; docs/bounded-execution.md.'
+
+        # --- ABSENT: not in this port (AGENTS.md section 14) --------------
+        'Get-FmPublicFollowupPending' = 'ABSENT. Relay / X mode. Nothing in this port posts anywhere public, so there are no public commitments to report.'
+        'Set-FmXModeArtifact' = 'ABSENT. Relay / X mode: no local relay artifacts are written because nothing here reads them.'
+        'Invoke-FmSecondmateLivenessSweep' = 'ABSENT. Remote secondmates: the liveness sweep, convergence and cross-home handoff are not ported.'
+        'Invoke-FmSecondmateSync' = 'ABSENT. Remote secondmates: convergence has no cross-home route to converge over.'
+        'Invoke-FmSecondmateHandoffResume' = 'ABSENT. Remote secondmates: there is no pending cross-home handoff to retry.'
+        'Invoke-FmPendingReplyTick' = 'ABSENT. Remote secondmates: the parent-owned pending-reply reconciliation has no records to reconcile here.'
+        'Invoke-FmProceventReconcile' = 'ABSENT. Process-to-event sources. A blocking external wait is a backlog item on this port, never a held turn.'
+        'Invoke-FmPrCheckMigrate' = 'ABSENT. The PR-check area. A Windows home has no legacy bash PR checks to neutralize.'
+        'Invoke-FmPrCheckMigration' = 'ABSENT. The PR-check area. The watcher treats the migration as done and still refuses any check it cannot authenticate.'
+        'Repair-FmPrPollRetirementAll' = 'ABSENT. The PR-check area: there are no retirement receipts to recover after a lost poll.'
+        'Publish-FmPrPollRetirement' = 'ABSENT. The PR-check area: no merged-poll retirement receipt is ever published here.'
+        'Invoke-FmWatchArm' = 'ABSENT. No automatic watcher arm. The Claude Stop auto-arm stays inert, and Get-FmSupervisionInstructions emits the session-kept foreground protocol instead of promising a mechanism that would not run.'
+        'Start-FmStartupNetwork' = 'ABSENT. The deferred network stage. The digest reports NETWORK CHECKS: NOT CONFIRMED and names exactly what is unverified.'
+        'Invoke-FmStartupNetworkHarvest' = 'ABSENT. The deferred network stage: there is no bounded worker whose result could be harvested.'
+        'Set-FmTraceContextSessionStart' = 'ABSENT. The trace-context library: no state/.trace-context-effective is refreshed at startup.'
+        'Test-FmGateAgent' = 'ABSENT. Gate agents belong to the no-mistakes pipeline, which this port refuses by name, so there is no gate agent to exclude.'
+        'Test-FmQuotaAxiCompatible' = 'ABSENT. The quota-axi compatibility probe. An installed quota-axi is used as-is; bootstrap raises no incompatibility line for it.'
+        'Invoke-FmHerdrSessionCleanup' = 'ABSENT. The stale-herdr-child sweep. Teardown removes its own endpoints; nothing sweeps children an interrupted session left behind.'
+    }
+
         $script:Signatures = Get-FmModuleFunctionSignature
         $script:CallSites = @(Get-FmByNameCallSite)
+        $script:ByNameTargets = @(Get-FmByNameTarget)
+    }
+
+    # THE REGISTRY OF DELIBERATE ABSENCES.
+    #
+    # A by-name target with no owner does not conflict in git, does not fail to
+    # compile, and dies at RUN time - or worse, does not die at all and silently
+    # takes a degraded path forever. Three shipped that way in one night, one of
+    # them (Invoke-FmLock) leaving every session on this port read-only.
+    #
+    # So an absent owner is now a DECISION that has to be written down. Each
+    # entry says which of two things it is:
+    #
+    #   PREFERRED  - the caller carries a complete local fallback and the shared
+    #                owner would only be nicer. Nothing is lost while it is absent.
+    #   ABSENT     - the capability genuinely is not in this port. The caller
+    #                degrades visibly and AGENTS.md section 14 says so.
+    #
+    # Anything not listed here must be DEFINED. Add a name to this table only
+    # after establishing which of the two it is - never to make this test green.
+    It 'finds by-name targets at all, so the registry check below is not vacuous' {
+        $script:ByNameTargets.Count | Should -BeGreaterThan 40
+    }
+
+    It 'gives every by-name target either an owner in the tree or a written reason' {
+        $undeclared = [System.Collections.Generic.List[string]]::new()
+        foreach ($target in $script:ByNameTargets) {
+            if ($script:Signatures.ContainsKey($target.Name)) { continue }
+            if ($script:DeclaredAbsentOwner.Contains($target.Name)) { continue }
+            $undeclared.Add("$($target.File):$($target.Line) binds $($target.Name), which no file defines")
+        }
+        ($undeclared | Sort-Object -Unique) -join '; ' | Should -Be '' -Because (
+            'a by-name call with no owner dies at run time or silently degrades forever; ' +
+            'define the owner, point the call at the owner that already exists under another name, ' +
+            'or record the absence and its consequence in $script:DeclaredAbsentOwner')
+    }
+
+    It 'keeps the registry honest: no entry for a name the tree now defines' {
+        # Without this, a landed owner leaves its excuse behind and the next
+        # reader believes a capability is missing that is not.
+        $stale = @($script:DeclaredAbsentOwner.Keys | Where-Object { $script:Signatures.ContainsKey($_) })
+        ($stale -join ', ') | Should -Be '' -Because 'the owner landed - delete its entry and update AGENTS.md section 14'
+    }
+
+    It 'keeps the registry honest: no entry for a name nothing binds' {
+        $bound = @($script:ByNameTargets | ForEach-Object { $_.Name } | Select-Object -Unique)
+        $orphan = @($script:DeclaredAbsentOwner.Keys | Where-Object { $bound -notcontains $_ })
+        ($orphan -join ', ') | Should -Be '' -Because 'nothing asks for it any more - delete the entry rather than carrying a stale excuse'
+    }
+
+    It 'classifies every declared absence as PREFERRED or ABSENT, with a reason' {
+        foreach ($name in $script:DeclaredAbsentOwner.Keys) {
+            $reason = [string]$script:DeclaredAbsentOwner[$name]
+            $reason | Should -Match '^(PREFERRED|ABSENT)\.' -Because "$name must say which kind of absence it is"
+            $reason.Length | Should -BeGreaterThan 40 -Because "$name needs a reason a reader can act on, not a label"
+        }
     }
 
     It 'finds by-name call sites at all, so the checks below are not vacuous' {
