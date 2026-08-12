@@ -51,8 +51,11 @@
 #   outside herdr has no workspace to inherit and uses this home's own labeled
 #   workspace, which must then match exactly one. --secondmate is the deliberate
 #   exception: it stands up that secondmate home's own workspace.
-#   Herdr additionally supports a default-off presentation-only layout when the
-#   local config/herdr-presentation-spaces flag exists. A clean fresh task first
+#   Herdr additionally uses a presentation-only layout by default when the
+#   selected client and running server meet the Herdr 0.8.0 floor. The local
+#   config/herdr-presentation-spaces file can say off to disable it or on to
+#   opt in below that floor; an empty file remains the historical opt-in form.
+#   A clean fresh task first
 #   writes state/<id>.herdr-presentation atomically, then creates a disposable
 #   workspace containing only the ordinary task pane. A successful clean create
 #   upgrades its attempt journal with exact home, session, workspace, tab, pane,
@@ -1766,8 +1769,19 @@ function Invoke-FmSpawnMain {
             $journal = Get-FmBackendHerdrProjectionJournalPath $state $id
             $seededDefaultTabId = ''
 
-            if ($kind -cne 'secondmate' -and
-                [System.IO.File]::Exists((ConvertTo-FmNativePath "$config/herdr-presentation-spaces"))) {
+            # The projection gate is version-aware and DEFAULT-ON, not a presence
+            # test of config/herdr-presentation-spaces: an explicit off or on wins,
+            # and an unconfigured home is projected only at or above the Herdr
+            # 0.8.0 floor. Test-FmBackendHerdrPresentationEnabled owns that whole
+            # decision; the preference it returns alongside is what distinguishes an
+            # unconfigured default - which re-checks the floor below, once the
+            # session server is genuinely up - from a deliberate opt-in, which must
+            # not be second-guessed.
+            $presentation = @{ Enabled = $false; Preference = 'default' }
+            if ($kind -cne 'secondmate') {
+                $presentation = Test-FmBackendHerdrPresentationEnabled $config $state
+            }
+            if ([bool]$presentation.Enabled) {
                 $herdrSes = Get-FmBackendHerdrSession
                 $parentLabel = Invoke-FmSpawnWithHome $labelHome { Get-FmBackendHerdrWorkspaceLabel }
                 $journalNative = ConvertTo-FmNativePath $journal
@@ -1827,6 +1841,14 @@ function Invoke-FmSpawnMain {
                 } elseif (-not $metaPresent) {
                     if (-not (Initialize-FmBackendHerdrServer $herdrSes)) {
                         Write-FmErr 'warning: herdr presentation could not ensure its session server; using the ordinary flat layout without projection'
+                    } elseif ([string]$presentation.Preference -ceq 'default' -and
+                        -not (Test-FmBackendHerdrPresentationDefaultSupported $state $herdrSes)) {
+                        # An unconfigured home re-reads the floor against the session
+                        # whose server this call just ensured: the first read may have
+                        # found no server running and judged the client alone. The
+                        # below-floor warning is deduped per release, so the two reads
+                        # still warn once.
+                        $null = $presentation
                     } elseif (Request-FmSpawnHerdrOrderLock $herdrSes) {
                         # The projected child is placed and bound UNDER this launcher's
                         # exact parent workspace. Its own herdr pane identity names that

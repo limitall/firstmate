@@ -302,6 +302,35 @@ HOME_PAD="$TMP_ROOT/home-pad"; mkdir -p "$HOME_PAD"
 printf '  bravo-b2  \n\n' > "$HOME_PAD/.fm-secondmate-home"
 HOME_EMPTY="$TMP_ROOT/home-empty"; mkdir -p "$HOME_EMPTY"
 : > "$HOME_EMPTY/.fm-secondmate-home"
+# Presentation config dirs: ONE DIRECTORY PER CONFIGURED STATE, written once here
+# and never mutated again.
+#
+# This is trap 1 (per-case environment does not survive the batch) wearing a
+# different hat, and it cost a red run to find: the bash oracle answers DURING
+# case construction while the single pwsh driver answers minutes later, so a
+# single config file rewritten between cases hands every PowerShell case the LAST
+# state written. The failure is maximally misleading - every case reports the
+# unconfigured default, which is a real verdict, so it reads as a broken parser
+# rather than a fixture that moved. A file shared across cases is per-case state,
+# exactly like an environment variable.
+#
+# The dirs are shared BETWEEN the two worlds (read-only on both sides, so the two
+# reads cannot diverge on content) but never between cases. Each one's path
+# appears inside the unrecognized-value warning, which is why norm_paths knows the
+# common prefix.
+PCFG_ROOT="$TMP_ROOT/prescfg"
+mkdir -p "$PCFG_ROOT"
+PCFG_ROOT_N=$(fm_test_native_path "$PCFG_ROOT")
+PCFG_DIR=''
+PCFG_DIR_N=''
+make_pres_config() {  # <name> [<content>]   (no content argument = no file at all)
+  PCFG_DIR="$PCFG_ROOT/$1"
+  mkdir -p "$PCFG_DIR"
+  rm -f "$PCFG_DIR/herdr-presentation-spaces"
+  [ "$#" -lt 2 ] || printf '%s' "$2" > "$PCFG_DIR/herdr-presentation-spaces"
+  PCFG_DIR_N=$(fm_test_native_path "$PCFG_DIR")
+}
+
 HOME_PRIMARY_N=$(fm_test_native_path "$HOME_PRIMARY")
 HOME_SECOND_N=$(fm_test_native_path "$HOME_SECOND")
 HOME_PAD_N=$(fm_test_native_path "$HOME_PAD")
@@ -316,6 +345,15 @@ norm_paths() {
   NORMALIZED=${NORMALIZED//"$SPS_N"/<S>}
   NORMALIZED=${NORMALIZED//"$SPS"/<S>}
   NORMALIZED=${NORMALIZED//"$SBASH"/<S>}
+  # The presentation config dirs are SHARED between the worlds, but each world
+  # names them in its own spelling and the unrecognized-value warning quotes that
+  # name back.
+  NORMALIZED=${NORMALIZED//"$PCFG_ROOT_N"/<C>}
+  NORMALIZED=${NORMALIZED//"$PCFG_ROOT"/<C>}
+  # ...and the ONE separator inside them, because each world was handed its own
+  # spelling of the same directory. Scoped to the marker so no other value's
+  # backslashes are touched.
+  NORMALIZED=${NORMALIZED//'<C>\'/<C>/}
 }
 
 # =============================================================================
@@ -377,6 +415,120 @@ for k in Enter enter Escape escape Esc esc C-c c-c ctrl+c Ctrl+C ENTER 'space' '
   run_oracle fm_backend_herdr_normalize_key "$k"
   add_case "herdr:key '$k' normalizes identically" "$ORACLE" key '' "$k" '' '' '' '' ''
 done
+
+# --- the presentation projection gate, part 1: the pure halves ----------------
+#
+# WHY THIS BLOCK EXISTS. The twin shipped a PRESENCE test of
+# config/herdr-presentation-spaces while the oracle had become a version-gated
+# tri-state that is default-ON, so with the ordinary configuration - no file at
+# all - bash projected the worker into its own disposable workspace and the twin
+# dropped it into the launcher's workspace with the launcher's working directory.
+# `treehouse get` then had no repository to allocate from and fm-spawn's isolation
+# assertion refused the launch, so EVERY native herdr spawn failed. Nothing in the
+# suite caught it because nothing drove the decision at all. These cases drive it.
+#
+# The pure classifiers come first, fork-free: the config parser (no herdr call at
+# all) and the two release comparisons.
+
+# --- config/herdr-presentation-spaces parsing ---------------------------------
+add_prespref_case() {  # <label> <config-dir(bash)> <config-dir(native)>
+  local pref
+  run_oracle fm_backend_herdr_presentation_preference "$2"
+  rstrip_oracle
+  pref="$ORACLE|$(first_line "$ORACLE_ERR")"
+  add_case "herdr:prespref $1" "$pref" prespref "FM_T_CDIR=$3" '' '' '' '' '' ''
+}
+add_prespref_state_case() {  # <label> <config-name>
+  add_prespref_case "$1" "$PCFG_DIR" "$PCFG_DIR_N"
+}
+
+make_pres_config absent
+add_prespref_state_case 'an ABSENT flag is the unconfigured default'
+make_pres_config empty ''
+add_prespref_state_case 'an EMPTY flag is the historical opt-in and still means on'
+make_pres_config spacey "$LF $TAB$LF"
+add_prespref_state_case 'a whitespace-only flag is also the historical opt-in'
+make_pres_config on "on$LF"
+add_prespref_state_case 'an explicit on is honored'
+make_pres_config off "off$LF"
+add_prespref_state_case 'an explicit off is honored'
+make_pres_config offpadded "  OFF  $LF"
+add_prespref_state_case 'the value is whitespace-stripped and case-folded'
+make_pres_config onmixed 'On'
+add_prespref_state_case 'a mixed-case on with no trailing newline is honored'
+make_pres_config bogus "disabled$LF"
+add_prespref_state_case 'an unrecognized value warns and falls back to the default'
+make_pres_config twowords "off off$LF"
+add_prespref_state_case 'two words collapse to one unrecognized token, not to off'
+add_prespref_case 'a missing config DIRECTORY is the unconfigured default' \
+  "$PCFG_ROOT/nothere" "$(fm_test_native_path "$PCFG_ROOT/nothere")"
+add_prespref_case 'an EMPTY config-dir argument is the unconfigured default' '' ''
+
+# --- dotted-release comparison ------------------------------------------------
+#
+# The return code is a TRICHOTOMY (at-or-above / below / unparseable) and the
+# unparseable arm is load-bearing: it is what keeps an unreadable release from
+# being read as "below" and warned about with the wrong words.
+add_verat_case() {  # <candidate> <floor>
+  local status=0
+  fm_backend_herdr_version_at_least "$1" "$2" || status=$?
+  add_case "herdr:versionatleast '$1' vs '$2' compares identically" "$status" \
+    versionatleast '' "$1" "$2" '' '' '' ''
+}
+add_verat_case '0.8.0' '0.8.0'
+add_verat_case '0.8.1' '0.8.0'
+add_verat_case '0.7.5' '0.8.0'
+add_verat_case '0.7.9' '0.8.0'
+add_verat_case '1.0.0' '0.8.0'
+add_verat_case '0.10.0' '0.8.0'
+add_verat_case '0.8' '0.8.0'
+add_verat_case '0.8.0-preview.2026-08-04-d78e3d3b5126' '0.8.0'
+add_verat_case '0.7.5-preview.1' '0.8.0'
+add_verat_case '0.8.0+build.7' '0.8.0'
+add_verat_case '' '0.8.0'
+add_verat_case 'unknown' '0.8.0'
+add_verat_case '0.8.0rc1' '0.8.0'
+add_verat_case '-1.0.0' '0.8.0'
+add_verat_case '08.0.0' '0.8.0'
+add_verat_case '0.08.0' '0.8.0'
+add_verat_case '..' '0.8.0'
+add_verat_case '0.8.0.1' '0.8.0'
+# A component too large for the shell's integer type makes BOTH bash comparisons
+# fail, so the pair is skipped and the walk continues as though equal. The twin
+# reproduces that rather than answering from a wider type.
+add_verat_case '99999999999999999999.0.0' '0.8.0'
+add_verat_case '0.8.0' ''
+
+# --- the two-signal floor classifier ------------------------------------------
+#
+# The measured release identities, from docs/verification/runtime-backends.md
+# "Presentation version floor": 0.7.3/0.7.4 report protocol 16, 0.7.5 reports 17,
+# the first post-fix preview reports 18, and 0.8.0 reports 19.
+# stderr is captured rather than inherited: the oracle's own `[ -ge ]` prints
+# "integer expression expected" for a protocol too large for the shell's integer
+# type, and that diagnostic belongs in the case, not in the suite's output where
+# it reads as a suite failure.
+add_floor_case() {  # <protocol> <version>
+  local status=0
+  fm_backend_herdr_release_floor_verdict "$1" "$2" 2>"$ERRCAP" || status=$?
+  add_case "herdr:floorverdict protocol='$1' version='$2' classifies identically" "$status" \
+    floorverdict '' "$1" "$2" '' '' '' ''
+}
+add_floor_case 19 '0.8.0'
+add_floor_case 20 '0.9.0'
+add_floor_case 18 '0.8.0-preview.1'
+add_floor_case 17 '0.7.5'
+add_floor_case 16 '0.7.3'
+add_floor_case 19 ''
+add_floor_case '' '0.8.0'
+add_floor_case '' '0.7.5'
+add_floor_case '' ''
+add_floor_case '' 'unknown'
+add_floor_case 'abc' '0.8.0'
+add_floor_case 'abc' '0.7.5'
+add_floor_case 'abc' 'unknown'
+add_floor_case 18 'unknown'
+add_floor_case 999999999999999999999 '0.7.5'
 
 # --- presentation labels (Unicode; Phase A only) ------------------------------
 for t in 'firstmate/alpha' '2ndmate-sm1/beta' 'fm-gamma' 'plain-task' '2ndmate-nolash' \
@@ -1089,6 +1241,18 @@ run_scenario 'herdr:prune an idle seed pane beside a real task tab is pruned' \
   p_prune prune fmtest w1 'w1:t1'
 
 # --- workspace placement ------------------------------------------------------
+#
+# The --cwd argument is passed in its NATIVE spelling, because that is the shape
+# that reaches herdr in production on this platform in BOTH worlds and nothing
+# else is comparable. herdr is a native binary, so MSYS rewrites a POSIX --cwd on
+# the way into it from bash; PowerShell performs no such rewrite, which is why
+# ConvertTo-FmBackendHerdrCwdArgument now does it explicitly (a POSIX --cwd is not
+# refused by herdr - it silently starts the pane in the user's home instead).
+# Driving both worlds with an already-native path leaves the argv comparison
+# asserting the COMMAND SHAPE rather than which of the two path spellings each
+# world happened to be handed.
+CWD_X=$(fm_test_native_path /tmp/x)
+CWD_W=$(fm_test_native_path /tmp/w)
 p_wsensure() {
   local status err=''
   fm_backend_herdr_workspace_ensure "$1" "$2" "$3" >/dev/null 2>"$ERRCAP" && status=0 || status=$?
@@ -1100,29 +1264,29 @@ p_wsensure() {
 new_scenario wsensure-adopt
 printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"}]}}' > "$B_RESP/1.out"
 run_scenario 'herdr:wsensure a single label match is ADOPTED with no seeded tab id' \
-  p_wsensure wsensure fmtest '/tmp/x' launcher-home
+  p_wsensure wsensure fmtest "$CWD_X" launcher-home
 
 new_scenario wsensure-duplicate
 printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"firstmate"}]}}' > "$B_RESP/1.out"
 run_scenario 'herdr:wsensure two same-labeled home workspaces REFUSE rather than guess' \
-  p_wsensure wsensure fmtest '/tmp/x' launcher-home
+  p_wsensure wsensure fmtest "$CWD_X" launcher-home
 
 new_scenario wsensure-create
 printf '%s\n' '{"result":{"workspaces":[]}}' > "$B_RESP/1.out"
 printf '%s\n' '{"result":{"workspace":{"workspace_id":"w5"},"tab":{"tab_id":"w5:t1"},"root_pane":{"pane_id":"w5:p1"}}}' > "$B_RESP/2.out"
 run_scenario 'herdr:wsensure a created workspace carries its own seeded tab id' \
-  p_wsensure wsensure fmtest '/tmp/x' launcher-home
+  p_wsensure wsensure fmtest "$CWD_X" launcher-home
 
 new_scenario wsensure-createfail
 printf '%s\n' '{"result":{"workspaces":[]}}' > "$B_RESP/1.out"
 printf '1\n' > "$B_RESP/2.exit"
 run_scenario 'herdr:wsensure a failed create reports the generic failure code' \
-  p_wsensure wsensure fmtest '/tmp/x' launcher-home
+  p_wsensure wsensure fmtest "$CWD_X" launcher-home
 
 new_scenario wsensure-otherhome
 printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"}]}}' > "$B_RESP/1.out"
 run_scenario 'herdr:wsensure an other-home launch never inherits the launcher workspace' \
-  p_wsensure wsensure fmtest '/tmp/x' other-home
+  p_wsensure wsensure fmtest "$CWD_X" other-home
 
 # --- task tab creation, husk replacement, duplicate refusal -------------------
 p_createtask() {
@@ -1138,7 +1302,7 @@ new_scenario create-clean
 printf '%s\n' '{"result":{"tabs":[]}}' > "$B_RESP/1.out"
 printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t9"},"root_pane":{"pane_id":"w1:p9"}}}' > "$B_RESP/2.out"
 run_scenario 'herdr:createtask a clean workspace yields the tab and pane ids' \
-  p_createtask createtask 'fmtest:w1' 'fm-x' '/tmp/w' ''
+  p_createtask createtask 'fmtest:w1' 'fm-x' "$CWD_W" ''
 
 new_scenario create-liveduplicate
 printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","label":"fm-x"}]}}' > "$B_RESP/1.out"
@@ -1146,14 +1310,14 @@ printf '%s\n' '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}' > "$
 printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p1"}}}' > "$B_RESP/3.out"
 printf '%s\n' '{"result":{"agent":{"agent_status":"working"}}}' > "$B_RESP/4.out"
 run_scenario 'herdr:createtask a LIVE same-labeled tab refuses rather than replacing' \
-  p_createtask createtask 'fmtest:w1' 'fm-x' '/tmp/w' ''
+  p_createtask createtask 'fmtest:w1' 'fm-x' "$CWD_W" ''
 
 new_scenario create-unreadableduplicate
 printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","label":"fm-x"}]}}' > "$B_RESP/1.out"
 printf '%s\n' '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}' > "$B_RESP/2.out"
 printf '%s\n' '{"error":{"code":"internal_error"}}' > "$B_RESP/3.out"
 run_scenario 'herdr:createtask an UNREADABLE duplicate refuses; only a confirmed husk is replaced' \
-  p_createtask createtask 'fmtest:w1' 'fm-x' '/tmp/w' ''
+  p_createtask createtask 'fmtest:w1' 'fm-x' "$CWD_W" ''
 
 new_scenario create-huskreplace
 printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","label":"fm-x"}]}}' > "$B_RESP/1.out"
@@ -1164,18 +1328,18 @@ printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t9"},"root_pane":{"pane_id":"w1:p9
 : > "$B_RESP/6.out"
 printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t9","label":"fm-x"}]}}' > "$B_RESP/7.out"
 run_scenario 'herdr:createtask a confirmed husk is replaced AFTER the new tab exists' \
-  p_createtask createtask 'fmtest:w1' 'fm-x' '/tmp/w' ''
+  p_createtask createtask 'fmtest:w1' 'fm-x' "$CWD_W" ''
 
 new_scenario create-parsefail
 printf '%s\n' '{"result":{"tabs":[]}}' > "$B_RESP/1.out"
 printf '%s\n' '{"result":{"tab":{}}}' > "$B_RESP/2.out"
 run_scenario 'herdr:createtask an incomplete create response is refused loudly' \
-  p_createtask createtask 'fmtest:w1' 'fm-x' '/tmp/w' ''
+  p_createtask createtask 'fmtest:w1' 'fm-x' "$CWD_W" ''
 
 new_scenario create-badtablist
 printf '%s\n' '{"result":{}}' > "$B_RESP/1.out"
 run_scenario 'herdr:createtask an unparseable tab listing is refused loudly' \
-  p_createtask createtask 'fmtest:w1' 'fm-x' '/tmp/w' ''
+  p_createtask createtask 'fmtest:w1' 'fm-x' "$CWD_W" ''
 
 # --- launcher identity: the exact parent, or a refusal ------------------------
 p_launcher() {
@@ -1214,6 +1378,143 @@ new_scenario workspacefind-none
 printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"someone-else"}]}}' > "$B_RESP/1.out"
 run_scenario 'herdr:workspacefind a non-matching label finds nothing' p_workspacefind workspacefind fmtest
 
+# --- the presentation projection gate, part 2: the whole decision -------------
+#
+# This is the case the missing coverage would have caught: with NO config file at
+# all, on a release at the floor, the answer must be ON. It needs its own fake
+# because the shared Phase B fake answers `status --json` with one hard-coded
+# below-floor release, and this decision reads exactly that response.
+make_release_fakebin() {  # <dir> <protocol> <version>
+  local fb="$1/fakebin" doc
+  mkdir -p "$fb"
+  doc="{\"client\":{\"version\":\"$3\",\"protocol\":$2},\"server\":{\"running\":true,\"version\":\"$3\",\"protocol\":$2}}"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -u\n'
+    printf 'raw=\n'
+    printf 'for a in "$@"; do raw="$raw $a"; done\n'
+    printf 'printf %%s\\\\n "${raw# }" >> "$FM_HERDR_LOG"\n'
+    printf '[ "${1:-}" = status ] || exit 3\n'
+    if [ "$2" = unreadable ]; then
+      printf 'exit 4\n'
+    else
+      printf 'printf %%s\\\\n %s\n' "'$doc'"
+    fi
+  } > "$fb/herdr"
+  chmod +x "$fb/herdr"
+  {
+    printf '@echo off\r\n'
+    printf '>>"%%FM_HERDR_LOG%%" echo %%*\r\n'
+    printf 'if /I "%%~1"=="status" (\r\n'
+    if [ "$2" = unreadable ]; then
+      printf '  exit /b 4\r\n'
+    else
+      printf '  echo %s\r\n' "$doc"
+      printf '  exit /b 0\r\n'
+    fi
+    printf ')\r\n'
+    printf 'exit /b 3\r\n'
+  } > "$fb/herdr.cmd"
+  printf '%s\n' "$fb"
+}
+
+# Two state dirs, one per world: the below-floor warning is deduplicated by a
+# marker FILE, so a shared dir would let whichever world ran first silence the
+# other and the comparison would assert nothing.
+PSTATE_BASH="$TMP_ROOT/presstate-bash"
+PSTATE_PS="$TMP_ROOT/presstate-ps"
+mkdir -p "$PSTATE_BASH" "$PSTATE_PS"
+PSTATE_PS_N=$(fm_test_native_path "$PSTATE_PS")
+
+# One release scenario: its own fakebin and its own per-world command log. The
+# fake answers only `status --json`, which is the whole of this decision's CLI
+# surface, so there is no numbered-response counter to keep.
+PR_DIR=''
+PR_FB=''
+PR_ENV=''
+PR_LOG_BASH=''
+PR_LOG_PS=''
+new_release_scenario() {  # <name> <protocol> <version>
+  PR_DIR="$TMP_ROOT/pres-$1"
+  mkdir -p "$PR_DIR"
+  PR_FB=$(make_release_fakebin "$PR_DIR" "$2" "$3")
+  PR_LOG_BASH="$PR_DIR/log.bash"
+  PR_LOG_PS="$PR_DIR/log.ps"
+  : > "$PR_LOG_BASH"
+  : > "$PR_LOG_PS"
+  PR_ENV="PATH=$(fm_test_native_path "$PR_FB")${US}FM_HERDR_LOG=$(fm_test_native_path "$PR_LOG_PS")${US}FM_T_SDIR2=$PSTATE_PS_N"
+}
+
+# run_pres_case drives fm_backend_herdr_presentation_enabled - the ONE gate
+# fm-spawn consults - and compares the verdict together with the first line of any
+# warning, so a decision that changed WORDING fails as loudly as one that changed
+# answer. The config dir comes from the CURRENT make_pres_config state and is
+# carried in the record, because a config file rewritten between cases would reach
+# the batched PowerShell side only in its final form.
+run_pres_case() {  # <label>
+  local verdict err
+  PATH="$PR_FB:$BASE_PATH"
+  FM_HERDR_LOG="$PR_LOG_BASH" run_yesno fm_backend_herdr_presentation_enabled "$PCFG_DIR" "$PSTATE_BASH"
+  PATH="$BASE_PATH"
+  IFS= read -r -d '' err < "$ERRCAP" || true
+  if [ "$YESNO" = yes ]; then verdict=on; else verdict=off; fi
+  add_case "$1" "$verdict|$(first_line "$err")" presenabled \
+    "$PR_ENV${US}FM_T_CDIR=$PCFG_DIR_N" '' '' '' '' '' ''
+  LOG_PAIRS+=("$PR_LOG_BASH|$PR_LOG_PS|$1")
+}
+
+AT_FLOOR_PROTOCOL=19
+AT_FLOOR_VERSION=0.8.0
+BELOW_FLOOR_PROTOCOL=17
+BELOW_FLOOR_VERSION=0.7.5
+
+# THE REGRESSION CASE. Absent flag, release at the floor: the projection is ON.
+make_pres_config absent
+new_release_scenario absent-at-floor "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION"
+run_pres_case 'herdr:presenabled an ABSENT flag at the floor projects by default'
+
+# Absent flag below the floor: flat fallback, with one naming warning.
+new_release_scenario absent-below-floor "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION"
+run_pres_case 'herdr:presenabled an ABSENT flag below the floor falls back flat and warns'
+# ...and the SAME release does not warn twice, because the marker is per release.
+run_pres_case 'herdr:presenabled the below-floor warning is one per home per release'
+# A different release IS announced again.
+new_release_scenario absent-older-floor 16 0.7.3
+run_pres_case 'herdr:presenabled a changed below-floor release re-announces itself'
+
+# An unreadable release is indeterminate, not "below": different words, same flat
+# fallback, and the twin must not guess from the client alone.
+new_release_scenario absent-unreadable unreadable unreadable
+run_pres_case 'herdr:presenabled an unreadable release falls back flat with its own wording'
+
+# A deliberate opt-in is never silently downgraded below the floor, in either of
+# its two spellings, and it must not warn - a migrated home would warn on every
+# spawn otherwise.
+make_pres_config empty ''
+new_release_scenario empty-below-floor "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION"
+run_pres_case 'herdr:presenabled an EMPTY flag is a deliberate opt-in below the floor'
+make_pres_config on "on$LF"
+new_release_scenario on-below-floor "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION"
+run_pres_case 'herdr:presenabled an explicit on survives the floor'
+new_release_scenario on-unreadable unreadable unreadable
+run_pres_case 'herdr:presenabled an explicit on does not even read the release'
+
+# An explicit off opts out regardless of release.
+make_pres_config off "off$LF"
+new_release_scenario off-at-floor "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION"
+run_pres_case 'herdr:presenabled an explicit off opts out at the floor'
+make_pres_config offpadded "  OFF  $LF"
+new_release_scenario off-folded-at-floor "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION"
+run_pres_case 'herdr:presenabled a padded upper-case off opts out too'
+
+# A typo is not a deliberate opt-in: it warns and then FOLLOWS THE DEFAULT, which
+# means on at the floor and flat below it.
+make_pres_config bogus "disabled$LF"
+new_release_scenario bogus-at-floor "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION"
+run_pres_case 'herdr:presenabled an unrecognized value warns and keeps the default on'
+new_release_scenario bogus-below-floor "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION"
+run_pres_case 'herdr:presenabled an unrecognized value below the floor follows the flat default'
+
 unset FM_BACKEND_HERDR_SCRIPTED_CLI
 PATH="$BASE_PATH"
 
@@ -1236,7 +1537,8 @@ $NONE = '<none>'
 $managed = @('FM_HOME', 'HERDR_SESSION', 'FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP',
     'FM_BACKEND_HERDR_EVENT_READER', 'FM_BACKEND_HERDR_SCRIPTED_CLI',
     'FM_HERDR_LOG', 'FM_HERDR_COUNTER', 'FM_HERDR_RESPONSES',
-    'FM_T_JDIR', 'FM_T_SDIR', 'FM_BACKEND_HERDR_COMPOSER_LINES',
+    'FM_T_JDIR', 'FM_T_SDIR', 'FM_T_CDIR', 'FM_T_SDIR2',
+    'FM_BACKEND_HERDR_COMPOSER_LINES',
     'FM_BACKEND_HERDR_SUBMIT_POLLS')
 $original = @{}
 foreach ($k in $managed) { $original[$k] = [Environment]::GetEnvironmentVariable($k) }
@@ -1326,6 +1628,13 @@ foreach ($record in $text.Split($RS)) {
                 if ($null -eq $t) { $result = $NONE } else { $result = $t.Session + '|' + $t.Pane }
             }
             'key' { $result = ConvertTo-FmBackendHerdrKey $f[2] }
+            'prespref' { $result = Get-FmBackendHerdrPresentationPreference $env:FM_T_CDIR }
+            'versionatleast' { $result = Test-FmBackendHerdrVersionAtLeast $f[2] $f[3] }
+            'floorverdict' { $result = Get-FmBackendHerdrReleaseFloorVerdict $f[2] $f[3] }
+            'presenabled' {
+                $decision = Test-FmBackendHerdrPresentationEnabled $env:FM_T_CDIR $env:FM_T_SDIR2
+                if ([bool]$decision.Enabled) { $result = 'on' } else { $result = 'off' }
+            }
             'concise' { $result = Get-FmBackendHerdrProjectionConciseTaskLabel $f[2] }
             'projlabel' { $result = Get-FmBackendHerdrProjectionWorkspaceLabel -TaskId $f[2] -ProjectionId $f[3] }
             'classify' { $result = Get-FmBackendHerdrAgentStatusClass $f[2] }
@@ -1482,6 +1791,8 @@ foreach ($record in $text.Split($RS)) {
     # as loudly as one that changed verdict.
     switch -CaseSensitive ($f[0]) {
         'journalcreate2' { $result = Get-FirstLine $errText }
+        'prespref' { $result = $result + '|' + (Get-FirstLine $errText) }
+        'presenabled' { $result = $result + '|' + (Get-FirstLine $errText) }
         'wsensure' { $result = $result + '|' + (Get-FirstLine $errText) }
         'createtask' { $result = $result + '|' + (Get-FirstLine $errText) }
         'launcher' { $result = $result + '|' + (Get-FirstLine $errText) }
@@ -1598,7 +1909,7 @@ fi
 
 # A suite that silently ran nothing must not read as a pass, so the assertion
 # COUNT is itself asserted. Set from an OBSERVED green run, never a guess.
-MIN_ASSERTIONS=228
+MIN_ASSERTIONS=339
 if [ "$ASSERTIONS" -lt "$MIN_ASSERTIONS" ]; then
   printf 'not ok - only %d differential assertions ran, expected at least %d\n' \
     "$ASSERTIONS" "$MIN_ASSERTIONS" >&2

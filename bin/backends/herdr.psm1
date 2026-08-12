@@ -44,7 +44,16 @@
 #   fm_backend_herdr_parse_target               Get-FmBackendHerdrTarget                      @{Session;Pane} or $null
 #   fm_backend_herdr_target_ready               Test-FmBackendHerdrTargetReady                @{Session;Pane} or $null
 #   fm_backend_herdr_normalize_host_path        ConvertTo-FmBackendHerdrHostPath              path
+#   (MSYS argv rewrite, no bash twin)           ConvertTo-FmBackendHerdrCwdArgument           native --cwd argument
 #   fm_backend_herdr_normalize_key              ConvertTo-FmBackendHerdrKey                   herdr key name
+#   -- the presentation projection gate ------------------------------------------------------------------------------------
+#   fm_backend_herdr_presentation_preference    Get-FmBackendHerdrPresentationPreference      off|on|default
+#   fm_backend_herdr_version_at_least           Test-FmBackendHerdrVersionAtLeast             [int] 0 ge, 1 lt, 2 unparseable
+#   fm_backend_herdr_release_floor_verdict      Get-FmBackendHerdrReleaseFloorVerdict         [int] 0 at/above, 1 below, 2 indeterminate
+#   fm_backend_herdr_presentation_release_supported  Get-FmBackendHerdrPresentationReleaseSupported  @{Verdict;Release}
+#   fm_backend_herdr_presentation_floor_warn    Write-FmBackendHerdrPresentationFloorWarning  [void] (+ deduped warning)
+#   fm_backend_herdr_presentation_default_supported  Test-FmBackendHerdrPresentationDefaultSupported [bool]
+#   fm_backend_herdr_presentation_enabled       Test-FmBackendHerdrPresentationEnabled        @{Enabled;Preference}
 #   -- presentation journal ----------------------------------------------------------------------------------------------
 #   fm_backend_herdr_projection_id              New-FmBackendHerdrProjectionId                22-char token, or $null
 #   fm_backend_herdr_projection_journal_path    Get-FmBackendHerdrProjectionJournalPath       path
@@ -299,6 +308,32 @@ $script:FmHerdrMinProtocol = 14
 $script:FmHerdrMinEventsProtocol = 16
 $script:FmHerdrMinWorkspaceMoveProtocol = 16
 
+# The version floor for DEFAULT-ON presentation projection. Projection turns every
+# crewmate teardown into a workspace-emptying removal, and the focus-safe removal
+# plan can only avoid Herdr's focus-stealing explicit close while the doomed pane
+# holds a provably lone idle childless shell; a persistent child of that shell
+# (gitstatusd, a zsh-async worker, direnv) makes the plan fall back to the plain
+# explicit close, which steals focus on every release without the two upstream
+# focus fixes (PR #1877 commit 165dca45, PR #1912 commit a979916). Herdr 0.8.0 is
+# the first release carrying both, so a home that configured nothing is projected
+# only at or above it. An explicit "on" is still honored below the floor.
+# Protocol 19 is the structural signal for that floor, measured against the real
+# macOS aarch64 release binaries (docs/verification/runtime-backends.md
+# "Presentation version floor"): 0.7.3 and 0.7.4 report 16, 0.7.5 reports 17, the
+# first post-fix preview reports 18, and 0.8.0 reports 19. No build lacking both
+# fixes reaches 19, and the pre-fix builds top out at 17.
+$script:FmHerdrMinPresentationProtocol = 19
+$script:FmHerdrMinPresentationVersion = '0.8.0'
+
+# One-warning-per-release dedupe marker prefix, under the state dir. The
+# projection decision is remade on every spawn, so an undeduplicated below-floor
+# warning would repeat on every crewmate; the key is the detected release, so an
+# upgrade or a downgrade is announced again.
+$script:FmHerdrPresentationFloorMarkerPrefix = '.herdr-presentation-floor-'
+
+# The config item a home writes to opt out of, or explicitly in to, the projection.
+$script:FmHerdrPresentationConfig = 'herdr-presentation-spaces'
+
 # Per-pane escalation dedupe marker prefix, under the state dir. One marker per
 # window, keyed like the watcher's own .stale-<key>: set when a ->blocked edge is
 # enqueued, cleared on any working edge, so exactly one wake fires per ->blocked
@@ -310,7 +345,7 @@ $script:FmHerdrEscalatedPrefix = '.herdr-escalated-'
 # never carries this marker.
 $script:FmHerdrSecondmateMarker = '.fm-secondmate-home'
 
-# The default-off presentation projection is intentionally separate from the
+# The presentation projection is intentionally separate from the
 # authoritative task endpoint record. A per-task journal lives under state/ as
 # <id>.herdr-presentation. Version 1 records only the attempted projection's
 # random correlator; version 2 additionally binds the successful projection's
@@ -794,6 +829,356 @@ function Get-FmBackendHerdrWorkspaceLabel {
     return 'firstmate'
 }
 
+# --- the presentation projection gate -----------------------------------------
+#
+# THIS IS THE DECISION THAT DECIDES WHERE A WORKER'S PANE OPENS, so it is not a
+# cosmetic setting. With the projection ON, a crewmate or scout gets its own
+# disposable workspace whose pane starts in the PROJECT directory; with it OFF,
+# the pane joins the launcher's flat workspace and starts wherever that shell was.
+# A twin that answered "off" where bash answers "on" therefore lands the worker in
+# the captain's own workspace with the wrong working directory, `treehouse get`
+# has no repository to allocate from, and fm-spawn's isolation assertion refuses
+# the launch. That is exactly what a presence-only test of
+# config/herdr-presentation-spaces produced here after the bash side became
+# version-gated and default-on upstream (#1708, then #1787).
+
+<#
+.SYNOPSIS
+Parse config/herdr-presentation-spaces into "off", "on" or "default".
+.DESCRIPTION
+Twin of fm_backend_herdr_presentation_preference, and the single owner of that
+file's parsing. Values are read with the whole-file whitespace-stripped
+convention the other scalar config items already use (config/backlog-backend,
+config/crew-harness), plus case folding. An EMPTY file is the historical
+presence-based opt-in form and still means an explicit "on", so no home that
+deliberately enabled the projection can lose it. An unrecognized value warns and
+falls back to the default rather than failing a spawn over a purely visual
+setting, so a typo is visible instead of silently deciding anything.
+
+The strip set and the case fold are both BYTE-oriented in the bash twin
+(`tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'` in the C locale), so this
+removes exactly the six ASCII space characters and folds exactly A-Z. A
+culture-aware ToLower would fold non-ASCII the oracle leaves alone, which would
+change the echoed value in the unrecognized-value warning.
+#>
+function Get-FmBackendHerdrPresentationPreference {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$ConfigDir = '')
+
+    if ([string]::IsNullOrEmpty($ConfigDir)) { return 'default' }
+    $file = "$ConfigDir/$($script:FmHerdrPresentationConfig)"
+    $native = ConvertTo-FmNativePath $file
+    if (-not [System.IO.File]::Exists($native)) { return 'default' }
+
+    $raw = Get-FmFileText $native
+    $value = ($raw -replace '[\t\n\v\f\r ]', '')
+    $folded = [System.Text.StringBuilder]::new()
+    foreach ($ch in $value.ToCharArray()) {
+        if ($ch -ge 'A' -and $ch -le 'Z') {
+            [void]$folded.Append([char]([int][char]$ch + 32))
+        } else {
+            [void]$folded.Append($ch)
+        }
+    }
+    $value = $folded.ToString()
+
+    switch -CaseSensitive ($value) {
+        'off' { return 'off' }
+        '' { return 'on' }
+        'on' { return 'on' }
+        default {
+            Write-FmErr "warning: $file`: unrecognized value ""$value""; herdr presentation spaces fall back to the default (write ""off"" to opt out, ""on"" to force the projection on)"
+            return 'default'
+        }
+    }
+}
+
+<#
+.SYNOPSIS
+Compare two dotted release strings: 0 candidate >= floor, 1 below, 2 unparseable.
+.DESCRIPTION
+Twin of fm_backend_herdr_version_at_least, including its return-code trichotomy,
+which is why this answers an [int] rather than a [bool] - "cannot tell" is a
+distinct verdict the caller acts on differently from "below".
+
+Any prerelease or build suffix is stripped first (everything from the first `-`
+or `+`), so a 0.8.0-preview build compares as 0.8.0 - it is built from the 0.8.0
+line and carries its fixes - while a 0.7.5-preview build compares as 0.7.5.
+
+Two bash `test` behaviors are reproduced deliberately rather than improved on:
+a component with a LEADING ZERO is decimal, not octal (`[ 08 -gt 7 ]` is true),
+and a component too large for the shell's integer type makes BOTH `-gt` and
+`-lt` fail, so the pair is skipped and the walk continues to the next component
+as though they were equal. [long]::TryParse gives the first for free; the second
+is the explicit "neither comparison ran" branch below.
+#>
+function Test-FmBackendHerdrVersionAtLeast {
+    [CmdletBinding()]
+    [OutputType([int])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$Candidate = '',
+        [Parameter(Position = 1)][AllowEmptyString()][AllowNull()][string]$Floor = ''
+    )
+
+    $candidate = [string]$Candidate
+    $floor = [string]$Floor
+    $cut = $candidate.IndexOfAny([char[]]@('-', '+'))
+    if ($cut -ge 0) { $candidate = $candidate.Substring(0, $cut) }
+    if ($candidate -eq '' -or $candidate -notmatch '^[0-9.]+$') { return 2 }
+
+    while ($floor -ne '') {
+        $ci = $candidate.IndexOf('.')
+        if ($ci -ge 0) { $c = $candidate.Substring(0, $ci) } else { $c = $candidate }
+        $fi = $floor.IndexOf('.')
+        if ($fi -ge 0) { $f = $floor.Substring(0, $fi) } else { $f = $floor }
+        if ($c -eq '') { $c = '0' }
+
+        $cv = [long]0
+        $fv = [long]0
+        $comparable = [long]::TryParse($c, [System.Globalization.NumberStyles]::None,
+            [System.Globalization.CultureInfo]::InvariantCulture, [ref]$cv) -and
+            [long]::TryParse($f, [System.Globalization.NumberStyles]::None,
+            [System.Globalization.CultureInfo]::InvariantCulture, [ref]$fv)
+        if ($comparable) {
+            if ($cv -gt $fv) { return 0 }
+            if ($cv -lt $fv) { return 1 }
+        }
+
+        if ($ci -ge 0) { $candidate = $candidate.Substring($ci + 1) } else { $candidate = '' }
+        if ($fi -ge 0) { $floor = $floor.Substring($fi + 1) } else { $floor = '' }
+    }
+    return 0
+}
+
+<#
+.SYNOPSIS
+Classify one release against the presentation floor: 0 at or above, 1 below, 2 indeterminate.
+.DESCRIPTION
+Twin of fm_backend_herdr_release_floor_verdict, the pure classifier. Two
+independent signals are read so no single field is load-bearing, and either one
+can carry a positive verdict: the protocol number, which is the structural signal
+this adapter already uses for every other capability gate, and the release core of
+the version string. A signal that is unreadable or unparseable simply cannot carry
+a verdict; a readable protocol below the floor is decisive on its own, and only
+losing BOTH signals reports indeterminate.
+
+A protocol string that is non-empty and all digits but too large for the integer
+type is still KNOWN, exactly as in the bash twin, where the failing `[ -ge ]` only
+skips its own comparison.
+#>
+function Get-FmBackendHerdrReleaseFloorVerdict {
+    [CmdletBinding()]
+    [OutputType([int])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$Protocol = '',
+        [Parameter(Position = 1)][AllowEmptyString()][AllowNull()][string]$Version = ''
+    )
+
+    $protocol = [string]$Protocol
+    $protocolKnown = $false
+    if ($protocol -ne '' -and $protocol -match '^[0-9]+$') {
+        $protocolKnown = $true
+        $pv = [long]0
+        if ([long]::TryParse($protocol, [System.Globalization.NumberStyles]::None,
+                [System.Globalization.CultureInfo]::InvariantCulture, [ref]$pv)) {
+            if ($pv -ge $script:FmHerdrMinPresentationProtocol) { return 0 }
+        }
+    }
+
+    $versionStatus = Test-FmBackendHerdrVersionAtLeast $Version $script:FmHerdrMinPresentationVersion
+    if ($versionStatus -eq 0) { return 0 }
+    if ($protocolKnown -or $versionStatus -eq 1) { return 1 }
+    return 2
+}
+
+<#
+.SYNOPSIS
+Run the floor classifier against the installed client and any running server.
+.DESCRIPTION
+Twin of fm_backend_herdr_presentation_release_supported. A running server and
+client compose conservatively: both must be supported. When status positively
+reports no running server, only the client that will start it is applicable. An
+unreadable server-running state is indeterminate rather than permission to
+substitute the client release.
+
+The bash twin's return code and its FM_BACKEND_HERDR_PRESENTATION_RELEASE
+out-parameter arrive together here, as @{ Verdict = 0|1|2; Release = <identifier> },
+because the warning names the release the verdict came from.
+
+jq is deliberately NOT required, for the reason already recorded at
+Test-FmBackendHerdrTool: the bash twin needs jq to parse this response and this
+one parses in process, so demanding it would refuse a working PowerShell host over
+a dependency it never uses. bin/fm-backend.psm1 still reports `herdr jq treehouse`
+as the required tool set, so bootstrap gates on it fleet-wide.
+#>
+function Get-FmBackendHerdrPresentationReleaseSupported {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param([Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$Session = '')
+
+    $unreadable = @{ Verdict = 2; Release = 'an unreadable release' }
+    if (-not (Test-FmCommand 'herdr')) { return $unreadable }
+
+    $session = [string]$Session
+    if ($session -eq '') { $session = Get-FmBackendHerdrSession }
+    $result = Invoke-FmBackendHerdrCli $session @('status', '--json')
+    if (-not $result.Ok) { return $unreadable }
+    $doc = ConvertFrom-FmBackendHerdrJson $result.StdOut
+    # An unparseable document is the `jq ... || return 2` arm: jq exits non-zero
+    # on a parse failure, and only on a parse failure - a MISSING .client is a
+    # normal empty value, which the floor classifier then reads as indeterminate.
+    if ($null -eq $doc) { return $unreadable }
+
+    $clientProtocol = Get-FmBackendHerdrJsonString $doc @('client', 'protocol')
+    $clientVersion = Get-FmBackendHerdrJsonString $doc @('client', 'version')
+    $clientVerdict = Get-FmBackendHerdrReleaseFloorVerdict $clientProtocol $clientVersion
+    $clientShown = 'version ' + $(if ($clientVersion -eq '') { 'unknown' } else { $clientVersion }) +
+        ' (protocol ' + $(if ($clientProtocol -eq '') { 'unknown' } else { $clientProtocol }) + ')'
+
+    # jq's `.server.running == true` is STRICT: the string "true" is not true, and
+    # anything that is not exactly the boolean falls into the "unknown" arm.
+    $running = 'unknown'
+    $runningValue = Get-FmBackendHerdrJsonValue $doc @('server', 'running')
+    if ($runningValue -is [bool]) {
+        if ([bool]$runningValue) { $running = 'true' } else { $running = 'false' }
+    }
+
+    switch -CaseSensitive ($running) {
+        'true' {
+            $serverProtocol = Get-FmBackendHerdrJsonString $doc @('server', 'protocol')
+            $serverVersion = Get-FmBackendHerdrJsonString $doc @('server', 'version')
+            $serverVerdict = Get-FmBackendHerdrReleaseFloorVerdict $serverProtocol $serverVersion
+            $serverShown = 'server version ' + $(if ($serverVersion -eq '') { 'unknown' } else { $serverVersion }) +
+                ' (protocol ' + $(if ($serverProtocol -eq '') { 'unknown' } else { $serverProtocol }) + ')'
+            if ($serverVerdict -eq 1) { return @{ Verdict = 1; Release = $serverShown } }
+            if ($clientVerdict -eq 1) { return @{ Verdict = 1; Release = $clientShown } }
+            if ($serverVerdict -ne 0) { return @{ Verdict = 2; Release = $serverShown } }
+            if ($clientVerdict -ne 0) { return @{ Verdict = 2; Release = $clientShown } }
+            return @{ Verdict = 0; Release = $clientShown }
+        }
+        'false' { return @{ Verdict = $clientVerdict; Release = $clientShown } }
+        default { return $unreadable }
+    }
+}
+
+<#
+.SYNOPSIS
+Emit the one below-floor warning, deduplicated per home per detected release.
+.DESCRIPTION
+Twin of fm_backend_herdr_presentation_floor_warn. Without a usable state dir the
+warning is emitted on every call, which is what a one-shot caller wants; with one,
+a marker keyed by the DETECTED RELEASE suppresses the repeat, so an upgrade or a
+downgrade is announced again while an unchanged release is announced once.
+
+The bash twin claims the marker with `mktemp` plus `ln`, which is create-if-absent
+in that directory; FileMode.CreateNew is the same atomic claim (the noclobber
+twin) and leaves the same empty regular file, so a home shared with the bash tree
+dedupes identically from either side.
+#>
+function Write-FmBackendHerdrPresentationFloorWarning {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'SupportsShouldProcess is for user-facing cmdlets that need -WhatIf/-Confirm. This is an internal helper whose bash twin writes its dedupe marker unconditionally; a confirmation surface would diverge from the twin and could stall a non-interactive spawn.')]
+    [CmdletBinding()]
+    [OutputType([void])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$StateDir = '',
+        [Parameter(Position = 1)][int]$Verdict = 2,
+        [Parameter(Position = 2)][AllowEmptyString()][AllowNull()][string]$Release = ''
+    )
+
+    $release = [string]$Release
+    if ($release -eq '') { $release = 'an unreadable release' }
+    $floor = $script:FmHerdrMinPresentationVersion
+    if ($Verdict -eq 1) {
+        $reason = "herdr $release is older than the $floor floor for presentation spaces, where projected cleanup can steal the active workspace"
+    } else {
+        $reason = "the selected herdr release could not be read, so the $floor floor for presentation spaces cannot be verified"
+    }
+
+    if (-not [string]::IsNullOrEmpty($StateDir)) {
+        $stateNative = ConvertTo-FmNativePath $StateDir
+        if ([System.IO.Directory]::Exists($stateNative) -and -not (Test-FmSymlink $StateDir)) {
+            $key = $release -replace '[^a-zA-Z0-9]', '-'
+            $marker = "$StateDir/$($script:FmHerdrPresentationFloorMarkerPrefix)$key"
+            $markerNative = ConvertTo-FmNativePath $marker
+            if ([System.IO.File]::Exists($markerNative) -or
+                [System.IO.Directory]::Exists($markerNative) -or (Test-FmSymlink $marker)) {
+                return
+            }
+            try {
+                $stream = [System.IO.File]::Open($markerNative, [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                $stream.Dispose()
+                Set-FmBackendHerdrPrivateFileMode $markerNative
+            } catch {
+                $null = $_
+                if ([System.IO.File]::Exists($markerNative) -or
+                    [System.IO.Directory]::Exists($markerNative)) {
+                    return
+                }
+            }
+        }
+    }
+
+    Write-FmErr "warning: $reason; using the ordinary flat layout instead. Upgrade herdr to $floor or newer (herdr update) to restore the projection, or write ""on"" into config/$($script:FmHerdrPresentationConfig) to force it on this release."
+}
+
+<#
+.SYNOPSIS
+Whether ONE unconfigured home may project on the selected release.
+.DESCRIPTION
+Twin of fm_backend_herdr_presentation_default_supported: compose the applicable
+release verdict and the shared warning contract.
+#>
+function Test-FmBackendHerdrPresentationDefaultSupported {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$StateDir = '',
+        [Parameter(Position = 1)][AllowEmptyString()][AllowNull()][string]$Session = ''
+    )
+
+    $supported = Get-FmBackendHerdrPresentationReleaseSupported $Session
+    if ([int]$supported.Verdict -eq 0) { return $true }
+    Write-FmBackendHerdrPresentationFloorWarning $StateDir ([int]$supported.Verdict) ([string]$supported.Release)
+    return $false
+}
+
+<#
+.SYNOPSIS
+The one gate bin/fm-spawn.ps1 consults before projecting a crewmate or scout.
+.DESCRIPTION
+Twin of fm_backend_herdr_presentation_enabled (docs/herdr-backend.md
+"Presentation spaces" owns the full contract). An explicit "off" or "on" is obeyed
+as written; a home that configured nothing is projected only at or above the
+version floor, and otherwise falls back to the flat layout with one warning.
+
+The bash twin's exit status and its FM_BACKEND_HERDR_PRESENTATION_PREFERENCE
+out-parameter arrive together as @{ Enabled = [bool]; Preference = 'off'|'on'|'default' }.
+fm-spawn needs BOTH: the preference is what lets the new-projection boundary
+distinguish an unconfigured default - which must re-check the floor once the
+session server is actually up - from a deliberate opt-in, which must not.
+#>
+function Test-FmBackendHerdrPresentationEnabled {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$ConfigDir = '',
+        [Parameter(Position = 1)][AllowEmptyString()][AllowNull()][string]$StateDir = ''
+    )
+
+    $preference = Get-FmBackendHerdrPresentationPreference $ConfigDir
+    switch -CaseSensitive ($preference) {
+        'off' { return @{ Enabled = $false; Preference = $preference } }
+        'on' { return @{ Enabled = $true; Preference = $preference } }
+        default {
+            $enabled = Test-FmBackendHerdrPresentationDefaultSupported $StateDir ''
+            return @{ Enabled = $enabled; Preference = $preference }
+        }
+    }
+}
+
 <#
 .SYNOPSIS
 Split "<session>:<pane-id>" on the FIRST colon only.
@@ -926,6 +1311,41 @@ function ConvertTo-FmBackendHerdrHostPath {
     if ([string]::IsNullOrEmpty($Path)) { return $Path }
     if ($Path -match '^[A-Za-z]:[\\/]') { return (ConvertTo-FmPosixPath $Path) }
     return $Path
+}
+
+<#
+.SYNOPSIS
+The spelling of a working directory that herdr's own binary can actually resolve.
+.DESCRIPTION
+The OUTBOUND direction, and it has no named bash twin because in bash it is not
+code: `herdr` is a native Windows binary, so MSYS rewrites every POSIX-looking
+argument on the way into it. A `--cwd /f/proj/x` typed in Git Bash reaches
+herdr.exe as `F:/proj/x`. PowerShell performs no such rewrite, so the same
+argument arrives verbatim - and herdr does NOT refuse it. Measured directly on the
+reference host:
+
+    herdr workspace create --cwd /f/Plotex_projects/... --label fmprobe-posix
+    -> {"root_pane":{"cwd":"C:\\Users\\plotex\\", ...}}
+
+It silently starts the pane in the USER'S HOME instead. That is not cosmetic:
+fm-spawn then types `treehouse get` into a pane sitting outside the project, gets
+no worktree, and the isolation assertion refuses the launch - so every herdr spawn
+from the PowerShell tree failed, flat layout and projected layout alike, with an
+error naming treehouse rather than the path.
+
+Applied at the exec boundary rather than in fm-spawn because that is where the
+bash twin's conversion happens too, and because $projAbs must stay POSIX for the
+durable records (docs/powershell-port.md contract 3). A path that is already
+native, UNC, or relative passes through untouched.
+#>
+function ConvertTo-FmBackendHerdrCwdArgument {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Position = 0)][AllowEmptyString()][AllowNull()][string]$Path = '')
+
+    if ([string]::IsNullOrEmpty($Path)) { return $Path }
+    if (-not (Test-FmWindows)) { return $Path }
+    return (ConvertTo-FmNativePath $Path)
 }
 
 <#
@@ -3058,7 +3478,7 @@ function Initialize-FmBackendHerdrWorkspace {
     }
 
     $out = Invoke-FmBackendHerdrCli -Session $Session -Arguments @(
-        'workspace', 'create', '--cwd', $WorkingDirectory, '--label', $label, '--no-focus')
+        'workspace', 'create', '--cwd', (ConvertTo-FmBackendHerdrCwdArgument $WorkingDirectory), '--label', $label, '--no-focus')
     if (-not $out.Ok) { return @{ Code = 1; WorkspaceId = ''; SeededTabId = '' } }
     $doc = ConvertFrom-FmBackendHerdrJson $out.StdOut
     $wsid = Get-FmBackendHerdrJsonString $doc @('result', 'workspace', 'workspace_id')
@@ -3213,7 +3633,7 @@ function New-FmBackendHerdrTask {
     }
 
     $out = Invoke-FmBackendHerdrCli -Session $session -Arguments @(
-        'tab', 'create', '--workspace', $wsid, '--cwd', $WorkingDirectory, '--label', $Label, '--no-focus')
+        'tab', 'create', '--workspace', $wsid, '--cwd', (ConvertTo-FmBackendHerdrCwdArgument $WorkingDirectory), '--label', $Label, '--no-focus')
     if (-not $out.Ok) { return $null }
     $doc = ConvertFrom-FmBackendHerdrJson $out.StdOut
     $tabId = Get-FmBackendHerdrJsonString $doc @('result', 'tab', 'tab_id')
@@ -4572,7 +4992,7 @@ function New-FmBackendHerdrProjectionTask {
         return $state
     }
     $out = Invoke-FmBackendHerdrCli -Session $session -Arguments @(
-        'workspace', 'create', '--cwd', $WorkingDirectory, '--label', $WorkspaceLabel, '--no-focus')
+        'workspace', 'create', '--cwd', (ConvertTo-FmBackendHerdrCwdArgument $WorkingDirectory), '--label', $WorkspaceLabel, '--no-focus')
     if (-not $out.Ok) {
         [void](Restore-FmBackendHerdrProjectionFocus -Session $session -Before $focusBefore -Operation 'workspace create')
         Write-FmErr 'error: herdr presentation workspace create failed ambiguously; leaving its journal quarantined'
@@ -4600,7 +5020,7 @@ function New-FmBackendHerdrProjectionTask {
         return $state
     }
     $out = Invoke-FmBackendHerdrCli -Session $session -Arguments @(
-        'tab', 'create', '--workspace', $state.WorkspaceId, '--cwd', $WorkingDirectory,
+        'tab', 'create', '--workspace', $state.WorkspaceId, '--cwd', (ConvertTo-FmBackendHerdrCwdArgument $WorkingDirectory),
         '--label', $TaskLabel, '--no-focus')
     if (-not $out.Ok) {
         [void](Restore-FmBackendHerdrProjectionFocus -Session $session -Before $focusBefore -Operation 'task-tab create')
@@ -4932,7 +5352,7 @@ function Restore-FmBackendHerdrProjectionTask {
     }
 
     $out = Invoke-FmBackendHerdrCli -Session $Session -Arguments @(
-        'tab', 'create', '--workspace', $MetaWorkspaceId, '--cwd', $WorkingDirectory,
+        'tab', 'create', '--workspace', $MetaWorkspaceId, '--cwd', (ConvertTo-FmBackendHerdrCwdArgument $WorkingDirectory),
         '--label', $TaskLabel, '--no-focus')
     if (-not $out.Ok) {
         if (-not (Restore-FmBackendHerdrProjectionFocus -Session $Session -Before $focusBefore -Operation 'husk replacement create')) { return $refuse }
@@ -6116,7 +6536,8 @@ Export-ModuleMember -Function @(
     'Get-FmBackendHerdrSession', 'Get-FmBackendHerdrWorkspaceLabel',
     'Initialize-FmBackendHerdrServer', 'Get-FmBackendHerdrServerRunning',
     'Get-FmBackendHerdrTarget', 'Test-FmBackendHerdrTargetReady',
-    'ConvertTo-FmBackendHerdrHostPath', 'ConvertTo-FmBackendHerdrKey',
+    'ConvertTo-FmBackendHerdrHostPath', 'ConvertTo-FmBackendHerdrCwdArgument',
+    'ConvertTo-FmBackendHerdrKey',
     # JSON helpers, exported so the differential suite can drive them directly
     'ConvertFrom-FmBackendHerdrJson', 'Get-FmBackendHerdrJsonValue',
     'Get-FmBackendHerdrJsonString', 'Get-FmBackendHerdrJsonArray',
@@ -6129,6 +6550,11 @@ Export-ModuleMember -Function @(
     'ConvertTo-FmBackendHerdrAwkNumber', 'Get-FmBackendHerdrPhysicalDirectory',
     'Start-FmBackendHerdrSleep', 'Get-FmBackendHerdrIntKnob',
     'Test-FmBackendHerdrScriptedCli',
+    # the presentation projection gate
+    'Get-FmBackendHerdrPresentationPreference', 'Test-FmBackendHerdrVersionAtLeast',
+    'Get-FmBackendHerdrReleaseFloorVerdict', 'Get-FmBackendHerdrPresentationReleaseSupported',
+    'Write-FmBackendHerdrPresentationFloorWarning', 'Test-FmBackendHerdrPresentationDefaultSupported',
+    'Test-FmBackendHerdrPresentationEnabled',
     # presentation journal
     'New-FmBackendHerdrProjectionId', 'Get-FmBackendHerdrProjectionJournalPath',
     'New-FmBackendHerdrProjectionJournal', 'Get-FmBackendHerdrProjectionJournalField',
