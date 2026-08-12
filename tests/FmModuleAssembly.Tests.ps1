@@ -351,3 +351,205 @@ Describe 'entry points' {
         ($unreachable -join '; ') | Should -Be '' -Because 'only exported functions are reachable through the manifest'
     }
 }
+
+Describe 'cross-area bindings' {
+    # WHY THIS EXISTS. Areas bind to each other by NAME at call time:
+    #
+    #     $cmd = Resolve-FmSessionCommand -Name 'Get-FmMetaValue'
+    #     if ($cmd) { return (& $cmd -Path $Path -Key $Key) }
+    #
+    # If the owner does not declare -Path, that call throws, the caller's catch
+    # reads the throw as "no owner", and it takes its degraded path forever
+    # while every test still passes. That is exactly how the turn-end guard came
+    # to fail OPEN on every turn. Worse, when the owner is a SIMPLE function the
+    # call does not even throw: the unmatched arguments land in $args and are
+    # dropped, so it succeeds having silently discarded its input.
+    #
+    # Neither failure conflicts in git and neither fails to compile, so nothing
+    # else in this repo can catch them. This reads the call sites out of the AST
+    # and checks them against the owners actually present in the tree.
+    BeforeAll {
+        function Get-FmModuleFunctionSignature {
+            $out = @{}
+            foreach ($subdir in @('Private', 'Public')) {
+                foreach ($file in (Get-FmModuleScriptFile -Subdir $subdir)) {
+                    $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+                    foreach ($fn in $ast.FindAll(
+                            { param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
+                        $params = @()
+                        $advanced = $false
+                        $mandatory = @()
+                        $block = $fn.Body.ParamBlock
+                        if ($block) {
+                            foreach ($attr in $block.Attributes) {
+                                if ($attr.TypeName.Name -in 'CmdletBinding', 'CmdletBindingAttribute') { $advanced = $true }
+                            }
+                            foreach ($p in $block.Parameters) {
+                                $name = $p.Name.VariablePath.UserPath
+                                $params += $name
+                                foreach ($a in $p.Attributes) {
+                                    if ($a.TypeName.Name -notin 'Parameter', 'ParameterAttribute') { continue }
+                                    $advanced = $true
+                                    foreach ($arg in $a.NamedArguments) {
+                                        if ($arg.ArgumentName -eq 'Mandatory') { $mandatory += $name }
+                                    }
+                                }
+                            }
+                        }
+                        $out[$fn.Name] = [pscustomobject]@{
+                            Name = $fn.Name; File = $file.Name; Params = $params
+                            Advanced = $advanced; Mandatory = $mandatory
+                        }
+                    }
+                }
+            }
+            $out
+        }
+
+        # A resolve may list SEVERAL candidate owners in preference order, and
+        # the caller then branches on which one it got:
+        #
+        #   $owner = Resolve-FmSessionCommand -Name 'Get-FmXObject', 'Get-FmX'
+        #   $w = if ($owner.Name -eq 'Get-FmX') { & $owner -AsObject } else { & $owner }
+        #
+        # Charging -AsObject to BOTH candidates invents a mismatch against the
+        # one the branch never passes it to. So when a call sits inside an `if`
+        # whose condition names candidates, it is charged only to those; inside
+        # the `else`, only to the ones the conditions ruled out.
+        function Get-FmGuardedCandidate {
+            param($Call, [string[]]$Candidate)
+            if ($Candidate.Count -le 1) { return $Candidate }
+            $node = $Call
+            while ($node.Parent) {
+                $parent = $node.Parent
+                if ($parent -is [System.Management.Automation.Language.IfStatementAst]) {
+                    $start = $Call.Extent.StartOffset
+                    $end = $Call.Extent.EndOffset
+                    $ruledOut = @()
+                    foreach ($clause in $parent.Clauses) {
+                        $named = @($Candidate | Where-Object { $clause.Item1.Extent.Text -match [regex]::Escape("'$_'") })
+                        $ruledOut += $named
+                        if ($clause.Item2.Extent.StartOffset -le $start -and $end -le $clause.Item2.Extent.EndOffset) {
+                            if ($named.Count) { return $named }
+                        }
+                    }
+                    if ($parent.ElseClause -and $ruledOut.Count -and
+                        $parent.ElseClause.Extent.StartOffset -le $start -and $end -le $parent.ElseClause.Extent.EndOffset) {
+                        $rest = @($Candidate | Where-Object { $ruledOut -notcontains $_ })
+                        if ($rest.Count) { return $rest }
+                    }
+                }
+                $node = $parent
+            }
+            return $Candidate
+        }
+
+        # Every `& $var -Foo ...` whose $var came from a Resolve-Fm*Command with
+        # a LITERAL owner name. A resolve through a variable name cannot be
+        # settled statically and is skipped rather than guessed at.
+        function Get-FmByNameCallSite {
+            $sites = [System.Collections.Generic.List[object]]::new()
+            foreach ($subdir in @('Private', 'Public')) {
+                foreach ($file in (Get-FmModuleScriptFile -Subdir $subdir)) {
+                    $text = [System.IO.File]::ReadAllText($file.FullName)
+                    $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+
+                    $assigns = @()
+                    foreach ($m in [regex]::Matches($text,
+                            '\$(?<var>\w+)\s*=\s*Resolve-Fm\w*Command\s+-Name\s+(?<names>(''[^'']+''\s*,?\s*)+)')) {
+                        $line = ($text.Substring(0, $m.Index) -split "`n").Count
+                        $names = @([regex]::Matches($m.Groups['names'].Value, "'([^']+)'") |
+                                ForEach-Object { $_.Groups[1].Value })
+                        $assigns += [pscustomobject]@{ Var = $m.Groups['var'].Value; Line = $line; Names = $names }
+                    }
+                    if ($assigns.Count -eq 0) { continue }
+
+                    foreach ($call in $ast.FindAll(
+                            { param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+                        $head = $call.CommandElements[0]
+                        if ($head -isnot [System.Management.Automation.Language.VariableExpressionAst]) { continue }
+                        $var = $head.VariablePath.UserPath
+                        $callLine = $call.Extent.StartLineNumber
+                        # The NEAREST PRECEDING assignment, not the last one in
+                        # the file: FmSessionStart.ps1 reassigns $probe from one
+                        # owner to another a few lines apart, and a last-wins map
+                        # invents a mismatch that is not there.
+                        $bound = @($assigns | Where-Object { $_.Var -eq $var -and $_.Line -le $callLine } |
+                                Sort-Object Line | Select-Object -Last 1)
+                        if ($bound.Count -eq 0) { continue }
+                        $used = @($call.CommandElements |
+                                Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] } |
+                                ForEach-Object { $_.ParameterName })
+                        if ($used.Count -eq 0) { continue }
+                        foreach ($target in (Get-FmGuardedCandidate -Call $call -Candidate $bound[0].Names)) {
+                            $sites.Add([pscustomobject]@{
+                                    File = $file.Name; Line = $callLine; Target = $target; Used = $used
+                                })
+                        }
+                    }
+                }
+            }
+            $sites
+        }
+
+        $script:Signatures = Get-FmModuleFunctionSignature
+        $script:CallSites = @(Get-FmByNameCallSite)
+    }
+
+    It 'finds by-name call sites at all, so the checks below are not vacuous' {
+        # A refactor that renames the resolver would otherwise turn every check
+        # in this Describe green by finding nothing to check.
+        $script:CallSites.Count | Should -BeGreaterThan 20
+    }
+
+    It 'passes every by-name owner only parameters that owner declares' {
+        $bad = [System.Collections.Generic.List[string]]::new()
+        foreach ($site in $script:CallSites) {
+            # An owner that is genuinely absent is a DEGRADATION, which the
+            # callers handle on purpose. Only a present owner has a contract to
+            # break, so an unported area is not a failure here.
+            if (-not $script:Signatures.ContainsKey($site.Target)) { continue }
+            $owner = $script:Signatures[$site.Target]
+            foreach ($p in $site.Used) {
+                # PowerShell binds an unambiguous prefix, so -Path matches Path.
+                if (@($owner.Params | Where-Object { $_ -like "$p*" }).Count -gt 0) { continue }
+                $how = if ($owner.Advanced) { 'throws, and the caller reads that as "no owner"' }
+                else { "is SIMPLE, so -$p lands in `$args and is silently dropped" }
+                $bad.Add("$($site.File):$($site.Line) calls $($site.Target) ($($owner.File)) with -$p, which it does not declare - $how")
+            }
+        }
+        ($bad -join '; ') | Should -Be ''
+    }
+
+    It 'gives every bootstrap sweep an owner that a no-argument call can reach' {
+        # Invoke-FmBootstrapSweep resolves by name and calls with @{} unless the
+        # caller passes -Parameters, so an owner with a mandatory parameter is
+        # unreachable: the call throws and the sweep silently reports nothing
+        # done. Invoke-FmFleetSync is live on this path today.
+        $bad = [System.Collections.Generic.List[string]]::new()
+        foreach ($subdir in @('Private', 'Public')) {
+            foreach ($file in (Get-FmModuleScriptFile -Subdir $subdir)) {
+                $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+                foreach ($call in $ast.FindAll(
+                        { param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+                    if ($call.GetCommandName() -ne 'Invoke-FmBootstrapSweep') { continue }
+                    $named = @($call.CommandElements |
+                            Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] } |
+                            ForEach-Object { $_.ParameterName })
+                    if ($named -contains 'Parameters') { continue }
+                    $idx = [array]::IndexOf(@($call.CommandElements | ForEach-Object { $_.Extent.Text }), '-CommandName')
+                    if ($idx -lt 0 -or $idx + 1 -ge $call.CommandElements.Count) { continue }
+                    $arg = $call.CommandElements[$idx + 1]
+                    if ($arg -isnot [System.Management.Automation.Language.StringConstantExpressionAst]) { continue }
+                    $target = $arg.Value
+                    if (-not $script:Signatures.ContainsKey($target)) { continue }
+                    $required = @($script:Signatures[$target].Mandatory)
+                    if ($required.Count -gt 0) {
+                        $bad.Add("$($file.Name):$($call.Extent.StartLineNumber) sweeps $target, which requires -$($required -join ' -')")
+                    }
+                }
+            }
+        }
+        ($bad -join '; ') | Should -Be ''
+    }
+}
