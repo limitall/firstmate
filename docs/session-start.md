@@ -14,10 +14,12 @@ and the seams other areas of the module plug into.
 | `bin/fm-bootstrap.ps1 -Install <tool>... -Approved` | `fm-bootstrap.sh install <tool>...` |
 | `bin/fm-project-mode.ps1 [-Raw] <name>` | `bin/fm-project-mode.sh [--raw] <name>` |
 | `bin/fm-claude-hook.ps1 -Event <event> [-Check <check>]` | the tracked `.claude/settings.json` entries |
+| `bin/fm-lock.ps1 [status]` | `bin/fm-lock.sh [status]` |
 
-Public functions: `Invoke-FmSessionStart`, `Invoke-FmBootstrap`,
-`Install-FmTool`, `Get-FmProjectMode`, `Invoke-FmClaudeHook`,
-`Get-FmClaudeHookSettings`.
+Public functions: `Invoke-FmSessionStart`, `Invoke-FmSessionStartNudge`,
+`Invoke-FmBootstrap`, `Install-FmTool`, `Get-FmProjectMode`,
+`Invoke-FmClaudeHook`, `Get-FmClaudeHookSettings`, `Invoke-FmLock`,
+`Get-FmHarness`, `Get-FmSupervisionInstructions`.
 
 ## The digest is unchanged
 

@@ -41,6 +41,20 @@ section 2 lists the state-file formats).
   process, so an `$env:FM_*` override left set by one file decides another
   file's behaviour; that has already produced two failures that passed in
   isolation. Save and restore every environment key your tests touch.
+- **An absent by-name owner is a DECISION, and it is written down.** Areas bind
+  to each other by name at call time, so a call whose target nothing defines
+  does not conflict in git, does not fail to compile, and either dies at run
+  time or silently takes a degraded path for ever. Twenty-two of them were live
+  at once on this port, one of which left every session read-only.
+  `tests/FmModuleAssembly.Tests.ps1` now derives every literal by-name target
+  from the source - `Resolve-Fm*Command`, `Invoke-FmSeam`/`Test-FmSeam`,
+  `-CommandName`, and direct `Get-Command` probes - and fails on any that is
+  neither defined nor listed in its registry of deliberate absences. Each
+  registry entry says which kind it is (`PREFERRED`, meaning the caller has a
+  complete local fallback, or `ABSENT`, meaning the capability is not in this
+  port) and why. It also fails on a stale entry in either direction: an owner
+  that has since landed, and a name nothing binds any more. Add an entry only
+  after establishing which kind it is - never to make the test green.
 - `tests/FmModuleAssembly.Tests.ps1` mechanises the cross-area rules below: no
   duplicate function name, the manifest imports, every `Public/` function is
   exported, and every `Fm` function a `bin/` entry point calls is exported.
