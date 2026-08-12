@@ -545,6 +545,49 @@ Describe 'Session lock' {
         }
     }
 
+    It 'still reports, and still refuses, when the identity sidecar cannot be read' {
+        # Same class as the Get-FmLockInfo defect the Windows run exposed, in the
+        # session-lock path. AGENTS.md's rule for this one is explicit: a session
+        # that cannot verify lock ownership falls back to READ-ONLY. A throw is
+        # not that fallback - it escapes the caller. Request-FmSessionLock is the
+        # sharper case, because its enclosing block is try/FINALLY with no catch,
+        # so an exception here leaves the function rather than returning the
+        # refusal it documents.
+        InModuleScope Firstmate -Parameters @{ StatePath = $script:StatePath } {
+            $other = Get-FmParentProcessId -Id $PID
+            Mock Test-FmHarnessProcess { $true }
+            $null = Request-FmSessionLock -StatePath $StatePath -ProcessId $other
+
+            # Mock the INNER read, not Read-FmLockSidecar itself: the guard under
+            # test is that function's own catch, and replacing it would remove
+            # the very thing being verified. Only the identity sidecar throws;
+            # everything else calls through, via a reference captured BEFORE the
+            # mock is installed. A -ParameterFilter alone will not do it - Pester
+            # 6 raises "no mock matched the call" rather than falling back to the
+            # real command, so the lock file's own read has to be handled here.
+            $realRead = Get-Command Read-FmStateFile
+            Mock Read-FmStateFile {
+                if ($Path -like '*.identity') {
+                    throw [System.IO.IOException]::new(
+                        "firstmate: read state file failed after 12 attempts on '$Path': access denied")
+                }
+                & $realRead -Path $Path
+            }
+
+            # The reporter answers rather than throwing, and a holder it cannot
+            # prove recycled still reads as held - never as stealable.
+            $status = Get-FmSessionLockStatus -StatePath $StatePath
+            $status.State | Should -Be 'held'
+            $status.Text | Should -Be "lock: held by live harness pid $other"
+
+            # And the acquirer returns its documented read-only refusal.
+            $result = Request-FmSessionLock -StatePath $StatePath -ProcessId $PID
+            $result.Acquired | Should -BeFalse
+            $result.Reason | Should -Be 'held'
+            $result.Message | Should -BeLike '*read-only*'
+        }
+    }
+
     It 'says "lock: stale (pid N dead or not a harness)" for a dead session' {
         Write-FmStateFile -Path (Get-FmSessionLockPath -StatePath $script:StatePath) -Content ([string]$script:DeadPid)
         (Get-FmSessionLockStatus -StatePath $script:StatePath).Text |

@@ -95,14 +95,11 @@ function Get-FmLockKey {
 function Read-FmLockSidecar {
     [CmdletBinding()]
     [OutputType([string])]
-    param(
-        [Parameter(Mandatory)][string]$LockPath,
-        [Parameter(Mandatory)][string]$Name
-    )
+    param([Parameter(Mandatory)][string]$Path)
 
     $value = $null
-    try { $value = Read-FmStateFile -Path (Join-Path $LockPath $Name) } catch {
-        Write-Verbose "firstmate: could not read lock sidecar '$Name' under '$LockPath'"
+    try { $value = Read-FmStateFile -Path $Path } catch {
+        Write-Verbose "firstmate: could not read lock metadata '$Path'"
         return $null
     }
     if ($null -eq $value) { return $null }
@@ -206,11 +203,11 @@ function Get-FmLockInfo {
     # recorded identity, which the liveness check below already treats as
     # "cannot prove anything" and resolves to plain liveness - held, never
     # stealable. Failing quiet in that direction is the safe one.
-    $info.Identity = Read-FmLockSidecar -LockPath $full -Name 'pid-identity'
+    $info.Identity = Read-FmLockSidecar -Path (Join-Path $full 'pid-identity')
     # Not $home: PowerShell's $HOME is read-only and assigning to it fails.
-    $info.Home = Read-FmLockSidecar -LockPath $full -Name 'fm-home'
-    $info.Role = Read-FmLockSidecar -LockPath $full -Name 'role'
-    $info.WatcherPath = Read-FmLockSidecar -LockPath $full -Name 'watcher-path'
+    $info.Home = Read-FmLockSidecar -Path (Join-Path $full 'fm-home')
+    $info.Role = Read-FmLockSidecar -Path (Join-Path $full 'role')
+    $info.WatcherPath = Read-FmLockSidecar -Path (Join-Path $full 'watcher-path')
 
     $aliveArgs = @{ Id = $info.ProcessId }
     # No recorded identity (a mid-claim, or a lock written by the bash side)
@@ -762,8 +759,12 @@ function Get-FmSessionLockStatus {
     # imply: a session is held only by a process that is BOTH alive and a
     # harness, and each half must be stated.
     $aliveArgs = @{ Id = $status.ProcessId }
-    $identity = Read-FmStateFile -Path "$lockPath.identity"
-    if ($identity -and $identity.Trim()) { $aliveArgs['Identity'] = $identity.Trim() }
+    # Read-FmLockSidecar, not Read-FmStateFile: this is a REPORTER. AGENTS.md's
+    # rule for it is that a session which cannot verify lock ownership falls
+    # back to READ-ONLY, and a throw here is not that fallback - it escapes and
+    # takes the caller with it.
+    $identity = Read-FmLockSidecar -Path "$lockPath.identity"
+    if ($identity) { $aliveArgs['Identity'] = $identity }
     if ((Test-FmProcessAlive @aliveArgs) -and (Test-FmHarnessProcess -Id $status.ProcessId)) {
         $status.State = 'held'
         $status.Text = "lock: held by live harness pid $($status.ProcessId)"
@@ -900,9 +901,13 @@ function Request-FmSessionLock {
         if ($null -ne $current) {
             $held = $current.Trim()
             if ($held -ne [string]$me -and (Test-FmProcessId -Id $held)) {
-                $identity = Read-FmStateFile -Path "$lockPath.identity"
+                # Same reason as the reporter above, and it matters more here:
+                # the enclosing block is try/FINALLY with no catch, so a throw
+                # on this read leaves Request-FmSessionLock entirely instead of
+                # returning the read-only refusal it documents.
+                $identity = Read-FmLockSidecar -Path "$lockPath.identity"
                 $aliveArgs = @{ Id = $held }
-                if ($identity -and $identity.Trim()) { $aliveArgs['Identity'] = $identity.Trim() }
+                if ($identity) { $aliveArgs['Identity'] = $identity }
                 if ((Test-FmProcessAlive @aliveArgs) -and (Test-FmHarnessProcess -Id $held)) {
                     $result.Reason = 'held'
                     $result.HolderProcessId = [int]$held
