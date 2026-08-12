@@ -217,6 +217,66 @@ Describe 'Stale-holder recovery' {
             } finally { Remove-Item -LiteralPath $path -Recurse -Force }
         }
     }
+
+    It 'refuses a break whose stale verdict the lock has already outlived' {
+        # THE DEFECT THIS PINS. Request-FmLock judges staleness with
+        # Get-FmLockInfo and breaks in a SEPARATE step. Between the two, another
+        # process can legitimately recover the same lock and be holding it for
+        # real. The break used to rename whatever 'pid' file it found, so the
+        # late breaker evicted that live holder: two processes then held one
+        # lock, and the loser found out only when Unlock-FmLock quietly returned
+        # false, because the pid file no longer named it. Nothing threw, so a
+        # worker lost its critical section without a single error to show for
+        # it - which is exactly what a lost increment looks like downstream.
+        InModuleScope Firstmate {
+            $path = Join-Path ([System.IO.Path]::GetTempPath()) ("latebreak-" + [guid]::NewGuid().ToString('N'))
+            $null = New-Item -ItemType Directory -Path $path -Force
+            try {
+                # A genuinely dead holder: the verdict the late breaker carries.
+                $deadPid = 2147483600
+                [System.IO.File]::WriteAllText((Join-Path $path 'pid'), "$deadPid`n")
+                (Get-FmLockInfo -Path $path).State | Should -Be 'stale'
+
+                # ...and then the lock is recovered for real by a live holder,
+                # before the breaker acts on that now-outdated verdict.
+                $live = Request-FmLock -Path $path
+                $live | Should -Not -BeNullOrEmpty -Because 'the stale lock is legitimately recoverable'
+                try {
+                    Invoke-FmLockBreak -LockPath $path -HolderProcessId $deadPid |
+                        Should -BeFalse -Because 'the holder it proved stale is no longer the holder'
+                    $after = Get-FmLockInfo -Path $path
+                    $after.State | Should -Be 'held' -Because 'the live holder must survive an out-of-date break'
+                    $after.ProcessId | Should -Be $PID
+
+                    # The whole point: nobody else can now take a lock this
+                    # process still believes it holds.
+                    $script:FmHeldLocks.Remove((Get-FmLockKey -Path $path)) | Out-Null
+                    $thief = Request-FmLock -Path $path
+                    if ($thief) { $null = Unlock-FmLock -Lock $thief -Confirm:$false }
+                    $thief | Should -BeNullOrEmpty -Because 'two processes must never hold one lock'
+                } finally {
+                    $script:FmHeldLocks[(Get-FmLockKey -Path $path)] = $live
+                    $null = Unlock-FmLock -Lock $live -Confirm:$false
+                }
+            } finally { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It 'still recovers a lock whose recorded holder really is the dead one' {
+        # The guard above must not have turned stale recovery off: a break that
+        # names the holder it proved stale still succeeds. Without this, the fix
+        # could "pass" by refusing every break and deadlocking the home.
+        InModuleScope Firstmate {
+            $path = Join-Path ([System.IO.Path]::GetTempPath()) ("okbreak-" + [guid]::NewGuid().ToString('N'))
+            $null = New-Item -ItemType Directory -Path $path -Force
+            try {
+                $deadPid = 2147483600
+                [System.IO.File]::WriteAllText((Join-Path $path 'pid'), "$deadPid`n")
+                Invoke-FmLockBreak -LockPath $path -HolderProcessId $deadPid | Should -BeTrue
+                (Get-FmLockInfo -Path $path).State | Should -Be 'free'
+            } finally { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
 }
 
 Describe 'Release safety' {

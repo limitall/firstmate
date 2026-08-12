@@ -217,10 +217,39 @@ function Invoke-FmLockBreak {
         exactly one breaker proceeds and the rest fall back to re-reading the
         lock. The renamed file is then deleted; a crash between the two leaves an
         inert pid.stale.* file that the next holder sweeps up.
+
+        -HolderProcessId IS NOT OPTIONAL BOOKKEEPING, IT IS THE WHOLE SAFETY.
+        The caller judges staleness with Get-FmLockInfo and breaks in a separate
+        step, and between those two steps another process can legitimately
+        recover the same lock and claim it. This function used to rename
+        whatever 'pid' file it found, so the late breaker evicted the LIVE
+        holder that had just recovered it - two processes then held one lock,
+        and the loser's Unlock-FmLock reported false and said nothing, because
+        the pid file no longer named it. Measured: reproducible on demand, and
+        silent every time.
+
+        So the break is conditional on the victim still being the holder the
+        caller proved stale. It is checked TWICE, because a rename cannot carry
+        a precondition: once before anything is destroyed, and again after the
+        rename has arbitrated, when the file this caller now owns can be read
+        without a race. A late breaker that grabbed a live holder's pid file
+        puts it straight back and reports failure.
     #>
-    param([Parameter(Mandatory)][string]$LockPath)
+    param(
+        [Parameter(Mandatory)][string]$LockPath,
+        [AllowNull()][object]$HolderProcessId = $null
+    )
 
     $pidFile = Join-Path $LockPath 'pid'
+    $expected = if ($null -eq $HolderProcessId) { '' } else { ([string]$HolderProcessId).Trim() }
+
+    # Before: do not destroy a live holder's sidecars over an outdated verdict.
+    if ($expected) {
+        $current = $null
+        try { $current = Read-FmStateFile -Path $pidFile } catch { $current = $null }
+        if ($null -eq $current -or $current.Trim() -ne $expected) { return $false }
+    }
+
     Remove-FmLockChildFile -LockPath $LockPath -Name ($script:FmLockChildNames | Where-Object { $_ -ne 'pid' })
 
     $ticks = [datetime]::UtcNow.Ticks
@@ -230,6 +259,22 @@ function Invoke-FmLockBreak {
     } catch {
         return $false
     }
+
+    # After: the rename decided one winner, so this file is now ours alone to
+    # read. If it is not the holder we proved stale, we took a live holder's
+    # lock - put it back and stand down. Move without overwrite, so a process
+    # that has already claimed the freed slot is never clobbered by the undo.
+    if ($expected) {
+        $taken = $null
+        try { $taken = Read-FmStateFile -Path $claimed } catch { $taken = $null }
+        if ($null -eq $taken -or $taken.Trim() -ne $expected) {
+            try { [System.IO.File]::Move($claimed, $pidFile, $false) } catch {
+                Write-Verbose "firstmate: could not restore $pidFile after an out-of-date lock break"
+            }
+            return $false
+        }
+    }
+
     # A crash before this delete leaves an inert pid.stale.* file that the next
     # holder sweeps up, so failing to remove it now costs nothing.
     try { [System.IO.File]::Delete($claimed) } catch { Write-Verbose "firstmate: could not remove $claimed" }
@@ -357,7 +402,11 @@ function Request-FmLock {
         $info = Get-FmLockInfo -Path $full
         if ($info.State -eq 'stale') {
             $recovered = $info.ProcessId
-            $null = Invoke-FmLockBreak -LockPath $full
+            # Name the holder this verdict is ABOUT. By the time the break runs,
+            # the lock may already have been recovered by someone else and be
+            # live again; passing the pid we proved stale is what stops this
+            # call evicting that new holder.
+            $null = Invoke-FmLockBreak -LockPath $full -HolderProcessId $info.ProcessId
             continue                        # win or lose the break, re-attempt
         }
         if ($info.State -ne 'free') {       # held, claiming, or invalid
