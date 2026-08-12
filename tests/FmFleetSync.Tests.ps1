@@ -102,30 +102,53 @@ Describe 'Test-FmFleetSyncPackedRefsLockError' {
 }
 
 Describe 'Test-FmFleetSyncStaleLock' {
+    # Provably stale = old enough AND proof that nothing holds it. This area
+    # owns only the age half; the holder verdict is the teardown area's
+    # Test-FmTeardownGitLockHeld, and 'free' is the only verdict that proves
+    # anything. Every other answer leaves the lock alone, which is the bash
+    # rule (no lsof, no proof) carried over intact.
     It 'calls a young lock live even when nothing holds it' {
         $lock = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
         Set-Content -LiteralPath $lock -Value 'lock'
         Test-FmFleetSyncStaleLock -Path $lock -AgeSeconds 3600 | Should -BeFalse
     }
 
-    It 'calls an old lock with no holder provably stale' {
+    It 'calls an old lock provably stale only when the holder probe says free' {
         $lock = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
         Set-Content -LiteralPath $lock -Value 'lock'
         (Get-Item -LiteralPath $lock).LastWriteTimeUtc = [datetime]::UtcNow.AddHours(-1)
+        Mock Test-FmTeardownGitLockHeld { 'free' }
         Test-FmFleetSyncStaleLock -Path $lock -AgeSeconds 30 | Should -BeTrue
     }
 
-    It 'calls an old lock LIVE while a handle is open on it - the fail-safe direction' {
+    It 'leaves an old lock alone when the holder probe says held, or cannot tell' {
         $lock = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
         Set-Content -LiteralPath $lock -Value 'lock'
         (Get-Item -LiteralPath $lock).LastWriteTimeUtc = [datetime]::UtcNow.AddHours(-1)
-        $stream = [System.IO.File]::Open($lock, [System.IO.FileMode]::Open,
-            [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-        try {
-            Test-FmFleetSyncStaleLock -Path $lock -AgeSeconds 30 | Should -BeFalse
-        } finally {
-            $stream.Dispose()
+        foreach ($verdict in @('held', 'unknown', 'absent')) {
+            Mock Test-FmTeardownGitLockHeld { $verdict }.GetNewClosure()
+            Test-FmFleetSyncStaleLock -Path $lock -AgeSeconds 30 |
+                Should -BeFalse -Because "'$verdict' is not proof that the lock is free"
         }
+    }
+
+    It 'treats a throwing holder probe as unknown rather than as free' {
+        $lock = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        Set-Content -LiteralPath $lock -Value 'lock'
+        (Get-Item -LiteralPath $lock).LastWriteTimeUtc = [datetime]::UtcNow.AddHours(-1)
+        Mock Test-FmTeardownGitLockHeld { throw 'probe exploded' }
+        Test-FmFleetSyncStaleLock -Path $lock -AgeSeconds 30 | Should -BeFalse
+    }
+
+    It 'never claims proof on a POSIX host, where an exclusive open proves nothing' {
+        # Advisory locking: a live git process holding the lock still lets an
+        # exclusive open through, so this must not read as "provably stale".
+        # Exercised against the real probe, not a mock.
+        if ($IsWindows) { Set-ItResult -Skipped -Because 'this is the POSIX rule' }
+        $lock = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        Set-Content -LiteralPath $lock -Value 'lock'
+        (Get-Item -LiteralPath $lock).LastWriteTimeUtc = [datetime]::UtcNow.AddHours(-1)
+        Test-FmFleetSyncStaleLock -Path $lock -AgeSeconds 30 | Should -BeFalse
     }
 
     It 'calls a missing lock not-stale, so nothing is removed on a guess' {

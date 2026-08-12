@@ -52,6 +52,32 @@ BeforeAll {
         }
     }
 
+    # This file deliberately ANALYSES the module rather than loading it: a
+    # collision or a syntax error must be diagnosed as itself, not as a load
+    # failure in the test session. So the entry-point runs below use their own
+    # child-process helper rather than the module's Invoke-FmChildProcess.
+    function Invoke-TestEntryPoint {
+        param(
+            [Parameter(Mandatory)][string]$Script,
+            [string[]]$CliArgs = @(),
+            [hashtable]$Environment = @{}
+        )
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        foreach ($a in (@('-NoProfile', '-File', (Join-Path $script:BinRoot $Script)) + $CliArgs)) {
+            $psi.ArgumentList.Add([string]$a)
+        }
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        foreach ($key in $Environment.Keys) { $psi.Environment[[string]$key] = [string]$Environment[$key] }
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $out = $proc.StandardOutput.ReadToEnd()
+        $err = $proc.StandardError.ReadToEnd()
+        $proc.WaitForExit()
+        [pscustomobject]@{ ExitCode = $proc.ExitCode; StdOut = $out; StdErr = $err }
+    }
+
     $script:Definitions = @(Get-FmModuleFunctionDefinition)
 }
 
@@ -166,35 +192,32 @@ Describe 'entry points' {
         $env_ = @{ FM_HOME = $home_; FM_ROOT_OVERRIDE = $home_ }
 
         # 2 = usage: the command was called with nothing to act on.
-        (Invoke-FmChildProcess -FilePath 'pwsh' -Environment $env_ -ArgumentList @('-NoProfile', '-File',
-            (Join-Path $script:BinRoot 'fm-merge-local.ps1'))).ExitCode | Should -Be 2
+        (Invoke-TestEntryPoint -Script 'fm-merge-local.ps1' -Environment $env_).ExitCode | Should -Be 2
 
         # 1 = refusal: a real request that this port will not perform.
-        (Invoke-FmChildProcess -FilePath 'pwsh' -Environment $env_ -ArgumentList @('-NoProfile', '-File',
-            (Join-Path $script:BinRoot 'fm-merge-local.ps1'), 'ghost')).ExitCode | Should -Be 1
-        (Invoke-FmChildProcess -FilePath 'pwsh' -Environment $env_ -ArgumentList @('-NoProfile', '-File',
-            (Join-Path $script:BinRoot 'fm-promote.ps1'), 'sometask')).ExitCode | Should -Be 1
+        (Invoke-TestEntryPoint -Script 'fm-merge-local.ps1' -CliArgs @('ghost') -Environment $env_).ExitCode |
+            Should -Be 1
+        (Invoke-TestEntryPoint -Script 'fm-promote.ps1' -CliArgs @('sometask') -Environment $env_).ExitCode |
+            Should -Be 1
 
         # 0 = success, and the registry it wrote is readable by the parser.
-        $create = Invoke-FmChildProcess -FilePath 'pwsh' -Environment $env_ -ArgumentList @('-NoProfile', '-File',
-            (Join-Path $script:BinRoot 'fm-project-create.ps1'), 'notes', '-Description', 'scratch notes')
+        $create = Invoke-TestEntryPoint -Script 'fm-project-create.ps1' -Environment $env_ `
+            -CliArgs @('notes', '-Description', 'scratch notes')
         $create.ExitCode | Should -Be 0
-        $mode = Invoke-FmChildProcess -FilePath 'pwsh' -Environment $env_ -ArgumentList @('-NoProfile', '-File',
-            (Join-Path $script:BinRoot 'fm-project-mode.ps1'), 'notes')
+        $mode = Invoke-TestEntryPoint -Script 'fm-project-mode.ps1' -CliArgs @('notes') -Environment $env_
         $mode.ExitCode | Should -Be 0
         $mode.StdOut.Trim() | Should -Be 'local-only off'
 
         # A registered local-only project is skipped by the fleet refresh.
-        $sync = Invoke-FmChildProcess -FilePath 'pwsh' -Environment $env_ -ArgumentList @('-NoProfile', '-File',
-            (Join-Path $script:BinRoot 'fm-fleet-sync.ps1'))
+        $sync = Invoke-TestEntryPoint -Script 'fm-fleet-sync.ps1' -Environment $env_
         $sync.ExitCode | Should -Be 0
         $sync.StdOut.Trim() | Should -Be 'notes: skipped: local-only project'
 
         # Removal without the captain's decision refuses; with it, it lands.
-        (Invoke-FmChildProcess -FilePath 'pwsh' -Environment $env_ -ArgumentList @('-NoProfile', '-File',
-            (Join-Path $script:BinRoot 'fm-project-remove.ps1'), 'notes')).ExitCode | Should -Be 1
-        (Invoke-FmChildProcess -FilePath 'pwsh' -Environment $env_ -ArgumentList @('-NoProfile', '-File',
-            (Join-Path $script:BinRoot 'fm-project-remove.ps1'), 'notes', '-Approved')).ExitCode | Should -Be 0
+        (Invoke-TestEntryPoint -Script 'fm-project-remove.ps1' -CliArgs @('notes') -Environment $env_).ExitCode |
+            Should -Be 1
+        (Invoke-TestEntryPoint -Script 'fm-project-remove.ps1' -CliArgs @('notes', '-Approved') -Environment $env_).ExitCode |
+            Should -Be 0
         Test-Path -LiteralPath (Join-Path $home_ 'projects/notes') | Should -BeFalse
     }
 

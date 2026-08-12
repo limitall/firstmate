@@ -72,26 +72,39 @@ function Invoke-FmPromote {
     }
 
     # The control lock first, so two lifecycle actions cannot run against one
-    # task, then the meta lock around the read-modify-write itself. Both are
-    # released in the finally block whatever happens - including a throw from
-    # the checks below, which is why they are inside it.
+    # task, then the meta lock around the read-modify-write itself. Both are the
+    # foundation's locks (Request-FmLock / Unlock-FmLock); this area no longer
+    # carries its own, and Get-FmMetaLockPath owns the meta-lock path.
+    #
+    # Request-, not Wait-: a second lifecycle action against one task must be
+    # REFUSED with the bash's message, not silently queued behind the first.
+    $metaPath = Get-FmMetaPath -StateDir $StateDir -TaskId $TaskId
     $controlLockPath = Get-FmDeliveryControlLockPath -StateDir $StateDir -TaskId $TaskId
-    $control = New-FmDeliveryLock -Path $controlLockPath -StealStale
-    if (-not $control.Acquired) {
+    $control = $null
+    try {
+        $control = Request-FmLock -Path $controlLockPath -Role 'promote'
+    } catch {
+        # The owner refuses re-entry by throwing rather than returning $null: a
+        # lock is per PROCESS, so taking it twice would deadlock. For this
+        # command that IS the refusal - another lifecycle action holds the task,
+        # it just happens to be in this process - so it is reported in this
+        # command's own words. Anything else is a real failure and is rethrown
+        # unchanged, because "already running" must never stand in for "the
+        # state directory is unwritable".
+        if ($_.Exception.Message -notlike '*already holds the lock*') { throw }
+    }
+    if (-not $control) {
         throw "error: another lifecycle action is already running for task $TaskId; nothing was changed"
     }
 
-    $metaLockPath = Get-FmDeliveryMetaLockPath -StateDir $StateDir -TaskId $TaskId
-    $metaLocked = $false
+    $metaLock = $null
     try {
         $null = Invoke-FmDeliveryGuard
 
-        $metaPath = Get-FmMetaPath -StateDir $StateDir -TaskId $TaskId
-        $meta = New-FmDeliveryLock -Path $metaLockPath -StealStale
-        if (-not $meta.Acquired) {
+        $metaLock = Request-FmLock -Path (Get-FmMetaLockPath -MetaPath $metaPath) -Role 'promote'
+        if (-not $metaLock) {
             throw "error: task $TaskId`'s record is locked by another writer; nothing was changed"
         }
-        $metaLocked = $true
 
         if (-not (Test-Path -LiteralPath $metaPath -PathType Leaf)) {
             throw "error: no meta for task $TaskId at $metaPath"
@@ -106,8 +119,10 @@ function Invoke-FmPromote {
         if (-not $PSCmdlet.ShouldProcess("task $TaskId", "promote to ship mode=$Mode yolo=$Yolo")) { return $null }
         $null = Set-FmTaskPromotionMeta -MetaPath $metaPath -Mode $Mode -Yolo $Yolo
     } finally {
-        if ($metaLocked) { $null = Remove-FmDeliveryLock -Path $metaLockPath }
-        $null = Remove-FmDeliveryLock -Path $controlLockPath
+        # Released whatever happened, including a throw from the checks above:
+        # a refused promotion must never leave the task locked.
+        if ($metaLock) { $null = Unlock-FmLock -Lock $metaLock -Confirm:$false }
+        $null = Unlock-FmLock -Lock $control -Confirm:$false
     }
 
     [pscustomobject]@{

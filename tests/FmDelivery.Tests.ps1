@@ -118,54 +118,23 @@ Describe 'Get-FmDeliveryModeSupport' {
     }
 }
 
-Describe 'New-FmDeliveryLock' {
-    It 'grants the lock once and refuses the second holder' {
-        $lock = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName() + '.lock')
-        (New-FmDeliveryLock -Path $lock).Acquired | Should -BeTrue
-        $second = New-FmDeliveryLock -Path $lock
-        $second.Acquired | Should -BeFalse
-        $second.HeldByPid | Should -Be ([string]$PID)
+Describe 'the per-task lifecycle interlock' {
+    # The lock MECHANISM is the foundation's (Request-FmLock / Unlock-FmLock),
+    # and tests/FmLock.Tests.ps1 owns proving it. What belongs here is the seam:
+    # the control-lock path this area names, and that promotion takes and
+    # releases both locks. Those behaviours are covered in the promotion
+    # Describe below, where a refusal can be observed end to end.
+    It 'names the control lock on the bash path, beside the record it guards' {
+        $state = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        Get-FmDeliveryControlLockPath -StateDir $state -TaskId 'scout1' |
+            Should -Be (Join-Path $state '.control-scout1.lock')
     }
 
-    It 'records the owner pid and its identity, so PID reuse cannot look like the same owner' {
-        $lock = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName() + '.lock')
-        $null = New-FmDeliveryLock -Path $lock
-        (Get-Content -LiteralPath (Join-Path $lock 'pid') -Raw).Trim() | Should -Be ([string]$PID)
-        (Get-Content -LiteralPath (Join-Path $lock 'pid-identity') -Raw).Trim() | Should -Not -BeNullOrEmpty
-    }
-
-    It 'refuses to steal a lock whose owner is still alive' {
-        $lock = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName() + '.lock')
-        $null = New-FmDeliveryLock -Path $lock
-        (New-FmDeliveryLock -Path $lock -StealStale).Acquired | Should -BeFalse
-    }
-
-    It 'recovers a lock left behind by a dead owner' {
-        $lock = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName() + '.lock')
-        New-Item -ItemType Directory -Path $lock | Out-Null
-        # A pid that is not running, with an identity that cannot match.
-        [System.IO.File]::WriteAllText((Join-Path $lock 'pid'), "999999`n")
-        [System.IO.File]::WriteAllText((Join-Path $lock 'pid-identity'), "1999-01-01T00:00:00.0000000Z`n")
-        (New-FmDeliveryLock -Path $lock -StealStale).Acquired | Should -BeTrue
-    }
-
-    It 'treats a pid-less lock as held while it is fresh' {
-        $lock = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName() + '.lock')
-        New-Item -ItemType Directory -Path $lock | Out-Null
-        (New-FmDeliveryLock -Path $lock -StealStale).Acquired | Should -BeFalse
-    }
-
-    It 'releases only its own lock' {
-        $lock = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName() + '.lock')
-        New-Item -ItemType Directory -Path $lock | Out-Null
-        [System.IO.File]::WriteAllText((Join-Path $lock 'pid'), "999999`n")
-        Remove-FmDeliveryLock -Path $lock | Should -BeFalse
-        Test-Path -LiteralPath $lock | Should -BeTrue
-
-        $mine = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName() + '.lock')
-        $null = New-FmDeliveryLock -Path $mine
-        Remove-FmDeliveryLock -Path $mine | Should -BeTrue
-        Test-Path -LiteralPath $mine | Should -BeFalse
+    It 'uses the foundation as the one owner of the meta lock path' {
+        $state = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        New-Item -ItemType Directory -Path $state -Force | Out-Null
+        $meta = Join-Path $state 'scout1.meta'
+        Get-FmMetaLockPath -MetaPath $meta | Should -Be (Join-Path $state '.meta-scout1.lock')
     }
 }
 
@@ -412,24 +381,59 @@ Describe 'Invoke-FmPromote' {
     }
 
     It 'refuses while another lifecycle action holds the task control lock' {
-        $held = New-FmDeliveryLock -Path (Get-FmDeliveryControlLockPath -StateDir $script:state -TaskId 'scout1')
-        $held.Acquired | Should -BeTrue
+        # The lock owner refuses re-entry by THROWING (a lock is per process, so
+        # taking it twice would deadlock). For this command that is still the
+        # "another lifecycle action" refusal, and it must be reported in this
+        # command's own words rather than as a lock-library error.
+        $held = Request-FmLock -Path (Get-FmDeliveryControlLockPath -StateDir $script:state -TaskId 'scout1')
+        $held | Should -Not -BeNullOrEmpty
+        try {
+            { Invoke-FmPromote -TaskId 'scout1' -Mode 'local-only' -Yolo 'off' -StateDir $script:state } |
+                Should -Throw '*another lifecycle action is already running for task scout1; nothing was changed*'
+            @(Get-FmSessionFileLines -Path (Join-Path $script:state 'scout1.meta')) | Should -Contain 'kind=scout'
+        } finally {
+            $null = Unlock-FmLock -Lock $held -Confirm:$false
+        }
+    }
+
+    It 'refuses when another PROCESS holds the control lock' {
+        # The cross-process case the bash refuses: the owner reports it by
+        # returning nothing rather than by throwing.
+        Mock Request-FmLock { $null } -ParameterFilter { $Path -like '*.control-scout1.lock' }
         { Invoke-FmPromote -TaskId 'scout1' -Mode 'local-only' -Yolo 'off' -StateDir $script:state } |
             Should -Throw '*another lifecycle action is already running for task scout1; nothing was changed*'
         @(Get-FmSessionFileLines -Path (Join-Path $script:state 'scout1.meta')) | Should -Contain 'kind=scout'
     }
 
+    It 'reports a real lock failure as itself, never as "already running"' {
+        Mock Request-FmLock { throw 'firstmate: cannot create lock: state directory is read-only' } `
+            -ParameterFilter { $Path -like '*.control-scout1.lock' }
+        { Invoke-FmPromote -TaskId 'scout1' -Mode 'local-only' -Yolo 'off' -StateDir $script:state } |
+            Should -Throw '*state directory is read-only*'
+    }
+
     It 'releases both locks after a successful promotion and after a refusal' {
+        # Asserted by RE-ACQUIRING, not by the lock path being gone: the
+        # foundation's release removes the pid file and deliberately leaves the
+        # lock directory in place (removing it is what broke mutual exclusion).
+        # "Can someone else take it now" is the property that matters anyway.
         $control = Get-FmDeliveryControlLockPath -StateDir $script:state -TaskId 'scout1'
-        $meta = Get-FmDeliveryMetaLockPath -StateDir $script:state -TaskId 'scout1'
+        $meta = Get-FmMetaLockPath -MetaPath (Join-Path $script:state 'scout1.meta')
+
         $null = Invoke-FmPromote -TaskId 'scout1' -Mode 'local-only' -Yolo 'off' -StateDir $script:state
-        Test-Path -LiteralPath $control | Should -BeFalse
-        Test-Path -LiteralPath $meta | Should -BeFalse
+        foreach ($path in @($control, $meta)) {
+            $taken = Request-FmLock -Path $path
+            $taken | Should -Not -BeNullOrEmpty -Because "$path must be free after a successful promotion"
+            $null = Unlock-FmLock -Lock $taken -Confirm:$false
+        }
 
         # The second promotion refuses (it is now a ship task) and must still release.
         { Invoke-FmPromote -TaskId 'scout1' -Mode 'local-only' -Yolo 'off' -StateDir $script:state } | Should -Throw
-        Test-Path -LiteralPath $control | Should -BeFalse
-        Test-Path -LiteralPath $meta | Should -BeFalse
+        foreach ($path in @($control, $meta)) {
+            $taken = Request-FmLock -Path $path
+            $taken | Should -Not -BeNullOrEmpty -Because "$path must be free after a refused promotion"
+            $null = Unlock-FmLock -Lock $taken -Confirm:$false
+        }
     }
 
     It 'changes nothing under -WhatIf' {

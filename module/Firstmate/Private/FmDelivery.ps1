@@ -119,162 +119,24 @@ function Invoke-FmDeliveryGuard {
 
 # --- the per-task lifecycle interlock ----------------------------------------
 #
-# MERGE POINT. bin/fm-promote.sh takes two locks through fm-wake-lib.sh's
-# symlink-owner mutex: a control lock so two lifecycle actions cannot run
-# against one task, and a meta lock around the read-modify-write of the task
-# record. That library is the lock area's to port. Until it lands, this area
-# implements the same two locks on the same paths (state/.control-<id>.lock,
-# state/.meta-<id>.lock) with the Windows-native primitive the design report
-# names: directory creation, which is atomic on NTFS, with the owner's pid and
-# pid-identity written inside exactly as the bash owner dir carries them.
+# MERGE POINT RESOLVED. bin/fm-promote.sh takes two locks through
+# fm-wake-lib.sh's symlink-owner mutex: a control lock so two lifecycle actions
+# cannot run against one task, and a meta lock around the read-modify-write of
+# the task record. This area carried a stand-in for both until the lock area
+# landed. It has, so the stand-in is gone and both locks are the foundation's:
+# Request-FmLock / Unlock-FmLock, with Get-FmMetaLockPath owning the meta-lock
+# path. Two things that owner gets right and the stand-in did not:
 #
-# When the lock area lands, delete these three functions and call its owner -
-# do not keep both. The on-disk shape is deliberately the bash one so a Linux
-# firstmate's fm_lock_try_acquire reads this port's lock as held.
-
-# A lock directory younger than this whose pid file is not readable yet is the
-# window between "directory created" and "pid written". Treat it as held, the
-# same conclusion fm_lock_mid_acquire_is_fresh reaches.
-$script:FmDeliveryLockFreshSeconds = 5
-
-function Get-FmDeliveryLockIdentity {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][int]$ProcessId)
-
-    # (pid, start time) is the Windows replacement for /proc/<pid>/stat's
-    # starttime field: it defeats PID reuse, which a bare pid check cannot.
-    # Formatted invariantly for the same reason the bash original pins LC_ALL=C.
-    $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-    if (-not $proc) { return '' }
-    try {
-        return $proc.StartTime.ToUniversalTime().ToString('o', [cultureinfo]::InvariantCulture)
-    } catch {
-        return ''
-    }
-}
-
-function Test-FmDeliveryLockOwnerAlive {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][AllowEmptyString()][string]$OwnerPid,
-        [Parameter(Mandatory)][AllowEmptyString()][string]$OwnerIdentity
-    )
-
-    if ($OwnerPid -notmatch '^\d+$') { return $false }
-    $proc = Get-Process -Id ([int]$OwnerPid) -ErrorAction SilentlyContinue
-    if (-not $proc) { return $false }
-    if (-not $OwnerIdentity) { return $true }
-    $identity = Get-FmDeliveryLockIdentity -ProcessId ([int]$OwnerPid)
-    # An unreadable identity for a live pid is NOT proof of reuse, so the safe
-    # answer is "alive": a lock is never stolen on a guess.
-    if (-not $identity) { return $true }
-    return ($identity -eq $OwnerIdentity)
-}
-
-# New-FmDeliveryLock: take <Path> exclusively, or report who holds it. Returns a
-# record with Acquired plus the holding pid when it refused; never throws, so
-# every caller decides for itself what a refusal means.
-function New-FmDeliveryLock {
-    # No ShouldProcess: see the -WhatIf note in the create block below. A lock
-    # that can be previewed away is not a lock.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [switch]$StealStale
-    )
-
-    $create = {
-        try {
-            # Directory creation is the atomic step: it FAILS when the directory
-            # already exists, which is what makes it a mutex on NTFS and on any
-            # POSIX filesystem alike.
-            #
-            # -WhatIf:$false deliberately: this is an internal interlock, not a
-            # user-visible mutation. Previewing it away would let a -WhatIf run
-            # proceed past the very check that says "someone else is in here",
-            # and the lock is released in the caller's finally either way.
-            $null = New-Item -ItemType Directory -Path $Path -ErrorAction Stop -WhatIf:$false -Confirm:$false
-        } catch {
-            return $false
-        }
-        $encoding = [System.Text.UTF8Encoding]::new($false)
-        [System.IO.File]::WriteAllText((Join-Path $Path 'pid'), "$PID`n", $encoding)
-        $identity = Get-FmDeliveryLockIdentity -ProcessId $PID
-        [System.IO.File]::WriteAllText((Join-Path $Path 'pid-identity'), "$identity`n", $encoding)
-        $home_ = if ($env:FM_HOME) { $env:FM_HOME } else { '' }
-        [System.IO.File]::WriteAllText((Join-Path $Path 'fm-home'), "$home_`n", $encoding)
-        return $true
-    }
-
-    if (& $create) {
-        return [pscustomobject]@{ Acquired = $true; Path = $Path; HeldByPid = '' }
-    }
-
-    $ownerPid = ''
-    $ownerIdentity = ''
-    foreach ($field in @('pid', 'pid-identity')) {
-        $file = Join-Path $Path $field
-        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { continue }
-        $value = ''
-        try { $value = ([System.IO.File]::ReadAllText($file)).Trim() } catch { $value = '' }
-        if ($field -eq 'pid') { $ownerPid = $value } else { $ownerIdentity = $value }
-    }
-
-    if (-not $StealStale) {
-        return [pscustomobject]@{ Acquired = $false; Path = $Path; HeldByPid = $ownerPid }
-    }
-
-    if (Test-FmDeliveryLockOwnerAlive -OwnerPid $ownerPid -OwnerIdentity $ownerIdentity) {
-        return [pscustomobject]@{ Acquired = $false; Path = $Path; HeldByPid = $ownerPid }
-    }
-    if (-not $ownerPid) {
-        # No pid recorded: either mid-acquire (young - held) or a lock whose
-        # owner died between mkdir and the pid write (old - stale).
-        $age = [double]::MaxValue
-        $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-        if ($item) { $age = ([datetime]::UtcNow - $item.CreationTimeUtc).TotalSeconds }
-        if ($age -lt $script:FmDeliveryLockFreshSeconds) {
-            return [pscustomobject]@{ Acquired = $false; Path = $Path; HeldByPid = '' }
-        }
-    }
-
-    try {
-        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop -WhatIf:$false -Confirm:$false
-    } catch {
-        return [pscustomobject]@{ Acquired = $false; Path = $Path; HeldByPid = $ownerPid }
-    }
-    if (& $create) {
-        return [pscustomobject]@{ Acquired = $true; Path = $Path; HeldByPid = ''; RecoveredFromPid = $ownerPid }
-    }
-    [pscustomobject]@{ Acquired = $false; Path = $Path; HeldByPid = $ownerPid }
-}
-
-# Remove-FmDeliveryLock: release a lock this process owns. Releasing a lock
-# someone else now holds is a no-op, never a removal - the bash
-# release-only-if-still-owner rule, which is what keeps a slow releaser from
-# deleting its successor's lock.
-function Remove-FmDeliveryLock {
-    # No ShouldProcess, for the same reason as New-FmDeliveryLock: a release
-    # that a preview could skip would leave the task locked by a dead command.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
-    $pidFile = Join-Path $Path 'pid'
-    $ownerPid = ''
-    if (Test-Path -LiteralPath $pidFile -PathType Leaf) {
-        try { $ownerPid = ([System.IO.File]::ReadAllText($pidFile)).Trim() } catch { $ownerPid = '' }
-    }
-    if ($ownerPid -ne [string]$PID) { return $false }
-    try {
-        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop -WhatIf:$false -Confirm:$false
-        return $true
-    } catch {
-        return $false
-    }
-}
+#   - the pid FILE is the lock, not the directory. Removing the directory on
+#     release is what broke mutual exclusion (see Request-FmLock), and the
+#     stand-in removed the directory.
+#   - stale recovery, holder reporting and the break protocol are one
+#     implementation for the whole module rather than one per area.
+#
+# The control-lock PATH has no owner yet - the foundation publishes
+# Get-FmMetaLockPath and Get-FmTaskSetLockPath but nothing for bash's
+# state/.control-<id>.lock - so this area names it, on the bash path, and uses
+# the foundation's mechanism to take it.
 
 function Get-FmDeliveryControlLockPath {
     [CmdletBinding()]
@@ -283,15 +145,6 @@ function Get-FmDeliveryControlLockPath {
         [Parameter(Mandatory)][string]$TaskId
     )
     Join-Path $StateDir ".control-$TaskId.lock"
-}
-
-function Get-FmDeliveryMetaLockPath {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$StateDir,
-        [Parameter(Mandatory)][string]$TaskId
-    )
-    Join-Path $StateDir ".meta-$TaskId.lock"
 }
 
 # --- the local landing path ---------------------------------------------------

@@ -36,8 +36,8 @@ record.
 | resolves | `Invoke-FmGuard` | The bash starts merge-local, promote and fleet-sync with `fm-guard.sh \|\| true` - an advisory supervision check whose failure never blocks the action. When the owner is absent the check simply did not run, which is the correct direction for a check that gates nothing here. |
 | publishes | `Invoke-FmFleetSync` | Bootstrap's network sweep resolves this name (`docs/session-start.md`). It must stay callable with no arguments. |
 | publishes | `Get-FmProjectMode` | The registered-posture reader. Fleet sync consumes it to skip local-only clones. |
-| MERGE POINT | `New-FmDeliveryLock` / `Remove-FmDeliveryLock` | A stand-in for the lock area's per-resource mutex. Delete them when that area lands (see below). |
-| MERGE POINT | `Test-FmFleetSyncStaleLock` | A stand-in for `fm_lock_is_provably_stale`, scoped to its one caller. Same rule: one owner, not two. |
+| resolves | `Request-FmLock` / `Unlock-FmLock` / `Get-FmMetaLockPath` | The foundation owns every lock. This area's stand-in is gone (see below); the control-lock PATH is still named here because the foundation publishes no helper for bash's `state/.control-<id>.lock`. |
+| resolves | `Test-FmTeardownGitLockHeld` | The teardown area owns "is this lock file held". Fleet sync owns only the AGE half of the staleness rule and asks that owner for the rest; absent, its fallback reaches the same verdicts. |
 
 ## v1 delivery modes: `direct-PR` and `local-only`, and nothing pretended
 
@@ -137,25 +137,34 @@ requirement the bash carries: inventory the scratch state, **return to a clean
 default-branch base**, carry over only intended fix changes, create `fm/<id>`,
 implement, report done.
 
-### The per-task interlock is a MERGE POINT
+### The per-task interlock is the foundation's
 
 The bash takes two locks through `fm-wake-lib.sh`'s symlink-owner mutex: a
 control lock (no two lifecycle actions against one task) and a meta lock (around
-the read-modify-write). That library belongs to the lock area. Until it lands,
-this area implements the same two locks, on the same paths
-(`state/.control-<id>.lock`, `state/.meta-<id>.lock`), with the primitive the
-design report names: **directory creation, which is atomic**, with `pid`,
-`pid-identity` and `fm-home` inside exactly as the bash owner dir carries them -
-so a Linux firstmate's `fm_lock_try_acquire` reads this port's lock as held.
+the read-modify-write). This area carried a stand-in for both until the lock
+area landed. It has, so **the stand-in is gone** and both locks are
+`Request-FmLock` / `Unlock-FmLock`, with `Get-FmMetaLockPath` owning the
+meta-lock path. Two things that owner gets right and the stand-in did not:
 
-Stale-owner recovery uses `(pid, process start time)`, the Windows replacement
-for `/proc/<pid>/stat`'s starttime: a live pid whose identity cannot be read is
-treated as **alive**, because a lock is never stolen on a guess.
+- **the pid file is the lock, not the directory.** Removing the directory on
+  release is what broke mutual exclusion there once; the stand-in removed the
+  directory. Tests assert release by RE-ACQUIRING rather than by the path being
+  gone, which is the property that actually matters.
+- stale recovery, holder reporting and the break protocol are one
+  implementation for the whole module instead of one per area.
 
-The locks are deliberately immune to `-WhatIf`. A lock that a preview can skip
-is not a lock, and both are released in a `finally` either way.
+`Request-FmLock`, not `Wait-FmLock`: a second lifecycle action against one task
+is REFUSED with the bash's message, never silently queued behind the first. Two
+refusal shapes are honoured, because the owner uses both - it returns nothing
+when another PROCESS holds the lock, and it THROWS on re-entry from the same
+process (a lock is per process, so taking it twice would deadlock). Both are
+this command's "another lifecycle action is already running" refusal. Any other
+throw is rethrown unchanged: "already running" must never stand in for "the
+state directory is unwritable".
 
-**When the lock area lands, delete these three functions and call its owner.**
+The control-lock path stays here, on bash's `state/.control-<id>.lock`, because
+the foundation publishes `Get-FmMetaLockPath` and `Get-FmTaskSetLockPath` but
+nothing for it.
 
 ## Fleet sync
 
@@ -174,9 +183,17 @@ no arguments.
 `lsof` (no holder) plus mtime age, treating a missing `lsof` as "live". Windows
 has no `lsof` and needs none: git holds its lock file open while it operates, so
 an exclusive open (`FileShare.None`) succeeding **is** direct proof that nobody
-holds it. With the same mtime age that is an equal-or-better proof, and the
-fail-safe direction is preserved - any outcome other than a clean exclusive open
-reads as "live" and the lock is left in place.
+holds it.
+
+That proof is the teardown area's `Test-FmTeardownGitLockHeld`, and fleet sync
+asks it rather than keeping a second copy. Splitting it that way fixed a real
+error in the local copy: **on POSIX the same successful open proves nothing**,
+because the locking there is advisory - a live git process holding the lock lets
+the open through, and deleting the lock on that basis corrupts the ref rewrite
+it exists to protect. The owner answers `unknown` on a non-Windows host, and
+`free` is the only verdict that proves staleness; `held`, `unknown` and a
+probe that throws all leave the lock alone. That is the bash rule intact: no
+proof, no removal.
 
 **What is deliberately not ported.** The per-clone timing records
 (`fm-timing-lib.sh`): they are inert unless the deferred network stage sets

@@ -81,15 +81,24 @@ function Get-FmFleetSyncPackedRefsLockPath {
     Join-Path $abs $lock
 }
 
-# MERGE POINT. This is the Windows replacement for fm-lock-lib.sh's
-# fm_lock_is_provably_stale, scoped to the one caller that needs it here. If a
-# lock area lands with a general owner for the same proof, delete this and call
-# that one - do not keep two answers to "is this lock stale".
+# The Windows replacement for fm-lock-lib.sh's fm_lock_is_provably_stale,
+# applied to fleet-sync's one caller. Provably stale means BOTH: old enough, AND
+# proof that nothing holds it. This owns only the AGE half; the holder question
+# belongs to the teardown area, which published Test-FmTeardownGitLockHeld for
+# exactly this - one owner per rule.
 #
-# Provably stale means BOTH: old enough, and openable exclusively. Anything else
-# - a young lock, an open that fails for any reason, a path that cannot be
-# examined - is "live", because removing a live process's lock corrupts the very
-# ref rewrite the lock exists to protect.
+# THE PLATFORM CAVEAT IS THE WHOLE POINT, and it is why delegating matters
+# rather than keeping a local copy. Windows locks open files, so a successful
+# exclusive open IS proof that nobody holds the lock. POSIX locking is advisory,
+# so the same successful open proves NOTHING - a live git process holding an
+# advisory lock lets the open through, and deleting its lock on that basis
+# corrupts the ref rewrite the lock exists to protect. The owner answers
+# 'unknown' there, and unknown is treated exactly like held. That preserves the
+# bash rule: no lsof, no proof, leave it alone.
+#
+# When the owner is not loaded, the fallback below reaches the SAME verdicts,
+# because a fleet refresh must not become more willing to delete a lock just
+# because another area is absent.
 function Test-FmFleetSyncStaleLock {
     [CmdletBinding()]
     param(
@@ -101,6 +110,16 @@ function Test-FmFleetSyncStaleLock {
     if (-not $item) { return $false }
     if (([datetime]::UtcNow - $item.LastWriteTimeUtc).TotalSeconds -lt $AgeSeconds) { return $false }
 
+    $holderProbe = Resolve-FmSessionCommand -Name 'Test-FmTeardownGitLockHeld'
+    if ($holderProbe) {
+        $verdict = 'unknown'
+        try { $verdict = [string](& $holderProbe -Path $Path) } catch { $verdict = 'unknown' }
+        # 'free' is the only verdict that proves staleness. 'held' and 'unknown'
+        # both mean leave it; 'absent' means there is nothing left to remove.
+        return ($verdict -eq 'free')
+    }
+
+    if (-not $IsWindows) { return $false }
     try {
         $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open,
             [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
