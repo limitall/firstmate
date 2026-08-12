@@ -142,7 +142,7 @@ function Invoke-FmChildProcess {
         if ($TimeoutSeconds -gt 0) {
             if (-not $proc.WaitForExit([int]([math]::Ceiling($TimeoutSeconds * 1000)))) {
                 $timedOut = $true
-                try { $proc.Kill($true) } catch { }
+                try { $proc.Kill($true) } catch { Write-Debug "herdr: kill after timeout failed (the process had already exited): $_" }
                 $proc.WaitForExit()
             }
         } else {
@@ -517,15 +517,15 @@ function Get-FmHerdrSessionSocketPath {
     $json = Invoke-FmHerdrCliJson -Session $Session -Arguments @('session', 'list', '--json')
     $sessions = Get-FmJsonValue -InputObject $json -Path 'sessions'
     if ($null -eq $sessions) { return '' }
-    $matches = @(foreach ($s in $sessions) {
+    $running = @(foreach ($s in $sessions) {
         if ((Get-FmJsonValue -InputObject $s -Path 'name') -eq $Session -and
             (Get-FmJsonValue -InputObject $s -Path 'running') -eq $true) {
             $socket = Get-FmJsonValue -InputObject $s -Path 'socket_path'
             if ($socket -is [string] -and $socket.Length -gt 0) { $socket }
         }
     })
-    if ($matches.Count -ne 1) { return '' }
-    Get-FmHerdrCanonicalSocketPath -SocketPath $matches[0]
+    if ($running.Count -ne 1) { return '' }
+    Get-FmHerdrCanonicalSocketPath -SocketPath $running[0]
 }
 
 # Resolve-FmHerdrWorkspace: the workspace this spawn's task tab belongs in -
@@ -571,15 +571,15 @@ function Resolve-FmHerdrWorkspace {
     }
 
     $label = Get-FmHerdrWorkspaceLabel
-    $matches = @(Get-FmHerdrWorkspaceIdAll -Session $Session -Label $label)
-    if ($matches.Count -gt 1) {
+    $labeled = @(Get-FmHerdrWorkspaceIdAll -Session $Session -Label $label)
+    if ($labeled.Count -gt 1) {
         $result.Status = 'refused'
-        $result.Reason = "$($matches.Count) herdr workspaces in session '$Session' are labeled '$label' ($($matches -join ' ')) and this spawn has no herdr parent pane to identify which one is its own; rename or close the extras, or run firstmate inside the workspace its workers belong in"
+        $result.Reason = "$($labeled.Count) herdr workspaces in session '$Session' are labeled '$label' ($($labeled -join ' ')) and this spawn has no herdr parent pane to identify which one is its own; rename or close the extras, or run firstmate inside the workspace its workers belong in"
         return $result
     }
-    if ($matches.Count -eq 1) {
+    if ($labeled.Count -eq 1) {
         $result.Status = 'resolved'
-        $result.WorkspaceId = $matches[0]
+        $result.WorkspaceId = $labeled[0]
         return $result
     }
 

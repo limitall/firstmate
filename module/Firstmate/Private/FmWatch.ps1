@@ -120,7 +120,7 @@ function Write-FmTriageLog {
             Set-FmFileTextLf -Path $log -Text (($keep -join "`n") + "`n")
         }
     }
-    catch { }
+    catch { Write-Debug "watch: triage log write failed (absorbed, the log is never relied on): $_" }
 }
 
 function Publish-FmWatchDelivery {
@@ -160,7 +160,7 @@ function Publish-FmWatchDelivery {
             Set-FmFileTextLf -Path $log -Text (($keep -join "`n") + "`n")
         }
     }
-    catch { }
+    catch { Write-Debug "watch: delivery journal write failed (absorbed, never fatal to the cycle): $_" }
     finally { Unlock-FmPath -LockDir $lock }
 }
 
@@ -291,7 +291,7 @@ function Invoke-FmProceventSurface {
             if ($_.Exception.Data.Contains('FmWakeExitCode') -and [int]$_.Exception.Data['FmWakeExitCode'] -eq 0) {
                 foreach ($key in $surfaced) {
                     try { Set-FmFileTextLf -Path (Get-FmProceventSurfacedMarker -Key $key -Context $Context) -Text '' }
-                    catch { }
+                    catch { Write-Debug "watch: could not mark process-event '$key' surfaced; it re-surfaces next cycle: $_" }
                 }
             }
             throw
@@ -345,7 +345,7 @@ function Invoke-FmWedgeTimerCheck {
     if (-not (Add-FmWakeRecord -Kind stale -Key $Window -Payload $reason -Context $Context)) {
         throw 'fm-watch: could not enqueue wedge escalation'
     }
-    try { [System.IO.File]::Delete($SinceFile) } catch { }
+    try { Remove-FmStateFile -Path $SinceFile } catch { Write-Debug "watch: could not clear wedge timer $SinceFile; the next cycle re-reads the old start time: $_" }
     New-FmWakeDelivery -Reason $reason -Context $Context
 }
 
@@ -357,7 +357,7 @@ function Clear-FmPauseState {
     $key = Get-FmWindowKey -Window $Window
     foreach ($name in @(".paused-$key", ".paused-rechecked-$key", ".paused-resurfaced-$key")) {
         $p = Join-Path $Context.State $name
-        try { if ([System.IO.File]::Exists($p)) { [System.IO.File]::Delete($p) } } catch { }
+        try { Remove-FmStateFile -Path $p } catch { Write-Debug "watch: could not clear state marker $p; the watcher may re-read a stale verdict: $_" }
     }
 }
 
@@ -370,7 +370,7 @@ function Clear-FmPauseTracking {
     $key = Get-FmWindowKey -Window $Window
     foreach ($name in @(".stale-$key", ".stale-since-$key", ".wedge-escalations-$key")) {
         $p = Join-Path $Context.State $name
-        try { if ([System.IO.File]::Exists($p)) { [System.IO.File]::Delete($p) } } catch { }
+        try { Remove-FmStateFile -Path $p } catch { Write-Debug "watch: could not clear state marker $p; the watcher may re-read a stale verdict: $_" }
     }
 }
 
@@ -398,7 +398,7 @@ function Invoke-FmPausedStale {
     Set-FmFileTextLf -Path (Join-Path $Context.State ".paused-$key") -Text ''
     foreach ($name in @(".stale-since-$key", ".wedge-escalations-$key")) {
         $p = Join-Path $Context.State $name
-        try { if ([System.IO.File]::Exists($p)) { [System.IO.File]::Delete($p) } } catch { }
+        try { Remove-FmStateFile -Path $p } catch { Write-Debug "watch: could not clear state marker $p; the watcher may re-read a stale verdict: $_" }
     }
 
     $statusFile = Join-Path $Context.State "$Task.status"
@@ -423,12 +423,13 @@ function Invoke-FmPausedStale {
 }
 
 function Invoke-FmNonTerminalStaleSurface {
-    <# surface_nonterminal_stale. #>
+    <# surface_nonterminal_stale. Takes no settings: like the bash original it
+       surfaces unconditionally and writes no triage line, so there is no bound
+       or cadence to read. #>
     param(
         [Parameter(Mandatory)][string]$Window,
         [Parameter(Mandatory)][string]$Hash,
-        [Parameter(Mandatory)][hashtable]$Context,
-        [Parameter(Mandatory)][hashtable]$Settings
+        [Parameter(Mandatory)][hashtable]$Context
     )
     $key = Get-FmWindowKey -Window $Window
     if (-not (Add-FmWakeRecord -Kind stale -Key $Window -Payload "stale: $Window" -Context $Context)) {
@@ -436,7 +437,7 @@ function Invoke-FmNonTerminalStaleSurface {
     }
     Set-FmFileTextLf -Path (Join-Path $Context.State ".stale-$key") -Text $Hash
     $sinceFile = Join-Path $Context.State ".stale-since-$key"
-    try { if ([System.IO.File]::Exists($sinceFile)) { [System.IO.File]::Delete($sinceFile) } } catch { }
+    try { Remove-FmStateFile -Path $sinceFile } catch { Write-Debug "watch: could not clear wedge timer $sinceFile; the next cycle re-reads the old start time: $_" }
 
     $task = Invoke-FmSeam -Name 'Get-FmWindowTask' -Arguments @($Window, $Context.State) -Default ''
     $last = Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @((Join-Path $Context.State "$task.status")) -Default ''
@@ -546,7 +547,8 @@ function Stop-FmWatchFileNotifier {
     foreach ($name in @('Changed', 'Created', 'Renamed')) {
         Unregister-Event -SourceIdentifier "$script:FmWatchFswSource-$name" -ErrorAction SilentlyContinue
     }
-    try { $script:FmWatchFsw.EnableRaisingEvents = $false; $script:FmWatchFsw.Dispose() } catch { }
+    try { $script:FmWatchFsw.EnableRaisingEvents = $false; $script:FmWatchFsw.Dispose() }
+    catch { Write-Debug "watch: file notifier dispose failed; the poll loop is the backstop either way: $_" }
     $script:FmWatchFsw = $null
 }
 
@@ -564,10 +566,12 @@ function Wait-FmWatchInterval {
 
         Waking is done in bounded slices so a notifier failure degrades into
         ordinary polling within one slice rather than hanging the watcher.
+
+        Takes no context: the notifier and the directory it watches are fixed by
+        Start-FmWatchFileNotifier, and this wait only consumes its events.
     #>
     param(
-        [Parameter(Mandatory)][int]$Seconds,
-        [Parameter(Mandatory)][hashtable]$Context
+        [Parameter(Mandatory)][int]$Seconds
     )
     if ($Seconds -le 0) { return $false }
 

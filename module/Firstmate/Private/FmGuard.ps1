@@ -1,4 +1,4 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 <#
     FmGuard.ps1 - supervision predicates, the liveness beacon, and the guard
     banner machinery. Port of bin/fm-supervision-lib.sh,
@@ -189,7 +189,7 @@ function Request-FmGuardStaleBanner {
         if (Lock-FmPath -LockDir $lock) {
             try {
                 if ((Get-FmFirstLine -Path $marker) -eq $Key) { return $false }
-                try { Set-FmFileTextLf -Path $marker -Text ("$Key`n") } catch { }
+                try { Set-FmFileTextLf -Path $marker -Text ("$Key`n") } catch { Write-Debug "guard: could not record the banner marker; the banner may print again: $_" }
                 return $true
             }
             finally { Unlock-FmPath -LockDir $lock }
@@ -211,7 +211,7 @@ function Test-FmGuardStaleBannerSeen {
 function Clear-FmGuardStaleBanner {
     param([Parameter(Mandatory)][string]$State)
     $marker = Get-FmGuardBannerMarkerPath -State $State
-    try { if ([System.IO.File]::Exists($marker)) { [System.IO.File]::Delete($marker) } } catch { }
+    try { Remove-FmStateFile -Path $marker } catch { Write-Debug "guard: could not clear the stale banner marker $marker; a fresh banner may be suppressed: $_" }
 }
 
 function Get-FmSupervisionRepairLine {

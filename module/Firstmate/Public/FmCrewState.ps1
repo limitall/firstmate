@@ -1,4 +1,4 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 # FmCrewState.ps1 (public) - deterministic read of a crew's CURRENT state,
 # ported from bin/fm-crew-state.sh.
 #

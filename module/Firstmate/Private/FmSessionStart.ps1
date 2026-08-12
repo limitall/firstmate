@@ -1,4 +1,4 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 # FmSessionStart.ps1 - the startup digest, ported from bin/fm-session-start.sh.
 #
 # COMPOSITION, NOT DUPLICATION. Exactly like the bash original, this file owns
@@ -228,7 +228,8 @@ function Set-FmSessionStage {
     param([Parameter(Mandatory)][string]$Name)
 
     if ([string]::IsNullOrEmpty($env:FM_SESSION_START_STAGE_FILE)) { return }
-    try { Write-FmSessionTextFile -Path $env:FM_SESSION_START_STAGE_FILE -Content "$Name`n" } catch { }
+    try { Write-FmSessionTextFile -Path $env:FM_SESSION_START_STAGE_FILE -Content "$Name`n" }
+    catch { Write-Debug "session-start: could not record stage $Name; a truncation report may name an older stage: $_" }
 }
 
 # Full contents under a labeled subsection, or an explicit ABSENT marker.
@@ -694,7 +695,8 @@ function Get-FmSessionStartDigest {
         }
         $trace = Resolve-FmSessionCommand -Name 'Set-FmTraceContextSessionStart'
         if ($trace) {
-            try { & $trace -ConfigDir $paths.Config -EffectiveFile (Join-Path $paths.State '.trace-context-effective') | Out-Null } catch { }
+            try { & $trace -ConfigDir $paths.Config -EffectiveFile (Join-Path $paths.State '.trace-context-effective') | Out-Null }
+            catch { Write-Debug "session-start: Set-FmTraceContextSessionStart owner failed; the trace context was NOT refreshed: $_" }
         }
         # Every network call this session start owes is launched HERE, detached
         # and bounded, so it runs concurrently with the whole digest below.
@@ -702,7 +704,8 @@ function Get-FmSessionStartDigest {
         $networkStageLocked = if ($Reemit) { 0 } else { 1 }
         $netStart = Resolve-FmSessionCommand -Name 'Start-FmStartupNetwork'
         if ($netStart) {
-            try { & $netStart -Locked $networkStageLocked -HarvestPid $PID | Out-Null } catch { }
+            try { & $netStart -Locked $networkStageLocked -HarvestPid $PID | Out-Null }
+            catch { Write-Debug "session-start: Start-FmStartupNetwork owner failed; step 7 harvests nothing: $_" }
         }
     }
 
@@ -720,7 +723,8 @@ function Get-FmSessionStartDigest {
         } else {
             $cleanup = Resolve-FmSessionCommand -Name 'Invoke-FmHerdrSessionCleanup'
             if ($cleanup) {
-                try { $bootOut += @(& $cleanup 2>&1 | ForEach-Object { [string]$_ }) } catch { }
+                try { $bootOut += @(& $cleanup 2>&1 | ForEach-Object { [string]$_ }) }
+                catch { Write-Debug "session-start: Invoke-FmHerdrSessionCleanup owner failed; stale Herdr children were NOT swept: $_" }
             }
             $bootOut += @(Invoke-FmBootstrap -Network skip)
         }
@@ -747,7 +751,8 @@ function Get-FmSessionStartDigest {
                 $env:FM_GUARD_READ_ONLY = '1'
                 $guardOut = @(& $guard 2>&1 | ForEach-Object { [string]$_ })
                 if ($guardOut.Count -gt 0) { $out += $guardOut }
-            } catch { } finally { $env:FM_GUARD_READ_ONLY = $previousGuardReadOnly }
+            } catch { Write-Debug "session-start: the read-only guard probe failed; its lines are absent from this digest: $_" }
+            finally { $env:FM_GUARD_READ_ONLY = $previousGuardReadOnly }
         }
     } else {
         $drain = Invoke-FmSessionComposedStep -CommandName @('Invoke-FmWakeDrain') `
@@ -1029,12 +1034,12 @@ function Invoke-FmSessionStartBounded {
             foreach ($line in $pending.Lines) { Write-Output $line }
             if ([datetime]::UtcNow -ge $deadline) {
                 $truncated = $true
-                try { $proc.Kill($true) } catch { }
+                try { $proc.Kill($true) } catch { Write-Debug "session-start: kill after the runtime bound failed (the child had already exited): $_" }
                 break
             }
             Start-Sleep -Milliseconds 100
         }
-        try { $proc.WaitForExit(5000) | Out-Null } catch { }
+        try { $proc.WaitForExit(5000) | Out-Null } catch { Write-Debug "session-start: waiting for the bounded child to exit failed: $_" }
         $pending = Read-FmSessionPendingOutput -Path $outFile -Offset $emitted
         $emitted = $pending.Offset
         foreach ($line in $pending.Lines) { Write-Output $line }
@@ -1044,7 +1049,7 @@ function Invoke-FmSessionStartBounded {
 
     if ($truncated) {
         $lastStage = ''
-        try { $lastStage = ([System.IO.File]::ReadAllText($stageFile)).Trim() } catch { }
+        try { $lastStage = ([System.IO.File]::ReadAllText($stageFile)).Trim() } catch { Write-Debug "session-start: could not read the stage file; the truncation notice reports unknown: $_" }
         if ([string]::IsNullOrEmpty($lastStage)) { $lastStage = 'unknown' }
         $idx = $script:FmSessionStartStages.IndexOf($lastStage)
         $pending = if ($idx -ge 0) {

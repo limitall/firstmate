@@ -8,6 +8,14 @@
     seam fails toward SURFACING rather than absorbing.
 #>
 
+# The seam stubs below declare their owner's full published parameter list and
+# then ignore it, which is the point of the stub: a stub that dropped a name
+# would make the caller's by-name invocation throw and its catch would read that
+# as "no owner", and a stub declaring no parameters at all would swallow the
+# arguments into $args unnoticed. PSReviewUnusedParameter is inverted here.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '',
+    Justification = 'Test seam stubs must declare their owner''s full published parameter list without using it; see the comment above.')]
+param()
 BeforeAll {
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     foreach ($area in @('Private', 'Public')) {
@@ -350,7 +358,7 @@ Describe 'Terminal wait' {
         Start-FmWatchFileNotifier -Context $script:Ctx | Should -BeFalse
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        Wait-FmWatchInterval -Seconds 1 -Context $script:Ctx | Should -BeFalse
+        Wait-FmWatchInterval -Seconds 1 | Should -BeFalse
         $sw.Stop()
         $sw.Elapsed.TotalMilliseconds | Should -BeGreaterThan 900
     }
@@ -361,7 +369,7 @@ Describe 'Terminal wait' {
         Set-FmFileTextLf -Path (Join-Path $script:Ctx.State 'alpha.status') -Text "done: x`n"
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $early = Wait-FmWatchInterval -Seconds 20 -Context $script:Ctx
+        $early = Wait-FmWatchInterval -Seconds 20
         $sw.Stop()
 
         $early | Should -BeTrue
@@ -371,7 +379,7 @@ Describe 'Terminal wait' {
     It 'still waits the full interval when nothing happens' {
         Start-FmWatchFileNotifier -Context $script:Ctx | Should -BeTrue
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        Wait-FmWatchInterval -Seconds 2 -Context $script:Ctx | Should -BeFalse
+        Wait-FmWatchInterval -Seconds 2 | Should -BeFalse
         $sw.Stop()
         $sw.Elapsed.TotalMilliseconds | Should -BeGreaterThan 1800
     }
@@ -399,7 +407,8 @@ Describe 'Process-event surfacing' {
 
     It 'releases the queue lock whether or not it surfaced anything' {
         $null = Add-FmWakeRecord -Kind check -Key 'procevent:build' -Payload 'check: captured'
-        try { Invoke-FmProceventSurface -Context $script:Ctx } catch { }
+        # The delivery unwinds by design; this case asserts the lock release, not the throw.
+        try { Invoke-FmProceventSurface -Context $script:Ctx } catch { Write-Debug "expected delivery unwind: $_" }
 
         Lock-FmPath -LockDir $script:Ctx.QueueLock | Should -BeTrue
         Unlock-FmPath -LockDir $script:Ctx.QueueLock

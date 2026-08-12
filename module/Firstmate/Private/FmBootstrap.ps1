@@ -164,7 +164,7 @@ function Get-FmBootstrapBackendName {
 
     $shared = Resolve-FmSessionCommand -Name 'Get-FmBackendName'
     if ($shared) {
-        try { return [string](& $shared) } catch { }
+        try { return [string](& $shared) } catch { Write-Debug "bootstrap: Get-FmBackendName owner failed; falling back to the local detection: $_" }
     }
     # Fallback for a partial module build: the explicit override, then the
     # configured backend, then tmux. Runtime auto-detection (the backend firstmate
@@ -197,7 +197,7 @@ function Get-FmBootstrapKnownBackend {
 
     $shared = Resolve-FmSessionCommand -Name 'Get-FmBackendKnown'
     if ($shared) {
-        try { return [string](& $shared) } catch { }
+        try { return [string](& $shared) } catch { Write-Debug "bootstrap: Get-FmBackendKnown owner failed; falling back to the local table: $_" }
     }
     return ($script:FmBootstrapBackendTools.Keys | Sort-Object) -join ' '
 }
@@ -211,7 +211,7 @@ function Test-FmBootstrapBackendToolAvailable {
 
     $shared = Resolve-FmSessionCommand -Name 'Test-FmBackendRequiredToolAvailable'
     if ($shared) {
-        try { return [bool](& $shared -Backend $Backend -Tool $Tool) } catch { }
+        try { return [bool](& $shared -Backend $Backend -Tool $Tool) } catch { Write-Debug "bootstrap: Test-FmBackendRequiredToolAvailable owner failed; falling back to a PATH lookup: $_" }
     }
     return [bool](Get-Command -Name $Tool -CommandType Application -ErrorAction SilentlyContinue)
 }
@@ -316,7 +316,7 @@ function Get-FmBootstrapDefaultBranch {
         try {
             $value = [string](& $shared -Root $Root)
             if ($value) { return $value }
-        } catch { }
+        } catch { Write-Debug "bootstrap: Get-FmDefaultBranch owner failed; falling back to asking git directly: $_" }
     }
     $res = Invoke-FmSessionCommandLine -Command 'git' -Arguments @('-C', $Root, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD')
     if ($res.ExitCode -eq 0) {
@@ -385,13 +385,13 @@ function Get-FmBootstrapCrewDispatchDiagnostic {
         if ($rule['use'] -is [object[]] -and @($rule['use']).Count -eq 0) {
             return (& $fail 'each rule needs at least one use profile')
         }
-        foreach ($profile in (& $profileList $rule['use'])) {
-            if ($profile -isnot [hashtable]) { return (& $fail 'each use profile must be an object') }
-            if (-not $profile.ContainsKey('harness') -or $profile['harness'] -isnot [string] -or $profile['harness'].Length -eq 0) {
+        foreach ($useProfile in (& $profileList $rule['use'])) {
+            if ($useProfile -isnot [hashtable]) { return (& $fail 'each use profile must be an object') }
+            if (-not $useProfile.ContainsKey('harness') -or $useProfile['harness'] -isnot [string] -or $useProfile['harness'].Length -eq 0) {
                 return (& $fail 'each use profile needs harness')
             }
             foreach ($optional in @('model', 'effort')) {
-                if ($profile.ContainsKey($optional) -and (($profile[$optional] -isnot [string]) -or $profile[$optional].Length -eq 0)) {
+                if ($useProfile.ContainsKey($optional) -and (($useProfile[$optional] -isnot [string]) -or $useProfile[$optional].Length -eq 0)) {
                     return (& $fail 'use profile model and effort must be non-empty strings when present')
                 }
             }
@@ -413,13 +413,13 @@ function Get-FmBootstrapCrewDispatchDiagnostic {
         if ($doc['default'] -is [object[]] -and @($doc['default']).Count -eq 0) {
             return (& $fail 'default needs at least one profile')
         }
-        foreach ($profile in (& $profileList $doc['default'])) {
-            if ($profile -isnot [hashtable]) { return (& $fail 'each default profile must be an object') }
-            if (-not $profile.ContainsKey('harness') -or $profile['harness'] -isnot [string] -or $profile['harness'].Length -eq 0) {
+        foreach ($defaultProfile in (& $profileList $doc['default'])) {
+            if ($defaultProfile -isnot [hashtable]) { return (& $fail 'each default profile must be an object') }
+            if (-not $defaultProfile.ContainsKey('harness') -or $defaultProfile['harness'] -isnot [string] -or $defaultProfile['harness'].Length -eq 0) {
                 return (& $fail 'each default profile needs harness')
             }
             foreach ($optional in @('model', 'effort')) {
-                if ($profile.ContainsKey($optional) -and (($profile[$optional] -isnot [string]) -or $profile[$optional].Length -eq 0)) {
+                if ($defaultProfile.ContainsKey($optional) -and (($defaultProfile[$optional] -isnot [string]) -or $defaultProfile[$optional].Length -eq 0)) {
                     return (& $fail 'default profile model and effort must be non-empty strings when present')
                 }
             }

@@ -162,6 +162,7 @@ function Set-FmPrivateFileMode {
     }
     catch {
         # Best effort, exactly like the bash `chmod || rm` guard's intent.
+        Write-Debug "wake: could not tighten unix file mode on $Path : $_"
     }
 }
 
@@ -391,7 +392,7 @@ function New-FmLockClaim {
     }
     catch {
         if ($tmp -and [System.IO.File]::Exists($tmp)) {
-            try { [System.IO.File]::Delete($tmp) } catch { }
+            try { [System.IO.File]::Delete($tmp) } catch { Write-Debug "wake: could not remove abandoned lock temporary $tmp; the next claim sweeps it: $_" }
         }
         return $false
     }
@@ -420,22 +421,22 @@ function Remove-FmLockPath {
     }
     catch { $owner = $null }
     if ($owner) {
-        try { [System.IO.File]::Delete($LockDir) } catch { }
+        try { [System.IO.File]::Delete($LockDir) } catch { Write-Debug "wake: could not drop lock symlink $LockDir; the rmdir below reports the real verdict: $_" }
         if ([System.IO.Directory]::Exists($owner)) { $null = Remove-FmLockPath -LockDir $owner }
         return (-not ([System.IO.Directory]::Exists($LockDir) -or [System.IO.File]::Exists($LockDir)))
     }
 
     foreach ($name in @('pid', 'fm-home', 'pid-identity', 'role', 'watcher-path')) {
         $p = Join-Path $LockDir $name
-        try { if ([System.IO.File]::Exists($p)) { [System.IO.File]::Delete($p) } } catch { }
+        try { if ([System.IO.File]::Exists($p)) { [System.IO.File]::Delete($p) } } catch { Write-Debug "wake: could not remove lock file $p; the rmdir below reports the real verdict: $_" }
     }
     # Sweep abandoned claim temporaries so a crashed claimant cannot pin the dir.
     try {
         foreach ($stray in [System.IO.Directory]::GetFiles($LockDir, '.pid.tmp.*')) {
-            try { [System.IO.File]::Delete($stray) } catch { }
+            try { [System.IO.File]::Delete($stray) } catch { Write-Debug "wake: could not sweep stray claim temporary $stray : $_" }
         }
     }
-    catch { }
+    catch { Write-Debug "wake: could not enumerate claim temporaries under $LockDir : $_" }
     try {
         [System.IO.Directory]::Delete($LockDir, $false)
         return $true
@@ -1183,15 +1184,15 @@ function Get-FmWakeAnnotations {
     foreach ($entry in (Get-FmWakeAnnotationManifest -Rows $Rows)) {
         if ($reads -ge $readCap) { $readOmitted++; continue }
         $reads++
-        $event = Get-FmWakeLatestEvent -Path (Join-Path $Context.State $entry.StatusKey) -TailBytes $tailBytes
-        if (-not $event) { continue }
+        $latest = Get-FmWakeLatestEvent -Path (Join-Path $Context.State $entry.StatusKey) -TailBytes $tailBytes
+        if (-not $latest) { continue }
 
         $prefix = 'wake annotation: latest wake-EVENT observed at drain, not current state'
         if ($entry.Mode -eq 'historical') {
             $prefix += '; historical / not necessarily the triggering event'
         }
-        $line = "{0}: {1}: {2}" -f $prefix, $entry.StatusKey, $event.Line
-        if ($event.Truncated) { $line += ' [truncated]' }
+        $line = "{0}: {1}: {2}" -f $prefix, $entry.StatusKey, $latest.Line
+        if ($latest.Truncated) { $line += ' [truncated]' }
         if (($line.Length + 1) -gt $itemBytes) {
             $suffix = ' [truncated]'
             $keep = $itemBytes - $suffix.Length - 1

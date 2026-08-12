@@ -1,4 +1,4 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 # Entry-point tests: the bin/fm-*.ps1 scripts really run, parse their documented
 # flags, and exit with the codes a supervisor branches on.
 #

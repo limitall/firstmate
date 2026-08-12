@@ -7,6 +7,14 @@
 # treehouse calls are mocked - acquiring a real pooled worktree would mutate
 # shared state on this machine.
 
+# The seam stubs below declare their owner's full published parameter list and
+# then ignore it, which is the point of the stub: a stub that dropped a name
+# would make the caller's by-name invocation throw and its catch would read that
+# as "no owner", and a stub declaring no parameters at all would swallow the
+# arguments into $args unnoticed. PSReviewUnusedParameter is inverted here.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '',
+    Justification = 'Test seam stubs must declare their owner''s full published parameter list without using it; see the comment above.')]
+param()
 BeforeAll {
     $script:ModuleRoot = Join-Path $PSScriptRoot '..' 'module' 'Firstmate'
     . (Join-Path $script:ModuleRoot 'Private' 'FmBackendHerdr.ps1')

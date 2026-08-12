@@ -1,4 +1,4 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 
 <#
 .SYNOPSIS
@@ -37,6 +37,8 @@
 function Invoke-FmClaudeHook {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidAssignmentToAutomaticVariable', 'Event',
+        Justification = 'The name is a published wiring contract: the .claude/settings.json entries this repo writes invoke "fm-claude-hook.ps1 -Event <event>", so renaming it would break every installed hook.')]
     param(
         [Parameter(Mandatory)][ValidateSet('SessionStart', 'PreToolUse', 'Stop')][string]$Event,
         [string]$Check,
@@ -73,7 +75,7 @@ function Read-FmHookStdin {
 
     try {
         if ([Console]::IsInputRedirected) { return [Console]::In.ReadToEnd() }
-    } catch { }
+    } catch { Write-Debug "hooks: stdin read failed; the hook proceeds on an empty payload: $_" }
     return ''
 }
 
@@ -111,7 +113,7 @@ function Invoke-FmClaudeSessionStartHook {
     # not own.
     $gateAgent = Resolve-FmSessionCommand -Name 'Test-FmGateAgent'
     if ($gateAgent) {
-        try { if (& $gateAgent -Root $paths.Root) { return (New-FmHookDecision) } } catch { }
+        try { if (& $gateAgent -Root $paths.Root) { return (New-FmHookDecision) } } catch { Write-Debug "hooks: Test-FmGateAgent owner failed; treating this session as not a gate agent: $_" }
     }
     if (-not (Test-FmHookPrimaryScope -Root $paths.Root -State $paths.State)) {
         return (New-FmHookDecision)
@@ -350,7 +352,7 @@ function New-FmHookBlockDecision {
         try {
             $line = [string](& $repair -Afk $afk -XMode $xMode)
             if (-not [string]::IsNullOrWhiteSpace($line)) { $reason = $line }
-        } catch { }
+        } catch { Write-Debug "hooks: Get-FmSupervisionRepairLine owner failed; keeping the built-in repair line: $_" }
     }
 
     $rule = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
@@ -570,6 +572,8 @@ function Test-FmHookFailureEpisodeVerified {
 function Invoke-FmClaudeStopAutoArm {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Payload',
+        Justification = 'Deliberately consumed and discarded, exactly as the bash original does with "cat >/dev/null": every decision below is state-based, and the payload is read only so a slow writer cannot wedge on a full pipe.')]
     param([AllowEmptyString()][AllowNull()][string]$Payload)
 
     $paths = Get-FmSessionPaths
@@ -712,7 +716,8 @@ function Invoke-FmClaudeStopAutoArm {
             $stderr = @("firstmate watcher auto-arm FAILED - the Stop-owned automatic supervision mechanism is broken after $attempt bounded attempts, and no live watcher with a fresh beacon was verified.")
             $stderr += @($armOutput | Where-Object { $_ -match '^(watcher:|signal:|stale:|check:|heartbeat)' } | Select-Object -First 8)
             $stderr += 'Do not launch a manual background arm from this notice; investigate the automatic Stop hook and watcher startup before ending blind.'
-            try { Write-FmSessionTextFile -Path $failureNotice -Content '' } catch { }
+            try { Write-FmSessionTextFile -Path $failureNotice -Content '' }
+            catch { Write-Debug "hooks: could not write the auto-arm failure notice; the operator notice may repeat: $_" }
             return (New-FmHookDecision -ExitCode 2 -Stderr $stderr)
         }
 

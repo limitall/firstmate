@@ -28,6 +28,8 @@
     PreToolUse: arm|cd|subagent. Stop: turnend-guard|autoarm.
 #>
 [CmdletBinding()]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidAssignmentToAutomaticVariable', 'Event',
+    Justification = 'The name is a published wiring contract: the .claude/settings.json entries this repo writes invoke "fm-claude-hook.ps1 -Event <event>", so renaming it would break every installed hook.')]
 param(
     [Parameter(Mandatory)][ValidateSet('SessionStart', 'PreToolUse', 'Stop')][string]$Event,
     [string]$Check

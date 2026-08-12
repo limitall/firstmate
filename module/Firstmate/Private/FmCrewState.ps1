@@ -1,4 +1,4 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 # FmCrewState.ps1 - no-mistakes run attribution primitives (bin/fm-nm-run-lib.sh)
 # and the internals of the deterministic current-state read (bin/fm-crew-state.sh).
 #

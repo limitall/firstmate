@@ -127,12 +127,15 @@ function Start-FmWatch {
 
     try {
         # Lock metadata: the tuple every liveness check compares against.
-        try { Set-FmFileTextLf -Path (Join-Path $watchLock 'fm-home') -Text ($ctx.Home + "`n") } catch { }
-        try { Set-FmFileTextLf -Path (Join-Path $watchLock 'watcher-path') -Text ($watchPath + "`n") } catch { }
+        try { Set-FmFileTextLf -Path (Join-Path $watchLock 'fm-home') -Text ($ctx.Home + "`n") }
+        catch { Write-Debug "watch: could not write the fm-home lock field; a liveness check sees an incomplete tuple: $_" }
+        try { Set-FmFileTextLf -Path (Join-Path $watchLock 'watcher-path') -Text ($watchPath + "`n") }
+        catch { Write-Debug "watch: could not write the watcher-path lock field; a liveness check sees an incomplete tuple: $_" }
         $script:FmWatchDeliveryPid = [string]$watcherPid
         $identity = Get-FmWakeProcessIdentity -ProcessId $watcherPid
         $script:FmWatchDeliveryIdentity = if ($identity) { $identity } else { '' }
-        try { Set-FmFileTextLf -Path (Join-Path $watchLock 'pid-identity') -Text ($script:FmWatchDeliveryIdentity + "`n") } catch { }
+        try { Set-FmFileTextLf -Path (Join-Path $watchLock 'pid-identity') -Text ($script:FmWatchDeliveryIdentity + "`n") }
+        catch { Write-Debug "watch: could not write the pid-identity lock field; a liveness check sees an incomplete tuple: $_" }
 
         $heartbeatFile = Join-Path $ctx.State '.last-heartbeat'
         if (-not [System.IO.File]::Exists($heartbeatFile)) { Update-FmFileTimestamp -Path $heartbeatFile }
@@ -222,7 +225,7 @@ function Start-FmWatch {
 
             # 8. Terminal wait.
             if (-not $SkipTerminalWait) {
-                $null = Wait-FmWatchInterval -Seconds $settings.Poll -Context $ctx
+                $null = Wait-FmWatchInterval -Seconds $settings.Poll
             }
         }
     }
@@ -602,7 +605,7 @@ function Invoke-FmWatchStaleTriage {
                 # No running pipeline, no exact busy verdict, no declared pause:
                 # surface now so firstmate inspects the inconclusive state rather
                 # than leaving a finish to wait out the timer.
-                Invoke-FmNonTerminalStaleSurface -Window $Window -Hash $Hash -Context $Context -Settings $Settings
+                Invoke-FmNonTerminalStaleSurface -Window $Window -Hash $Hash -Context $Context
             }
         }
         return

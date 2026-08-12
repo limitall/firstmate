@@ -1,4 +1,4 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 <#
     Public/FmGuard.ps1 - the two supervision guards.
     Ports of bin/fm-guard.sh (pull, warns) and bin/fm-turnend-guard.sh (push,
@@ -294,7 +294,7 @@ function Invoke-FmTurnEndGuard {
 
     # The auto-arm genuinely failed to establish: consume the bounded re-block
     # budget before considering the verified one-time attended fail-open.
-    if (-not (Update-FmTurnEndBudget -State $state -BudgetFile $budgetFile -BudgetLock $budgetLock `
+    if (-not (Update-FmTurnEndBudget -BudgetFile $budgetFile -BudgetLock $budgetLock `
                 -EpochFile $epochFile -FailureNotice $failureNotice -SessionId $sessionId)) {
         return (Write-FmTurnEndBlock -Status $status -State $state -Config $config -Claude:$true)
     }
@@ -384,9 +384,11 @@ function Update-FmTurnEndBudget {
 
         The first fresh exhausted-failure epoch preserves the bounded progression
         (count 0, flagged initialized); later fresh failed epochs consume it.
+
+        Takes no state directory: like the bash original it reaches every file it
+        needs through the explicit budget, lock, epoch and notice paths.
     #>
     param(
-        [Parameter(Mandatory)][string]$State,
         [Parameter(Mandatory)][string]$BudgetFile,
         [Parameter(Mandatory)][string]$BudgetLock,
         [Parameter(Mandatory)][string]$EpochFile,
@@ -457,7 +459,7 @@ function Test-FmAutoarmOwnsRecovery {
 
     $account = {
         if ([System.IO.File]::Exists($FailureNotice)) {
-            $null = Update-FmTurnEndBudget -State $State -BudgetFile $BudgetFile -BudgetLock $BudgetLock `
+            $null = Update-FmTurnEndBudget -BudgetFile $BudgetFile -BudgetLock $BudgetLock `
                 -EpochFile $EpochFile -FailureNotice $FailureNotice -SessionId $SessionId
         }
     }
@@ -476,7 +478,7 @@ function Test-FmAutoarmOwnsRecovery {
         }
         'failed' {
             if ($age -lt $EpochFresh -and [System.IO.File]::Exists($FailureNotice)) {
-                if (Update-FmTurnEndBudget -State $State -BudgetFile $BudgetFile -BudgetLock $BudgetLock `
+                if (Update-FmTurnEndBudget -BudgetFile $BudgetFile -BudgetLock $BudgetLock `
                         -EpochFile $EpochFile -FailureNotice $FailureNotice -SessionId $SessionId) {
                     if ($script:FmTurnEndBudgetInitializedFailure -eq 1) { return $true }
                 }
@@ -484,7 +486,7 @@ function Test-FmAutoarmOwnsRecovery {
         }
         'failed-suppressed' {
             if ($age -lt $EpochFresh -and [System.IO.File]::Exists($FailureNotice)) {
-                $null = Update-FmTurnEndBudget -State $State -BudgetFile $BudgetFile -BudgetLock $BudgetLock `
+                $null = Update-FmTurnEndBudget -BudgetFile $BudgetFile -BudgetLock $BudgetLock `
                     -EpochFile $EpochFile -FailureNotice $FailureNotice -SessionId $SessionId
             }
         }

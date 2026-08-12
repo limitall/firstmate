@@ -1,4 +1,4 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 <#
 Deterministic read of a crew's CURRENT state.
 

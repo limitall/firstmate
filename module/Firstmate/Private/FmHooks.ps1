@@ -138,7 +138,7 @@ function Get-FmHookSupervisionStatus {
 
     $shared = Resolve-FmSessionCommand -Name 'Get-FmSupervisionStatus'
     if ($shared) {
-        try { return (& $shared -State $State -Grace $Grace) } catch { }
+        try { return (& $shared -State $State -Grace $Grace) } catch { Write-Debug "hooks: Get-FmSupervisionStatus owner failed; falling back to the local read: $_" }
     }
 
     if ($Grace -le 0) { $Grace = Get-FmHookGrace }
@@ -275,7 +275,7 @@ function Remove-FmHookLock {
 
     try {
         Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
-    } catch { }
+    } catch { Write-Debug "hooks: could not remove $Path; a later claim treats it as a stale lock: $_" }
 }
 
 function Set-FmHookLockRole {
@@ -360,7 +360,7 @@ function Write-FmHookEpochRecord {
     try {
         Write-FmSessionTextFile -Path $tmp -Content "epoch=$seq owner_pid=$PID outcome=$Outcome updated_at=$now`n"
         [void](Move-FmSessionFileInPlace -Source $tmp -Destination $path)
-    } catch { } finally {
+    } catch { Write-Debug "hooks: could not record the auto-arm epoch; the next stop re-reads the previous one: $_" } finally {
         if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     }
 }

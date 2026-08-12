@@ -1,4 +1,4 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 # Pester tests for the startup digest.
 #
 # The digest is what the captain reads at session start, so what these tests pin
@@ -6,6 +6,14 @@
 # expectations were produced by running bin/fm-session-start.sh in the reference
 # implementation against the same fixture home and are byte-identical to it.
 
+# The seam stubs below declare their owner's full published parameter list and
+# then ignore it, which is the point of the stub: a stub that dropped a name
+# would make the caller's by-name invocation throw and its catch would read that
+# as "no owner", and a stub declaring no parameters at all would swallow the
+# arguments into $args unnoticed. PSReviewUnusedParameter is inverted here.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '',
+    Justification = 'Test seam stubs must declare their owner''s full published parameter list without using it; see the comment above.')]
+param()
 BeforeAll {
     # The module loader sets these, so the tests must exercise the same rules.
     Set-StrictMode -Version Latest

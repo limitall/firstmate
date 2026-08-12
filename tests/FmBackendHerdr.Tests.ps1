@@ -6,6 +6,14 @@
 # CLI call is mocked, which is both a safety requirement of this task and the
 # only way these paths can be exercised on a machine with no herdr session.
 
+# The seam stubs below declare their owner's full published parameter list and
+# then ignore it, which is the point of the stub: a stub that dropped a name
+# would make the caller's by-name invocation throw and its catch would read that
+# as "no owner", and a stub declaring no parameters at all would swallow the
+# arguments into $args unnoticed. PSReviewUnusedParameter is inverted here.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '',
+    Justification = 'Test seam stubs must declare their owner''s full published parameter list without using it; see the comment above.')]
+param()
 BeforeAll {
     $script:ModuleRoot = Join-Path $PSScriptRoot '..' 'module' 'Firstmate'
     . (Join-Path $script:ModuleRoot 'Private' 'FmBackendHerdr.ps1')
