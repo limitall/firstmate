@@ -1904,3 +1904,79 @@ non-elevated Windows run is the outstanding confirmation.
   but the message names treehouse's failure rather than the missing remote.
   Worth a captain-facing improvement; it is treehouse's rule, not firstmate's.
 
+---
+
+## 14. Suite numbers for this task, and one comparison left open
+
+### Linux, definitive, at `fm/fmwin-dispatchable` HEAD
+
+```
+$ pwsh -NoProfile -Command 'Invoke-Pester -Path ./tests/'
+Tests Passed: 1511, Failed: 0, Skipped: 5, Inconclusive: 0, NotRun: 0
+
+$ pwsh -NoProfile -Command 'Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1'
+(no findings)
+```
+
+### Windows 11, whole suite, one commit behind HEAD
+
+Run in `C:\Users\ADMIN\fmwin-suite`, a plain `git clone` of the branch:
+
+```
+RESULT total=1515 passed=1493 failed=6 skipped=16 notrun=0
+can create a symlink: True
+```
+
+Six failures, and **the question of whether any of them is caused by this branch
+is UNRESOLVED**. What is established:
+
+- **Every one of them passes when its own file runs alone on the same machine.**
+  `FmAnalyzer`, `FmPaths`, `FmState`, `FmIdentity` and `FmInstall` together:
+  `RESULT total=221 passed=221 failed=0 skipped=0`. So they are whole-suite
+  cross-file interference, not defects in those files. This repo already carries
+  one documented case of exactly that shape - the `FM_BACKEND` leak recorded
+  further up this file - which makes "pre-existing" plausible. Plausible is not
+  evidence, and it is not claimed here.
+- **Two of the six are this run's own fixture, not code.**
+  `FmContract.Tests.ps1`'s `this checkout's own instruction surface` pair checks
+  the checkout it is executing in. `fmwin-suite` was cloned with plain
+  `git clone` and `bin/fm-setup.ps1` was never run in it, so `CLAUDE.md` is the
+  9-byte placeholder and `.claude/skills` is text - precisely the state section 7
+  documents and setup repairs. The other clone used for section 10, where setup
+  DID run, reported `CLAUDE.md is a link to AGENTS.md` and 19 reachable skills.
+
+The four still open:
+
+```
+  the sweep runner itself.gives up after the full attempt budget when every sweep crashes
+  the sweep runner itself.recovers when a later attempt completes, and keeps that attempt s findings
+  Get-FmTaskStatePath.composes state/<id>.<suffix>
+  Reading.returns an empty collection of lines for a missing file
+```
+
+### How to finish the comparison
+
+A baseline whole-suite run at `origin/main` (`99a0e96`) on the same machine was
+launched detached and **completed**; the tunnel went down before its result could
+be read. It is on the laptop, not lost:
+
+```powershell
+Get-Content C:\Users\ADMIN\baseline-result.txt
+```
+
+The file ends with `BASELINE_COMPLETE` and lists `BASELINE total=...` followed by
+every failing test path. Compare that failure list with the four above:
+
+- the same four failing at `99a0e96` means they are pre-existing whole-suite
+  interference on Windows and this branch did not introduce them;
+- any of the four absent from the baseline means this branch did, and the
+  interference has to be traced to the file that leaks into it.
+
+The clone is at `C:\Users\ADMIN\fmwin-base` (checked out at `99a0e96`) and
+`C:\Users\ADMIN\fmwin-suite` (the branch), so the comparison can be re-run in
+place without re-cloning.
+
+Also outstanding on Windows, and unrelated: the whole suite has not been run at
+branch HEAD - the Windows run above is one commit behind it, missing only the
+launch-wrapper double-quote refusal, which is covered on Linux.
+
