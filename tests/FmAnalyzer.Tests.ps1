@@ -29,9 +29,13 @@ BeforeAll {
     # run phase yields $null - which left the sweep unrun and every assertion
     # below passing against an empty result.
     $script:Findings = @()
+    $script:SweepErrors = @()
     if (Get-Module -ListAvailable -Name PSScriptAnalyzer) {
         Import-Module PSScriptAnalyzer -ErrorAction Stop
-        $script:Findings = @(Invoke-ScriptAnalyzer -Path $script:RepoRoot -Recurse -Settings $script:SettingsPath)
+        $sweepErrors = $null
+        $script:Findings = @(Invoke-ScriptAnalyzer -Path $script:RepoRoot -Recurse `
+                -Settings $script:SettingsPath -ErrorVariable sweepErrors -ErrorAction SilentlyContinue)
+        $script:SweepErrors = @($sweepErrors | ForEach-Object { [string]$_ })
     }
 
     function Format-FmFinding {
@@ -48,6 +52,13 @@ Describe 'repository analyzer bar' {
         # Import-PowerShellDataFile also proves it parses as the analyzer will read it.
         $settings = Import-PowerShellDataFile -LiteralPath $script:SettingsPath
         @($settings.Keys).Count | Should -BeGreaterThan 0
+    }
+
+    It 'completes the sweep without an analyzer error' -Skip:(-not $script:HasAnalyzer) {
+        # An empty result is only evidence of a clean repository if the sweep
+        # actually finished. A non-terminating analyzer error would otherwise
+        # leave the assertions below passing against a partial result.
+        ($script:SweepErrors -join '; ') | Should -Be ''
     }
 
     # Split by severity so a new Information finding cannot hide behind a
