@@ -2,6 +2,15 @@
 
 What was actually executed, with the real output, and what was not.
 
+**Sections 10 to 13 are the current headline.** The five acceptance steps -
+a session that takes the lock, an emitted supervision protocol, a real worker
+dispatched into an isolated worktree, its state read back, and a cleanup that
+refuses to discard unlanded work - were all executed on the captain's laptop and
+all pass. Sections 11 to 13 record the two defects that run exposed, and three
+findings that are environment rather than code. Where sections 2 to 5 say a
+session is read-only or a worker cannot be dispatched, section 10 supersedes
+them.
+
 **Read the headline first.** Sections 0-5 below were written by an earlier task
 for which the Windows 11 laptop was unreachable for its whole duration; they say
 so, and everything in them was executed on PowerShell 7.6.4 on Linux.
@@ -1513,11 +1522,11 @@ product code differs between the two runs.
 
 | Capability | Blocked by |
 | --- | --- |
-| Dispatching a real worker | this brief's herdr-lifecycle gate; plus `Get-FmHarnessLaunchCommand` (harness area) is not on `main`, so `-LaunchCommand` is mandatory |
-| Stopping a real agent | this brief's herdr-lifecycle gate |
-| Teardown past the refusal (process custody, returning the worktree) | not reached; its Windows-specific half needs Windows |
-| A session that is not read-only | the session area resolves `Invoke-FmLock`; the foundation publishes `Request-FmSessionLock`. A name mismatch across a landed seam, not a missing area |
-| Turn-end supervision | `Get-FmSupervisionInstructions` not on `main` |
+| Dispatching a real worker | **RESOLVED - see section 10.3**, and the two defects it exposed in section 11 |
+| Stopping a real agent | **RESOLVED - see section 10.5** |
+| Teardown past the refusal (process custody, returning the worktree) | **RESOLVED** - reached during the section 10 cleanup, with explicit `--approved-by` discard authority |
+| A session that is not read-only | **RESOLVED - see section 10.1.** `Invoke-FmLock` has landed over the session-lock machinery that was already there |
+| Turn-end supervision | **RESOLVED - see section 10.2.** `Get-FmSupervisionInstructions` has landed, and reports what this build actually has |
 | `fm-peek` | not ported |
 
 ### Never executed on Windows
@@ -1666,3 +1675,232 @@ Fixed at the source (a root `AfterAll` in `FmBootstrap.Tests.ps1`) and
 defensively in `FmInstall.Tests.ps1`, which now saves, clears and restores
 `FM_BACKEND` like the other environment keys it depends on. Both files pass
 alone and in the full suite.
+
+---
+
+## 10. The five acceptance steps, on the captain's Windows 11 laptop - `PROVEN (Windows 11)`
+
+Sections 2 to 5 above were written when a session on this port could not take
+the lock and no worker could be dispatched. This section is the same five steps
+run for real, on the laptop, on `fm/fmwin-dispatchable` over `99a0e96`.
+
+The captain's own checkout at `C:\Users\ADMIN\firstmate-win` was **not
+touched**: it had uncommitted work in it from another lane. The branch was
+cloned to `C:\Users\ADMIN\fmwin-accept` and set up there with `-SkipProfile`,
+so the captain's PowerShell profile and their global Claude settings were left
+alone. Everything this run created was removed afterwards.
+
+### 10.1 A session starts and ACQUIRES the lock - not read-only
+
+Run first over SSH, which correctly REFUSED, and that refusal is worth keeping:
+
+```
+lock: NOT ACQUIRED - error: cannot locate harness process in ancestry
+```
+
+An ssh shell is not a firstmate session. The lock records the harness process,
+there is none in that ancestry, and a session that cannot verify ownership must
+stay read-only. That is the bash contract, unchanged.
+
+Then run the way the captain runs it - inside a real `claude` session in the
+home - and captured from the digest the session itself produced:
+
+```
+   6: LOCK
+   8: lock acquired: harness pid 28872
+  10: BOOTSTRAP
+  20: WAKE QUEUE
+  24: SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
+  27: - Lock: held by this session; this session owns normal supervision unless away mode says otherwise.
+  30: - Automatic re-arm: NOT available in this build; this session keeps the cycle itself.
+  31: - Ordinary wake: drain, handle the wake, then start the next FOREGROUND bin/fm-watch.ps1 cycle yourself while supervision is still needed.
+  33: Mode: Claude, session-kept FOREGROUND supervision cycle.
+  94: NETWORK CHECKS
+
+ASSERT 1 lock acquired      : True
+ASSERT 1 not read-only      : True
+ASSERT 2 protocol emitted   : True
+ASSERT 2 no NOT EMITTED     : True
+
+state/.lock                   = 28872
+state/.session-start-complete = 28872
+```
+
+`state/.session-start-complete` is written **only** on a locked, non-re-emit
+digest, and it carries the pid it read out of `state/.lock`. So the two files
+agreeing on `28872` is independent evidence that the session was not read-only,
+separate from the digest text.
+
+### 10.2 It emits a supervision protocol
+
+Above: `SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude`, and the
+harness detected as `claude` rather than `unknown`. The emitted block reports
+the automatic arm as **absent in this build**, because it is, and hands the
+session the foreground cycle instead. It is selected from the seams present at
+run time, so the day an arm owner lands the block changes with it.
+
+### 10.3 A worker is dispatched into an isolated worktree and shows up alive
+
+```
+spawned probe-alive harness=claude kind=ship mode=local-only yolo=off window=default:wB:p2 worktree=C:\Users\ADMIN\.treehouse\probe-ab08a6\1\probe
+SPAWN_EXIT=0
+
+worktree = C:\Users\ADMIN\.treehouse\probe-ab08a6\1\probe
+project  = C:\Users\ADMIN\fmwin-accept\projects\probe
+ASSERT spawn reported success     : True
+ASSERT worktree is isolated       : True
+
+--- what the session-start digest now says about this task ---
+--- probe-alive ---
+endpoint: alive (backend=herdr window=default:wB:p2)
+```
+
+And the worker really ran: it read its brief and appended its own status line.
+
+```
+probe: alive in /c/Users/ADMIN/.treehouse/probe-ab08a6/1/probe
+```
+
+### 10.4 Its state can be read back
+
+Read while the worker was mid-turn:
+
+```
+crew state   : state: working | source: pane | harness busy (busy herdr-native)
+busy verdict : busy herdr-native
+status file  : working: probe holding
+```
+
+Before this branch that read was `state: unknown | source: none | no backend
+state reader available (backend herdr)` for every task in this build - the
+generic window contract the reader binds by name existed nowhere, while every
+herdr primitive under it had already landed.
+
+### 10.5 It can be stopped, and cleanup REFUSES to discard uncommitted work
+
+```
+Target          : default:wB:p5
+Outcome         : stopped
+PaneClosed      : False
+WorktreeRelease : not-requested
+ASSERT the agent is stopped       : True
+ASSERT worktree preserved         : True
+
+uncommitted in the worktree: ?? UNLANDED-WORK.txt
+REFUSED: worktree C:\Users\ADMIN\.treehouse\probe-ab08a6\4\probe has uncommitted changes.
+uncommitted changes present
+Commit them (or get the captain's explicit OK to discard, then --force).
+TEARDOWN_EXIT=1
+ASSERT cleanup REFUSED            : True
+ASSERT the work is still there    : True
+ASSERT the task record survived   : True
+
+fm-teardown: --force discards work that has not landed, so it requires --approved-by "<who approved it>"
+BARE_FORCE_EXIT=2
+```
+
+## 11. Two defects only a real dispatch could find - `PROVEN (Windows 11)`
+
+Both were invisible to a green suite, and the second had been corrupting every
+brief this port has ever handed a crewmate.
+
+### 11.1 The spawn reported FAILURE for a dispatch that had succeeded
+
+First real spawn:
+
+```
+spawned ... window=default:wA:p2 worktree=C:\Users\ADMIN\.treehouse\probe-ab08a6\1\probe
+The property 'Message' cannot be found on this object. Verify that the property exists.
+exit=1
+```
+
+The task record was on disk, the pane existed, the agent was launched - and the
+entry point exited 1. `Confirm-FmWorkerWorktree` returns a bool and was called
+without discarding it, so `Start-FmWorker` emitted two objects and
+`$worker.Message` failed under strict mode on the resulting array.
+
+Every existing test assigned the result to `$null`, so the leak was invisible to
+all of them. `tests/FmWorker.Tests.ps1` now asserts the function emits exactly
+one object, and that test fails on the unfixed code.
+
+### 11.2 The pane's shell is Windows PowerShell 5.1, and it mangled every brief
+
+A brief whose text contained `pwsh -NoProfile -Command "Start-Sleep -Seconds 75"`
+aborted its own launch:
+
+```
+PS ...\2\probe> $env:CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION='false'; claude --dangerously-skip-permissions ('FIRSTMATE_OP: v1 launch-brief: ' + (Get-Content -Raw -LiteralPath '...\brief.md'))
+error: unknown option '-Seconds'
+```
+
+Measured, rather than guessed at, in three steps:
+
+1. PowerShell 7 passes that expression to a child as **one** argv element, with
+   the newlines and quotes intact - so the construction is right.
+2. `claude.exe` does not split a single argument: a payload containing
+   `-Seconds`, `--herdr-lab`, or embedded quotes is accepted whole.
+3. The pane itself:
+
+```
+PS ...> "SHELL=" + $PSVersionTable.PSVersion.ToString() + " HOST=" + $host.Name + " EXE=" + (Get-Process -Id $PID).ProcessName
+SHELL=5.1.26100.8115 HOST=ConsoleHost EXE=powershell
+```
+
+A herdr pane opens **`powershell.exe` 5.1**, not `pwsh`. 5.1 has no
+`$PSNativeCommandArgumentPassing` at all and always applies the legacy
+command-line quoting, which does not escape a double quote inside an argument. A
+brief is full of quoted commands, so its own quotes ended the argument early and
+the next option-shaped token became a flag. A brief without such a token still
+arrived silently mangled, which is worse than the loud failure.
+
+The launch now runs under PowerShell 7, whose argument passing is exact. The
+only text crossing the 5.1 boundary is the wrapper, which carries no double
+quote of its own and still no brief content - the pane reads the brief from disk
+itself. With that in place the same brief launched, was read intact, and the
+worker ran the exact command it named.
+
+## 12. The 8 red tests that were never regressions - `PROVEN (Windows 11)`
+
+The captain hit eight failures on a stock Windows shell that pass when the same
+commit runs elevated:
+
+```
+New-Item: A required privilege is not held by the client.
+```
+
+Creating a symlink on Windows needs `SeCreateSymbolicLinkPrivilege`, which a
+non-elevated shell does not hold unless Developer Mode is on. In every one of
+those tests the symlink is a **fixture**, not the thing under test. Eight red
+that turn green when run elevated look exactly like a regression, and cost the
+captain time to disprove.
+
+`tests/FmSymlink.TestHelpers.ps1` now probes the privilege by trying to create
+one, and any test whose fixture needs it reports SKIPPED with the reason and the
+fix instead of failing. Nothing whose SUBJECT is symlink handling on a path that
+does not need the privilege is skipped: the `CLAUDE.md` placeholder repair, the
+hardlink and copy fallbacks, and every refusal path stay live.
+
+The related wording mismatch was the same environment, not a defect either.
+`Set-FmAgentsMemory` reports the link kind that is actually on disk - where
+symlinks are unavailable the second name is a hardlink or a copy, and calling
+that `CLAUDE.md -> AGENTS.md` would claim a link that is not there. The test
+asserted one wording regardless; it now expects the message that matches what
+the host produced.
+
+**The SSH session used for this run holds the privilege**, so the skip path
+itself was exercised on Linux by forcing the probe, not on the laptop. A
+non-elevated Windows run is the outstanding confirmation.
+
+## 13. Findings this run produced that are NOT firstmate defects
+
+- **`gh` is absent on the laptop**, so the `direct-PR` path cannot complete
+  there. That is an install, not a code defect. `local-only` needs no network
+  and was used throughout section 10.
+- **A project with no `origin` cannot be leased.** `treehouse get --lease`
+  creates its worktree from `refs/remotes/origin/main`, so a repository made by
+  `bin/fm-project-create.ps1` - which is deliberately local and makes no network
+  call - cannot be dispatched into until it has an origin and an `origin/HEAD`.
+  The spawn refuses loudly and records nothing, which is the right direction,
+  but the message names treehouse's failure rather than the missing remote.
+  Worth a captain-facing improvement; it is treehouse's rule, not firstmate's.
+
