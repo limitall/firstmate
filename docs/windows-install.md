@@ -32,10 +32,15 @@ Public functions: `Install-FmHome`, `Invoke-FmDoctor`.
    names the checkout. See "Which directory do I start Claude in" below.
 5. **Checkout memory** - repairs the checkout's own `CLAUDE.md` when git left it
    as the text of a symlink it could not create.
-6. **Profile wiring** - the managed block in `$PROFILE.CurrentUserAllHosts`.
-7. **Claude hooks** - `SessionStart`, `PreToolUse`, `Stop` in the checkout's
+6. **Skills link** - repairs `.claude/skills` the same way, for the same reason.
+   It is the second of this repo's two committed symlinks, and an unrepaired one
+   means a session loads ZERO skills while every command still works.
+   `docs/instruction-surface.md` owns why the two repair ladders differ (a
+   hardlink cannot name a directory; a junction can).
+7. **Profile wiring** - the managed block in `$PROFILE.CurrentUserAllHosts`.
+8. **Claude hooks** - `SessionStart`, `PreToolUse`, `Stop` in the checkout's
    `.claude/settings.json`.
-8. **Doctor** - re-reads the environment and returns the report.
+9. **Doctor** - re-reads the environment and returns the report.
 
 ## The three rules this area is built on
 
@@ -259,10 +264,17 @@ and is likewise not this area's to edit.
 | prerequisites | PowerShell 7 (required), git (required), Pester 5+, herdr, treehouse incl. `get --lease` support, Claude CLI |
 | home | the home resolves without the environment (`.fm-home`), the four directories, the resolved backend |
 | wiring | `Import-Module Firstmate` resolves on `PSModulePath`, `bin/` on `PATH`, the profile block is current, the hooks are registered |
+| instructions | the operating contract is present AND is one, `CLAUDE.md` reaches it, the skills tree loads, `.claude/skills` reaches it |
 
 Statuses are `ok` / `warn` / `missing`; healthy means no `missing`. Every check
 prints whether or not it passed, and every non-`ok` check carries a fix - a test
 asserts that, so a check cannot be added without an actionable remedy.
+
+**Every check in the `instructions` group is required**, which is deliberately
+the opposite of the wiring group below. A checkout whose contract or skills are
+unreachable has every command and no first mate; that is broken, not less
+ergonomic, and it is the one fault a captain would otherwise discover by noticing
+the session's tone. `docs/instruction-surface.md` owns that group.
 
 **`missing` means broken; `warn` means it works but not as ergonomically.** The
 three wiring checks about `PSModulePath`, `PATH` and the profile block are all

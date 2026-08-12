@@ -50,6 +50,15 @@ BeforeAll {
         # captain's laptop: 9 bytes, content 'AGENTS.md'. Building the fixture any
         # other way would test a checkout no Windows machine actually has.
         [System.IO.File]::WriteAllText((Join-Path $Destination 'CLAUDE.md'), 'AGENTS.md')
+        # The skills tree, and .claude/skills in the SAME broken shape - because
+        # this repo tracks that one as a symlink too, so a real Windows clone has
+        # a 17-byte file there naming '../.agents/skills'. The doctor calls both
+        # placeholders [missing] and setup repairs both, so a fixture that omitted
+        # the tree entirely would make every "healthy install" assertion below
+        # fail for a reason no real checkout has.
+        Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.agents') -Destination $Destination -Recurse -Force
+        $null = New-Item -ItemType Directory -Path (Join-Path $Destination '.claude') -Force
+        [System.IO.File]::WriteAllText((Join-Path $Destination '.claude' 'skills'), '../.agents/skills')
         # A stray pointer copied in from the developer's own checkout would make
         # every test below pass for the wrong reason.
         $stray = Join-Path $Destination '.fm-home'
@@ -457,10 +466,19 @@ Describe 'where do I start Claude, end to end in a bare shell' {
         # The whole point: everything the documented workflow needs is in the
         # ONE directory the captain would cd into.
         foreach ($needed in @('AGENTS.md', 'CLAUDE.md', '.claude/settings.json',
+                '.agents/skills', '.claude/skills',
                 'config', 'data', 'projects', 'state')) {
             Test-Path -LiteralPath (Join-Path $checkout $needed) |
                 Should -BeTrue -Because "cd $checkout; claude must find $needed"
         }
+        # Presence is not enough for the two committed symlinks: the fixture
+        # started with both as the text git leaves behind, and a session reading
+        # that text gets one filename instead of its instructions and no skills
+        # at all. Setup must have turned them into something that resolves.
+        [System.IO.File]::ReadAllText((Join-Path $checkout 'CLAUDE.md')) |
+            Should -BeLike '*You are the first mate.*' -Because 'the contract must be readable under that name'
+        Test-Path -LiteralPath (Join-Path $checkout '.claude/skills/harness-adapters/SKILL.md') |
+            Should -BeTrue -Because 'a session must reach the skills through .claude/skills'
     }
 
     It 'reports the coincident layout as ok, and names the directory to use' {
@@ -525,7 +543,10 @@ Describe 'the checkout''s own CLAUDE.md, as a Windows clone actually has it' {
 
         $claude = [System.IO.File]::ReadAllText((Join-Path $checkout 'CLAUDE.md'))
         $claude | Should -Not -Be 'AGENTS.md'
-        $claude | Should -BeLike '*Project agent memory*' -Because 'it must carry the real instructions'
+        # The identity assertion, not a heading: this is what makes the file the
+        # first mate's operating contract rather than some other markdown at the
+        # repo root, and it is the sentence Get-FmContractCheck looks for too.
+        $claude | Should -BeLike '*You are the first mate.*' -Because 'it must carry the real instructions'
         $claude | Should -Be ([System.IO.File]::ReadAllText((Join-Path $checkout 'AGENTS.md')))
     }
 

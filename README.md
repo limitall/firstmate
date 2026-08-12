@@ -10,7 +10,9 @@ A native Windows / PowerShell port of firstmate.
   and run it. One command: `bin/fm-setup.ps1`.
 - **[docs/windows-e2e-evidence.md](docs/windows-e2e-evidence.md)** - what has
   actually been executed and what has not. Read this before relying on anything.
-- [AGENTS.md](AGENTS.md) - rules for changing this repo.
+- [AGENTS.md](AGENTS.md) - the first mate's operating contract. This is what a
+  session started in this directory reads, and `CLAUDE.md` links to it.
+- [CONTRIBUTING.md](CONTRIBUTING.md) - rules for changing this repo.
 - `docs/` - one design note per area.
 
 ```powershell

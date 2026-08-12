@@ -19,6 +19,10 @@ Set-StrictMode -Version Latest
          bin/fm-*.ps1 find it in a shell that loads no profile, and - when the
          home is NOT the checkout - writes an AGENTS.md/CLAUDE.md into the home
          that stops a session started there and names the checkout,
+      3b. repairs the two committed symlinks a Windows clone does not get -
+         CLAUDE.md -> AGENTS.md, and .claude/skills -> .agents/skills - so the
+         session has an operating contract and skills rather than two short
+         text files naming them,
       4. wires this checkout into the user's PowerShell profile so
          `Import-Module Firstmate` resolves and bin/fm-*.ps1 is on PATH in every
          new session, and FM_HOME points at the home,
@@ -149,6 +153,11 @@ function Install-FmHome {
     # leaves behind for a symlink it could not create.
     $memory = Set-FmInstallCheckoutMemory -RepoRoot $RepoRoot
     $steps += New-FmInstallStep -Name 'checkout memory' -Action $memory.Action -Detail $memory.Detail
+
+    # And the second committed symlink. Same failure mode as the one above, one
+    # step worse in effect: the contract loads and the session has no skills.
+    $skills = Set-FmInstallSkillsLink -RepoRoot $RepoRoot
+    $steps += New-FmInstallStep -Name 'skills link' -Action $skills.Action -Detail $skills.Detail
 
     if ($SkipProfile) {
         $steps += New-FmInstallStep -Name 'profile wiring' -Action 'skipped' -Detail '-SkipProfile'

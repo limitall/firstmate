@@ -105,14 +105,16 @@ Describe 'Install-FmHome: the home layout' {
     }
 
     It 'reports every step as created on the first run' {
-        # 'checkout memory' is exempt: every other step is about the HOME this
-        # fixture just made, but that one is about the checkout, which already
-        # exists and already has correct AGENTS.md/CLAUDE.md. Reporting 'already'
-        # there is the converge rule working, not a first run that was not first.
+        # 'checkout memory' and 'skills link' are exempt: every other step is
+        # about the HOME this fixture just made, but those two are about the
+        # CHECKOUT, which already exists and already has a correct
+        # AGENTS.md/CLAUDE.md pair and a resolving .claude/skills. Reporting
+        # 'already' there is the converge rule working, not a first run that was
+        # not first.
         $fixture = New-InstallFixture
         $report = Invoke-Setup -Fixture $fixture
         @($report.Steps |
-                Where-Object { $_.Name -ne 'checkout memory' } |
+                Where-Object { $_.Name -notin @('checkout memory', 'skills link') } |
                 Where-Object { $_.Action -eq 'already' }).Count | Should -Be 0
     }
 
@@ -454,6 +456,42 @@ Describe 'Install-FmHome: Claude hook registration' {
         $result.Action | Should -Be 'skipped'
         $result.Detail | Should -BeLike '*hook area is not loaded*'
         Test-Path -LiteralPath $fixture.Settings | Should -BeFalse
+    }
+}
+
+Describe 'Set-FmInstallSkillsLink' {
+    It 'repairs the placeholder a Windows clone leaves at .claude/skills' {
+        # A checkout in exactly the state git with core.symlinks=false produces:
+        # a real skills tree, and a 17-byte text file where the link should be.
+        $repo = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path (Join-Path $repo '.agents' 'skills' 'sample') -Force
+        $null = New-Item -ItemType Directory -Path (Join-Path $repo '.claude') -Force
+        Write-FmTextFileLf -Path (Join-Path $repo '.agents' 'skills' 'sample' 'SKILL.md') `
+            -Text "---`nname: sample`ndescription: fixture.`n---`n"
+        [System.IO.File]::WriteAllText((Join-Path $repo '.claude' 'skills'), '../.agents/skills')
+
+        $result = Set-FmInstallSkillsLink -RepoRoot $repo -Confirm:$false
+
+        $result.Action | Should -Be 'updated'
+        Test-Path -LiteralPath (Join-Path $repo '.claude' 'skills' 'sample' 'SKILL.md') -PathType Leaf |
+            Should -BeTrue -Because 'a session must reach the skills through .claude/skills'
+    }
+
+    It 'reports the step as NOT run when the instruction-surface area is absent' {
+        # Same cross-area rule as the hook step above: an absent owner is a step
+        # that did not run, never one that passed. Staged at the resolve seam,
+        # because the manifest keeps exporting the name whatever this session's
+        # function table says.
+        $repo = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path (Join-Path $repo '.agents' 'skills') -Force
+        Mock Resolve-FmSessionCommand { $null } -ParameterFilter {
+            $Name -contains 'Set-FmClaudeSkillsLink'
+        }
+
+        $result = Set-FmInstallSkillsLink -RepoRoot $repo -Confirm:$false
+
+        $result.Action | Should -Be 'skipped'
+        $result.Detail | Should -BeLike 'NOT RUN:*'
     }
 }
 

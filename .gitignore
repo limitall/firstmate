@@ -8,3 +8,8 @@ state/
 # Written by bin/fm-setup.ps1: the home this checkout resolves to when no
 # profile and no environment variable supply one. Per-machine, never shared.
 .fm-home
+
+# Transfer artifacts. A `git bundle` is how a branch reaches the captain's
+# Windows laptop over a tunnel with no shared remote; it is a one-off carrier,
+# never source. One was committed by accident once.
+*.bundle

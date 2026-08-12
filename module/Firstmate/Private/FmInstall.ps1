@@ -305,6 +305,40 @@ function Set-FmInstallCheckoutMemory {
     [pscustomobject]@{ Action = $action; Detail = $result.Message }
 }
 
+# The OTHER committed symlink. CLAUDE.md is only half the instruction surface:
+# .claude/skills points at .agents/skills, and a core.symlinks=false clone
+# writes a 17-byte text file there too. The result is worse than the CLAUDE.md
+# case, not better - every command works, the contract loads, and the session
+# has ZERO skills with nothing anywhere saying so.
+#
+# Called through the by-name seam like the memory repair above, so an absent
+# owner is reported as a step that did NOT run rather than as one that passed.
+function Set-FmInstallSkillsLink {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$RepoRoot)
+
+    $owner = Resolve-FmSessionCommand -Name 'Set-FmClaudeSkillsLink'
+    if (-not $owner) {
+        return [pscustomobject]@{
+            Action = 'skipped'
+            Detail = 'NOT RUN: the instruction-surface area (Set-FmClaudeSkillsLink) is not loaded'
+        }
+    }
+    if (-not $PSCmdlet.ShouldProcess($RepoRoot, 'link .claude/skills to .agents/skills')) {
+        return [pscustomobject]@{ Action = 'skipped'; Detail = 'WhatIf' }
+    }
+    try {
+        # -RepoRoot only: a by-name call may pass ONLY parameters the owner
+        # declares, and the ShouldProcess gate above already covers the rest.
+        $result = & $owner -RepoRoot $RepoRoot
+    } catch {
+        return [pscustomobject]@{ Action = 'skipped'; Detail = "NOT RUN: $($_.Exception.Message)" }
+    }
+    if (-not $result) { return [pscustomobject]@{ Action = 'skipped'; Detail = 'WhatIf' } }
+    [pscustomobject]@{ Action = $result.Action; Detail = $result.Detail }
+}
+
 function Test-FmInstallHomeRedirectCurrent {
     [CmdletBinding()]
     [OutputType([bool])]

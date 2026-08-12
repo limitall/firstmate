@@ -27,6 +27,12 @@ Set-StrictMode -Version Latest
 
     A check that could not be evaluated is never reported as passing.
 
+    The `instructions` group is the exception to the "warn is not unhealthy"
+    rule above, and deliberately so: every check in it is required. A checkout
+    whose operating contract or skills are unreachable has every command and no
+    first mate, which is broken rather than merely less ergonomic, and it is the
+    one fault a captain would otherwise find by noticing the session's tone.
+
 .PARAMETER FirstmateHome
     The home to check. Defaults to $env:FM_HOME, then the home persisted in
     <RepoRoot>/.fm-home, then the checkout itself - Resolve-FmEntryPointHome
@@ -77,6 +83,11 @@ function Invoke-FmDoctor {
                 -RepoRoot $RepoRoot)
         'wiring'        = @(Get-FmInstallWiringCheck -RepoRoot $RepoRoot -FirstmateHome $FirstmateHome `
                 -ProfilePath $ProfilePath -HookSettingsPath $HookSettingsPath)
+        # The identity. Last because it is the one group whose failure a captain
+        # would otherwise discover by noticing the session's tone rather than by
+        # any command failing - so it is printed where the eye lands, next to
+        # the verdict it decides.
+        'instructions'  = @(Get-FmContractCheck -RepoRoot $RepoRoot)
     }
 
     $checks = @()

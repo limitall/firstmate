@@ -17,6 +17,20 @@ first half of the entry-point bootstrap task and then died mid-task.
   Linux and covered by regression tests, and it says so in its own words rather
   than borrowing the credibility of the sections around it.
 
+**Section 7 is the same shape again.** The identity task had the link for one
+window and lost it for the rest.
+
+- **7.1 to 7.5 were executed on the laptop**, against a fresh clone: the
+  9-byte `CLAUDE.md` and 17-byte `.claude/skills` a Windows clone actually
+  produces, the doctor reporting both `[missing]` and exiting 1, setup repairing
+  both, all 19 skills reachable afterwards, and the negative control putting the
+  failure back.
+- **7.6 is PARTIAL** - 9 of 33 test files ran there before the link died, which
+  includes this area's own suite and the repo-wide analyzer sweep, and does not
+  include the rest.
+- **The whole-suite Windows re-run is still outstanding**, and 7.6 says so and
+  gives the command. The complete suite numbers in this file are Linux.
+
 Tags used throughout:
 
 | Tag | Meaning |
@@ -797,8 +811,6 @@ checkout/home layout of 6.5 is NOT among them.
 
 ---
 
----
-
 ## 7. The Claude hook transport and the cd guard, on the captain's laptop - `PROVEN (Windows 11)`
 
 Executed on the laptop at `C:\Users\ADMIN\firstmate-win` (checkout and home are
@@ -1023,6 +1035,460 @@ What is NOT proven on Windows, and must not be read as if it were:
 
 Nothing else in section 7 depends on either.
 
+---
+
+## 8. The instruction surface, on the captain's Windows 11 laptop
+
+**Read the tag per subsection, not per section.** 8.1 to 8.5 are
+`PROVEN (Windows 11)`: the failure, the doctor's verdict either side of setup,
+the repair, the loaded surface, and the negative control all executed on the
+laptop with the output below. 8.6 is **partial** - the suite run there covered 9
+of 33 files before the link died. 8.7 lists what section 8 does not prove at all.
+
+The identity area. Its whole subject is a failure that produces **no error**: a
+checkout where every command works and the session is not firstmate. So the proof
+had to start from a **real clone**, because the two things that break are the two
+committed symlinks, and a copied directory would have proven nothing.
+
+Method: `git bundle` of the branch, scp to `C:\Users\ADMIN`, `git clone` from the
+bundle on the laptop, then one `.ps1` run with `pwsh -NoProfile -File`. Nothing
+outside `C:\Users\ADMIN`.
+
+```
+pwsh    : 7.6.4
+os      : Microsoft Windows NT 10.0.26200.0
+git     : git version 2.49.0.windows.1
+symlinks: core.symlinks=false
+pester  : 6.1.0
+herdr   : 0.7.5-preview.2026-07-21
+claude  : 2.1.228
+```
+
+### 8.1 The failure reproduces, exactly as designed for
+
+```
+=== STEP 1 - what a Windows clone actually did to the two committed symlinks ===
+CLAUDE.md : file, 9 bytes
+         content: 'AGENTS.md'
+.claude\skills : file, 17 bytes
+         content: '../.agents/skills'
+```
+
+Not imagined, not inferred from `core.symlinks=false`: measured on the clone. A
+session started there reads one filename as its operating contract and finds no
+skills directory at all.
+
+### 8.2 The doctor reports it, before setup
+
+```
+instructions:
+  [ok]      operating contract - C:\Users\ADMIN\fmwin-identity\AGENTS.md (49160 bytes)
+  [missing] contract for Claude - ...\CLAUDE.md is the text git leaves for a symlink it could not create, not the instructions; a session here comes up with one filename and no contract
+              fix: bin/fm-setup.ps1
+  [ok]      skills - 19 in C:\Users\ADMIN\fmwin-identity\.agents\skills (5 captain-invocable)
+  [missing] skills for Claude - ...\.claude\skills is the text git leaves for a symlink it could not create, so a session here loads ZERO skills while every command still works
+              fix: bin/fm-setup.ps1
+
+unhealthy: 6 missing, 3 warning(s).
+exit: 1
+```
+
+This is the precise shape of the bug and the reason the group has four checks
+rather than two: the tree and the contract are **fine**, and both mirrors are
+broken, so a session gets neither. A check that only asked "does AGENTS.md exist"
+would have passed here, and so would one that only counted skills.
+
+### 8.3 Setup repairs both
+
+```
+  [updated] checkout memory - symlinked: CLAUDE.md -> AGENTS.md in C:\Users\ADMIN\fmwin-identity (it was a symlink git checked out as text)
+  [updated] skills link - C:\Users\ADMIN\fmwin-identity\.claude\skills symlinked to C:\Users\ADMIN\fmwin-identity\.agents\skills
+```
+
+```
+=== STEP 4 - the two links, after setup ===
+CLAUDE.md : link -> AGENTS.md
+.claude\skills : link -> ..\.agents\skills
+
+CLAUDE.md first 5 lines - this is what a session actually reads:
+  | # Firstmate
+  |
+  | You are the first mate.
+  | The user is the captain.
+  | This file is your entire job description.
+
+skills reachable at .claude\skills:
+  afk  ahoy  ask-user-authority  bearings  bootstrap-diagnostics
+  decision-hold-lifecycle  diagnostic-reasoning  firstmate-codexapp
+  firstmate-coding-guidelines  firstmate-orca  fmx-respond  harness-adapters
+  process-event-sources  project-management  quota-array-dispatch
+  secondmate-provisioning  stow  stuck-crewmate-recovery  updatefirstmate
+```
+
+That host allows symlink creation, so the Auto ladder took its first rung both
+times and reported `symlinked` honestly. **The junction rung was therefore never
+reached and remains unverified anywhere** - see 7.6.
+
+Doctor after setup: all four `instructions` checks `[ok]`,
+`healthy: nothing is missing. 2 warning(s)`, `exit: 0`. The two remaining
+warnings are the profile block and `bin/` on `PATH`, both expected from
+`-SkipProfile`.
+
+### 8.4 The loaded instruction surface, as a session sees it
+
+```
+instruction surface: C:\Users\ADMIN\fmwin-identity
+
+  operating contract  present - ...\AGENTS.md
+  for Claude          link - ...\CLAUDE.md
+  skills              19 - ...\.agents\skills
+  for Claude          symlink - ...\.claude\skills
+
+  / afk                         Away-mode supervision - NOT AVAILABLE on this Windows port. ...
+  / ahoy                        Recap visible session events and guide the captain through ...
+    ask-user-authority          Agent-only decision procedure for ask-user findings and ...
+  / bearings                    Generate a "pick up where I left off" fleet digest ...
+    ...
+    firstmate-orca              The Orca runtime backend - NOT AVAILABLE on this Windows port. ...
+    fmx-respond                 Relay public-mention handling - NOT AVAILABLE on this Windows port. ...
+    process-event-sources       Registered process-to-event sources - NOT AVAILABLE on this Windows port. ...
+  / stow                        Sweep the current session for uncaptured durable knowledge ...
+  / updatefirstmate             Self-update a running firstmate to the latest from origin. ...
+```
+
+`/` marks a captain-invocable skill. Every not-ported capability names itself as
+absent **in the description**, which is the line the model matches on - so the gap
+is visible without loading anything.
+
+### 8.5 Negative control, and repair again
+
+Replacing `.claude/skills` with the placeholder put the doctor straight back:
+
+```
+  [missing] skills for Claude - ...\.claude\skills is the text git leaves for a symlink it could not create, so a session here loads ZERO skills while every command still works
+unhealthy: 1 missing, 2 warning(s).
+exit: 1  (must be 1)
+```
+
+A second `bin/fm-setup.ps1` reported `[updated] skills link` and `[already]` for
+every other step, and the doctor returned to `exit: 0`. Idempotent, and the repair
+is not a one-shot.
+
+### 8.6 The suite on Windows - partial, and said so
+
+The same run went on to the full Pester suite in that clone. **The tunnel died
+partway through.** This is exactly what completed - 9 of 33 files, 375 tests,
+0 failures - and no more:
+
+```
+[+] tests\FmAgentsMemory.Tests.ps1     9.43s   (36 tests)
+[+] tests\FmAnalyzer.Tests.ps1       106.14s   (12 tests)
+[+] tests\FmBackendHerdr.Tests.ps1     8.28s   (80 tests)
+[+] tests\FmBacklog.Tests.ps1         28.65s   (87 tests)
+[+] tests\FmBootstrap.Tests.ps1       16.80s   (34 tests)
+[+] tests\FmBounded.Tests.ps1         39.11s   (19 tests)
+[+] tests\FmBrief.Tests.ps1            3.32s   (22 tests)
+[+] tests\FmClassify.Tests.ps1         6.03s   (50 tests)
+[+] tests\FmContract.Tests.ps1        11.00s   (35 tests)
+```
+
+Two of those matter for this area specifically. `FmContract.Tests.ps1` is this
+area's own suite and passed 35/35 on Windows, including every rung of the repair
+ladder it can reach there and every assertion about the real checkout's surface.
+`FmAnalyzer.Tests.ps1` is the repo-wide PSScriptAnalyzer sweep, so **zero findings
+at every severity is Windows-proven** for this branch's code.
+
+The other 24 files were not reached. The clone this ran against also predates the
+two test-fixture fixes made afterwards (`FmEntryPoint`, `FmInstall`) - neither of
+which is among the 9 above, so no result here is affected by them, but neither is
+either fix Windows-proven.
+
+Retries to restart the run over the next hour found the forwarder refusing
+connections. **Nothing here should be read as "the whole suite is green on
+Windows for this branch."** The complete run is the Linux one under "Suite and
+analyzer numbers"; the Windows run is partial by exactly this much.
+
+**Outstanding, for whoever has the link next.** The whole-suite Windows re-run is
+the one thing this area still owes, and it is one command in a fresh clone:
+
+```powershell
+git clone -b <branch> <source> C:\Users\ADMIN\fmwin-suite
+C:\Users\ADMIN\fmwin-suite\bin\fm-setup.ps1 -SkipProfile
+Invoke-Pester -Path C:\Users\ADMIN\fmwin-suite\tests
+```
+
+Expect the same 5 skips as Linux to become real tests there - the three
+job-object custody tests, the sharing-violation retry, and the exclusive-open
+git-lock probe are Windows-gated, so a Windows run should report **more** passes
+than the Linux total, not the same.
+
+### 8.7 What section 8 does NOT prove
+
+- **The junction rung.** The laptop allows symlinks, so the ladder's second rung
+  never ran. It is reachable only through `-Strategy Junction`, which is
+  Windows-only, so it has executed nowhere. Failure is safe: the ladder falls
+  through to the copy, which the suite proves end to end on both platforms.
+- **A real Claude session loading a skill through a COPIED `.claude/skills`.**
+  Skill discovery scans the filesystem, so a copy should be indistinguishable
+  from a link - reasoned, not observed. It matters on a machine without Developer
+  Mode, where the copy is the rung that lands.
+- **The captain's own observation** that a session there behaves as firstmate.
+  That is the acceptance test and it belongs to the captain, not to a check. What
+  8.1 to 8.5 prove is that the instructions and the skills are *present and
+  reachable* - the structural cause of the original complaint. A live `claude`
+  session was not started in that directory as part of *this* run, because a
+  separate worker was still fixing the Claude hooks. Section 9 closes that gap:
+  the hook fix landed, and the session was run.
+
+---
+
+## 9. A real `claude` session in the captain's checkout, on the merged tree - `PROVEN (Windows 11)`
+
+Executed after `fm/fmwin-hookstdin` merged, on the rebased branch (`d3f12a4`,
+section 7's hook and cd-guard work plus section 8's identity work in one tree),
+at `C:\Users\ADMIN\firstmate-win`. PowerShell 7.6.4, Pester 6.1.0,
+PSScriptAnalyzer 1.25.0, git 2.49.0.windows.1, Claude Code 2.1.228,
+herdr 0.7.5-preview.
+
+### 9.1 The Windows placeholder failure, reproduced once more by an ordinary checkout - `PROVEN (Windows 11)`
+
+The branch arrived by `git bundle` into the existing clone and was checked out.
+No fixture, no staging - just `git checkout`:
+
+```
+AGENTS.md          EXISTS  len=50301 attrs=Archive
+CLAUDE.md          EXISTS  len=0     attrs=Archive, ReparsePoint
+CONTRIBUTING.md    EXISTS  len=21171 attrs=Archive
+.agents\skills     EXISTS  dir       attrs=Directory
+.claude\skills     EXISTS  len=17    attrs=Archive        <- the placeholder
+```
+
+`.claude/skills` is new to this checkout, so git wrote the 17-byte link text
+instead of a symlink and a session there would have loaded **zero skills** while
+every command still worked. `CLAUDE.md` already existed as a real reparse point
+from an earlier install, so it survived - which is the honest reason only one of
+the two placeholders appears here.
+
+### 9.2 The doctor names it, and exits non-zero - `PROVEN (Windows 11)`
+
+```
+instructions:
+  [ok]      operating contract - C:\Users\ADMIN\firstmate-win\AGENTS.md (50301 bytes)
+  [ok]      contract for Claude - C:\Users\ADMIN\firstmate-win\CLAUDE.md is a link to AGENTS.md
+  [ok]      skills - 19 in C:\Users\ADMIN\firstmate-win\.agents\skills (5 captain-invocable)
+  [missing] skills for Claude - C:\Users\ADMIN\firstmate-win\.claude\skills is the text git
+            leaves for a symlink it could not create, so a session here loads ZERO skills
+            while every command still works
+              fix: bin/fm-setup.ps1
+
+unhealthy: 1 missing, 1 warning(s).
+DOCTOR EXIT = 1
+```
+
+`[missing]`, not `[warn]`, and exit 1 - a checkout with every command and no
+first mate is broken, not merely inelegant.
+
+### 9.3 Setup repairs it to a real symlink - `PROVEN (Windows 11)`
+
+```
+SETUP EXIT = 0
+.claude\skills  attrs=Directory, ReparsePoint  linkType=SymbolicLink  target=..\.agents\skills
+skills reachable THROUGH .claude\skills: count=19
+  afk, ahoy, ask-user-authority, bearings, bootstrap-diagnostics,
+  decision-hold-lifecycle, diagnostic-reasoning, firstmate-codexapp,
+  firstmate-coding-guidelines, firstmate-orca, fmx-respond, harness-adapters,
+  process-event-sources, project-management, quota-array-dispatch,
+  secondmate-provisioning, stow, stuck-crewmate-recovery, updatefirstmate
+
+instructions:  all four [ok]
+healthy: nothing is missing.
+DOCTOR EXIT = 0
+```
+
+The first rung of the ladder landed, so the junction and copy rungs still have
+not executed on Windows (8.7 stands).
+
+### 9.4 The acceptance test: the session reads the contract and answers as the first mate - `PROVEN (Windows 11)`
+
+**How this is tested matters.** The captain's own
+`C:\Users\ADMIN\.claude\settings.json` carries `permissions.defaultMode=dontAsk`,
+which denies tool calls that are not explicitly allow-listed (section 7.0). That
+setting is outside this repo and was **not changed**. It also does not need to
+be: whether the operating contract and the skills reach the model is a question
+about the *loaded instruction surface*, which requires no tool call at all. Each
+prompt below therefore forbids tool use, so what is being measured is our
+instruction surface and not the captain's permission mode.
+
+`claude -p` run in `C:\Users\ADMIN\firstmate-win`, verbatim reply:
+
+```
+> Answer from your loaded instructions only. Do not use any tool.
+> 1. Who are you, and who am I to you? Quote the first three lines of your job
+>    description verbatim.
+> 2. State hard rule 1 in full, verbatim.
+> 3. Which file are these instructions in?
+
+Captain, here are your answers.
+
+**1. Who we are.** I'm your first mate - your single point of contact for all
+software work across your projects; you're the captain. The first three lines
+of my job description:
+
+> You are the first mate.
+> The user is the captain.
+> This file is your entire job description.
+
+**2. Hard rule 1, verbatim:**
+
+> 1. **Never write to a project.**
+>    Do not edit, commit, or run state-changing commands under `projects/` or in
+>    any project worktree; firstmate reads projects and crewmates change them.
+>    [...full rule reproduced correctly...]
+
+**3. The file.** `C:\Users\ADMIN\firstmate-win\CLAUDE.md` - which is really
+`AGENTS.md`; `CLAUDE.md` is a link to it.
+
+EXIT = 0
+```
+
+Unprompted address as "Captain", the identity, the hard rule quoted from the
+file, and the link relationship - from a session given nothing but the checkout.
+This is the observation the captain made in the negative, now made in the
+positive.
+
+### 9.5 All 19 skills are visible to that session - `PROVEN (Windows 11)`
+
+Asked to list every skill available to it, again with no tool use, the session
+returned all nineteen with their triggers, grouped, and closed with:
+
+```
+**Total: 19.**
+
+Five of them say this port does not support their subject: **afk**,
+**fmx-respond**, **process-event-sources**, **firstmate-orca**, and
+**firstmate-codexapp**.
+```
+
+That is the gap-recording group working exactly as intended: the absent
+capabilities are *visible to the model without loading anything*, because the
+description is what it matches on.
+
+### 9.6 The session found a defect in the contract that every test had passed - `PROVEN (Windows 11)`
+
+It also volunteered this, unasked:
+
+```
+One correction worth flagging, captain: section 13 of the operating contract
+calls that last group "four more skills" but then names five. The count is
+wrong in the file, not in the list above.
+```
+
+It was right. Section 13 read "Four more skills exist only to record a
+capability this port does not have" and then named five, because `afk` is
+counted in the captain-invocable group as well and the sentence was written
+before it was. **Nothing failed.** A miscount in an always-loaded instruction
+raises no error, breaks no command, and passes every existing check - the only
+reader that had ever verified it was the model, on the laptop, in the product.
+
+Fixed in section 13, which now states five and says which one is also
+captain-invocable. `tests/FmContract.Tests.ps1` gained
+`counts the gap-recording skills correctly where section 13 states how many
+there are`: it parses the number word, counts the names beside it, and requires
+that set to equal the skills whose own description declares `NOT AVAILABLE`, so
+the fact cannot drift apart from itself again. Negative control - restoring
+"Four" - fails it with:
+
+```
+Expected 5, because the contract says 4 and names 5: afk, fmx-respond,
+process-event-sources, firstmate-orca, firstmate-codexapp, but got 4.
+```
+
+### 9.7 An instruction the PRODUCT prints that does not work - `FOUND, NOT FIXED (cross-area)`
+
+Found while checking that no rule in the ported contract names machinery this
+port lacks. This one is the same defect class in the opposite direction: the
+contract correctly does **not** mention it, and the running code does.
+
+`module/Firstmate/Public/FmWake.ps1` ends its open-decisions block with
+
+```
+OPEN DECISIONS: close one by answering it: bin/fm-send.ps1 <task> -ResolveKey <key> '<answer>'
+```
+
+`bin/fm-send.ps1` has no `-ResolveKey` parameter. Its `-Key` is a *keyboard* key
+(`-Key Escape`), an unrelated thing, and nothing in `module/` declares
+`ResolveKey` at all.
+
+It does not fail loudly. The script's last parameter is
+`[Parameter(ValueFromRemainingArguments)][string[]]$Message`, which swallows the
+unmatched switch and its value:
+
+```
+Target  = sometask
+Key     = ''
+Message = -ResolveKey | somekey | the captain says use option B
+TEXT THAT WOULD BE TYPED INTO THE WORKER: '-ResolveKey somekey the captain says use option B'
+```
+
+So following firstmate's own printed instruction types the literal text
+`-ResolveKey somekey <answer>` into the worker's pane, exits 0, and leaves the
+decision open - while the comment above that line in `FmWake.ps1` states the
+opposite guarantee, that "closure never depends on the busy worker writing a
+matching resolved line". The Linux contract's `AGENTS.md` line 294 is the rule
+this hint implements, and it is the one rule this port's `AGENTS.md` section 7
+deliberately omits, precisely because the parameter is absent here.
+
+**Not fixed by this branch, on purpose.** The hint belongs to the wake area and
+the parameter to the send area, both of which are landing tonight; implementing
+a new cross-area parameter here would collide with their owners and would be the
+second copy of a rule that must have one owner. Either half closes it:
+
+- add `-ResolveKey <key>` to `bin/fm-send.ps1` so a confirmed delivery also
+  appends a `resolved: ... [key=<key>]` line to `state/<target>.status`, which
+  `Private/FmClassify.ps1` already recognises - then add the rule back to
+  `AGENTS.md` section 7 as the Linux contract states it; **or**
+- stop printing the hint until that exists.
+
+The first is the Linux behaviour and the better answer. Until one lands, the
+port's contract is correct as written and the printed hint is not.
+
+### 9.8 Suite numbers, both platforms, on the exact committed tree
+
+Both runs are of tree `1d5c86f`, which is this branch's final content except for
+**this document** - the numbers below could not be written down until after they
+existed, and no test reads this file. Every `.ps1`, `.psm1`, `.psd1`, `AGENTS.md`
+and `SKILL.md` that ships is byte-identical to what these two runs executed.
+`Result` is reported alongside the counts, because 7.6 is the file that proves a
+container can fail while every count says clean.
+
+| Run | Where | Result |
+| --- | --- | --- |
+| `Invoke-Pester -Path ./tests` | Linux, PowerShell 7.6.4, Pester 6.1 | `RESULT=Passed TOTAL=1452 PASSED=1447 FAILED=0 SKIPPED=5` |
+| `Invoke-Pester -Path ./tests` | Windows 11 laptop, PowerShell 7.6.4, Pester 6.1.0 | `RESULT=Passed TOTAL=1452 PASSED=1436 FAILED=0 SKIPPED=16` |
+
+Same total on both, no failure and no container error on either. The Windows
+skip count is higher for the reasons 7.7 gives - platform-conditional suites -
+and lower than the 22 recorded there because PSScriptAnalyzer is now installed
+on the laptop, so `tests/FmAnalyzer.Tests.ps1` **runs** rather than skipping.
+The repo-wide zero-findings analyzer bar is therefore Windows-proven for this
+tree, not assumed.
+
+**This closes two items section 7 left open**, and it is worth being explicit
+because they were recorded as outstanding by the worker who found them:
+
+- *"whether the FULL Windows suite reports `RESULT=Passed` rather than merely
+  `FAILED=0`"* - it does, above.
+- *"A Windows re-run of `tests/FmCdGuard.Tests.ps1` reporting `RESULT=Passed` is
+  the outstanding check"* - the whole-suite `RESULT=Passed` includes it, so the
+  7.6 fixture-teardown fix is now Windows-proven rather than Linux-only.
+
+An earlier whole-suite Windows run on this branch, at `d3f12a4`, reported
+`RESULT=Passed TOTAL=1450 PASSED=1434 FAILED=0 SKIPPED=16`. The two extra tests
+are the 9.6 ones; `git diff d3f12a4..1d5c86f -- module/ bin/` is empty, so no
+product code differs between the two runs.
+
+---
+
 ## Honest summary
 
 ### Works end to end, executed on PowerShell 7.6.4 (Linux)
@@ -1056,9 +1522,12 @@ Nothing else in section 7 depends on either.
 
 ### Never executed on Windows
 
-**Superseded in part by section 6** - the install area, the home resolution and
-every entry point have since been run on the laptop. What follows was true of
-the task that wrote it.
+**Superseded in part by sections 6 to 9** - the install area, the home
+resolution, every entry point (6), the Claude hook transport and the cd guard
+(7), the whole instruction surface (8), and a live `claude` session reading the
+contract and the skills in the captain's own checkout (9) have since been run on
+the laptop, as has the full suite. What follows was true of the task that wrote
+it.
 
 Everything. No line of this port has run on Windows hardware during this task.
 The mechanisms this area introduces are platform-neutral by construction
@@ -1083,6 +1552,36 @@ output.
 ---
 
 ## Suite and analyzer numbers
+
+### Identity task, on `fm/fmwin-identity` over `6ef403d`
+
+```
+$ pwsh -NoProfile -Command 'Invoke-Pester -Path ./tests/'      # Linux, PowerShell 7.6.4
+RESULT total=1360 passed=1355 failed=0 skipped=5 notrun=0
+```
+
+The 5 skips are the same Windows-only gates as every run below: three Win32
+job-object custody tests, the sharing-violation retry test, and the
+exclusive-open git-lock probe.
+
+This area added `tests/FmContract.Tests.ps1` (35 tests) and two tests to
+`tests/FmInstall.Tests.ps1`. PSScriptAnalyzer: **0 findings** across the changed
+files, and the repo-wide sweep inside `tests/FmAnalyzer.Tests.ps1` is green on
+both platforms - see 7.6 for the Windows half.
+
+Two failures appeared in the full run that neither affected file produced in
+isolation, both in fixtures rather than in the new code, and both worth naming
+because they are the same class of thing the whole-directory rule exists for:
+
+- `tests/FmEntryPoint.Tests.ps1` builds a fixture checkout by copying a subset of
+  the real one, and did not copy `.agents/skills`. The new doctor checks then
+  reported that fixture unhealthy - correctly. The fixture now carries the skills
+  tree AND a `.claude/skills` in the same broken shape a real Windows clone has,
+  which is what it should have had from the start.
+- `tests/FmInstall.Tests.ps1`'s "every step reports created on the first run"
+  exempted `checkout memory` because that step is about the CHECKOUT rather than
+  the fresh home. `skills link` is the same kind of step and needed the same
+  exemption; reporting `already` there is the converge rule working.
 
 ### Entry-point bootstrap task, on `fm/fmwin-bootstrap` over `c8fa82c`
 

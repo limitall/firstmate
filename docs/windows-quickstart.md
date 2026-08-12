@@ -26,8 +26,16 @@ C:\Users\<you>\firstmate-win\bin\fm-setup.ps1
 
 That creates the home (`config/ data/ projects/ state/`) **inside the checkout**,
 selects the herdr backend, records the home in `.fm-home`, repairs the checkout's
-`CLAUDE.md`, puts `Import-Module Firstmate` and the `fm-*` commands on PATH for
-every new session, registers the Claude hooks, and prints a doctor report.
+`CLAUDE.md` and `.claude/skills`, puts `Import-Module Firstmate` and the `fm-*`
+commands on PATH for every new session, registers the Claude hooks, and prints a
+doctor report.
+
+Those two repairs are not cosmetic, and they are why you run setup before your
+first session. The repo tracks `CLAUDE.md` and `.claude/skills` as symlinks so it
+works on Linux; Windows git writes each one as a short text file naming its target
+instead. Left alone, the result is a checkout where every command works and the
+session has no operating instructions and no skills, silently. `fm-doctor.ps1`
+reports both as `[missing]` until setup has run.
 
 It is idempotent - re-run it any time, after moving the checkout, or to repair
 the wiring. If a hard prerequisite is missing it installs **nothing** and tells
@@ -43,9 +51,14 @@ claude
 ```
 
 This is the same layout the Linux firstmate has: the repo root *is* the home, so
-`AGENTS.md`, `.claude/` and `config/ data/ projects/ state/` all sit together and
-one `cd` gets you everything. The four operational directories are gitignored,
-so `git pull` still works normally.
+`AGENTS.md`, `.agents/skills/`, `.claude/` and `config/ data/ projects/ state/`
+all sit together and one `cd` gets you everything. The four operational
+directories are gitignored, so `git pull` still works normally.
+
+A session started there reads `AGENTS.md` - the first mate's operating contract -
+and has the 19 skills under `.agents/skills/` available. If it does not behave
+like firstmate, that is a broken install rather than a mood: run
+`fm-doctor.ps1` and look at the `instructions` group.
 
 You can put the home somewhere else if you want to - a second drive, a home
 shared with a Linux firstmate:
