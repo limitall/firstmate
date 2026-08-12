@@ -250,6 +250,7 @@ function Start-FmWorker {
 # that it passed - and the brief's own isolation assertion remains the worker-side
 # backstop for exactly that case.
 function Confirm-FmWorkerWorktree {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Target,

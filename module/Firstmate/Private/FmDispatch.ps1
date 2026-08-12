@@ -60,6 +60,7 @@ function ConvertTo-FmShellLiteral {
 # constant here rather than being spelled out at any call site.
 
 function Get-FmOperationalInputHeader {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Kind)
     $known = @('session-start', 'watcher', 'turn-end-guard', 'away-supervisor', 'launch-brief')
@@ -73,6 +74,7 @@ function Get-FmOperationalInputHeader {
 # look for. It stays byte-compatible with the bash constant because live
 # secondmates already carry the label in their charter context.
 function Get-FmFromFirstmateLabel {
+    [OutputType([string])]
     [CmdletBinding()]
     param()
     '[fm-from-firstmate]'
@@ -91,6 +93,7 @@ function ConvertTo-FmOperationalInput {
 # --- the delivery contract ---------------------------------------------------
 
 function Get-FmDeliveryModeName {
+    [OutputType([array])]
     [CmdletBinding()]
     param()
     , @('no-mistakes', 'direct-PR', 'local-only')
@@ -99,6 +102,7 @@ function Get-FmDeliveryModeName {
 # 3 (most rigor) .. 1 (least); 0 when the value is not a task mode. Ported from
 # delivery_rigor_rank.
 function Get-FmDeliveryRigorRank {
+    [OutputType([int])]
     [CmdletBinding()]
     param([Parameter()][AllowNull()][AllowEmptyString()][string]$Mode)
     switch ($Mode) {
@@ -157,6 +161,7 @@ function Assert-FmDeliveryContract {
 # whole mechanism that keeps a worker's instructions and the task record from
 # drifting apart.
 function Get-FmBriefDeliveryMode {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
@@ -262,6 +267,7 @@ function Get-FmHarnessAdapter {
 # requested value still lives in the task record, but it does not reach a CLI
 # that was never verified to accept it.
 function Get-FmHarnessModelFlag {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Harness,
@@ -274,6 +280,7 @@ function Get-FmHarnessModelFlag {
 }
 
 function Get-FmHarnessEffortFlag {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Harness,
@@ -306,6 +313,7 @@ function Assert-FmHarnessExecutable {
 # --- harness resolution from config ------------------------------------------
 
 function Get-FmConfigFirstLine {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
@@ -321,6 +329,7 @@ function Get-FmConfigFirstLine {
 # config/secondmate-harness is "<harness> [<model>] [<effort>]"; config/crew-harness
 # is a bare adapter name and is never parsed for a model.
 function Get-FmSecondmateHarnessToken {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$ConfigDir,
@@ -338,6 +347,7 @@ function Get-FmSecondmateHarnessToken {
 # it is absent this falls back to the one marker this port can read for itself
 # and otherwise says 'unknown', which every caller treats as "no usable answer".
 function Get-FmOwnHarness {
+    [OutputType([string])]
     [CmdletBinding()]
     param()
     $resolver = Get-Command -Name Get-FmHarness -CommandType Function -ErrorAction SilentlyContinue
@@ -480,6 +490,7 @@ function Resolve-FmSpawnPlan {
 # identity that replaced scraping a pane's cwd - and is written last so a reader
 # that does not know it simply never reaches it.
 function ConvertTo-FmTaskRecordField {
+    [OutputType([System.Collections.Specialized.OrderedDictionary])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$TaskId,

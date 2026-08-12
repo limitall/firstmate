@@ -68,6 +68,7 @@ Set-StrictMode -Version Latest
 # misfire the isolation guard in BOTH directions - refusing a spawn that never
 # tangled, or failing to notice one that did.
 function Resolve-FmPhysicalPath {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter()][AllowNull()][AllowEmptyString()][string]$Path)
 
@@ -110,6 +111,7 @@ function Resolve-FmPhysicalPath {
 # possible, otherwise hand back the input unchanged so a comparison against a
 # path that no longer exists still compares something meaningful.
 function Resolve-FmPhysicalPathOrRaw {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter()][AllowNull()][AllowEmptyString()][string]$Path)
     $real = Resolve-FmPhysicalPath -Path $Path
@@ -124,6 +126,7 @@ function Resolve-FmPhysicalPathOrRaw {
 # let "C:\Repos\Proj" and "C:\repos\proj" read as two different checkouts and
 # silently pass an isolation check that must fail.
 function Test-FmPathEqual {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter()][AllowNull()][AllowEmptyString()][string]$Left,
@@ -161,6 +164,7 @@ function Invoke-FmGit {
 }
 
 function Get-FmGitOutput {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Directory,
@@ -174,6 +178,7 @@ function Get-FmGitOutput {
 # Get-FmGitDefaultBranch: origin/HEAD's branch when it is set, else the first
 # of main/master that exists locally. Mirrors the bash default_branch.
 function Get-FmGitDefaultBranch {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Directory)
     $ref = Get-FmGitOutput -Directory $Directory -Arguments @('symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD')
@@ -254,6 +259,7 @@ function Assert-FmWorktreeIsolation {
 # Assert-, not Test-: a missing treehouse is a hard blocker, and a throw
 # refuses identically whatever the caller's $ErrorActionPreference is.
 function Assert-FmTreehouseTool {
+    [OutputType([bool])]
     [CmdletBinding()]
     param()
     if (Get-Command treehouse -CommandType Application -ErrorAction SilentlyContinue) { return $true }

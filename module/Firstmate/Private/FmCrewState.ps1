@@ -12,6 +12,7 @@ Set-StrictMode -Version Latest
 # callers: a timeout or a missing CLI yields '' and the caller falls through to
 # another source rather than inventing a verdict.
 function Invoke-FmNoMistakes {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$WorktreePath,
@@ -40,6 +41,7 @@ function Get-FmNmUnquoted {
 
 # Scalar value of a TOON key in captured `axi status` output, quotes stripped.
 function Get-FmNmField {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Output,
@@ -66,6 +68,7 @@ Does a run head match a worktree's code identity?
     (local work advanced outside the run, or the tip was rewritten)
 #>
 function Test-FmNmHeadMatchesWorktree {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$WorktreePath,
@@ -85,6 +88,7 @@ function Test-FmNmHeadMatchesWorktree {
 # endpoint that declared a known external wait reports `paused` distinctly, so a
 # supervisor sees a declared pause rather than a wedge-suspect idle.
 function Get-FmCrewStateFromLogVerb {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Line)
     if (Test-FmStatusIsPaused -Line $Line) { return 'paused' }
@@ -104,6 +108,7 @@ function Get-FmCrewStateFromLogVerb {
 # green. Scan the ci log tail for the MOST RECENT recognized marker (the log is
 # chronological, so the last match is current).
 function Get-FmNmCiChecksState {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$WorktreePath,
@@ -130,6 +135,7 @@ function Get-FmNmCiChecksState {
 # exactly what this needs - is a run for THIS branch active right now - and the
 # same code-identity rule still applies to the row's short sha.
 function Get-FmNmRunsStatusForBranch {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$WorktreePath,

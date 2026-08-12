@@ -180,6 +180,8 @@ function New-FmWakeDelivery {
         the recovery state - before the process ends. That cleanup ordering is
         the whole reason this is not a plain `exit`.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Reports one actionable reason and unwinds the supervision loop; declining it would swallow the wake the whole watcher exists to surface.')]
     param(
         [Parameter(Mandatory)][string]$Reason,
         [Parameter(Mandatory)][hashtable]$Context
@@ -240,6 +242,8 @@ function Get-FmWatchSignalChanges {
 
 function Set-FmSignalSeen {
     <# Persist the observed signature; the wake for it is now accounted for. #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Persisting the observed signature is what accounts for a wake already delivered; skipping it would redeliver forever.')]
     param([Parameter(Mandatory)][object]$Change)
     Set-FmFileTextLf -Path $Change.SeenFile -Text $Change.Signature
 }
@@ -484,6 +488,8 @@ function Test-FmHeartbeatFindsActionable {
 
 function Set-FmAllCaptainRelevantSurfaced {
     <# mark_all_captain_relevant_surfaced. #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal marker write inside a poll cycle that has already classified the wake.')]
     param([Parameter(Mandatory)][hashtable]$Context)
     $statuses = @(Invoke-FmSeam -Name 'Get-FmCaptainRelevantStatuses' -Arguments @($Context.State) -Default @())
     foreach ($s in $statuses) {
@@ -516,6 +522,8 @@ function Start-FmWatchFileNotifier {
         # precisely why the signature scan, not this notifier, decides what
         # happened - a dropped event costs latency, never a wake.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Starts a process-local FileSystemWatcher; it holds no durable state and only ever shortens a sleep.')]
     param([Parameter(Mandatory)][hashtable]$Context)
     if ((Get-FmEnvValue 'FM_WATCH_DISABLE_FSNOTIFY') -eq '1') { return $false }
     if ($script:FmWatchFsw) { return $true }
@@ -543,6 +551,9 @@ function Start-FmWatchFileNotifier {
 }
 
 function Stop-FmWatchFileNotifier {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Disposes a process-local FileSystemWatcher; it holds no durable state.')]
+    param()
     if (-not $script:FmWatchFsw) { return }
     foreach ($name in @('Changed', 'Created', 'Renamed')) {
         Unregister-Event -SourceIdentifier "$script:FmWatchFswSource-$name" -ErrorAction SilentlyContinue

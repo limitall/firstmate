@@ -32,6 +32,7 @@ unverified adapter deliberately.
 Get-FmHarnessLaunchCommand -Harness claude -BriefPath C:\fm\data\my-task\brief.md -Model opus -Effort high
 #>
 function Get-FmHarnessLaunchCommand {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Harness,

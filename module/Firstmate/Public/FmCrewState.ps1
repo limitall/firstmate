@@ -193,6 +193,7 @@ function Get-FmNmGateStepRow {
 }
 
 function Get-FmNmGateStatus {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Output)
     foreach ($line in ($Output -replace "`r`n", "`n").Split("`n")) {
@@ -204,6 +205,7 @@ function Get-FmNmGateStatus {
 }
 
 function Get-FmNmGateName {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Output)
     $gate = Get-FmNmField -Output $Output -Key 'gate'
@@ -222,6 +224,7 @@ function Get-FmNmGateName {
 }
 
 function Get-FmNmGateFindingsCount {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Output)
     if ($Output -match 'findings\[([0-9]+)\]') { return $Matches[1] }
@@ -231,6 +234,7 @@ function Get-FmNmGateFindingsCount {
 }
 
 function Get-FmNmEffectiveCiStepStatus {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Output,

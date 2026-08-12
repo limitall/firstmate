@@ -24,6 +24,8 @@
 # --- decision objects ---------------------------------------------------------
 
 function New-FmHookDecision {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Builds an in-memory decision record and changes nothing.')]
     [CmdletBinding()]
     param(
         [int]$ExitCode = 0,
@@ -61,6 +63,7 @@ function ConvertFrom-FmHookPayload {
 # both appear. A present-but-non-boolean value is malformed: the caller fails
 # open rather than guessing.
 function Get-FmHookStopHookActive {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowNull()][hashtable]$Payload)
 
@@ -81,6 +84,7 @@ function Get-FmHookStopHookActive {
 # linked-worktree exemption, which keeps crewmate and scout task worktrees inert.
 
 function Test-FmHookSecondmateHome {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root)
 
@@ -102,6 +106,7 @@ function Test-FmHookSecondmateHome {
 }
 
 function Test-FmHookPrimaryScope {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Root,
@@ -188,6 +193,7 @@ function Get-FmHookSupervisionStatus {
 }
 
 function Get-FmHookGrace {
+    [OutputType([int])]
     [CmdletBinding()]
     param()
 
@@ -196,6 +202,7 @@ function Get-FmHookGrace {
 }
 
 function Get-FmHookPathAge {
+    [OutputType([int])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
@@ -208,6 +215,7 @@ function Get-FmHookPathAge {
 }
 
 function Test-FmHookPidAlive {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][AllowNull()][string]$ProcessId)
 
@@ -220,6 +228,7 @@ function Test-FmHookPidAlive {
 # than blocking every turn end - the same rule the bash guard applies to a
 # missing jq.
 function Test-FmHookWatcherHealthy {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$State,
@@ -246,6 +255,9 @@ function Test-FmHookWatcherHealthy {
 # Locks are volatile runtime state and are never read across machines.
 
 function New-FmHookLock {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'A lock claim IS the question the caller asked; a declined claim would be indistinguishable from a held lock.')]
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
@@ -270,6 +282,8 @@ function New-FmHookLock {
 }
 
 function Remove-FmHookLock {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal release step for a claim the caller already established; ShouldProcess belongs on that claim, not on every private step.')]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
@@ -279,6 +293,9 @@ function Remove-FmHookLock {
 }
 
 function Set-FmHookLockRole {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal helper called only by functions that have already established ownership; ShouldProcess belongs on those.')]
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -303,6 +320,7 @@ function Get-FmHookLockRole {
 }
 
 function Get-FmHookLockField {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -387,6 +405,7 @@ function Get-FmHookBudgetRecord {
 }
 
 function Write-FmHookBudgetRecord {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$State,
@@ -410,6 +429,9 @@ function Write-FmHookBudgetRecord {
 # Positive watcher recovery clears the block budget, the failure notice, and the
 # attended alarm together, so a future independent episode starts clean.
 function Reset-FmHookFailureEpisode {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal ledger step inside a hook decision that has already been made; the hook itself is never invoked interactively.')]
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$State,
@@ -452,6 +474,7 @@ function Reset-FmHookFailureEpisode {
 #                        killed mid-sweep is finished first
 #   resume, reload, fork  delegate to the nudge, because prior context is restored
 function Get-FmHookSessionStartRoute {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][AllowNull()][string]$Source,
@@ -469,6 +492,7 @@ function Get-FmHookSessionStartRoute {
 }
 
 function Test-FmHookStartupCompleted {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$State)
 
@@ -497,6 +521,7 @@ function Test-FmHookStartupCompleted {
 # The command string a PreToolUse payload carries. Grok writes toolInput,
 # Claude and Codex write tool_input.
 function Get-FmHookToolCommand {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowNull()][hashtable]$Payload)
 
@@ -536,6 +561,8 @@ function Get-FmHookVerdictField {
 # WINDOWS-UNVERIFIED: that Claude Code on Windows reads this hookSpecificOutput
 # shape from a PowerShell-native hook's stderr.
 function New-FmHookDenyDecision {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Builds an in-memory decision record and changes nothing.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Code,
@@ -559,6 +586,7 @@ function New-FmHookDenyDecision {
 # command-string quoting Claude Code applies on Windows are taken from Claude
 # Code's documentation and have not been executed against a Windows host.
 function Get-FmClaudeHookSettingsObject {
+    [OutputType([System.Collections.Specialized.OrderedDictionary])]
     [CmdletBinding()]
     param()
 

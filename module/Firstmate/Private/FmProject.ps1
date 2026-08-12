@@ -63,6 +63,7 @@ function Get-FmProjectRegistryLine {
 # Every registered project, in registry order. Used by callers that need the
 # whole navigation registry rather than one project's posture.
 function Get-FmProjectRegistryEntry {
+    [OutputType([object[]])]
     [CmdletBinding()]
     param([string]$RegistryPath)
 

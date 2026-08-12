@@ -32,6 +32,7 @@
 # branch keeps the bash strings verbatim so a mixed fleet reads the same advice.
 
 function Get-FmBootstrapInstallCommand {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Tool)
 
@@ -66,6 +67,7 @@ function Get-FmBootstrapInstallCommand {
 }
 
 function Get-FmBootstrapManualInstallUrl {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Tool)
 
@@ -79,6 +81,7 @@ function Get-FmBootstrapManualInstallUrl {
 }
 
 function Get-FmBootstrapMissingDiagnostic {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Tool)
 
@@ -104,6 +107,7 @@ $script:FmBootstrapCommonTools = @('node', 'git', 'gh', 'no-mistakes', 'gh-axi',
 # triple is incompatible, never assumed current, so a development or vendored
 # build cannot pass a floor it was never checked against.
 function Test-FmBootstrapToolVersionAtLeast {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Tool,
@@ -134,6 +138,7 @@ function Test-FmBootstrapToolVersionAtLeast {
 }
 
 function Test-FmBootstrapTreehouseSupportsLease {
+    [OutputType([bool])]
     [CmdletBinding()]
     param()
 
@@ -159,6 +164,7 @@ $script:FmBootstrapBackendTools = @{
 }
 
 function Get-FmBootstrapBackendName {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ConfigDir)
 
@@ -180,6 +186,7 @@ function Get-FmBootstrapBackendName {
 }
 
 function Get-FmBootstrapBackendRequiredTool {
+    [OutputType([object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Backend)
 
@@ -192,6 +199,7 @@ function Get-FmBootstrapBackendRequiredTool {
 }
 
 function Get-FmBootstrapKnownBackend {
+    [OutputType([string])]
     [CmdletBinding()]
     param()
 
@@ -203,6 +211,7 @@ function Get-FmBootstrapKnownBackend {
 }
 
 function Test-FmBootstrapBackendToolAvailable {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Backend,
@@ -283,6 +292,7 @@ function Get-FmBootstrapLocalToolDiagnostic {
 # default branch, not a feature branch. Scoped to the primary only; detached-HEAD
 # worktrees and secondmate homes never trip it.
 function Get-FmBootstrapTangleBranch {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root)
 
@@ -308,6 +318,7 @@ function Get-FmBootstrapTangleBranch {
 }
 
 function Get-FmBootstrapDefaultBranch {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root)
 
@@ -329,6 +340,7 @@ function Get-FmBootstrapDefaultBranch {
 # config/crew-dispatch.json validation, ported off jq to native JSON parsing:
 # nothing in this port shells out to a Unix text tool.
 function Get-FmBootstrapCrewDispatchDiagnostic {
+    [OutputType([object[]])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$ConfigDir,
@@ -518,6 +530,7 @@ function Get-FmBootstrapLocalConfigDiagnostic {
 # state/handoff outbox detection: how many undelivered items a secondmate still
 # owes. Read-only; the retry itself is a mutating sweep owned elsewhere.
 function Get-FmBootstrapHandoffDiagnostic {
+    [OutputType([object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Paths)
 
@@ -542,6 +555,9 @@ function Get-FmBootstrapHandoffDiagnostic {
 # absent. A secondmate home is deliberately passive - its value must converge
 # from the primary rather than becoming a local authority.
 function Set-FmBootstrapStartupMemoryBudget {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Materializes the documented default for a config file bootstrap has already decided is missing; the diagnostic line reports the outcome.')]
+    [OutputType([object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Paths)
 
@@ -583,6 +599,7 @@ function Set-FmBootstrapStartupMemoryBudget {
 # never reimplements one. Ordering matches bin/fm-bootstrap.sh so a `skip` run is
 # the same output with the network lines removed, never a reshuffle.
 function Invoke-FmBootstrapSweep {
+    [OutputType([object[]])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$CommandName,

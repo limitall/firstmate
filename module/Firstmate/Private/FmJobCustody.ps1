@@ -375,6 +375,7 @@ namespace Firstmate
 # process? Compiles the interop on first use. Never throws - an unsupported
 # host degrades to an explicit "did not run", which is the whole point.
 function Test-FmJobCustodySupported {
+    [OutputType([bool])]
     [CmdletBinding()]
     param()
     if (-not $IsWindows) { return $false }
@@ -399,6 +400,7 @@ function Test-FmJobCustodySupported {
 # a `Global\` name would need SeCreateGlobalPrivilege and would let two logon
 # sessions collide on one task id.
 function Get-FmTaskJobName {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$TaskId)
     if (-not (Test-FmTaskIdShape -TaskId $TaskId)) {
@@ -441,6 +443,7 @@ function New-FmTaskJob {
 # it spawns - under the task's custody. This is the call the spawn path makes
 # with the pane's process id once herdr reports it.
 function Add-FmTaskJobProcess {
+    [OutputType([bool])]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][IntPtr]$JobHandle,
@@ -458,6 +461,7 @@ function Add-FmTaskJobProcess {
 # assigned processes keep the job alive, which is exactly what lets teardown
 # find it later.
 function Close-FmTaskJob {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][IntPtr]$JobHandle)
     if (-not (Test-FmJobCustodySupported)) { return $false }
@@ -583,6 +587,7 @@ function Stop-FmTaskJob {
 # Returns @() when nothing holds them and $null when Restart Manager itself
 # could not answer - a caller must not read $null as "nobody".
 function Get-FmFileHolderProcess {
+    [OutputType([array], [object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string[]]$Path)
 

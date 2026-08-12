@@ -5,6 +5,10 @@
 # Every herdr and treehouse call is mocked. Nothing here starts, stops, or
 # otherwise drives a real herdr server or a real worktree pool.
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+    Justification = 'Pester fixtures that build and remove disposable temp homes. -WhatIf on a fixture would leave the test asserting against a home that was never created.')]
+param()
+
 BeforeAll {
     $script:ModuleRoot = Join-Path $PSScriptRoot '..' 'module' 'Firstmate'
     # Every Private file, not a hand-picked pair: Start-FmWorker composes the

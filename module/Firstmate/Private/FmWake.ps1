@@ -127,6 +127,8 @@ function Set-FmFileTextLf {
         # open. The temporary is removed and the error propagates rather than
         # leaving a partial file behind.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'The one LF/no-BOM write primitive of the wake area, called only from operations that have already decided to write; ShouldProcess belongs on those.')]
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
@@ -153,6 +155,8 @@ function Set-FmPrivateFileMode {
         # WINDOWS-UNVERIFIED: on Windows the file inherits the state directory's
         # ACL instead; there is no chmod equivalent to assert here.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Best-effort permission tightening on a file the caller has already written.')]
     param([Parameter(Mandatory)][string]$Path)
     if ($IsWindows) { return }
     try {
@@ -201,6 +205,8 @@ function Test-FmNonEmptyFile {
 
 function Update-FmFileTimestamp {
     <# `touch` - create if absent, otherwise bump mtime. #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'The wake area file primitive, called only from operations that have already decided to write; ShouldProcess belongs on those.')]
     param([Parameter(Mandatory)][string]$Path)
     if ([System.IO.File]::Exists($Path)) {
         [System.IO.File]::SetLastWriteTimeUtc($Path, [DateTime]::UtcNow)
@@ -376,6 +382,8 @@ function New-FmLockClaim {
         Linux, so exactly one caller can ever win. Writing the pid content BEFORE
         the move means no reader can observe a half-written holder.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'The claim IS the question the caller asked; a declined claim would be indistinguishable from a lock held by someone else.')]
     param([Parameter(Mandatory)][string]$LockDir)
 
     $parent = Split-Path -Parent $LockDir
@@ -404,6 +412,8 @@ function Remove-FmLockPath {
         knows about, then rmdir. Unknown files are deliberately left behind so an
         rmdir failure preserves evidence rather than deleting a stranger's data.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal release step for a lock the caller already owns or has proven stale; ShouldProcess belongs on that decision, not on every private step.')]
     param([Parameter(Mandatory)][string]$LockDir)
 
     # A lock claimed by the bash implementation on this machine is a SYMLINK to
@@ -555,6 +565,8 @@ function Unlock-FmPath {
 
 function Set-FmLockRole {
     <# fm_lock_set_role: label a lock this process holds, read back to confirm. #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal helper called only by functions that have already established ownership; ShouldProcess belongs on those.')]
     param(
         [Parameter(Mandatory)][string]$LockDir,
         [Parameter(Mandatory)][ValidateSet('autoarm', 'terminal-check')][string]$Role
@@ -670,6 +682,8 @@ function Start-FmRecoveryHandling {
           1  no usable marker
           3  ExpectedGeneration did not match - a newer episode owns the marker
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Marks recovery for a lock this process already broke; skipping the mark would strand the recovery evidence.')]
     [OutputType([int])]
     param(
         [Parameter(Mandatory)][string]$Marker,
@@ -1345,6 +1359,8 @@ function Reset-FmFailureEpisode {
         already hold it. Refuses when any target is a directory rather than
         blindly removing it.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal ledger step inside a decision the caller has already made.')]
     param(
         [Parameter(Mandatory)][string]$State,
         [ValidateSet('acquire', 'held')][string]$Mode = 'acquire'

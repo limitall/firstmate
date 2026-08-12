@@ -8,6 +8,10 @@
     that blocks on a parse error wedges a session).
 #>
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+    Justification = 'Pester fixtures that build and remove disposable temp homes. -WhatIf on a fixture would leave the test asserting against a home that was never created.')]
+param()
+
 BeforeAll {
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     foreach ($area in @('Private', 'Public')) {

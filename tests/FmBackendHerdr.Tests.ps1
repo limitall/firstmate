@@ -11,6 +11,8 @@
 # would make the caller's by-name invocation throw and its catch would read that
 # as "no owner", and a stub declaring no parameters at all would swallow the
 # arguments into $args unnoticed. PSReviewUnusedParameter is inverted here.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+    Justification = 'Pester fixtures that build and remove disposable temp homes. -WhatIf on a fixture would leave the test asserting against a home that was never created.')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '',
     Justification = 'Test seam stubs must declare their owner''s full published parameter list without using it; see the comment above.')]
 param()

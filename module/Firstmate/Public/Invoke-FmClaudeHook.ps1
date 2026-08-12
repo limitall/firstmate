@@ -70,6 +70,7 @@ function Invoke-FmClaudeHook {
 # A terminal stdin is skipped outright, because a hook always pipes its payload
 # and an operator running this by hand must not be left waiting on a read.
 function Read-FmHookStdin {
+    [OutputType([string])]
     [CmdletBinding()]
     param()
 
@@ -336,6 +337,8 @@ function Invoke-FmClaudeTurnEndGuard {
 }
 
 function New-FmHookBlockDecision {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Reads state and builds an in-memory decision record; it writes nothing.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Paths,
@@ -431,6 +434,8 @@ function Test-FmHookAutoArmOwnsRecovery {
 # Account this event epoch against the bounded block budget, under the budget
 # lock. One epoch identity is counted at most once.
 function Update-FmHookBlockBudget {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal ledger step inside a hook decision already made; the hook is fired by Claude, never invoked interactively.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$State,
@@ -483,6 +488,7 @@ function Update-FmHookBlockBudget {
 # exhausted, and a final check finds neither a healthy watcher nor an automatic
 # continuation. Returns 'alarm', 'allow', or 'none'.
 function Invoke-FmHookTerminalFailOpen {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$State,
@@ -542,6 +548,7 @@ function Invoke-FmHookTerminalFailOpen {
 }
 
 function Test-FmHookFailureEpisodeVerified {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$State,

@@ -20,7 +20,8 @@
 #>
 [CmdletBinding()]
 # fmRequiredCommand is read by fm-module-load.ps1, which is dot-sourced below.
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'fmRequiredCommand')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'fmRequiredCommand',
+    Justification = 'fmRequiredCommand is read by fm-module-load.ps1, which is dot-sourced below.')]
 param(
     [Parameter(Position = 0)][string]$TaskId,
     [Parameter(ValueFromRemainingArguments)][string[]]$RemainingArguments

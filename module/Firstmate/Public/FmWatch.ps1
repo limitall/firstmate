@@ -67,6 +67,8 @@ function Start-FmWatch {
         A result object carrying ExitCode and the delivered Reason (empty when
         the loop ended without an actionable wake).
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'The blocking supervision loop itself: running it IS the command, and bin/fm-watch.ps1 has no dry-run mode in either implementation.')]
     [CmdletBinding()]
     param(
         [int]$MaxCycles = 0,

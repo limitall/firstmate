@@ -7,6 +7,10 @@
 # module manifest being present in a work-in-progress checkout. The bin entry
 # points are exercised separately, through a temp tree with a stand-in manifest.
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+    Justification = 'Pester fixtures that build and remove disposable temp homes. -WhatIf on a fixture would leave the test asserting against a home that was never created.')]
+param()
+
 Set-StrictMode -Version Latest
 
 function Get-FmLifecycleRepoRoot {
@@ -84,14 +88,16 @@ function New-FmTestProject {
     $project = Join-Path $Root 'project'
     [void](New-Item -ItemType Directory -Path $project -Force)
     Invoke-FmTestGit -RepoPath $project init --initial-branch=main | Out-Null
-    Invoke-FmTestGit -RepoPath $project config user.email 'crew@example.invalid' | Out-Null
-    Invoke-FmTestGit -RepoPath $project config user.name 'Test Crew' | Out-Null
+    Invoke-FmTestGit -RepoPath $project -Arguments config, user.email, 'crew@example.invalid' | Out-Null
+    Invoke-FmTestGit -RepoPath $project -Arguments config, user.name, 'Test Crew' | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $project 'README.md'), "base`n")
     Invoke-FmTestGit -RepoPath $project add README.md | Out-Null
     Invoke-FmTestGit -RepoPath $project commit -m 'base' | Out-Null
 
     $worktree = Join-Path $Root 'wt'
-    Invoke-FmTestGit -RepoPath $project worktree add -b "fm/$Id" $worktree main | Out-Null
+    # -Arguments named, not positional: a bare -b would otherwise be offered to
+    # the parameter binder before it reached git's argv.
+    Invoke-FmTestGit -RepoPath $project -Arguments worktree, add, '-b', "fm/$Id", $worktree, main | Out-Null
     return [pscustomobject]@{ Project = $project; Worktree = $worktree; Branch = "fm/$Id" }
 }
 

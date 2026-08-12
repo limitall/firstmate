@@ -5,6 +5,10 @@
 # so these pin byte-for-byte parity with the lines the bootstrap-diagnostics
 # skill matches on.
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+    Justification = 'Pester fixtures that build and remove disposable temp homes. -WhatIf on a fixture would leave the test asserting against a home that was never created.')]
+param()
+
 BeforeAll {
     # The module loader sets these, so the tests must exercise the same rules.
     Set-StrictMode -Version Latest

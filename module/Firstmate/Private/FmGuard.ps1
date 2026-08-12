@@ -41,6 +41,8 @@ function Update-FmWatcherBeacon {
         job. Guard scripts read its mtime; a stale beacon with work in flight is
         the alarm condition.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Touches the liveness beacon inside a cycle already under way; a skipped touch would read as a dead watcher.')]
     [CmdletBinding()]
     param([hashtable]$Context)
     if (-not $Context) { $Context = Get-FmWakeContext }

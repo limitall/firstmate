@@ -11,6 +11,10 @@
 #     is the surface a caller actually sees.
 # Nothing here starts a real herdr server, a real treehouse pool, or a real agent.
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+    Justification = 'Pester fixtures that build and remove disposable temp homes. -WhatIf on a fixture would leave the test asserting against a home that was never created.')]
+param()
+
 BeforeAll {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'

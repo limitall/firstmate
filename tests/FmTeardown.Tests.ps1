@@ -21,14 +21,16 @@ BeforeAll {
     . (Join-Path $script:ModuleRoot 'Public' 'Invoke-FmTeardown.ps1')
 
     function New-TestOrigin {
-        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'Pester fixtures that build and remove disposable temp repos. -WhatIf on a fixture would leave the test asserting against a repo that was never created.')]
         param([Parameter(Mandatory)][string]$Path)
         $null = Invoke-FmChildProcess -FilePath 'git' -ArgumentList @('init', '-q', '--bare', '-b', 'main', $Path)
         $Path
     }
 
     function New-TestClone {
-        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'Pester fixtures that build and remove disposable temp repos. -WhatIf on a fixture would leave the test asserting against a repo that was never created.')]
         param([Parameter(Mandatory)][string]$Origin, [Parameter(Mandatory)][string]$Path)
         $null = Invoke-FmChildProcess -FilePath 'git' -ArgumentList @('clone', '-q', $Origin, $Path)
         $null = Invoke-FmGit -Directory $Path -Arguments @('config', 'user.email', 'test@example.invalid')
@@ -52,7 +54,8 @@ BeforeAll {
     # A seeded origin, a project clone of it, and a task worktree on its own
     # branch - the exact shape teardown is handed.
     function New-TestFixture {
-        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'Pester fixtures that build and remove disposable temp repos. -WhatIf on a fixture would leave the test asserting against a repo that was never created.')]
         param([Parameter(Mandatory)][string]$Root, [string]$Branch = 'fm/task')
         New-Item -ItemType Directory -Path $Root -Force | Out-Null
         $origin = New-TestOrigin -Path (Join-Path $Root 'origin.git')
@@ -82,7 +85,8 @@ BeforeAll {
     }
 
     function New-ChildProcessResult {
-        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'Pester fixtures that build and remove disposable temp repos. -WhatIf on a fixture would leave the test asserting against a repo that was never created.')]
         param([bool]$Ok = $true, [int]$ExitCode = 0, [string]$StdOut = '', [string]$StdErr = '')
         [pscustomobject]@{
             Ok = $Ok; ExitCode = $ExitCode; StdOut = $StdOut; StdErr = $StdErr

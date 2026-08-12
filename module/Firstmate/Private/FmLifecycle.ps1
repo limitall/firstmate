@@ -29,6 +29,7 @@ function Get-FmLifecycleRoot {
 # Port of resolve_directory_input (bin/fm-brief.sh): an absolute path is taken
 # verbatim; a relative one must resolve to a real directory or the caller stops.
 function Resolve-FmLifecycleDirectoryInput {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -68,6 +69,7 @@ function Get-FmLifecyclePaths {
 # CRLF so a file written by a Windows editor still parses. Firstmate's own
 # writes stay LF-only (Write-FmTextFileLf).
 function Get-FmLifecycleFileLines {
+    [OutputType([object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return , @() }
@@ -81,6 +83,7 @@ function Get-FmLifecycleFileLines {
 
 # fm_task_id_path_safe: a task id is a single path component, never a traversal.
 function Test-FmLifecycleTaskIdPathSafe {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Id)
     if ([string]::IsNullOrEmpty($Id)) { return $false }
@@ -95,6 +98,7 @@ function Test-FmLifecycleTaskIdPathSafe {
 # reads that use this are single-value (`rev-parse`, `symbolic-ref`) or must take
 # only the first line the way the bash `| head -1` does.
 function Get-FmGitFirstLine {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Result)
     if (-not $Result.Ok) { return '' }
@@ -108,6 +112,7 @@ function Get-FmGitFirstLine {
 # scripts spell this `[ -f "$f" ] && [ ! -L "$f" ]` before trusting a private
 # record; the same rule keeps a symlinked state file from escaping the home.
 function Test-FmLifecycleRegularFile {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
     if (-not $Path) { return $false }
@@ -119,6 +124,7 @@ function Test-FmLifecycleRegularFile {
 }
 
 function Test-FmLifecycleRegularDirectory {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
     if (-not $Path) { return $false }

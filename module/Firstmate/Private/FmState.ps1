@@ -159,7 +159,8 @@ function New-FmDirectory {
     #>
     # Creating a missing state directory is implied by every write that needs
     # it; the ShouldProcess prompt belongs on that write, not here.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Creating a missing state directory is implied by every write that needs it; the ShouldProcess prompt belongs on that write, not here.')]
     param([Parameter(Mandatory)][string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return }
     if ([System.IO.Directory]::Exists($Path)) { return }
@@ -276,7 +277,7 @@ function Read-FmStateLines {
         line INSIDE the file is preserved - some records use one meaningfully.
     #>
     [CmdletBinding()]
-    [OutputType([string[]])]
+    [OutputType([string[]], [object[]])]
     param([Parameter(Mandatory)][string]$Path)
 
     $text = Read-FmStateFile -Path $Path

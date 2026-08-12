@@ -388,6 +388,8 @@ function Update-FmTurnEndBudget {
         Takes no state directory: like the bash original it reaches every file it
         needs through the explicit budget, lock, epoch and notice paths.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Accounts one block against a bounded budget inside a turn-end decision already made; the guard is fired by Claude, never invoked interactively.')]
     param(
         [Parameter(Mandatory)][string]$BudgetFile,
         [Parameter(Mandatory)][string]$BudgetLock,

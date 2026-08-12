@@ -225,7 +225,8 @@ function Get-FmLockInfo {
 function Remove-FmLockChildFile {
     # Internal helper called only by functions that have already established
     # ownership; ShouldProcess belongs on those, not on every private step.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal helper called only by functions that have already established ownership; ShouldProcess belongs on those, not on every private step.')]
     param([Parameter(Mandatory)][string]$LockPath, [string[]]$Name = $script:FmLockChildNames)
     foreach ($child in $Name) {
         $path = Join-Path $LockPath $child
@@ -352,6 +353,10 @@ function Request-FmLock {
         when the body throws.
     #>
     [CmdletBinding()]
+    # The rule infers [bool] from `$null = $script:FmHeldLocks.Remove($key)`,
+    # a discarded assignment. This returns the lock object or $null, never a bool.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseOutputTypeCorrectly', '',
+        Justification = 'The rule infers [bool] from "$null = $script:FmHeldLocks.Remove($key)", a discarded assignment. This returns the lock object or $null, never a bool.')]
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -590,7 +595,7 @@ function Get-FmHeldLock {
         Locks this process currently holds.
     #>
     [CmdletBinding()]
-    [OutputType([pscustomobject])]
+    [OutputType([pscustomobject], [object[]])]
     param([string]$Path)
 
     if ($PSBoundParameters.ContainsKey('Path')) {

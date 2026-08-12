@@ -73,6 +73,7 @@ function Resolve-FmSessionCommand {
 # owner when the foundation area is loaded, so there is exactly one parser in a
 # complete module build.
 function Get-FmSessionMetaValue {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -95,6 +96,7 @@ function Get-FmSessionMetaValue {
 # Read a text file as LF-delimited lines with no trailing-empty artifact, so a
 # file written by a Linux firstmate and one written here parse identically.
 function Get-FmSessionFileLines {
+    [OutputType([object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
@@ -135,6 +137,7 @@ function Write-FmSessionTextFile {
 # removed first when the direct move is refused - the same visible outcome the
 # bash `mv -f` has, with the Windows file-locking difference handled here.
 function Move-FmSessionFileInPlace {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Source,
@@ -160,6 +163,7 @@ $script:FmLineCapSuffix = ' [truncated]'
 
 # The shared per-line cap for agent-facing digest lines (bin/fm-line-cap-lib.sh).
 function Get-FmSessionCappedLine {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Line,
@@ -214,16 +218,22 @@ $script:FmSessionStartStages = @(
 )
 
 function New-FmSessionSection {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Formats digest text in memory and changes nothing.')]
     param([Parameter(Mandatory)][string]$Title)
     @('', $script:FmSessionRule, $Title, $script:FmSessionRule)
 }
 
 function New-FmSessionSubsection {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Formats digest text in memory and changes nothing.')]
     param([Parameter(Mandatory)][string]$Title)
     @('', $Title, $script:FmSessionSubRule)
 }
 
 function Set-FmSessionStage {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal progress breadcrumb for the bounded startup; a skipped write would silently misreport which stage truncated.')]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Name)
 
@@ -276,6 +286,7 @@ function Format-FmSessionStatusTail {
 $script:FmSessionManualKeepPattern = '\(hold|blocked-by:'
 
 function Format-FmSessionBacklogManualCompact {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -332,6 +343,9 @@ function Format-FmSessionBacklogManualCompact {
 # tasks-axi closes every listing with its own help block. This section composes
 # four listings, so keeping them would repeat the same pointers four times.
 function Remove-FmSessionAxiHelp {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Filters a caller-supplied array of lines; despite the verb it removes nothing outside this process.')]
+    [OutputType([object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Lines)
 
@@ -423,6 +437,7 @@ function Format-FmSessionBacklogTasksAxiCompact {
 }
 
 function Format-FmSessionBacklogCompact {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -449,6 +464,7 @@ function Format-FmSessionBacklogCompact {
 # config/backlog-backend: absent or "tasks-axi" is the default backend, "manual"
 # forces title-line rendering (AGENTS.md section 2).
 function Test-FmSessionBacklogBackendManual {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ConfigDir)
 
@@ -462,6 +478,7 @@ function Test-FmSessionBacklogBackendManual {
 }
 
 function Test-FmSessionTasksAxiBackendAvailable {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ConfigDir)
 
@@ -473,6 +490,7 @@ function Test-FmSessionTasksAxiBackendAvailable {
 # the bootstrap child through FM_TASKS_AXI_COMPATIBLE exactly as the bash digest
 # does, so the probe is not paid twice.
 function Test-FmSessionTasksAxiCompatible {
+    [OutputType([bool])]
     [CmdletBinding()]
     param()
 
@@ -488,6 +506,7 @@ function Test-FmSessionTasksAxiCompatible {
 }
 
 function Get-FmSessionFileSha256 {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
@@ -496,6 +515,7 @@ function Get-FmSessionFileSha256 {
 }
 
 function Test-FmSessionPiExtensionLoaded {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Marker,
@@ -550,6 +570,7 @@ function Invoke-FmSessionComposedStep {
 # meta naming an unported backend is reported as unknown rather than guessed at -
 # the same refuse-loudly-never-guess rule that area applies elsewhere.
 function Get-FmSessionEndpointLine {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$MetaPath,
@@ -951,6 +972,9 @@ function Get-FmSessionStartDigest {
 # Record that a full startup finished under the current lock owner, so a later
 # /clear or /compact can re-emit instead of re-running the mutating sweeps.
 function Set-FmSessionStartCompletion {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal step of a session start that has already been decided; the digest reports the outcome either way.')]
+    [OutputType([object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Paths)
 

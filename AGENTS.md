@@ -182,10 +182,27 @@ Invoke-Pester -Path ./tests
 Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
 ```
 
-Keep the analyzer clean of Error and Warning findings; its three excluded rules
-each carry their reason in `PSScriptAnalyzerSettings.psd1`. The lock and state
-suites spawn real background processes on purpose - every concurrency defect
-found in this port was found by running them, never by reading the code.
+The analyzer bar is **zero findings at every severity**, not just Error and
+Warning, and `tests/FmAnalyzer.Tests.ps1` runs that same repo-wide sweep inside
+the Pester suite - so `Invoke-Pester` alone will fail on a new finding. Per-area
+cleanliness does not compose: the repo reached 814 findings while every area
+believed it was clean, which is why the check is repo-wide and why there is no
+tolerated count to re-baseline.
+
+`PSScriptAnalyzerSettings.psd1` is the one agreed bar and carries the reason for
+each excluded rule. When a rule is wrong for ONE function rather than the whole
+repo, suppress it there with a `Justification` argument, not a bare attribute -
+the suite fails a suppression that does not say why. Two rules are deliberately
+scoped rather than excluded: `PSAvoidUsingPositionalParameters` allows only
+`Join-Path`, and `PSUseShouldProcessForStateChangingFunctions` stays ON so a
+future state-changing entry point is still caught, with each existing internal
+helper and Pester fixture carrying its own reason for opting out.
+
+The lock and state suites spawn real background processes on purpose - every
+concurrency defect found in this port was found by running them, never by
+reading the code. `tests/FmState.Tests.ps1`'s multi-process append test is
+known to fail intermittently under load; re-run before treating it as a
+regression.
 
 ## Maintaining this file
 

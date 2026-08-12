@@ -347,6 +347,10 @@ function Get-FmProcessAncestry {
         This process and its ancestors, innermost first, bounded to -MaxDepth.
     #>
     [CmdletBinding()]
+    # The rule infers [object[]] from the ", $x.ToArray()" wrapper, which exists only
+    # to stop the pipeline unrolling the array; the emitted value is an int[].
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseOutputTypeCorrectly', '',
+        Justification = 'The rule infers [object[]] from the ", $x.ToArray()" wrapper, which exists only to stop the pipeline unrolling the array; the emitted value is an int[].')]
     [OutputType([int[]])]
     param(
         [object]$Id = $PID,
@@ -389,6 +393,10 @@ function Get-FmHarnessAncestry {
         contiguous run is reported and the caller decides what it needs from it.
     #>
     [CmdletBinding()]
+    # The rule infers [object[]] from the ", $x.ToArray()" wrapper, which exists only
+    # to stop the pipeline unrolling the array; the emitted value is an int[].
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseOutputTypeCorrectly', '',
+        Justification = 'The rule infers [object[]] from the ", $x.ToArray()" wrapper, which exists only to stop the pipeline unrolling the array; the emitted value is an int[].')]
     [OutputType([int[]])]
     param(
         [object]$Id = $PID,

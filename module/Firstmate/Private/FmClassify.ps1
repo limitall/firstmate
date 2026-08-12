@@ -49,6 +49,7 @@ function Get-FmClassifyReservedKeyPrefix {
 # Without this rule any writer into the same stream could claim a reserved key
 # and permanently block, or wrongly clear, the owner's decision.
 function Test-FmClassifyReservedKeyTransitionAllowed {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Key,
@@ -64,12 +65,17 @@ function Test-FmClassifyReservedKeyTransitionAllowed {
 }
 
 function New-FmClassifyOpenSet {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Builds an empty in-memory list and changes nothing.')]
+    param()
     # The unary comma keeps PowerShell from unrolling the empty list away.
     $set = [System.Collections.Generic.List[object]]::new()
     return , $set
 }
 
 function Remove-FmClassifyOpenKey {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Mutates a list the caller owns and passed in; nothing outside this process changes.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[object]]$OpenSet,
@@ -81,6 +87,8 @@ function Remove-FmClassifyOpenKey {
 }
 
 function New-FmClassifyOpenRecord {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Builds an in-memory record and changes nothing.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Key,
@@ -167,6 +175,7 @@ function Get-FmClassifyCursorPath {
 # in-place edit: no firstmate code path ever rewrites a status file in place,
 # and the cursor is safe to delete, which forces one full re-fold.
 function Get-FmClassifyFileIdent {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Path,

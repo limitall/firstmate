@@ -47,6 +47,7 @@ Set-StrictMode -Version Latest
 # muscle memory and the bash side's own test harness both keep working.
 
 function Get-FmTeardownSetting {
+    [OutputType([double])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string[]]$Name,
@@ -69,13 +70,15 @@ function Get-FmTeardownSetting {
 function Get-FmTeardownLockAgeSeconds {
     # 'Seconds' is a count of seconds, not a plural of a noun; a singular
     # name would misdescribe it.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+        Justification = 'Seconds is a count of seconds, not a plural of a noun; a singular name would misdescribe it.')]
     [CmdletBinding()]
     param()
     Get-FmTeardownSetting -Name @('FM_STALE_WORKTREE_LOCK_AGE_SECS') -Default 30
 }
 
 function Get-FmTeardownReturnRetryCount {
+    [OutputType([int])]
     [CmdletBinding()]
     param()
     [int](Get-FmTeardownSetting -Name @('FM_TREEHOUSE_RETURN_LOCK_RETRIES') -Default 3)
@@ -84,7 +87,8 @@ function Get-FmTeardownReturnRetryCount {
 function Get-FmTeardownReturnRetryWaitSeconds {
     # 'Seconds' is a count of seconds, not a plural of a noun; a singular
     # name would misdescribe it.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+        Justification = 'Seconds is a count of seconds, not a plural of a noun; a singular name would misdescribe it.')]
     [CmdletBinding()]
     param()
     Get-FmTeardownSetting -AllowFraction -Default 1 -Name @(
@@ -100,6 +104,7 @@ function Get-FmTeardownReturnRetryWaitSeconds {
 # --git-path` is what resolves a LINKED worktree's lock to
 # .git/worktrees/<name>/index.lock rather than to the repo's own.
 function Get-FmTeardownGitLockPath {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Worktree)
 
@@ -122,6 +127,7 @@ function Get-FmTeardownGitLockPath {
 #   'unknown' anything else (access denied, a non-Windows host) - fail safe,
 #             which every caller treats exactly like 'held'
 function Test-FmTeardownGitLockHeld {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
 
@@ -164,6 +170,7 @@ function Test-FmTeardownGitLockHeld {
 # 'unknown' is deliberately as strong a refusal as 'holders', matching the
 # bash rule that a missing lsof means "assume live".
 function Test-FmTeardownDirectoryHeld {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter()][AllowNull()][AllowEmptyString()][string]$TaskId)
 
@@ -181,6 +188,7 @@ function Test-FmTeardownDirectoryHeld {
 # least the threshold. Any uncertainty returns false - never remove a lock this
 # returns false for.
 function Test-FmTeardownGitLockStale {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$LockPath,
@@ -219,6 +227,7 @@ function Test-FmTeardownGitLockStale {
 # --- the landed-work test ----------------------------------------------------
 
 function Get-FmTeardownPrNumberFromTarget {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter()][AllowNull()][AllowEmptyString()][string]$Target)
 
@@ -232,6 +241,7 @@ function Get-FmTeardownPrNumberFromTarget {
 # lookup failure returns '' so the caller reads it as "no PR found" - fail-safe,
 # because a missing PR must never by itself claim work is landed.
 function Get-FmTeardownPrNumberFromBranch {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Worktree,
@@ -250,6 +260,7 @@ function Get-FmTeardownPrNumberFromBranch {
 # Confirm-FmTeardownCommitObject: make the PR head commit locally readable,
 # fetching refs/pull/<n>/head when the PR's branch was deleted after merge.
 function Confirm-FmTeardownCommitObject {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Worktree,
@@ -274,6 +285,7 @@ function Confirm-FmTeardownCommitObject {
 # Get-FmTeardownCommitPatchId: `git show <c> | git patch-id --stable`, without a
 # shell pipe - the show output is fed to patch-id's stdin as bytes.
 function Get-FmTeardownCommitPatchId {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Worktree,
@@ -293,6 +305,7 @@ function Get-FmTeardownCommitPatchId {
 # that is on HEAD but on no remote must have a patch-id that also appears in the
 # PR head's own commits. One missing patch id means unlanded work.
 function Test-FmTeardownPatchesInPrHead {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Worktree,
@@ -330,6 +343,7 @@ function Test-FmTeardownPatchesInPrHead {
 # the current local work? Non-zero on any doubt, so the caller falls through to
 # the content check rather than concluding "landed".
 function Test-FmTeardownPrMerged {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Worktree,
@@ -365,6 +379,7 @@ function Test-FmTeardownPrMerged {
 # the squash-merge signature. Inconclusive (no default ref, a conflict) is
 # false, so the caller refuses rather than guesses.
 function Test-FmTeardownContentInDefault {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Worktree,
@@ -398,6 +413,7 @@ function Test-FmTeardownContentInDefault {
 # LANDED? A merged PR that contains it, or content already in the default
 # branch. False only for genuinely unlanded work.
 function Test-FmTeardownWorkLanded {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Worktree,
@@ -416,7 +432,8 @@ function Test-FmTeardownWorkLanded {
 # 'Stop' would make callers unable to tell a refusal from a bug.
 function New-FmTeardownVerdict {
     # Constructs an in-memory record and changes nothing.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Constructs an in-memory record and changes nothing.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][ValidateSet('allow', 'refuse', 'lock-blocked')][string]$Verdict,
@@ -556,6 +573,7 @@ function Test-FmTeardownWorktreeSafety {
 # the shared proof says it is provably stale. Returns 'cleared' (retry the
 # safety checks) or 'refused' (leave everything intact).
 function Clear-FmTeardownStaleLock {
+    [OutputType([string])]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$Worktree,
@@ -599,6 +617,7 @@ function Test-FmTeardownTreehouseAvailable {
 # Test-FmTeardownIndexLockError: the ONE failure signature that earns patience.
 # Every other treehouse failure aborts immediately and loudly.
 function Test-FmTeardownIndexLockError {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter()][AllowNull()][AllowEmptyString()][string]$Text)
     if (-not $Text) { return $false }
@@ -629,7 +648,8 @@ function Test-FmTeardownIndexLockError {
 function Invoke-FmTeardownWorktreeReturn {
     # Project is used inside the $attempt scriptblock, which the analyzer
     # cannot see through.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Project')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Project',
+        Justification = 'Project is used inside the $attempt scriptblock, which the analyzer cannot see through.')]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$Worktree,
@@ -754,6 +774,7 @@ function Invoke-FmTeardownWorktreeReturn {
 # delegate to them and delete these three - one owner for the lock protocol.
 
 function Test-FmTeardownLockOwnerAlive {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$LockPath)
     $pidFile = Join-Path $LockPath 'pid'
@@ -771,6 +792,7 @@ function Test-FmTeardownLockOwnerAlive {
 }
 
 function Enter-FmTeardownLock {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$LockPath)
     $pidFile = Join-Path $LockPath 'pid'
@@ -821,6 +843,7 @@ function Exit-FmTeardownLock {
 # and fall back to the same parse otherwise, so this works in a partial build
 # without ever defining a second copy of THEIR names.
 function Get-FmTeardownRunField {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Output,
@@ -843,7 +866,9 @@ function Get-FmTeardownRunField {
 
 function Test-FmTeardownRunHeadMatches {
     # 'Matches' is a verb form here, not a plural noun.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '')]
+    [OutputType([bool])]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+        Justification = 'Matches is a verb form here, not a plural noun.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$WorktreePath,
@@ -867,6 +892,7 @@ function Test-FmTeardownRunHeadMatches {
 # run, which needs nothing). Attribution requires branch AND code identity to
 # match - never a guess.
 function Get-FmTaskParkedRunId {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$WorktreePath,
@@ -892,7 +918,9 @@ function Stop-FmTaskNoMistakesRun {
     # Aborting a parked pipeline run is the lifecycle area's established name
     # and signature; adding ShouldProcess here would change a contract another
     # area already calls.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+    [OutputType([string])]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Aborting a parked pipeline run is the lifecycle area established name and signature; adding ShouldProcess here would change a contract another area already calls.')]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$WorktreePath)
     if (-not $WorktreePath -or -not (Test-Path -LiteralPath $WorktreePath -PathType Container)) { return '' }
@@ -913,6 +941,7 @@ function Stop-FmTaskNoMistakesRun {
 
 # Path-safety predicates: delegate to the lifecycle area's owners when present.
 function Test-FmTeardownRegularFile {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
     $owner = Resolve-FmTeardownOwner -Name 'Test-FmLifecycleRegularFile'
@@ -924,6 +953,7 @@ function Test-FmTeardownRegularFile {
 }
 
 function Test-FmTeardownRegularDirectory {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
     $owner = Resolve-FmTeardownOwner -Name 'Test-FmLifecycleRegularDirectory'
@@ -941,6 +971,7 @@ function Test-FmTeardownRegularDirectory {
 # deleting whatever is on the other end. Ported from the bash
 # validate_pr_poll_cleanup / remove_pr_poll_artifacts pair.
 function Remove-FmTaskPrPollArtifact {
+    [OutputType([bool])]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$StatePath,
@@ -1005,6 +1036,7 @@ function Resolve-FmTeardownOwner {
 # is installed. Carried over from the lifecycle area's teardown, so a partial
 # build still honours a configured `manual` backend instead of assuming one.
 function Test-FmTeardownTasksAxiBacklog {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ConfigPath)
 
@@ -1029,6 +1061,7 @@ function Test-FmTeardownTasksAxiBacklog {
 # gets updated. Ported from backlog_refresh_reminder; a secondmate teardown
 # prints none, since secondmates are not backlog items.
 function Get-FmTeardownBacklogReminder {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$TaskId,

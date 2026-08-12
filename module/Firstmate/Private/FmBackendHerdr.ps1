@@ -169,6 +169,7 @@ function Invoke-FmChildProcess {
 # object. Returns $null when any hop is absent - the direct equivalent of jq's
 # `.a.b.c // empty`, which every call site in the bash adapter relies on.
 function Get-FmJsonValue {
+    [OutputType([object[]])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowNull()]$InputObject,
@@ -215,6 +216,7 @@ function ConvertFrom-FmJsonSafe {
 # HERDR_SESSION mirrors tmux's $TMUX ambient selection; absent means herdr's
 # own "default" session.
 function Get-FmHerdrSession {
+    [OutputType([string])]
     [CmdletBinding()]
     param()
     if ($env:HERDR_SESSION) { return $env:HERDR_SESSION }
@@ -269,6 +271,7 @@ function Invoke-FmHerdrCliJson {
 # under a caller's 'Continue', which is exactly the kind of
 # refusal-that-might-not-refuse this port must not have.
 function Assert-FmHerdrTool {
+    [OutputType([bool])]
     [CmdletBinding()]
     param()
     if (Get-Command herdr -CommandType Application -ErrorAction SilentlyContinue) { return $true }
@@ -278,6 +281,7 @@ function Assert-FmHerdrTool {
 # Assert-FmHerdrVersion: refuse loudly on a missing or too-old herdr client.
 # Reads .client.protocol, which is session-independent (unlike .server).
 function Assert-FmHerdrVersion {
+    [OutputType([bool])]
     [CmdletBinding()]
     param()
     $null = Assert-FmHerdrTool
@@ -304,6 +308,7 @@ function Assert-FmHerdrVersion {
 # "2ndmate-<id>". Read fresh from FM_HOME on every call, never cached, so the
 # label stays stable for the life of that home.
 function Get-FmHerdrWorkspaceLabel {
+    [OutputType([string])]
     [CmdletBinding()]
     param([string]$HomePath = '')
     if (-not $HomePath) { $HomePath = $env:FM_HOME }
@@ -325,6 +330,7 @@ function Get-FmHerdrWorkspaceLabel {
 # A bare CLI call does NOT auto-start the server, so this must run before any
 # workspace/tab/pane call. Bounded poll for the server to report running.
 function Start-FmHerdrServer {
+    [OutputType([bool])]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$Session,
@@ -373,6 +379,7 @@ function Test-FmHerdrServerRunning {
 # label uniqueness, so this can legitimately return more than one id; callers
 # decide what a duplicate means for them.
 function Get-FmHerdrWorkspaceIdAll {
+    [OutputType([array], [object[]])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Session,
@@ -394,6 +401,7 @@ function Get-FmHerdrWorkspaceIdAll {
 # Safe for recovery and list paths, which address panes they already recorded
 # and only need a container to scan. NOT the spawn-time resolver.
 function Get-FmHerdrWorkspaceId {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Session)
     $all = @(Get-FmHerdrWorkspaceIdAll -Session $Session)
@@ -496,6 +504,7 @@ function Get-FmHerdrLauncherIdentity {
 # spellings of the same socket compare equal. Refuses a relative or empty path.
 # An unresolvable directory is left as-is rather than treated as a failure.
 function Get-FmHerdrCanonicalSocketPath {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter()][AllowNull()][string]$SocketPath)
     if (-not $SocketPath) { return '' }
@@ -512,6 +521,7 @@ function Get-FmHerdrCanonicalSocketPath {
 # path. Requires exactly one running session of that name carrying a non-empty
 # string socket_path.
 function Get-FmHerdrSessionSocketPath {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Session)
     $json = Invoke-FmHerdrCliJson -Session $Session -Arguments @('session', 'list', '--json')
@@ -634,6 +644,7 @@ function New-FmHerdrContainer {
 # dead|present|unknown from its JSON body, never from process exit status - a
 # business-logic "not found" is a normal outcome here, not a call failure.
 function Get-FmHerdrPanePresenceState {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Session,
@@ -657,6 +668,7 @@ function Get-FmHerdrPanePresenceState {
 #   live     - a registered agent reporting any real status.
 #   unknown  - anything else. Callers must fail safe toward refusal here.
 function Get-FmHerdrPaneAgentState {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Session,
@@ -686,6 +698,7 @@ function Get-FmHerdrPaneAgentState {
 # adapter can positively confirm; live and unknown both refuse, so an
 # inconclusive read never licenses closing anything.
 function Test-FmHerdrTabIsHusk {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Session,
@@ -697,6 +710,7 @@ function Test-FmHerdrTabIsHusk {
 # Get-FmHerdrAgentState: the recovery-grade state contract, one of
 # alive|dead|missing|unreadable. Only dead and missing license recovery.
 function Get-FmHerdrAgentState {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Target)
     $parsed = Split-FmHerdrTarget -Target $Target
@@ -730,6 +744,7 @@ function Split-FmHerdrTarget {
 # up. Every ACTIVE operation (send/capture) goes through this; the passive
 # liveness probe below deliberately does not, so a read never starts a server.
 function Test-FmHerdrTargetReady {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter()][AllowNull()][string]$Target)
     $parsed = Split-FmHerdrTarget -Target $Target
@@ -741,6 +756,7 @@ function Test-FmHerdrTargetReady {
 # server: it queries the pane directly, so a passive liveness probe cannot have
 # the side effect of resurrecting a session.
 function Test-FmHerdrTargetExists {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter()][AllowNull()][string]$Target)
     $parsed = Split-FmHerdrTarget -Target $Target
@@ -758,6 +774,7 @@ function Test-FmHerdrTargetExists {
 # nothing depends on it for isolation any more; it is kept for diagnostics and
 # for the relaunch check that an adopted endpoint really sits in its worktree.
 function Get-FmHerdrCurrentPath {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Target)
     if (-not (Test-FmHerdrTargetReady -Target $Target)) { return '' }
@@ -773,6 +790,7 @@ function Get-FmHerdrCurrentPath {
 # is the only reading available on a platform whose live foreground cwd comes
 # back empty (MEASURED on Windows herdr; data/fmwin-design/report.md section 3.2).
 function Get-FmHerdrPaneCreationPath {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Target)
     if (-not (Test-FmHerdrTargetReady -Target $Target)) { return '' }
@@ -787,6 +805,7 @@ function Get-FmHerdrPaneCreationPath {
 # filtered by tab_id. Never assumes a tab-number/pane-number correspondence -
 # herdr numbers them independently.
 function Get-FmHerdrPaneForTab {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Session,
@@ -932,6 +951,7 @@ function New-FmHerdrTask {
 # equivalent of tmux's `send-keys -t T text Enter`. Used for fixed spawn-time
 # commands. `pane run` types the command and submits it in one call.
 function Send-FmHerdrTextLine {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Target,
@@ -946,6 +966,7 @@ function Send-FmHerdrTextLine {
 # sends Enter separately. `pane send-text` does not auto-submit; it behaves
 # exactly like tmux's `send-keys -l`.
 function Send-FmHerdrLiteral {
+    [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Target,
@@ -960,6 +981,7 @@ function Send-FmHerdrLiteral {
 # `pane send-keys` names. Herdr is case-insensitive here; normalize explicitly
 # rather than relying on that.
 function ConvertTo-FmHerdrKey {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Key)
     switch -Regex ($Key) {
@@ -1014,6 +1036,7 @@ function Get-FmHerdrCapture {
 # Get-FmHerdrAgentIdentity: the native agent identity/state probe - the genuine
 # herdr primitive no other backend has natively. Returns "<agent>`t<status>".
 function Get-FmHerdrAgentIdentity {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Target)
     $parsed = Split-FmHerdrTarget -Target $Target
@@ -1033,6 +1056,7 @@ function Get-FmHerdrAgentIdentity {
 # private, drift-prone copy of the shape catalogue. 'unknown' is the fail-safe
 # direction: every caller treats it as "cannot prove", never as "safe".
 function Get-FmHerdrComposerState {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Target)
     $classifier = Get-Command -Name Get-FmComposerState -ErrorAction SilentlyContinue
@@ -1070,6 +1094,7 @@ function Get-FmHerdrComposerState {
 # watcher must see it rather than suppress it as busy); anything else ->
 # unknown, the caller's cue to fall back to pane-tail detection.
 function ConvertTo-FmHerdrBusyState {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter()][AllowNull()][AllowEmptyString()][string]$AgentStatus)
     switch ($AgentStatus) {
@@ -1085,6 +1110,7 @@ function ConvertTo-FmHerdrBusyState {
 # status. A blocked agent HAS taken the input (it reached a prompt), so submit
 # treats blocked as busy while the watcher treats it as idle.
 function ConvertTo-FmHerdrSubmitState {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter()][AllowNull()][AllowEmptyString()][string]$AgentStatus)
     switch ($AgentStatus) {
@@ -1102,6 +1128,7 @@ function ConvertTo-FmHerdrSubmitState {
 # confirmation loop polls this immediately after a caller already proved the
 # server live.
 function Get-FmHerdrAgentStatusRaw {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Session,
@@ -1115,6 +1142,7 @@ function Get-FmHerdrAgentStatusRaw {
 # Get-FmHerdrBusyState: semantic busy state from herdr's native agent-state
 # detection - the one backend where this has real semantics beyond pane regex.
 function Get-FmHerdrBusyState {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Target)
     if (-not (Test-FmHerdrTargetReady -Target $Target)) { return 'unknown' }
@@ -1146,6 +1174,7 @@ function Get-FmHerdrSubmitConfirmBudget {
 # what makes this robust against a slow transition; real claude and codex were
 # measured at 90-490ms to first `working`.
 function Wait-FmHerdrWorking {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Session,
@@ -1187,6 +1216,7 @@ function Wait-FmHerdrWorking {
 # Echoes empty|pending|unknown|send-failed. Empty means confirmed submitted;
 # how each backend confirms it is an internal decision.
 function Send-FmHerdrTextSubmit {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Target,
@@ -1268,6 +1298,7 @@ function Test-FmHerdrEndpointGone {
 # guaranteed stable across every server lifecycle. Read-only: a session or
 # workspace that does not exist yet simply lists nothing.
 function Get-FmHerdrLiveTask {
+    [OutputType([array], [object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Session)
     $wsid = Get-FmHerdrWorkspaceId -Session $Session
@@ -1357,6 +1388,7 @@ function Get-FmMetaPath {
 # Get-FmMetaValue: the LAST value of `key=` in the meta file, or '' when the
 # file or key is absent. Never errors - the fm_meta_get contract.
 function Get-FmMetaValue {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -1393,6 +1425,7 @@ function Get-FmMetaExactValue {
 # when the field is absent - the compatibility contract that keeps a
 # default-path meta byte-identical across implementations.
 function Get-FmMetaBackend {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
     $value = Get-FmMetaValue -Path $Path -Key 'backend'
@@ -1606,6 +1639,7 @@ function Resolve-FmTaskSelector {
 # exact because a `pi*` prefix would swallow the signed adapter. An
 # unrecognized value returns '' rather than being guessed into a family.
 function Get-FmControlHarnessFamily {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter()][AllowNull()][AllowEmptyString()][string]$RecordedHarness)
     if (-not $RecordedHarness) { return '' }
@@ -1625,6 +1659,7 @@ function Get-FmControlHarnessFamily {
 # The key that cancels a running turn. Escape for every adapter except grok,
 # whose Esc only moves focus to the scrollback; grok cancels on Ctrl+C.
 function Get-FmControlInterruptKey {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Harness)
     switch ($Harness) {
@@ -1637,6 +1672,7 @@ function Get-FmControlInterruptKey {
 # How many times the interrupt key must be delivered. OpenCode needs a double
 # Escape; every other verified adapter interrupts on a single press.
 function Get-FmControlInterruptRepeat {
+    [OutputType([int])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Harness)
     if ($Harness -eq 'opencode') { return 2 }
@@ -1649,6 +1685,7 @@ function Get-FmControlInterruptRepeat {
 # composer as real bright text, so an interrupt is not complete until Ctrl+U
 # has cleared it - otherwise the next submitted line concatenates onto it.
 function Get-FmControlInterruptClearKey {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Harness)
     if ($Harness -eq 'muse') { return 'C-u' }
@@ -1657,6 +1694,7 @@ function Get-FmControlInterruptClearKey {
 
 # The command that exits the agent from its own composer.
 function Get-FmControlExitCommand {
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Harness)
     switch ($Harness) {
@@ -1684,6 +1722,7 @@ function Test-FmControlBackendSupportsKey {
 # "the agent stopped" cannot be proven, and the control plane refuses a
 # stop-proving verb rather than reporting an unproven transition as done.
 function Test-FmControlBackendStateVerified {
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Backend)
     $Backend -in @('tmux', 'herdr')
@@ -1702,6 +1741,7 @@ function Test-FmControlBackendStateVerified {
 # control plane reports for every adapter except muse - never a claim that the
 # turn was cancelled.
 function Send-FmControlInterrupt {
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Backend,
