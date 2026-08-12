@@ -38,9 +38,10 @@ function Invoke-FmBoundedCommand {
         throws for a failed or missing binary - callers branch on the returned
         record exactly as the bash callers branch on exit status.
 
-        On Windows the child is assigned to a kill-on-close Job Object, so the
-        bound kills the whole tree the check spawned and a crash of this process
-        kills it too. Elsewhere, and when the shim cannot load, the fallback is
+        On Windows the child is assigned to a kill-on-close Job Object (the
+        module's one job-object shim, Private/FmJobCustody.ps1), so the bound
+        kills the whole tree the check spawned and a crash of this process kills
+        it too. Elsewhere, and when the shim cannot load, the fallback is
         Process.Kill($true). The record's Mechanism says which one ran, so a test
         (and a bug report) can tell them apart.
 
@@ -88,7 +89,7 @@ function Invoke-FmBoundedCommand {
 
     try {
         if ($useJob) {
-            $job = [Firstmate.FmJobObjectNative]::CreateKillOnCloseJob()
+            $job = New-FmBoundedJob
             if ($job -eq [IntPtr]::Zero) { $useJob = $false; $mechanism = 'process-tree' }
         }
         try { $null = $proc.Start() }
@@ -104,7 +105,7 @@ function Invoke-FmBoundedCommand {
         if ($useJob) {
             # Assigned immediately after start: every process the child spawns
             # from here is created inside the job and inherits its fate.
-            if (-not [Firstmate.FmJobObjectNative]::AssignProcessToJobObject($job, $proc.Handle)) {
+            if (-not [Firstmate.JobCustody]::Assign($job, $proc.Id)) {
                 $useJob = $false
                 $mechanism = 'process-tree'
             }
@@ -120,7 +121,7 @@ function Invoke-FmBoundedCommand {
         $timedOut = $false
         if (-not $proc.WaitForExit([int][math]::Ceiling($TimeoutSeconds * 1000))) {
             $timedOut = $true
-            if ($useJob) { $null = [Firstmate.FmJobObjectNative]::TerminateJobObject($job, 124) }
+            if ($useJob) { $null = [Firstmate.JobCustody]::Terminate($job) }
             else { try { $proc.Kill($true) } catch { $null = $_ } }
             try { $null = $proc.WaitForExit(5000) } catch { $null = $_ }
         }
@@ -145,7 +146,8 @@ function Invoke-FmBoundedCommand {
     }
     finally {
         $proc.Dispose()
-        if ($job -ne [IntPtr]::Zero) { $null = [Firstmate.FmJobObjectNative]::CloseHandle($job) }
+        # Closing the last handle is also what reaps anything still inside it.
+        if ($job -ne [IntPtr]::Zero) { $null = [Firstmate.JobCustody]::Close($job) }
     }
 }
 

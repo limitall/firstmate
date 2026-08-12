@@ -4,7 +4,7 @@ Two small owners that other areas were already calling by name and not finding.
 
 | This module | Ported from | Owns |
 | --- | --- | --- |
-| `module/Firstmate/Private/FmBounded.ps1` | the process-group half of `bin/fm-timeout-lib.sh`, `bin/fm-watch.sh`'s `run_check_process` | the Win32 Job Object shim |
+| `module/Firstmate/Private/FmBounded.ps1` | the process-group half of `bin/fm-timeout-lib.sh`, `bin/fm-watch.sh`'s `run_check_process` | the kill-on-close job policy, on top of the teardown area's job shim |
 | `module/Firstmate/Public/FmBounded.ps1` | `fm_run_timed`, the check half of `bin/fm-watch.sh` | `Invoke-FmBoundedCommand`, `Invoke-FmValidatedCheck`, `Test-FmCheckAuthenticated` |
 | `module/Firstmate/Public/FmTangle.ps1` | `bin/fm-tangle-lib.sh` | `Get-FmPrimaryTangleBranch`, `Get-FmDefaultBranch` |
 
@@ -38,14 +38,22 @@ the last handle to the job closes and the OS reaps the tree. A job object is
 also strictly stronger than a Unix process group here - a child cannot escape by
 re-grouping itself.
 
-There is no managed API, so this needs a small `Add-Type` P/Invoke shim.
-**# WINDOWS-UNVERIFIED: the shim has never executed on Windows in this repo.**
-Everywhere else - and whenever the shim fails to load - the fallback is .NET's
-`Process.Kill($true)`, which walks the child list at kill time. That is the
-weaker `taskkill /T` guarantee the report describes, which is why the job object
-is the primary path rather than the only one. The returned `Mechanism` says
-which ran, and `FM_BOUNDED_FORCE_FALLBACK=1` forces the fallback so both paths
-are exercised on one platform.
+**One P/Invoke surface, two lifetimes.** `Private/FmJobCustody.ps1` (teardown
+area) already owns every kernel32 job-object declaration this module makes, so
+bounding adds a policy on top of it rather than a second set of imports:
+`JobCustody::CreateKillOnClose` is the anonymous, kill-on-close job this needs.
+The difference from custody is the lifetime, and it is the whole point - a
+task's custody job must OUTLIVE the process that created it so teardown can find
+it later, while a bounded run's job must die WITH its owner so a crashed watcher
+cannot strand a check's tree.
+
+**# WINDOWS-UNVERIFIED: no job-object call in this module has executed on
+Windows in this repo.** Everywhere else - and whenever the shim fails to load -
+the fallback is .NET's `Process.Kill($true)`, which walks the child list at kill
+time. That is the weaker `taskkill /T` guarantee the report describes, which is
+why the job object is the primary path rather than the only one. The returned
+`Mechanism` says which ran, and `FM_BOUNDED_FORCE_FALLBACK=1` forces the
+fallback so both paths are exercised on one platform.
 
 `Invoke-FmChildProcess` (backend area) stays the generic argv runner for
 ordinary CLI calls; its `-TimeoutSeconds` is a courtesy bound on a cooperating

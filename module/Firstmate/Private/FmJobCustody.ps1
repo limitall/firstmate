@@ -95,6 +95,8 @@ namespace Firstmate
         public const uint JOB_OBJECT_QUERY = 0x0004;
         public const uint SYNCHRONIZE = 0x00100000;
         private const int JobObjectBasicProcessIdList = 3;
+        private const int JobObjectExtendedLimitInformation = 9;
+        public const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
         private const int ERROR_MORE_DATA = 234;
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -115,6 +117,11 @@ namespace Firstmate
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool QueryInformationJobObject(IntPtr hJob, int JobObjectInfoClass,
             IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength, IntPtr lpReturnLength);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetInformationJobObject(IntPtr hJob, int JobObjectInfoClass,
+            IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -142,6 +149,43 @@ namespace Firstmate
         public static IntPtr Create(string name)
         {
             return CreateJobObjectW(IntPtr.Zero, name);
+        }
+
+        // An ANONYMOUS job whose members die when the last handle to it closes.
+        //
+        // The opposite lifetime to the named custody job above, on purpose. A
+        // task's custody job must OUTLIVE the process that created it, so
+        // teardown can find and terminate it later; a bounded run's job must
+        // die WITH its owner, so a crashed watcher cannot strand a check's
+        // process tree. Same kernel object, two rules - kept in one shim so
+        // there is a single P/Invoke surface for job objects in this module.
+        // Used by Invoke-FmBoundedCommand (docs/bounded-execution.md).
+        public static IntPtr CreateKillOnClose()
+        {
+            IntPtr job = CreateJobObjectW(IntPtr.Zero, null);
+            if (job == IntPtr.Zero) { return IntPtr.Zero; }
+            // JOBOBJECT_EXTENDED_LIMIT_INFORMATION laid out by hand: a
+            // BASIC_LIMIT_INFORMATION, then IO_COUNTERS, then four pointers.
+            // Only LimitFlags is set, at its documented offset.
+            int basicSize = (2 * sizeof(long)) + sizeof(uint) + (2 * IntPtr.Size)
+                + sizeof(uint) + IntPtr.Size + (2 * sizeof(uint));
+            int size = basicSize + (6 * sizeof(ulong)) + (4 * IntPtr.Size);
+            IntPtr buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                for (int i = 0; i < size; i++) { Marshal.WriteByte(buffer, i, 0); }
+                Marshal.WriteInt32(buffer, 2 * sizeof(long), (int)JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE);
+                if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, buffer, (uint)size))
+                {
+                    CloseHandle(job);
+                    return IntPtr.Zero;
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+            return job;
         }
 
         public static IntPtr OpenForTerminate(string name)
