@@ -582,9 +582,22 @@ function New-FmHookDenyDecision {
 
 # --- Claude Code settings emission --------------------------------------------
 
-# WINDOWS-UNVERIFIED: the "shell": "powershell" per-hook field and the exact
-# command-string quoting Claude Code applies on Windows are taken from Claude
-# Code's documentation and have not been executed against a Windows host.
+# The "shell": "powershell" per-hook field is Claude Code's documented Windows
+# hook mode. MEASURED on the captain's laptop against Claude Code 2.1.228: it
+# runs each hook as
+#   pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "<command>"
+# with the JSON payload on the process's stdin.
+#
+# `; exit $LASTEXITCODE` IS LOAD-BEARING, and the whole guard surface is inert
+# without it. `pwsh -Command '& <script>'` does NOT propagate the script's exit
+# code: a script that exits 2 makes pwsh itself exit 1, because -Command derives
+# its status from $? rather than from the child script's code. Claude Code reads
+# exit 2 as "block" and any other non-zero as a non-blocking error, so with the
+# bare `& <script>` form EVERY PreToolUse deny and EVERY Stop block reached
+# Claude as an ignorable warning - the guard ran, decided correctly, and was
+# discarded. Re-exiting with $LASTEXITCODE carries 2 through unchanged and
+# leaves 0 as 0; both directions are measured by tests/FmHooks.Tests.ps1 and on
+# Windows in docs/windows-e2e-evidence.md. Do not "simplify" this away.
 function Get-FmClaudeHookSettingsObject {
     [OutputType([System.Collections.Specialized.OrderedDictionary])]
     [CmdletBinding()]
@@ -594,6 +607,7 @@ function Get-FmClaudeHookSettingsObject {
         param($script, $argument)
         $command = "& `"`$env:CLAUDE_PROJECT_DIR/bin/$script`""
         if ($argument) { $command += " $argument" }
+        $command += '; exit $LASTEXITCODE'
         [ordered]@{ type = 'command'; shell = 'powershell'; command = $command }
     }
 

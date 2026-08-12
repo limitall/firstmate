@@ -8,33 +8,97 @@ Windows/PowerShell port of the tracked Claude hook entrypoints:
 contract for the turn-end guard and the Stop-owned auto-arm. This file records
 only what the Windows port assumes, what it proves, and what it cannot.
 
-## WINDOWS-UNVERIFIED: the boundary
+## How Claude Code actually invokes a PowerShell hook - MEASURED
 
-Claude Code documents a PowerShell-native hook mode on Windows, with a per-hook
-`"shell": "powershell"` field. **Everything on the far side of that documentation
-is unverified from this port**, because the port was written on Linux where the
-host does not exist. Specifically, none of these has been observed:
+Measured on the captain's Windows 11 laptop against **Claude Code 2.1.228**, by
+registering an instrumented hook that recorded its own and its parent's command
+line. A `"shell": "powershell"` hook runs as:
 
-- that Claude Code on Windows runs a `"shell": "powershell"` hook at all, or
-  applies the command-string quoting `Get-FmClaudeHookSettings` emits;
-- that it delivers the JSON payload on stdin to such a hook;
-- that it honours exit 2 plus stderr as a block-with-feedback for `Stop`, and as
-  a deny for `PreToolUse` with stdout required to stay empty;
+```
+"C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -NonInteractive
+    -ExecutionPolicy Bypass -Command "<the command string from settings.json>"
+```
+
+with the JSON payload on the process's **stdin**, and with `CLAUDE_PROJECT_DIR`
+set. Two consequences are load-bearing, and each one had already produced a
+silent defect:
+
+**1. The payload is raw console input, not pipeline input.** In that shape
+PowerShell places nothing on the script's own pipeline (the instrumented hook
+recorded zero pipeline objects), so the payload is reachable only through
+`[Console]::In.ReadToEnd()`. But a PowerShell *caller* that pipes the payload -
+`Get-Content p.json | fm-claude-hook.ps1 -Event ...`, or any host wrapping the
+hook as `$input | & <script>` - delivers it as pipeline input instead, and
+against an entry point with no pipeline-bound parameter that is a **parameter
+binding failure**:
+
+```
+The input object cannot be bound to any parameters for the command either
+because the command does not take pipeline input ...
+```
+
+Binding happens *before* the script body, so the entry point's own `try`/`catch`
+cannot catch it: the hook exits non-zero having never run the guard. The entry
+point therefore declares an `-InputObject` parameter that accepts anything, so no
+input can fail to bind, and joins what arrives into the payload.
+
+An earlier commit (`ed1fdab`) is titled "Fix the hook entry point never reading
+its stdin payload". It fixed a real and *different* bug one layer in:
+`Invoke-FmClaudeHook` decided whether to read stdin by testing `$Payload` for
+`$null`, and an unbound `[string]` parameter arrives as the empty string, so the
+read was skipped and every hook failed open. That fix is correct and still
+stands - the raw-stdin transport is measured working above. What it could not
+reach is the *entry point's parameter binding*, which fails before any of that
+code runs. Both layers are now correct, and both have tests.
+
+**2. `pwsh -Command '& <script>'` DOES NOT PROPAGATE THE SCRIPT'S EXIT CODE.**
+A script that exits 2 makes `pwsh` itself exit **1**, because `-Command` derives
+its status from `$?` rather than from the child script's code. Claude Code blocks
+on exit 2 and treats every other non-zero code as an ignorable non-blocking
+error, so with the bare `& <script>` form **every PreToolUse deny and every Stop
+block was computed correctly and then discarded**. It took the `asyncRewake`
+auto-arm with it: that hook signals "wake this idle session" with exit 2 as
+well, so watcher continuity had no path back into the session either. Every registered command
+therefore ends with `; exit $LASTEXITCODE`, which carries 2 through unchanged and
+leaves 0 as 0. Both directions are asserted by `tests/FmHooks.Tests.ps1`, which
+drives the entry point through Claude Code's exact invocation shape.
+
+## WINDOWS-UNVERIFIED: what is still on the far side
+
+These remain documentation-only, and every function implementing one carries its
+own `# WINDOWS-UNVERIFIED:` marker naming what specifically is unproven:
+
+- that Claude Code honours exit 2 plus stderr as a block-with-feedback for
+  `Stop`, and as a deny for `PreToolUse` with stdout required to stay empty;
 - that a `Stop` hook with `"asyncRewake": true` fires in the background on every
   Stop, honours the 28800-second timeout, and turns its exit 2 into a rewake of
   an idle session;
-- that `SessionStart` hook stdout is injected into model context;
-- that `CLAUDE_PROJECT_DIR` is set for a PowerShell-native hook.
+- that `SessionStart` hook stdout is injected into model context.
 
-Every function implementing one of those behaviours carries its own
-`# WINDOWS-UNVERIFIED:` marker naming what specifically is unproven. Confirming
-them needs one session on a real Windows host; until then, treat the hook
-registration as a design, not a validated integration.
+## The captain's "every shell command is denied" was NOT this hook
+
+Recorded here because the misdiagnosis cost a full investigation. The reported
+symptom - a session in the checkout that could read and write files but could not
+execute anything, reporting "both PowerShell and Bash denied" - is Claude Code's
+own permission layer, not firstmate. The session transcript on the laptop
+(`~/.claude/projects/C--Users-ADMIN-firstmate-win/`) records it verbatim:
+
+```
+Error: Permission to use Bash has been denied because Claude Code is running
+in don't ask mode.
+```
+
+`C:\Users\ADMIN\.claude\settings.json` carries
+`"permissions": { "defaultMode": "dontAsk" }`, which denies every tool call not
+on the explicit allow-list without prompting. File reads and writes stay allowed,
+which is exactly the observed split. All six firstmate hooks were measured
+exiting 0 on that machine with realistic payloads. **No hook change can fix
+that symptom**; it is a setting in the captain's own Claude configuration.
 
 ## What IS proven on this host
 
 Everything on the near side of that boundary, by `tests/FmHooks.Tests.ps1`
-(54 tests, run on Linux with PowerShell 7.6 and Pester 6.1):
+(77 tests, run on Linux with PowerShell 7.6 and Pester 6.1):
 
 - payload parsing, including `stopHookActive` taking precedence over
   `stop_hook_active` and a non-boolean value being treated as malformed;
@@ -47,7 +111,15 @@ Everything on the near side of that boundary, by `tests/FmHooks.Tests.ps1`
 - the whole turn-end block/allow state machine, and the auto-arm's epoch and
   failure-episode progression;
 - the byte layout of `state/.claude-autoarm-epoch` and
-  `state/.turnend-claude-blocks`.
+  `state/.turnend-claude-blocks`;
+- **the transport, through every shape**. Each event is driven end to end in a
+  real child process with a real payload, through Claude Code's own
+  `-Command "& <script> ...; exit $LASTEXITCODE"` invocation AND through the
+  PowerShell-pipeline shape, and the `cd` guard is asserted both DENYING the
+  command it exists to deny (exit 2, empty stdout, the deny object on stderr) and
+  ALLOWING an ordinary one. Each of those has a negative control: reverting the
+  entry point fails 7 of them, removing `; exit $LASTEXITCODE` fails the wiring
+  test, and removing the policy owner fails both deny tests.
 
 That is possible because the hook functions never write to the host. They return
 a decision object - `ExitCode`, `Stdout`, `Stderr` - and `bin/fm-claude-hook.ps1`
@@ -90,7 +162,9 @@ loaded in pieces:
   its own predicate, and blocking every turn end on that basis would wedge the
   session outright. This is the module-partial-build analogue of missing `jq`;
 - a missing PreToolUse policy owner allows, because only the policy owner may
-  decide deny;
+  decide deny. The `cd` owner now exists (`Test-FmCdCommandPolicy`, see
+  `docs/cd-guard-windows.md`); `arm` and `subagent` are still unported, so those
+  two hooks are deliberately inert rather than accidentally so;
 - a missing `Invoke-FmWatchArm` leaves the Stop auto-arm silent and inert;
 - any unexpected exception in `bin/fm-claude-hook.ps1` exits 0 with a diagnostic
   on stderr. A hook that crashes must never take a session with it.

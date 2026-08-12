@@ -614,6 +614,26 @@ Describe 'Get-FmClaudeHookSettings' {
     It 'renders as JSON' {
         (Get-FmClaudeHookSettings) | ConvertFrom-Json | Should -Not -BeNullOrEmpty
     }
+
+    It 're-exits with $LASTEXITCODE, without which no deny ever reaches Claude' {
+        # `pwsh -Command '& <script>'` - the exact form Claude Code runs a
+        # "shell": "powershell" hook as - does NOT propagate the script's exit
+        # code: a script exiting 2 makes pwsh exit 1, which Claude reads as an
+        # ignorable error rather than a block. Every registered hook must carry
+        # the re-exit. The behaviour itself is proven in the end-to-end Describe
+        # below; this only guards the wiring that every install writes.
+        $settings = Get-FmClaudeHookSettings -AsObject
+        $commands = @(
+            $settings.hooks.SessionStart[0].hooks.command
+            $settings.hooks.PreToolUse[0].hooks.command
+            $settings.hooks.PreToolUse[1].hooks.command
+            $settings.hooks.Stop[0].hooks.command
+        )
+        $commands.Count | Should -Be 6
+        foreach ($command in $commands) {
+            $command | Should -BeLike '*; exit $LASTEXITCODE'
+        }
+    }
 }
 
 Describe 'bin/fm-claude-hook.ps1 end to end' {
@@ -638,8 +658,28 @@ Describe 'bin/fm-claude-hook.ps1 end to end' {
             (Join-Path $script:E2ERoot 'module' 'Firstmate' 'Private' 'ZZTestWatcherStub.ps1'),
             "function Test-FmWatcherHealthy { param(`$State, `$Grace) `$false }`n")
 
+        # The e2e checkout must also be a PLAIN git repository, because that is
+        # what the cd guard scopes itself to. Without this the guard is inert and
+        # the deny test below would pass for the wrong reason.
+        & git -C $script:E2ERoot init --initial-branch=main . 2>&1 | Out-Null
+        & git -C $script:E2ERoot -c user.email=t@t -c user.name=t commit --allow-empty -m e2e 2>&1 | Out-Null
+
+        # Transport is the whole point of this Describe, so it is a parameter.
+        #   File     - pwsh -File <entry>, the shape the older tests used.
+        #   Command  - pwsh -Command "& '<entry>' <args>; exit $LASTEXITCODE",
+        #              which is EXACTLY what Claude Code runs a "shell":
+        #              "powershell" hook as (measured, Claude Code 2.1.228).
+        #   Pipeline - the payload arrives as PowerShell PIPELINE input rather
+        #              than raw stdin. This is the shape that used to be a
+        #              parameter-binding failure before the entry point declared
+        #              a pipeline-bound parameter, and a binding failure happens
+        #              before the script body so its own try/catch cannot save it.
         function Invoke-HookEntryPoint {
-            param([string]$Payload, [string[]]$HookArguments)
+            param(
+                [string]$Payload,
+                [string[]]$HookArguments,
+                [ValidateSet('File', 'Command', 'Pipeline')][string]$Transport = 'File'
+            )
 
             $entry = Join-Path $script:E2ERoot 'bin' 'fm-claude-hook.ps1'
             $stdout = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
@@ -647,9 +687,23 @@ Describe 'bin/fm-claude-hook.ps1 end to end' {
             $stdin = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
             [System.IO.File]::WriteAllText($stdin, $Payload)
 
+            $quotedEntry = "'" + $entry.Replace("'", "''") + "'"
+            $hookArgumentText = ($HookArguments -join ' ')
+            $argv = switch ($Transport) {
+                'File' { @('-NoProfile', '-NonInteractive', '-File', $entry) + $HookArguments }
+                'Command' {
+                    @('-NoProfile', '-NonInteractive', '-Command',
+                        "& $quotedEntry $hookArgumentText; exit `$LASTEXITCODE")
+                }
+                'Pipeline' {
+                    @('-NoProfile', '-NonInteractive', '-Command',
+                        "`$input | & $quotedEntry $hookArgumentText; exit `$LASTEXITCODE")
+                }
+            }
+
             $psi = [System.Diagnostics.ProcessStartInfo]::new()
             $psi.FileName = (Get-Process -Id $PID).Path
-            foreach ($a in (@('-NoProfile', '-NonInteractive', '-File', $entry) + $HookArguments)) {
+            foreach ($a in $argv) {
                 $psi.ArgumentList.Add($a)
             }
             $psi.UseShellExecute = $false
@@ -694,6 +748,104 @@ Describe 'bin/fm-claude-hook.ps1 end to end' {
             -HookArguments @('-Event', 'PreToolUse', '-Check', 'arm')
         $result.ExitCode | Should -Be 0
         $result.Stdout | Should -Be ''
+    }
+
+    # --- transport ------------------------------------------------------------
+    # The captain's report was "every shell command denied", and the diagnosis
+    # offered was that piping a payload into the entry point produced
+    #   The input object cannot be bound to any parameters for the command ...
+    # That IS reproducible - through a PowerShell pipeline - and it is fatal: the
+    # binding failure happens before the script body, so the entry point's own
+    # try/catch never runs, the guard never runs, and the hook exits non-zero.
+    # Every event is asserted through every transport, because the previous
+    # regression test used only one shape and that is precisely why this shipped.
+
+    It 'accepts the payload through the <Transport> transport for <Arguments>' -ForEach @(
+        @{ Transport = 'Command'; Arguments = @('-Event', 'PreToolUse', '-Check', 'arm') }
+        @{ Transport = 'Command'; Arguments = @('-Event', 'PreToolUse', '-Check', 'cd') }
+        @{ Transport = 'Command'; Arguments = @('-Event', 'PreToolUse', '-Check', 'subagent') }
+        @{ Transport = 'Pipeline'; Arguments = @('-Event', 'PreToolUse', '-Check', 'arm') }
+        @{ Transport = 'Pipeline'; Arguments = @('-Event', 'PreToolUse', '-Check', 'cd') }
+        @{ Transport = 'Pipeline'; Arguments = @('-Event', 'PreToolUse', '-Check', 'subagent') }
+        @{ Transport = 'Pipeline'; Arguments = @('-Event', 'Stop', '-Check', 'autoarm') }
+    ) {
+        $payload = '{"session_id":"s1","cwd":"c","hook_event_name":"PreToolUse","tool_name":"Bash",' +
+        '"tool_input":{"command":"git status"}}'
+        $result = Invoke-HookEntryPoint -Payload $payload -HookArguments $Arguments -Transport $Transport
+        $result.ExitCode | Should -Be 0
+        $result.Stderr | Should -Not -BeLike '*cannot be bound to any parameters*'
+        $result.Stderr | Should -Not -BeLike '*failed open*'
+    }
+
+    It 'still emits the SessionStart digest when the payload arrives as pipeline input' {
+        $result = Invoke-HookEntryPoint -Payload '{"source":"startup"}' `
+            -HookArguments @('-Event', 'SessionStart') -Transport Pipeline
+        $result.ExitCode | Should -Be 0
+        $result.Stdout | Should -BeLike '*READ-ONCE CONTRACT*'
+        $result.Stderr | Should -Not -BeLike '*cannot be bound to any parameters*'
+    }
+
+    It 'still blocks the Stop when the payload arrives as pipeline input' {
+        $result = Invoke-HookEntryPoint -Payload '{"session_id":"s1","stop_hook_active":true}' `
+            -HookArguments @('-Event', 'Stop', '-Check', 'turnend-guard') -Transport Pipeline
+        $result.ExitCode | Should -Be 2
+        $result.Stderr | Should -BeLike '*TURN WOULD END BLIND - SUPERVISION IS OFF*'
+    }
+
+    # --- the guard actually firing -------------------------------------------
+    # A hook that stops erroring but never denies is the same outage wearing a
+    # different costume, so the deny is asserted through Claude Code's own
+    # invocation shape, end to end, with the real policy owner loaded.
+
+    It 'DENIES a persistent top-level cd through Claude Code''s own invocation shape' {
+        $payload = '{"session_id":"s1","cwd":"c","hook_event_name":"PreToolUse","tool_name":"Bash",' +
+        '"tool_input":{"command":"cd projects/acme && git status"}}'
+        $result = Invoke-HookEntryPoint -Payload $payload `
+            -HookArguments @('-Event', 'PreToolUse', '-Check', 'cd') -Transport Command
+        # Exit 2 is the whole contract: Claude Code blocks on 2 and treats every
+        # other non-zero code as an ignorable error.
+        $result.ExitCode | Should -Be 2
+        # Claude requires stdout to stay empty on a deny.
+        $result.Stdout | Should -Be ''
+        $decision = $result.Stderr | ConvertFrom-Json
+        $decision.hookSpecificOutput.hookEventName | Should -Be 'PreToolUse'
+        $decision.hookSpecificOutput.permissionDecision | Should -Be 'deny'
+        # -Match, not -BeLike: square brackets are a wildcard character class.
+        $decision.systemMessage | Should -Match '\[persistent-cd\]'
+    }
+
+    It 'ALLOWS an ordinary command through the same shape' {
+        $payload = '{"session_id":"s1","cwd":"c","hook_event_name":"PreToolUse","tool_name":"Bash",' +
+        '"tool_input":{"command":"pwsh -NoProfile -Command \"Invoke-Pester -Path ./tests\""}}'
+        $result = Invoke-HookEntryPoint -Payload $payload `
+            -HookArguments @('-Event', 'PreToolUse', '-Check', 'cd') -Transport Command
+        $result.ExitCode | Should -Be 0
+        $result.Stdout | Should -Be ''
+        $result.Stderr | Should -Be ''
+    }
+
+    It 'denies identically when the payload arrives as pipeline input' {
+        $payload = '{"tool_name":"Bash","tool_input":{"command":"cd projects/acme"}}'
+        $result = Invoke-HookEntryPoint -Payload $payload `
+            -HookArguments @('-Event', 'PreToolUse', '-Check', 'cd') -Transport Pipeline
+        $result.ExitCode | Should -Be 2
+        $result.Stderr | Should -BeLike '*persistent-cd*'
+    }
+
+    # --- no payload -----------------------------------------------------------
+
+    It 'fails OPEN on <Case>, because denying every tool call is the outage' -ForEach @(
+        @{ Case = 'an empty payload'; Payload = '' }
+        @{ Case = 'a payload that is not JSON'; Payload = 'not json at all {{{' }
+        @{ Case = 'JSON that is not an object'; Payload = '["a","b"]' }
+        @{ Case = 'an object with no tool_input'; Payload = '{"session_id":"s"}' }
+    ) {
+        foreach ($check in @('arm', 'cd', 'subagent')) {
+            $result = Invoke-HookEntryPoint -Payload $Payload `
+                -HookArguments @('-Event', 'PreToolUse', '-Check', $check) -Transport Command
+            $result.ExitCode | Should -Be 0 -Because "the $check hook must not deny on $Case"
+            $result.Stdout | Should -Be ''
+        }
     }
 }
 

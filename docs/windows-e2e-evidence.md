@@ -797,6 +797,232 @@ checkout/home layout of 6.5 is NOT among them.
 
 ---
 
+---
+
+## 7. The Claude hook transport and the cd guard, on the captain's laptop - `PROVEN (Windows 11)`
+
+Executed on the laptop at `C:\Users\ADMIN\firstmate-win` (checkout and home are
+the same directory), PowerShell 7.6.4, Pester 6.1, Claude Code **2.1.228**, with
+the branch checked out and `.claude/settings.json` regenerated from
+`Get-FmClaudeHookSettings`.
+
+### 7.0 The reported symptom was not this hook - `PROVEN (Windows 11)`
+
+The brief's premise was that `bin/fm-claude-hook.ps1` denied every tool call.
+It does not, and the laptop says what did. The captain's own session transcript,
+`~/.claude/projects/C--Users-ADMIN-firstmate-win/3a278456-....jsonl`:
+
+```
+Error: Permission to use PowerShell has been denied because Claude Code is
+running in don't ask mode.
+Error: Permission to use Bash has been denied because Claude Code is running
+in don't ask mode.
+```
+
+and that session's own reply, which is what the captain relayed:
+
+```
+I can't run anything - both PowerShell and Bash are blocked in this session
+("don't ask" permission mode), so there's no way for me to execute the Pester
+suite.
+```
+
+`C:\Users\ADMIN\.claude\settings.json` carries
+`"permissions": { ..., "defaultMode": "dontAsk" }`. That mode denies every tool
+call not on the explicit allow-list without prompting, and leaves file reads and
+writes alone - exactly the observed split. **No firstmate change fixes it**; it
+is a setting in the captain's own Claude configuration. It is recorded here so
+the next investigation does not start from the same wrong place.
+
+### 7.1 How Claude Code invokes a PowerShell hook - `PROVEN (Windows 11)`
+
+Measured by registering an instrumented hook in a throwaway project and driving a
+real `claude` session at it. The hook recorded its own and its parent's command
+line:
+
+```
+selfCommandLine="C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile
+    -NonInteractive -ExecutionPolicy Bypass
+    -Command "& \"$env:CLAUDE_PROJECT_DIR/probe-hook.ps1\" -Check bashprobe"
+parentCommandLine="C:\Users\ADMIN\.local\bin\claude.exe" -p ...
+pipelineObjectCount=0
+IsInputRedirected=True
+consoleInReadToEnd=[{"session_id":"784b2cf4-...","cwd":"C:\\Users\\ADMIN\\fmprobe",
+  "hook_event_name":"PreToolUse","tool_name":"Bash",
+  "tool_input":{"command":"echo probe-marker-9931",...},...}]
+```
+
+So: `-Command`, payload on raw stdin, nothing on the script's pipeline. That one
+capture settles both transport questions below.
+
+### 7.2 Every hook, every transport, realistic payload - `PROVEN (Windows 11)`
+
+```
+--- transport: Command (Claude Code's own shape) ---
+  PreToolUse arm       exit=0 stdout=empty binding=ok
+  PreToolUse cd        exit=0 stdout=empty binding=ok
+  PreToolUse subagent  exit=0 stdout=empty binding=ok
+  SessionStart         exit=0 stdout=6411b binding=ok
+  Stop turnend-guard   exit=0 stdout=empty binding=ok
+  Stop autoarm         exit=0 stdout=empty binding=ok
+--- transport: Pipeline (the shape that used to be a binding error) ---
+  PreToolUse arm       exit=0 stdout=empty binding=ok
+  PreToolUse cd        exit=0 stdout=empty binding=ok
+  PreToolUse subagent  exit=0 stdout=empty binding=ok
+  SessionStart         exit=0 stdout=6411b binding=ok
+  Stop turnend-guard   exit=0 stdout=empty binding=ok
+  Stop autoarm         exit=0 stdout=empty binding=ok
+```
+
+`binding=ok` means the stderr carried no "cannot be bound to any parameters".
+`SessionStart` returning 6411 bytes of digest is the payload having been read.
+
+### 7.3 The exit code, which is where the guard surface was actually lost - `PROVEN (Windows 11)`
+
+```
+pwsh -Command 'exit 2'                 -> 2
+pwsh -Command '& <hook>'   (old form)  -> 1   <- a deny arriving as a non-blocking error
+pwsh -Command '& <hook>; exit $LASTEXITCODE'  -> 2   <- Claude blocks
+```
+
+Measured on the laptop, against the real hook, with a real deny payload. The old
+form is what every installed `.claude/settings.json` contained, so every
+PreToolUse deny, every Stop block, and every `asyncRewake` rewake was computed
+correctly and then discarded.
+
+### 7.4 The cd guard denying and allowing - `PROVEN (Windows 11)`
+
+```
+DENY case  'cd projects/acme && git status':
+  exit=2                       (2 = Claude blocks the tool call)
+  stdout=[]                    (must be empty on a deny)
+  stderr={"hookSpecificOutput":{"hookEventName":"PreToolUse",
+          "permissionDecision":"deny"},
+          "systemMessage":"[persistent-cd] a persistent top-level directory
+          change in the primary firstmate checkout is blocked; ..."}
+ALLOW case 'git status':
+  exit=0   stdout=[]   stderr=[]
+```
+
+and through the policy owner in process, in the real checkout:
+
+```
+  cd projects/acme                              DENY [persistent-cd]
+  pushd x                                       DENY [persistent-cd]
+  (cd x && y)                                   allow
+  cd x &                                        allow
+  cd x | cat                                    allow
+  git -C x status                               allow
+  echo "cd x"                                   allow
+  sudo cd x                                     allow
+  command -v cd                                 allow
+  CD x                                          allow
+  pwsh -NoProfile -Command "Invoke-Pester -Path ./tests"   allow
+  cd projects/acme in a LINKED WORKTREE       -> allow (correct - inert)
+```
+
+That last line is the one that keeps every crewmate and scout task worktree
+working: a worker there cds freely and must never be denied.
+
+### 7.5 The acceptance test: a real Claude session in the captain's checkout - `PROVEN (Windows 11)`
+
+`claude` run in `C:\Users\ADMIN\firstmate-win` with all six firstmate hooks live
+in `.claude/settings.json`. This is the captain's own scenario.
+
+**It can execute a shell command** - the thing the reported outage was about:
+
+```
+=== A. a real claude session must be able to EXECUTE a shell command ===
+Output:
+
+```
+acceptance-marker-5512
+```
+```
+
+**And the guard actually blocks**, which is the stronger half. Asked to run
+`cd projects && pwd`, the session reported:
+
+```
+The command was blocked - it never ran. The cd guard hook
+(`bin/fm-claude-hook.ps1 -Event PreToolUse -Check cd`) returned a `deny`
+decision. Exact message:
+
+> [persistent-cd] a persistent top-level directory change in the primary
+> firstmate checkout is blocked; it would move the shell out of the home so a
+> later firstmate-owned command runs inside a project clone. ...
+
+So no `pwd` output was produced.
+```
+
+That is the whole chain, end to end, in the real product: Claude Code fires the
+hook, the hook reads its payload off stdin, the classifier tokenizes the command,
+the policy denies, the exit code survives `pwsh -Command`, and Claude blocks the
+tool call and shows the reason. Before this change the same command ran, because
+the deny arrived as exit 1 and was discarded.
+
+### 7.6 A test that passed every assertion and still failed - observation `PROVEN (Windows 11)`, fix `PROVEN (pwsh/Linux)` only
+
+The same acceptance test asked the session to run `tests/FmCdGuard.Tests.ps1` and
+print Pester's `Result`. It printed:
+
+```
+RESULT=Failed TOTAL=73 PASSED=73 FAILED=0
+```
+
+Every assertion passed and the CONTAINER failed - Pester's git-fixture
+`TestDrive` cleanup, against `.git/objects` files that Windows creates read-only
+plus a linked worktree's registration in its parent repo. Every check used on
+this port reads the passed/failed counts, and the counts call that a clean run.
+Fixed by tearing the fixtures down explicitly in `AfterAll`
+(`git worktree remove --force`, prune, clear the read-only bit), and the
+suite-reporting one-liner now prints `Result` as well as the counts.
+
+**The fix is NOT verified on Windows.** The tunnel dropped before it could be
+re-run there, and the failure it addresses only appears on Windows - so what is
+proven is that the fixed file reports `RESULT=Passed` on Linux, and that the
+whole Linux suite reports `RESULT=Passed` with no container error anywhere. A
+Windows re-run of `tests/FmCdGuard.Tests.ps1` reporting `RESULT=Passed` is the
+outstanding check.
+
+### 7.7 Suite and analyzer numbers
+
+| Run | Where | Result |
+| --- | --- | --- |
+| `Invoke-Pester -Path ./tests` | Linux, PowerShell 7.6.4, Pester 6.1 | `RESULT=Passed TOTAL=1413 PASSED=1408 FAILED=0 SKIPPED=5` |
+| `Invoke-Pester -Path ./tests` | Windows 11 laptop, PowerShell 7.6.4, Pester 6.1 | `TOTAL=1413 PASSED=1391 FAILED=0 SKIPPED=22` |
+| `tests/FmAnalyzer.Tests.ps1` | Windows 11 laptop | `TOTAL=12 PASSED=12 FAILED=0 SKIPPED=0` |
+| `Invoke-ScriptAnalyzer -Path . -Recurse` | Linux | CLEAN at every severity |
+
+The Windows skip count is higher because platform-conditional suites skip there
+(POSIX-only lock semantics, tasks-axi differential parity, the CI-log reconciler).
+Six of those skips were the **analyzer bar itself**: PSScriptAnalyzer was not
+installed on the laptop, so the repo-wide sweep silently skipped rather than ran.
+It is installed now (1.25.0, `CurrentUser` scope) and the bar passes there - the
+fourth row above. A skipped bar reads exactly like a met bar in a summary line,
+which is the same lesson as 7.6.
+
+**One honest boundary, stated exactly.** Sections 7.1-7.5 and the first three
+rows of the 7.7 table were executed on the laptop against an earlier revision of
+this same branch. Everything added to the branch after that run is confined to
+`tests/FmCdGuard.Tests.ps1` and `docs/`: **no file under `module/` or `bin/`
+changed**, so the product code that ships is byte-identical to the code those
+sections exercised, and every hook and guard behaviour recorded above is proven
+for it.
+
+What is NOT proven on Windows, and must not be read as if it were:
+
+- the 7.6 fixture-teardown fix, and therefore whether
+  `tests/FmCdGuard.Tests.ps1` reports `RESULT=Passed` on Windows. Proven on
+  Linux only. The Windows run in the 7.7 table predates that fix, and reported
+  its counts (`FAILED=0`) rather than its `Result`, so it neither confirms nor
+  denies the container-level failure.
+- whether the FULL Windows suite reports `RESULT=Passed` rather than merely
+  `FAILED=0`. Only the counts were captured there. The full Linux suite does
+  report `RESULT=Passed` with no container error in any file.
+
+Nothing else in section 7 depends on either.
+
 ## Honest summary
 
 ### Works end to end, executed on PowerShell 7.6.4 (Linux)

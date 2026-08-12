@@ -88,9 +88,16 @@ module any other way.
   table of function names one area resolves from another. **Read that table
   before naming a cross-area function**: areas are built in parallel and bind to
   each other by name at call time, so a rename is a silent break.
-- `docs/claude-hooks-windows.md` - the Claude hook surface, and the line between
-  what is `# WINDOWS-UNVERIFIED:` documentation and what the tests actually
-  prove.
+- `docs/claude-hooks-windows.md` - the Claude hook surface. Now carries the
+  MEASURED invocation shape Claude Code uses on Windows, the two transport
+  defects that shape caused (a pipeline-bound payload, and `pwsh -Command`
+  silently downgrading a deny's exit 2 to 1), and the line between what is
+  `# WINDOWS-UNVERIFIED:` documentation and what the tests actually prove.
+- `docs/cd-guard-windows.md` - the cd guard: the native-PowerShell shell
+  classifier that replaced the `.mjs` engines, the 119-command differential
+  comparison against the Linux reference, and the two silent PowerShell hazards
+  (case-insensitive hash keys and case-insensitive variable names) it had to
+  survive.
 - `docs/foundation.md` - the module foundation: paths, state files, locks, and
   process identity, plus where this port deliberately differs from bash.
 - `docs/supervision.md` - the wake queue, the watcher and the guards: the
