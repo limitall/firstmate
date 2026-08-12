@@ -267,6 +267,37 @@ Describe 'Stale-holder recovery' {
         }
     }
 
+    It 'gives up a claim it cannot read back, rather than throwing at the caller' {
+        # The last bare read in the append's hot path. After winning the pid
+        # file, Request-FmLock reads it back to confirm nothing displaced the
+        # claim - and that read races a concurrent breaker renaming the very
+        # file being read, which is the same delete-pending shape Windows
+        # raises on. A read that cannot be PERFORMED means exactly what a read
+        # that DISAGREES means: this process cannot confirm it owns the lock.
+        # So it must take the same branch - drop the claim, report unavailable -
+        # not crash the Add-FmStateLine three frames up.
+        InModuleScope Firstmate {
+            $path = Join-Path ([System.IO.Path]::GetTempPath()) ("readback-" + [guid]::NewGuid().ToString('N'))
+            $realRead = Get-Command Read-FmStateFile
+            Mock Read-FmStateFile {
+                if ($Path -like '*[\\/]pid') {
+                    throw [System.IO.IOException]::new(
+                        "firstmate: read state file failed after 12 attempts on '$Path': access denied")
+                }
+                & $realRead -Path $Path
+            }
+            try {
+                $lock = Request-FmLock -Path $path
+                $lock | Should -BeNullOrEmpty -Because 'a claim it cannot confirm is given up, not held'
+                # And the self-deadlock table must not be left believing this
+                # process holds it, or the next honest attempt would throw
+                # "already holds the lock" forever.
+                @(Get-FmHeldLock | Where-Object { $_.Path -eq (Resolve-FmFullPath -Path $path) }).Count |
+                    Should -Be 0
+            } finally { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
     It 'refuses a break whose stale verdict the lock has already outlived' {
         # THE DEFECT THIS PINS. Request-FmLock judges staleness with
         # Get-FmLockInfo and breaks in a SEPARATE step. Between the two, another

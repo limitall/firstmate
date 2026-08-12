@@ -425,8 +425,16 @@ function Request-FmLock {
             if ($Role) { Write-FmStateFile -Path (Join-Path $full 'role') -Content $Role }
             if ($WatcherPath) { Write-FmStateFile -Path (Join-Path $full 'watcher-path') -Content $WatcherPath }
 
-            $readback = Read-FmStateFile -Path $pidFile
-            if ($null -eq $readback -or $readback.Trim() -ne [string]$PID) {
+            # Read-FmLockSidecar, so a readback that cannot be PERFORMED lands in
+            # the same branch as a readback that disagrees. Both mean the same
+            # thing - this process cannot confirm it owns the lock - and the
+            # branch below is already the safe answer to that: drop the claim and
+            # report the lock unavailable. Letting the read throw instead turns
+            # "cannot confirm" into a crash in the caller, and this read races a
+            # concurrent breaker's rename of the very file it is reading, which
+            # is the delete-pending shape Windows raises on.
+            $readback = Read-FmLockSidecar -Path $pidFile
+            if ($null -eq $readback -or $readback -ne [string]$PID) {
                 $null = $script:FmHeldLocks.Remove($key)
                 $script:FmLastLockHolder = Get-FmLockInfo -Path $full
                 return $null
