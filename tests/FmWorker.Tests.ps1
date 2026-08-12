@@ -79,6 +79,22 @@ Describe 'Start-FmWorker' {
         Mock Remove-FmWorktreeLease { $true }
     }
 
+    It 'emits EXACTLY ONE object - the task record - and leaks nothing else' {
+        # Every other test here assigns the result to $null, so a value leaked
+        # onto this function's output stream was invisible to all of them. One
+        # was: the endpoint-side worktree confirmation returns a bool and was
+        # called without discarding it, so bin/fm-spawn.ps1 held an ARRAY and
+        # died on $worker.Message under strict mode - after the worker was
+        # already leased, launched and recorded. It reported failure for a
+        # dispatch that had succeeded.
+        $emitted = @(Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
+                -Harness 'claude' -LaunchCommand 'claude' -Mode 'local-only' -Yolo 'off' `
+                -FirstmateHome $script:fmHome -Confirm:$false)
+        $emitted.Count | Should -Be 1 -Because 'the caller reads .Message off whatever this returns'
+        $emitted[0].Message | Should -BeLike 'spawned alpha harness=claude*'
+        $emitted[0].Target | Should -Be 'default:w1:p5'
+    }
+
     It 'creates the pane inside the leased worktree, not in the project' {
         $null = Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
             -Harness 'claude' -LaunchCommand 'claude' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false

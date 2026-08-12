@@ -25,6 +25,18 @@ BeforeAll {
             Sort-Object Name | ForEach-Object { . $_.FullName }
     }
 
+    # The typed launch line is `pwsh -NoProfile -Command '<script>'` with the
+    # script's own single quotes doubled, because the pane's shell is Windows
+    # PowerShell 5.1 (see the launch-command tests below). Recover the script so
+    # every assertion is written against what the pane actually executes rather
+    # than against one particular layer of escaping.
+    function Get-FmTestLaunchScript {
+        param([Parameter(Mandatory)][string]$Command)
+        $prefix = "pwsh -NoProfile -Command '"
+        if (-not $Command.StartsWith($prefix)) { return $Command }
+        ($Command.Substring($prefix.Length, $Command.Length - $prefix.Length - 1)) -replace "''", "'"
+    }
+
     function Reset-DispatchEnvironment {
         foreach ($name in @('FM_HOME', 'FM_ROOT_OVERRIDE', 'FM_STATE_OVERRIDE', 'FM_DATA_OVERRIDE',
                 'FM_CONFIG_OVERRIDE', 'FM_PROJECTS_OVERRIDE', 'FM_CLASSIFY_PAUSED_VERB',
@@ -232,19 +244,21 @@ Describe 'Harness adapters' {
 
         It 'has the pane read the brief itself rather than typing it' {
             $launch = Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath 'C:\fm\data\t\brief.md'
-            $launch | Should -Match ([regex]::Escape("Get-Content -Raw -LiteralPath 'C:\fm\data\t\brief.md'"))
+            (Get-FmTestLaunchScript -Command $launch) |
+            Should -Match ([regex]::Escape("Get-Content -Raw -LiteralPath 'C:\fm\data\t\brief.md'"))
             $launch | Should -Match ([regex]::Escape([char]0x2063 + 'FIRSTMATE_OP: v1 launch-brief: '))
             $launch | Should -Match ([regex]::Escape('--dangerously-skip-permissions'))
         }
 
         It 'quotes a path containing a quote instead of breaking out of the string' {
             $launch = Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath "C:\it's\brief.md"
-            $launch | Should -Match ([regex]::Escape("'C:\it''s\brief.md'"))
+            (Get-FmTestLaunchScript -Command $launch) | Should -Match ([regex]::Escape("'C:\it''s\brief.md'"))
         }
 
         It 'threads model and effort only where the axis is verified' {
             $both = Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath 'b.md' -Model 'opus' -Effort 'high'
-            $both | Should -Match ([regex]::Escape("--model 'opus'"))
+            $both = Get-FmTestLaunchScript -Command $both
+        $both | Should -Match ([regex]::Escape("--model 'opus'"))
             $both | Should -Match ([regex]::Escape("--effort 'high'"))
 
             $default = Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath 'b.md' -Model 'default' -Effort 'default'
@@ -259,15 +273,42 @@ Describe 'Harness adapters' {
             Get-FmHarnessModelFlag -Harness 'nonesuch' -Model 'opus' | Should -Be ''
         }
 
+        It 'runs the launch under PowerShell 7, because the pane''s shell is 5.1' {
+            # MEASURED on the captain's laptop: a herdr pane opens
+            # powershell.exe 5.1, whose legacy command-line quoting does not
+            # escape a double quote inside an argument. The brief is full of
+            # quoted commands, so its own quotes ended the argument early and
+            # the next option-shaped token became a flag - a brief containing
+            # `-Seconds` aborted the launch outright, and every other brief
+            # arrived silently mangled.
+            $command = Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath 'b.md'
+            $command | Should -BeLike 'pwsh -NoProfile -Command *'
+            # The only text crossing the 5.1 boundary is the wrapper, and it
+            # carries no double quote of its own for legacy quoting to break.
+            $wrapper = $command.Substring('pwsh -NoProfile -Command '.Length)
+            $wrapper | Should -Not -Match '"'
+            $wrapper[0] | Should -Be ''''
+            $wrapper[-1] | Should -Be ''''
+        }
+
+        It 'never puts the brief TEXT on the command line, whatever the shell' {
+            # The pane reads the brief itself; only the expression crosses the
+            # terminal, so a multi-kilobyte brief cannot be truncated by the
+            # send path or re-parsed by a shell in between.
+            $command = Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath 'C:\fm\data\t1\brief.md'
+            $command | Should -BeLike '*Get-Content -Raw -LiteralPath*'
+            $command | Should -BeLike '*brief.md*'
+        }
+
         It 'disables the predicted-prompt ghost text every launch' {
-            Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath 'b.md' |
+            (Get-FmTestLaunchScript -Command (Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath 'b.md')) |
                 Should -Match ([regex]::Escape("`$env:CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION='false'"))
         }
 
         It "forwards firstmate's own claude store, which a herdr-created pane does not inherit" {
             $env:CLAUDE_CONFIG_DIR = 'C:\work\claude'
             try {
-                Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath 'b.md' |
+                (Get-FmTestLaunchScript -Command (Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath 'b.md')) |
                     Should -Match ([regex]::Escape("`$env:CLAUDE_CONFIG_DIR='C:\work\claude'"))
             } finally {
                 $env:CLAUDE_CONFIG_DIR = $null
@@ -343,7 +384,7 @@ Describe 'Resolve-FmSpawnPlan' {
             -ConfigDir $script:configDir -Harness 'claude' -Mode 'local-only' -Yolo 'off' -Model 'opus' -Effort 'high'
         $plan.Harness | Should -Be 'claude'
         $plan.HarnessSource | Should -Be 'explicit'
-        $plan.LaunchCommand | Should -Match ([regex]::Escape("--model 'opus'"))
+        (Get-FmTestLaunchScript -Command $plan.LaunchCommand) | Should -Match ([regex]::Escape("--model 'opus'"))
     }
 
     It 'refuses the spawn when the brief and the flag disagree' {

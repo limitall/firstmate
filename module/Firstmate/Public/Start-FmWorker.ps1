@@ -166,7 +166,15 @@ function Start-FmWorker {
         #    reported the path and the isolation check already passed, so this
         #    is the independent second reading: if the pane is anywhere else,
         #    the task stops here rather than running in the wrong tree.
-        Confirm-FmWorkerWorktree -Target $created.Target -Worktree $worktree -Project $projectReal
+        # $null =, because this returns a bool and an unassigned call LEAKS it
+        # onto this function's output stream. The task record is the last thing
+        # emitted, so the caller then holds an ARRAY, and `$worker.Message` in
+        # bin/fm-spawn.ps1 fails under strict mode with "the property 'Message'
+        # cannot be found on this object". MEASURED on the captain's laptop: the
+        # spawn leased the worktree, created the pane, wrote the record and
+        # launched the agent - and then reported failure and exited 1, which is
+        # the worst possible way to be wrong about a dispatch.
+        $null = Confirm-FmWorkerWorktree -Target $created.Target -Worktree $worktree -Project $projectReal
 
         # 5. Per-task temp root. Nested so other per-task temp can live
         #    alongside it later and teardown removes one deterministic path.
