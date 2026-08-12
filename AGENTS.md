@@ -209,6 +209,13 @@ one, so `tests/FmAnalyzer.Tests.ps1` shells out and retries. A crashed rule
 analyses that file no further, so its findings go MISSING rather than clean;
 never "fix" this by ignoring the sweep's error stream.
 
+**The sweep is driven from an enumerated file list, not `-Recurse`**, because
+"found nothing to report" and "looked at four files" are the same empty result.
+The swept set is asserted to equal every `.ps1`/`.psm1`/`.psd1` on disk, so a
+new area is covered the moment its files exist and a subset is a failure rather
+than a pass. Nothing to add to a list when an area lands - but if you ever
+narrow that enumeration, you have removed the bar, not tidied it.
+
 The lock and state suites spawn real background processes on purpose - every
 concurrency defect found in this port was found by running them, never by
 reading the code. Treat an intermittent failure there as a real race until
