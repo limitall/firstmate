@@ -14,6 +14,48 @@ BeforeAll {
     $script:FixtureHome = '/tmp/fm-brief-fixture-home'
     $script:FixtureRoot = '/fm/root'
 
+    # THE SEPARATOR IS THE PLATFORM'S, AND THAT IS DELIBERATE. On Windows these
+    # come out `...\bin\fm-herdr-lab.sh`, and a native Windows port emitting a
+    # native path is CORRECT: the repo's own rule is Join-Path and never a
+    # hard-coded separator, and what the brief carries here is a real local
+    # filesystem path on the machine the worker runs on. The byte contract the
+    # fixtures exist to defend is the brief's GRAMMAR - its headings, its
+    # `FIRSTMATE_OP:` marker, and the `Delivery contract: mode=` line that
+    # Get-FmDispatchBriefMode actually parses back. No separator appears in any
+    # of that, and nothing anywhere parses a PATH back out of a brief.
+    #
+    # So the fixture path is rebuilt with Join-Path rather than compared
+    # literally - which is what this file already did for the status file, and
+    # what its header already claims to do for all of them. It was only ever
+    # applied to two of them, so `<root>/bin/...`, `<root>/.agents/...` and
+    # `<home>/data/t1/report.md` still carried fixture slashes and failed on
+    # Windows 11 while passing here. Every other byte still has to match.
+    function Join-FmFixturePath {
+        param([Parameter(Mandatory)][string]$Base, [Parameter(Mandatory)][AllowEmptyString()][string]$Relative)
+        $result = $Base
+        foreach ($segment in @($Relative -split '/' | Where-Object { $_ })) {
+            $result = Join-Path $result $segment
+        }
+        return $result
+    }
+
+    # Rewrite every <prefix>/a/b/c under a fixture prefix, longest first so a
+    # nested path is never half-substituted by its own parent.
+    function Convert-FmFixturePath {
+        param(
+            [Parameter(Mandatory)][string]$Text,
+            [Parameter(Mandatory)][string]$Prefix,
+            [Parameter(Mandatory)][string]$Base
+        )
+        $pattern = [regex]::Escape($Prefix) + '(?:/[A-Za-z0-9._-]+)*'
+        $seen = @($([regex]::Matches($Text, $pattern) | ForEach-Object { $_.Value }) |
+                Sort-Object -Property Length -Descending -Unique)
+        foreach ($match in $seen) {
+            $Text = $Text.Replace($match, (Join-FmFixturePath -Base $Base -Relative $match.Substring($Prefix.Length)))
+        }
+        return $Text
+    }
+
     function Get-ExpectedBrief {
         param(
             [Parameter(Mandatory)][string]$Name,
@@ -23,8 +65,8 @@ BeforeAll {
         )
         $text = [System.IO.File]::ReadAllText((Join-Path $script:FixtureDir "$Name.md"))
         $text = $text.Replace("$script:FixtureHome/state/$Id.status", (Join-Path $TestHome.State "$Id.status"))
-        $text = $text.Replace("$script:FixtureHome/data", $TestHome.Data)
-        $text = $text.Replace($script:FixtureRoot, $Root)
+        $text = Convert-FmFixturePath -Text $text -Prefix "$script:FixtureHome/data" -Base $TestHome.Data
+        $text = Convert-FmFixturePath -Text $text -Prefix $script:FixtureRoot -Base $Root
         return $text
     }
 }
