@@ -291,6 +291,20 @@ Describe 'Harness adapters' {
             $wrapper[-1] | Should -Be ''''
         }
 
+        It 'REFUSES rather than emitting a wrapper the pane shell cannot quote' {
+            # "carries no double quote" is what makes the wrapper survive 5.1,
+            # and everything composed into it uses single quotes - so one can
+            # only arrive from an interpolated value. Emitting it anyway would
+            # put us back to a silently mangled brief.
+            $env:CLAUDE_CONFIG_DIR = 'C:\work\"odd"\claude'
+            try {
+                { Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath 'b.md' } |
+                    Should -Throw '*cannot quote safely*'
+            } finally {
+                $env:CLAUDE_CONFIG_DIR = $null
+            }
+        }
+
         It 'never puts the brief TEXT on the command line, whatever the shell' {
             # The pane reads the brief itself; only the expression crosses the
             # terminal, so a multi-kilobyte brief cannot be truncated by the

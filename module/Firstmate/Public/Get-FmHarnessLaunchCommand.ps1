@@ -92,5 +92,16 @@ function Get-FmHarnessLaunchCommand {
     # read from disk inside it. ConvertTo-FmPowerShellLiteral does the escaping
     # mechanically rather than by hand-counted quoting.
     $inner = "$prefix$($adapter.Executable) --dangerously-skip-permissions $modelFlag$effortFlag$briefExpr"
+    if ($inner.Contains('"')) {
+        # "carries no double quote" is the whole reason this survives the 5.1
+        # boundary, and everything composed above uses single quotes - so a
+        # double quote here means an interpolated VALUE brought one in (a
+        # CLAUDE_CONFIG_DIR path, say). Refusing is the only safe answer:
+        # emitting it would put us back to a silently mangled brief, which is
+        # precisely the failure this wrapper exists to remove.
+        throw ('error: the launch command would carry a double quote, which the pane shell (Windows PowerShell ' +
+            '5.1) cannot quote safely; remove it from the interpolated value rather than launching a worker ' +
+            "whose brief may arrive mangled: $inner")
+    }
     "pwsh -NoProfile -Command " + (ConvertTo-FmPowerShellLiteral $inner)
 }
