@@ -101,6 +101,17 @@ function New-FmBrief {
     $pausedVerb = Get-FmClassifyPausedVerb
     $statusFile = ConvertTo-FmBriefQuotedPath -Path (Join-Path $paths.State "$Id.status")
 
+    # Composite paths the templates used to spell with literal '/' after
+    # __FM_ROOT__. That produced 'C:\home\firstmate-root/bin/fm-ensure-agents-md.sh'
+    # on Windows - a MIXED separator, which is neither convention and reads as a
+    # bug, while the Herdr helper a few lines below was already fully native
+    # because it goes through Join-Path. Built here so every path in a brief is
+    # the platform's own, per the repo rule of Join-Path and never a hard-coded
+    # separator.
+    $ensureAgents = Join-Path (Join-Path $paths.Root 'bin') 'fm-ensure-agents-md.sh'
+    $decisionHoldSkill = Join-Path (Join-Path (Join-Path (Join-Path $paths.Root '.agents') 'skills') 'decision-hold-lifecycle') 'SKILL.md'
+    $reportFile = Join-Path (Join-Path $paths.Data $Id) 'report.md'
+
     if ($kind -eq 'secondmate') {
         $charterText = if ($PSBoundParameters.ContainsKey('Charter') -and $Charter) { $Charter } elseif ($env:FM_SECONDMATE_CHARTER) { $env:FM_SECONDMATE_CHARTER } else { '{TASK}' }
         $scopeText = if ($PSBoundParameters.ContainsKey('Scope') -and $Scope) { $Scope } elseif ($env:FM_SECONDMATE_SCOPE) { $env:FM_SECONDMATE_SCOPE } else { $charterText }
@@ -151,6 +162,9 @@ function New-FmBrief {
             '__FM_PAUSED__'      = $pausedVerb
             '__FM_DATA__'        = $paths.Data
             '__FM_ROOT__'        = $paths.Root
+            '__FM_ENSURE_AGENTS__' = $ensureAgents
+            '__FM_DECISION_HOLD_SKILL__' = $decisionHoldSkill
+            '__FM_REPORT_FILE__' = $reportFile
             '__FM_ID__'          = $Id
         }
         if (-not $PSCmdlet.ShouldProcess($brief, 'scaffold scout brief')) {
@@ -174,6 +188,8 @@ function New-FmBrief {
         '__FM_STATUS_FILE__' = $statusFile
         '__FM_PAUSED__'      = $pausedVerb
         '__FM_ROOT__'        = $paths.Root
+        '__FM_ENSURE_AGENTS__' = $ensureAgents
+        '__FM_DECISION_HOLD_SKILL__' = $decisionHoldSkill
         '__FM_DOD__'         = $dod
         '__FM_ID__'          = $Id
     }

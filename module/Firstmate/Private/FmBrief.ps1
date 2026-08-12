@@ -118,10 +118,10 @@ __FM_RULE1__
    daemon error, append `blocked: {the daemon error}` and stop; only firstmate manages the daemon.
 
 # Project memory
-If `AGENTS.md` or `CLAUDE.md` already exists, or if this task produced durable project-intrinsic knowledge, run `__FM_ROOT__/bin/fm-ensure-agents-md.sh .` in the worktree.
+If `AGENTS.md` or `CLAUDE.md` already exists, or if this task produced durable project-intrinsic knowledge, run `__FM_ENSURE_AGENTS__ .` in the worktree.
 Record only project knowledge useful to almost every future session.
 For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
-If you touch a project `AGENTS.md` that lacks `## Maintaining this file`, add that short self-governance section from `__FM_ROOT__/bin/fm-ensure-agents-md.sh` in the same pass.
+If you touch a project `AGENTS.md` that lacks `## Maintaining this file`, add that short self-governance section from `__FM_ENSURE_AGENTS__` in the same pass.
 Keep it proportionate: skip `AGENTS.md` edits for trivial tasks that produced no durable project knowledge.
 
 __FM_DOD__
@@ -165,9 +165,9 @@ The report is the only thing that survives, so anything worth keeping must be in
    daemon error, append `blocked: {the daemon error}` and stop; only firstmate manages the daemon.
 
 # Definition of done
-Write your findings to `__FM_DATA__/__FM_ID__/report.md`.
+Write your findings to `__FM_REPORT_FILE__`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
-Before reporting done, read and follow `__FM_ROOT__/.agents/skills/decision-hold-lifecycle/SKILL.md` and pass its shared completion gate for the report and any visual review.
+Before reporting done, read and follow `__FM_DECISION_HOLD_SKILL__` and pass its shared completion gate for the report and any visual review.
 When the report is complete, append `done: {one-line conclusion}` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 '@
