@@ -198,6 +198,17 @@ scoped rather than excluded: `PSAvoidUsingPositionalParameters` allows only
 future state-changing entry point is still caught, with each existing internal
 helper and Pester fixture carrying its own reason for opting out.
 
+**The sweep runs in a child process, and must keep doing so.** PSScriptAnalyzer's
+`Helper.GetExportedFunction` raises a NullReferenceException from
+`CommandInfo.ResolveParameter` on `Firstmate.psm1`, the only file here that calls
+`Export-ModuleMember`. Several rules use that helper (`AvoidReservedCharInCmdlet`,
+`ProvideCommentHelp`), so excluding one only moves the crash to the next. It fires
+about 3 times in 10 when the Firstmate module is loaded in the session doing the
+analysing - which is every Pester session - against about 1 in 40 from a clean
+one, so `tests/FmAnalyzer.Tests.ps1` shells out and retries. A crashed rule
+analyses that file no further, so its findings go MISSING rather than clean;
+never "fix" this by ignoring the sweep's error stream.
+
 The lock and state suites spawn real background processes on purpose - every
 concurrency defect found in this port was found by running them, never by
 reading the code. Treat an intermittent failure there as a real race until
