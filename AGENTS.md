@@ -143,6 +143,11 @@ below are what those bugs cost.
   the arguments land in `$args` and are dropped, so the call succeeds having
   discarded its input. The table in `docs/session-start.md` is the contract for
   both sides; an owner that needs more should default it, not require it.
+  `tests/FmModuleAssembly.Tests.ps1` now checks this mechanically, so a
+  mismatch fails the suite instead of degrading in silence - but only for an
+  owner that is PRESENT, and only where the resolved name is a literal. A
+  by-name call whose owner is still unported is a degradation on purpose and is
+  not flagged.
 - **A degradation test stops testing degradation once the owner lands.** Suites
   asserting the "owner not loaded" branch must stage the absence at the
   `Resolve-Fm*Command` seam. Deleting the function is not enough - the
