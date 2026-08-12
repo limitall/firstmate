@@ -33,7 +33,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'fm-module-load.ps1')
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'New-FmProject'
 
 if (-not $Name) {
     [Console]::Error.WriteLine('usage: fm-project-create.ps1 <name> [-Mode local-only] [-Yolo on|off] ' +

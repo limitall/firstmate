@@ -134,6 +134,45 @@ function Test-FmAgentsMirror {
     $ha -eq $hc
 }
 
+# Test-FmAgentsLinkPlaceholder: is this CLAUDE.md a symlink that git checked out
+# as ORDINARY TEXT?
+#
+# MEASURED on the captain's Windows 11 laptop: this repo tracks CLAUDE.md as a
+# symlink to AGENTS.md, and a clone with core.symlinks=false - which is the
+# default for a non-elevated Windows git - writes a 9-byte regular file whose
+# entire content is the string "AGENTS.md". A Claude session started in that
+# checkout therefore reads a CLAUDE.md consisting of one filename and comes up
+# with no project instructions at all, silently.
+#
+# That is a link the host failed to materialize, not a second memory file, so it
+# is recognised here rather than refused as a conflict. The test is deliberately
+# narrow: one short line, no newline required, naming AGENTS.md and nothing else.
+#
+# WINDOWS-UNVERIFIED: the placeholder itself was MEASURED on the laptop (9 bytes,
+# 'AGENTS.md', core.symlinks=false). What has not run on Windows is the REPAIR -
+# New-FmAgentsClaudeLink replacing it, which on a non-elevated Windows session
+# falls through symlink to hardlink to copy. Green on Linux; see
+# docs/windows-e2e-evidence.md section 6.5.
+function Test-FmAgentsLinkPlaceholder {
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ClaudePath)
+
+    if (-not (Test-Path -LiteralPath $ClaudePath -PathType Leaf)) { return $false }
+    $item = Get-Item -LiteralPath $ClaudePath -Force
+    # A real memory file is never this small; the placeholder is exactly the
+    # link text. Bounding the length first keeps this from reading a large file.
+    if ($item.Length -gt 260) { return $false }
+    $text = ([System.IO.File]::ReadAllText($ClaudePath)).Trim()
+    if (-not $text) { return $false }
+    if ($text -match '[\r\n]') { return $false }
+    $leaf = Split-Path -Leaf ($text -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+    # Case-insensitive on Windows, exact elsewhere - the same rule Test-FmPathEqual
+    # applies, asked of a filename.
+    if ($IsWindows) { return $leaf -ieq $script:FmAgentsFileName }
+    return $leaf -ceq $script:FmAgentsFileName
+}
+
 # New-FmAgentsClaudeLink: create CLAUDE.md as the strongest link to AGENTS.md
 # this host allows. Returns the kind that was created ('symlink', 'hardlink' or
 # 'copy'), so no caller can describe a copy as a link.

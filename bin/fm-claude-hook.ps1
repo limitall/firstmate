@@ -39,7 +39,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 try {
-    . (Join-Path $PSScriptRoot 'fm-module-load.ps1')
+    . (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Invoke-FmClaudeHook'
 
     $hookArgs = @{ Event = $Event }
     if ($Check) { $hookArgs['Check'] = $Check }

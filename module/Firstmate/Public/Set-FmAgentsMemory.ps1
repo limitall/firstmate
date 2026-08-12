@@ -95,6 +95,21 @@ function Set-FmAgentsMemory {
             return & $report $verb "$verb`: CLAUDE.md -> AGENTS.md in $dir"
         }
 
+        if ($claudeIsFile -and (Test-FmAgentsLinkPlaceholder -ClaudePath $claude)) {
+            # A symlink git checked out as ordinary text because
+            # core.symlinks=false - the default on Windows. It is a link this
+            # host failed to materialize, not a second memory file, and leaving
+            # it means a Claude session reads a one-line file naming AGENTS.md
+            # and gets no instructions at all. Replace it with a real link.
+            if (-not $PSCmdlet.ShouldProcess($dir, 'materialize the CLAUDE.md link git left as text')) { return $null }
+            $null = Add-FmAgentsMaintenanceSection -Path $agents
+            Remove-Item -LiteralPath $claude -Force
+            $kind = New-FmAgentsClaudeLink -Directory $dir -Strategy $LinkStrategy
+            $verb = Get-FmAgentsLinkVerb -Kind $kind
+            return & $report $verb ("$verb`: CLAUDE.md -> AGENTS.md in $dir " +
+                '(it was a symlink git checked out as text)')
+        }
+
         if ($claudeIsFile) {
             # A real CLAUDE.md that is byte-identical to AGENTS.md is a
             # MATERIALIZED link - the hardlink or copy this port falls back to

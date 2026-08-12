@@ -30,7 +30,7 @@ Refuses to overwrite an existing brief.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-Import-Module (Join-Path $PSScriptRoot '..' 'module' 'Firstmate' 'Firstmate.psd1') -Force
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'New-FmBrief'
 
 if ($args.Count -ge 1 -and ($args[0] -eq '-h' -or $args[0] -eq '--help')) {
     Get-Help -Full $PSCommandPath

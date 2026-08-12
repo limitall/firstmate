@@ -46,19 +46,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Module resolution. The manifest is the real entry point; the dot-source
-# fallback exists so these scripts run before the module loader lands and is
-# harmless once it has.
-$fmManifest = Join-Path $PSScriptRoot '../module/Firstmate/Firstmate.psd1'
-if (Test-Path -LiteralPath $fmManifest) {
-    Import-Module $fmManifest -Force
-} else {
-    $fmModule = Join-Path $PSScriptRoot '../module/Firstmate'
-    foreach ($fmFile in @(Get-ChildItem -Path (Join-Path $fmModule 'Private') -Filter '*.ps1' -ErrorAction SilentlyContinue) +
-        @(Get-ChildItem -Path (Join-Path $fmModule 'Public') -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
-        . $fmFile.FullName
-    }
-}
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Stop-FmWorker'
 
 if (-not $TaskId -or -not $Verb) {
     [Console]::Error.WriteLine('usage: fm-control.ps1 <task-id> <interrupt|exit>')

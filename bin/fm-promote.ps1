@@ -36,7 +36,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'fm-module-load.ps1')
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Invoke-FmPromote'
 
 if (-not $TaskId) {
     [Console]::Error.WriteLine('usage: fm-promote.ps1 <task-id> -Mode <no-mistakes|direct-PR|local-only> -Yolo <on|off>')

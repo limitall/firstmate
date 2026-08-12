@@ -227,6 +227,74 @@ Describe 'the link strategies' {
     }
 }
 
+Describe 'the symlink git checked out as text' {
+    # MEASURED on the captain's Windows 11 laptop. This repo tracks CLAUDE.md as
+    # a symlink to AGENTS.md; git with core.symlinks=false - the default for a
+    # non-elevated Windows git - writes a 9-byte regular file whose whole content
+    # is 'AGENTS.md'. A Claude session started in that checkout reads one
+    # filename and comes up with NO project instructions, and nothing says so.
+    #
+    # It is a link the host failed to materialize, not a second memory file, so
+    # it must be repaired rather than refused as a conflict.
+
+    It 'recognises the placeholder' {
+        $dir = New-TestDir
+        [System.IO.File]::WriteAllText((Join-Path $dir 'CLAUDE.md'), 'AGENTS.md')
+        Test-FmAgentsLinkPlaceholder -ClaudePath (Join-Path $dir 'CLAUDE.md') | Should -BeTrue
+    }
+
+    It 'recognises it with a trailing newline or a ./ prefix' -ForEach @(
+        @{ Content = "AGENTS.md`n" }
+        @{ Content = './AGENTS.md' }
+    ) {
+        $dir = New-TestDir
+        [System.IO.File]::WriteAllText((Join-Path $dir 'CLAUDE.md'), $Content)
+        Test-FmAgentsLinkPlaceholder -ClaudePath (Join-Path $dir 'CLAUDE.md') | Should -BeTrue
+    }
+
+    It 'does NOT mistake a real memory file for a placeholder' -ForEach @(
+        @{ Case = 'multi-line'; Content = "# notes`nAGENTS.md is the other file`n" }
+        @{ Case = 'names something else'; Content = 'README.md' }
+        @{ Case = 'empty'; Content = '' }
+    ) {
+        $dir = New-TestDir
+        [System.IO.File]::WriteAllText((Join-Path $dir 'CLAUDE.md'), $Content)
+        Test-FmAgentsLinkPlaceholder -ClaudePath (Join-Path $dir 'CLAUDE.md') |
+            Should -BeFalse -Because "a $Case CLAUDE.md is a real file"
+    }
+
+    It 'is false for a file that does not exist' {
+        Test-FmAgentsLinkPlaceholder -ClaudePath (Join-Path (New-TestDir) 'CLAUDE.md') | Should -BeFalse
+    }
+
+    It 'materializes it instead of refusing, and the content becomes the real one' {
+        $dir = New-TestDir
+        [System.IO.File]::WriteAllText((Join-Path $dir 'AGENTS.md'), "# real instructions`n")
+        [System.IO.File]::WriteAllText((Join-Path $dir 'CLAUDE.md'), 'AGENTS.md')
+
+        $result = Set-FmAgentsMemory -Path $dir -Confirm:$false
+        $result.Message | Should -BeLike '*symlink git checked out as text*'
+        (Get-Content -LiteralPath (Join-Path $dir 'CLAUDE.md') -Raw) |
+            Should -BeLike '*real instructions*'
+    }
+
+    It 'still REFUSES two real, different memory files' {
+        # The placeholder rule must not become a licence to clobber.
+        $dir = New-TestDir
+        [System.IO.File]::WriteAllText((Join-Path $dir 'AGENTS.md'), "# one`n")
+        [System.IO.File]::WriteAllText((Join-Path $dir 'CLAUDE.md'), "# a genuinely different file`n")
+        { Set-FmAgentsMemory -Path $dir -Confirm:$false } | Should -Throw '*reconcile them manually*'
+    }
+
+    It 'writes nothing under -WhatIf' {
+        $dir = New-TestDir
+        [System.IO.File]::WriteAllText((Join-Path $dir 'AGENTS.md'), "# real instructions`n")
+        [System.IO.File]::WriteAllText((Join-Path $dir 'CLAUDE.md'), 'AGENTS.md')
+        $null = Set-FmAgentsMemory -Path $dir -WhatIf
+        [System.IO.File]::ReadAllText((Join-Path $dir 'CLAUDE.md')) | Should -Be 'AGENTS.md'
+    }
+}
+
 Describe 'Test-FmAgentsMirror' {
     It 'recognizes a materialized link: two real names with identical bytes' {
         $dir = New-TestDir

@@ -23,22 +23,27 @@
 
 .PARAMETER HookSettingsPath
     Claude settings file expected to carry the hooks.
+
+.PARAMETER HomePointerPath
+    File expected to carry the home that resolves without the environment.
+    Defaults to <RepoRoot>/.fm-home.
 #>
 [CmdletBinding()]
 param(
     [string]$FirstmateHome,
     [string]$RepoRoot,
     [string]$ProfilePath,
-    [string]$HookSettingsPath
+    [string]$HookSettingsPath,
+    [string]$HomePointerPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'fm-module-load.ps1')
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Invoke-FmDoctor'
 
 $doctorArgs = @{}
-foreach ($name in @('FirstmateHome', 'RepoRoot', 'ProfilePath', 'HookSettingsPath')) {
+foreach ($name in @('FirstmateHome', 'RepoRoot', 'ProfilePath', 'HookSettingsPath', 'HomePointerPath')) {
     if ($PSBoundParameters.ContainsKey($name)) { $doctorArgs[$name] = $PSBoundParameters[$name] }
 }
 if (-not $doctorArgs.ContainsKey('RepoRoot')) { $doctorArgs['RepoRoot'] = (Split-Path -Parent $PSScriptRoot) }

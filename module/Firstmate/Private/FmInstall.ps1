@@ -21,10 +21,18 @@
 #    setup twice produces byte-identical files, and the second run reports
 #    'already' for every step. tests/FmInstall.Tests.ps1 pins that.
 #
-# 3. ONE MECHANISM PER JOB. `Import-Module Firstmate` from any session and
-#    `fm-doctor.ps1` on PATH are both achieved by ONE mechanism - a managed block
-#    in the user's PowerShell profile that prepends the checkout's module/ to
+# 3. ONE MECHANISM PER JOB. A bare `Import-Module Firstmate` and a bare
+#    `fm-doctor.ps1` are both achieved by ONE mechanism - a managed block in the
+#    user's PowerShell profile that prepends the checkout's module/ to
 #    PSModulePath and bin/ to PATH, and exports FM_HOME.
+#
+#    THAT BLOCK IS A CONVENIENCE, NOT THE FOUNDATION. It is loaded by an
+#    interactive session and by nothing else - not by a herdr pane, a Claude
+#    hook, or a dispatched worker. What makes the entry points work in those is
+#    bin/fm-module-load.ps1 plus the home this area persists in
+#    <RepoRoot>/.fm-home. See docs/windows-install.md, "Working without the
+#    profile". The consequence here: absent profile wiring is a WARNING, and the
+#    absent home pointer is what is reported as missing.
 #
 #    The rejected alternative was the Windows User environment variables
 #    (`[Environment]::SetEnvironmentVariable(..., 'User')`). It reaches cmd.exe
@@ -115,15 +123,203 @@ function Get-FmInstallHomeDirectory {
         })
 }
 
-# Where a home lives when the captain does not name one. FM_HOME wins, because a
-# session that already has a home must never be given a second one.
-function Get-FmInstallDefaultHome {
+# WHERE A HOME LIVES WHEN THE CAPTAIN DOES NOT NAME ONE HAS ONE OWNER, AND IT IS
+# NOT THIS FILE. Resolve-FmEntryPointHome answers it, and its tail is the
+# CHECKOUT. This area used to keep a second copy of the same question that ended
+# in <userprofile>/firstmate, which is how a fresh install ended up with the code
+# in one directory and the home in another - a layout the Linux firstmate does
+# not have, and one the documented workflow walks straight into. See
+# Set-FmInstallHomeRedirect below for what happens when they ARE separate.
+
+# --- the home that is not the checkout -------------------------------------------
+#
+# On Linux the two coincide: the firstmate repo root IS the home, with config/
+# data/ projects/ state/ gitignored beside AGENTS.md, CLAUDE.md and .claude/. So
+# `cd <firstmate>; claude` starts a session that has the instructions AND the
+# hooks. Every doc in the fleet says to do exactly that.
+#
+# A Windows home that is separate from its checkout breaks that sentence
+# SILENTLY: the directory exists, it looks like a firstmate home, and a session
+# started in it has no AGENTS.md, no CLAUDE.md and no .claude/settings.json - so
+# the agent comes up with no instructions, no digest and no supervision, and
+# nothing anywhere says so. The captain hit this on the first command after
+# installing.
+#
+# A separate home is still legitimate (a secondmate home, a home on another
+# drive, a home shared with a Linux firstmate). So it is not refused - it is made
+# to FAIL LOUDLY. Setup writes an AGENTS.md/CLAUDE.md into the home whose only
+# job is to stop a session and name the checkout.
+$script:FmInstallRedirectBeginMarker = '<!-- >>> firstmate-win home >>> -->'
+$script:FmInstallRedirectEndMarker = '<!-- <<< firstmate-win home <<< -->'
+
+function Test-FmInstallHomeIsCheckout {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$FirstmateHome,
+        [Parameter(Mandatory)][string]$RepoRoot
+    )
+    Test-FmPathEqual -Left $FirstmateHome -Right $RepoRoot
+}
+
+# The redirect's text. A pure function of the two paths, so two runs produce
+# identical bytes and the second reports 'already' by comparing rather than
+# guessing - the same converge-not-append rule as the profile block.
+#
+# It is written for BOTH readers. An agent reads the imperative; a human doing
+# `dir` sees a file called CLAUDE.md and opens it to the same answer.
+function Get-FmInstallHomeRedirect {
     [CmdletBinding()]
     [OutputType([string])]
-    param()
+    param(
+        [Parameter(Mandatory)][string]$FirstmateHome,
+        [Parameter(Mandatory)][string]$RepoRoot
+    )
 
-    if (-not [string]::IsNullOrWhiteSpace($env:FM_HOME)) { return $env:FM_HOME }
-    Join-Path ([System.Environment]::GetFolderPath('UserProfile')) 'firstmate'
+    @(
+        $script:FmInstallRedirectBeginMarker
+        '# STOP - this is a firstmate HOME, not the firstmate checkout'
+        ''
+        "This directory (``$FirstmateHome``) holds one instance's operational state -"
+        '`config/ data/ projects/ state/` - and nothing else. It has no firstmate'
+        'instructions and no Claude hooks, so a session started HERE comes up with no'
+        'briefing, no startup digest and no supervision, and nothing else will tell you.'
+        ''
+        '**Start the session in the checkout instead:**'
+        ''
+        '```powershell'
+        "cd $RepoRoot"
+        'claude'
+        '```'
+        ''
+        'The checkout has `AGENTS.md`, `.claude/settings.json` and `bin/`, and it reaches'
+        'this home through `.fm-home`, so everything operates on the state you see here.'
+        ''
+        'If you are an agent reading this: do no firstmate work from this directory. Say'
+        'the line above to the captain and stop.'
+        ''
+        '(On Linux the two are the same directory and this file does not exist. Managed by'
+        'bin/fm-setup.ps1 - re-run setup to update it.)'
+        $script:FmInstallRedirectEndMarker
+    ) -join "`n"
+}
+
+# Splice the redirect into <home>/AGENTS.md, and mirror it to CLAUDE.md.
+#
+# BOTH NAMES, IDENTICAL BYTES. AGENTS.md is the real file by the repo's
+# convention and CLAUDE.md is the name a Claude session looks for, and a session
+# that reads only one of them must still be stopped. Set-FmAgentsMemory owns the
+# symlink/hardlink/copy machinery for a PROJECT worktree; a copy is used here on
+# purpose - this file is generated and never hand-edited, so a link buys nothing
+# and cannot dangle, and that area already treats a byte-identical real CLAUDE.md
+# on Windows as a materialized link rather than a conflict.
+#
+# Text outside the markers is preserved, so a home that is also a real repo keeps
+# its own memory file.
+function Set-FmInstallHomeRedirect {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$FirstmateHome,
+        [Parameter(Mandatory)][string]$RepoRoot
+    )
+
+    if (Test-FmInstallHomeIsCheckout -FirstmateHome $FirstmateHome -RepoRoot $RepoRoot) {
+        return [pscustomobject]@{
+            Action = 'already'
+            Detail = 'the home IS the checkout, as on Linux; nothing to redirect'
+        }
+    }
+
+    $block = Get-FmInstallHomeRedirect -FirstmateHome $FirstmateHome -RepoRoot $RepoRoot
+    $agents = Join-Path $FirstmateHome 'AGENTS.md'
+    $claude = Join-Path $FirstmateHome 'CLAUDE.md'
+    $pattern = '(?s)' + [regex]::Escape($script:FmInstallRedirectBeginMarker) + '.*?' +
+        [regex]::Escape($script:FmInstallRedirectEndMarker)
+
+    $existing = ''
+    if (Test-Path -LiteralPath $agents -PathType Leaf) { $existing = [System.IO.File]::ReadAllText($agents) }
+    $match = [regex]::Match($existing, $pattern)
+
+    if ($match.Success) {
+        $updated = $existing.Remove($match.Index, $match.Length).Insert($match.Index, $block)
+        $action = 'updated'
+    } else {
+        # The redirect goes FIRST. An agent that reads only the top of a long
+        # file must still hit the stop.
+        $separator = if ([string]::IsNullOrEmpty($existing)) { '' } else { "`n`n" }
+        $updated = $block + "`n" + $separator + $existing
+        $action = if ([string]::IsNullOrEmpty($existing)) { 'created' } else { 'updated' }
+    }
+
+    $claudeCurrent = ''
+    if (Test-Path -LiteralPath $claude -PathType Leaf) { $claudeCurrent = [System.IO.File]::ReadAllText($claude) }
+    if ($match.Success -and $updated -eq $existing -and $claudeCurrent -eq $updated) {
+        return [pscustomobject]@{ Action = 'already'; Detail = "$agents (and CLAUDE.md) redirect to $RepoRoot" }
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($FirstmateHome, 'write the firstmate home redirect')) {
+        return [pscustomobject]@{ Action = 'skipped'; Detail = 'WhatIf' }
+    }
+    Write-FmTextFileLf -Path $agents -Text $updated
+    Write-FmTextFileLf -Path $claude -Text $updated
+    [pscustomobject]@{ Action = $action; Detail = "$agents (and CLAUDE.md) redirect to $RepoRoot" }
+}
+
+# The checkout's OWN memory files. Recorded here because it is the other half of
+# "which directory do I start Claude in": making the home the checkout is no use
+# if the checkout's CLAUDE.md is the 9-byte string "AGENTS.md" that git leaves
+# when core.symlinks is false, which is the default on Windows and is MEASURED to
+# be what the captain's clone contains.
+#
+# Set-FmAgentsMemory owns this rule; this only calls it, through the by-name seam
+# so an absent owner is reported as a step that did NOT run rather than as one
+# that passed.
+function Set-FmInstallCheckoutMemory {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$RepoRoot)
+
+    $owner = Resolve-FmSessionCommand -Name 'Set-FmAgentsMemory'
+    if (-not $owner) {
+        return [pscustomobject]@{
+            Action = 'skipped'
+            Detail = 'NOT RUN: the agent-memory area (Set-FmAgentsMemory) is not loaded'
+        }
+    }
+    if (-not $PSCmdlet.ShouldProcess($RepoRoot, 'ensure AGENTS.md and CLAUDE.md')) {
+        return [pscustomobject]@{ Action = 'skipped'; Detail = 'WhatIf' }
+    }
+    try {
+        # -Path only. A by-name call may pass ONLY parameters the owner declares
+        # (tests/FmModuleAssembly.Tests.ps1 enforces that), and the ShouldProcess
+        # gate above already covers what -Confirm:$false was doing here.
+        $result = & $owner -Path $RepoRoot
+    } catch {
+        # A conflict is the captain's to reconcile - two real, different memory
+        # files. Setup says so and carries on; it must not clobber either.
+        return [pscustomobject]@{ Action = 'skipped'; Detail = "NOT RUN: $($_.Exception.Message)" }
+    }
+    if (-not $result) { return [pscustomobject]@{ Action = 'skipped'; Detail = 'WhatIf' } }
+    $action = if ($result.Action -eq 'unchanged') { 'already' } elseif ($result.Action -eq 'created') { 'created' } else { 'updated' }
+    [pscustomobject]@{ Action = $action; Detail = $result.Message }
+}
+
+function Test-FmInstallHomeRedirectCurrent {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$FirstmateHome,
+        [Parameter(Mandatory)][string]$RepoRoot
+    )
+
+    $block = Get-FmInstallHomeRedirect -FirstmateHome $FirstmateHome -RepoRoot $RepoRoot
+    foreach ($name in @('AGENTS.md', 'CLAUDE.md')) {
+        $path = Join-Path $FirstmateHome $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+        if (-not ([System.IO.File]::ReadAllText($path).Contains($block))) { return $false }
+    }
+    return $true
 }
 
 # --- step records --------------------------------------------------------------
@@ -601,18 +797,48 @@ function Get-FmInstallPrerequisiteCheck {
     $checks
 }
 
+# WHAT THIS CHECK IS ABOUT, AND WHY IT IS NOT '$env:FM_HOME IS SET'.
+#
+# It used to be. That reported [missing] in every shell that had not loaded the
+# profile - which is every herdr pane, every Claude hook, every dispatched
+# worker - while the same install reported healthy in the captain's own window.
+# Worse, it reported nothing at all about the real damage: with FM_HOME unset
+# Get-FmHome falls through to the code root, so those shells silently used the
+# CHECKOUT as the home and exited 0.
+#
+# The thing that actually has to be true is that the home resolves WITHOUT the
+# environment, which is what <checkout>/.fm-home is for. So that is what this
+# check tests. An environment variable on top of it is an override and is
+# reported as one.
 function Get-FmInstallHomeCheck {
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory)][string]$FirstmateHome)
+    param(
+        [Parameter(Mandatory)][string]$FirstmateHome,
+        [string]$HomePointerPath = '',
+        [string]$RepoRoot = ''
+    )
+
+    if (-not $RepoRoot) { $RepoRoot = Get-FmInstallRepoRoot }
+    if (-not $HomePointerPath) { $HomePointerPath = Get-FmHomePointerPath -RepoRoot $RepoRoot }
+    $pointer = Read-FmHomePointer -Path $HomePointerPath
 
     $checks = @()
-    if ([string]::IsNullOrWhiteSpace($env:FM_HOME)) {
+    if (-not $pointer) {
+        # Name the home a bare shell would ACTUALLY have used, because that is
+        # the failure - not the absence of a file.
+        $bare = Get-FmHome
         $checks += New-FmInstallCheck -Name 'FM_HOME' -Status 'missing' -Required `
-            -Detail 'not set in this session' `
-            -Fix 'run bin/fm-setup.ps1, then open a new PowerShell session'
+            -Detail ("no $HomePointerPath, so a shell that did not load the profile resolves the home to '$bare'") `
+            -Fix "bin/fm-setup.ps1 -FirstmateHome '$FirstmateHome'"
+    } elseif (Test-FmPathEqual -Left $pointer -Right $FirstmateHome) {
+        $checks += New-FmInstallCheck -Name 'FM_HOME' -Status 'ok' -Required `
+            -Detail "$FirstmateHome (persisted in $HomePointerPath; resolves with no profile and no environment)"
     } else {
-        $checks += New-FmInstallCheck -Name 'FM_HOME' -Status 'ok' -Detail $env:FM_HOME -Required
+        # A legitimate override, not a fault: a secondmate home, a test home, or
+        # the captain saying otherwise for one session. Say which is winning.
+        $checks += New-FmInstallCheck -Name 'FM_HOME' -Status 'ok' -Required `
+            -Detail "$FirstmateHome (overriding the persisted '$pointer' in $HomePointerPath)"
     }
 
     if (-not (Test-Path -LiteralPath $FirstmateHome -PathType Container)) {
@@ -635,8 +861,67 @@ function Get-FmInstallHomeCheck {
         $checks += New-FmInstallCheck -Name 'home layout' -Status 'ok' -Required `
             -Detail ($FirstmateHome + ' (' + (($directories | ForEach-Object { $_.Name }) -join ', ') + ')')
     }
+    $checks += Get-FmInstallHomeLocationCheck -FirstmateHome $FirstmateHome -RepoRoot $RepoRoot
     $checks += Get-FmInstallBackendCheck -FirstmateHome $FirstmateHome
     $checks
+}
+
+# WHERE DO I START CLAUDE? The one question the split home made unanswerable.
+#
+# ok      the home IS the checkout, so `cd <here>; claude` works exactly as the
+#         Linux docs say - one directory, instructions, hooks and state together
+# warn    they are separate, but the home carries the redirect, so a session
+#         started in the wrong one stops and names the right one
+# missing they are separate and NOTHING says so - a session started in the home
+#         comes up with no instructions, no digest and no supervision, silently
+function Get-FmInstallHomeLocationCheck {
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param(
+        [Parameter(Mandatory)][string]$FirstmateHome,
+        [Parameter(Mandatory)][string]$RepoRoot
+    )
+
+    $checkoutClaude = Join-Path $RepoRoot 'CLAUDE.md'
+    $memoryBroken = @()
+    if (-not (Test-Path -LiteralPath $checkoutClaude -PathType Leaf)) {
+        $memoryBroken += "$checkoutClaude is missing"
+    } elseif (Test-FmAgentsLinkPlaceholder -ClaudePath $checkoutClaude) {
+        # MEASURED on the laptop: a 9-byte file containing 'AGENTS.md'. A session
+        # started there reads one filename and gets no instructions.
+        $memoryBroken += "$checkoutClaude is the text git leaves for a symlink, not the instructions"
+    }
+
+    if (Test-FmInstallHomeIsCheckout -FirstmateHome $FirstmateHome -RepoRoot $RepoRoot) {
+        if ($memoryBroken.Count -gt 0) {
+            return @(New-FmInstallCheck -Name 'start Claude in' -Status 'missing' -Required `
+                    -Detail ("$RepoRoot - the home IS the checkout, but " + ($memoryBroken -join '; ') +
+                        ', so a session started there gets no instructions') `
+                    -Fix 'bin/fm-setup.ps1')
+        }
+        return @(New-FmInstallCheck -Name 'start Claude in' -Status 'ok' -Required `
+                -Detail "$RepoRoot - the home IS the checkout, as on Linux")
+    }
+
+    if (-not (Test-Path -LiteralPath $FirstmateHome -PathType Container)) {
+        # The home layout check already reports the absent home; do not report a
+        # redirect as missing from a directory that does not exist.
+        return @(New-FmInstallCheck -Name 'start Claude in' -Status 'warn' `
+                -Detail "$RepoRoot - the home '$FirstmateHome' is separate from the checkout and does not exist yet" `
+                -Fix "bin/fm-setup.ps1 -FirstmateHome '$FirstmateHome'")
+    }
+
+    if (Test-FmInstallHomeRedirectCurrent -FirstmateHome $FirstmateHome -RepoRoot $RepoRoot) {
+        return @(New-FmInstallCheck -Name 'start Claude in' -Status 'warn' `
+                -Detail ("$RepoRoot - NOT '$FirstmateHome', which holds only this instance's state; " +
+                    'that directory says so in its own AGENTS.md and CLAUDE.md') `
+                -Fix "cd $RepoRoot")
+    }
+
+    return @(New-FmInstallCheck -Name 'start Claude in' -Status 'missing' -Required `
+            -Detail ("$RepoRoot - and nothing stops a session started in '$FirstmateHome', which has no " +
+                'AGENTS.md, no CLAUDE.md and no .claude/, so an agent there gets no instructions and no hooks') `
+            -Fix "bin/fm-setup.ps1 -FirstmateHome '$FirstmateHome'")
 }
 
 function Get-FmInstallWiringCheck {
@@ -654,6 +939,14 @@ function Get-FmInstallWiringCheck {
     # The proof that `Import-Module Firstmate` resolves is that PowerShell's own
     # discovery finds it on PSModulePath - not that a manifest file exists
     # somewhere. Get-Module -ListAvailable is that discovery.
+    # MISSING vs WARN IS THE WHOLE POINT OF THIS GROUP. A missing manifest is
+    # broken: nothing can run. Everything else here is about the CAPTAIN'S
+    # INTERACTIVE SHELL being able to type `Import-Module Firstmate` and
+    # `fm-doctor.ps1` bare - which the profile block provides and nothing else
+    # does. An entry point run by its own path works either way, because
+    # bin/fm-module-load.ps1 wires its own process. So: convenience, therefore
+    # warn. Reporting these as [missing] is what made one working install
+    # report "unhealthy: 3 missing" the moment it was run without a profile.
     $manifest = Join-Path -Path $RepoRoot -ChildPath 'module' -AdditionalChildPath 'Firstmate', 'Firstmate.psd1'
     if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
         $checks += New-FmInstallCheck -Name 'Firstmate module' -Status 'missing' -Required `
@@ -662,9 +955,10 @@ function Get-FmInstallWiringCheck {
         $checks += New-FmInstallCheck -Name 'Firstmate module' -Status 'ok' -Required `
             -Detail 'Import-Module Firstmate resolves on PSModulePath'
     } else {
-        $checks += New-FmInstallCheck -Name 'Firstmate module' -Status 'missing' -Required `
-            -Detail 'not on PSModulePath in this session' `
-            -Fix 'run bin/fm-setup.ps1, then open a new PowerShell session'
+        $checks += New-FmInstallCheck -Name 'Firstmate module' -Status 'warn' `
+            -Detail ("bare 'Import-Module Firstmate' does not resolve in this session; " +
+                'the entry points import the manifest at ' + $manifest + ' themselves') `
+            -Fix 'open a new PowerShell session, which loads the profile block bin/fm-setup.ps1 writes'
     }
 
     $binDir = Join-Path $RepoRoot 'bin'
@@ -673,9 +967,10 @@ function Get-FmInstallWiringCheck {
     if ($onPath.Count -gt 0) {
         $checks += New-FmInstallCheck -Name 'fm-* entry points' -Status 'ok' -Required -Detail "$binDir is on PATH"
     } else {
-        $checks += New-FmInstallCheck -Name 'fm-* entry points' -Status 'missing' -Required `
-            -Detail "$binDir is not on PATH in this session" `
-            -Fix 'run bin/fm-setup.ps1, then open a new PowerShell session'
+        $checks += New-FmInstallCheck -Name 'fm-* entry points' -Status 'warn' `
+            -Detail ("$binDir is not on PATH in this session, so the bare command name does not work; " +
+                'running one by its full path does') `
+            -Fix 'open a new PowerShell session, which loads the profile block bin/fm-setup.ps1 writes'
     }
 
     $block = Get-FmInstallProfileBlock -RepoRoot $RepoRoot -FirstmateHome $FirstmateHome
@@ -686,8 +981,9 @@ function Get-FmInstallWiringCheck {
             -Detail "$ProfilePath has no current firstmate block (the checkout or the home may have moved)" `
             -Fix "bin/fm-setup.ps1 -FirstmateHome '$FirstmateHome'"
     } else {
-        $checks += New-FmInstallCheck -Name 'profile wiring' -Status 'missing' -Required `
-            -Detail "no profile at $ProfilePath" -Fix "bin/fm-setup.ps1 -FirstmateHome '$FirstmateHome'"
+        $checks += New-FmInstallCheck -Name 'profile wiring' -Status 'warn' `
+            -Detail "no profile at $ProfilePath, so a new session gets no firstmate wiring of its own" `
+            -Fix "bin/fm-setup.ps1 -FirstmateHome '$FirstmateHome'"
     }
 
     if (Test-FmInstallHookRegistered -Path $HookSettingsPath) {

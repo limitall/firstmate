@@ -43,7 +43,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'fm-module-load.ps1')
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Invoke-FmBootstrap'
 
 if ($Install) {
     Install-FmTool -Name $Install -Approved:$Approved

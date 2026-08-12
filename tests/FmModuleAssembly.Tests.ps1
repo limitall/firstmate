@@ -302,16 +302,45 @@ Describe 'entry points' {
         }
     }
 
-    It 'resolves the module in every bin/ entry point before calling into it' {
-        # Three conventions are in use across the areas that have landed - the
-        # shared loader, importing the manifest, and an inline dot-source of
-        # Private then Public. What matters is that no entry point calls a module
-        # function without loading the module at all.
+    It 'resolves the module through the ONE shared prelude in every bin/ entry point' {
+        # Three conventions used to be in use - the shared prelude, importing the
+        # manifest inline, and an inline dot-source of Private then Public. Two
+        # of them looked equivalent and were not: only the prelude puts module/
+        # on PSModulePath and publishes the resolved home, so the entry points
+        # using the other two worked in the captain's shell and failed in a
+        # herdr pane. There is one way now, and this is what keeps it that way.
+        $offenders = @()
         foreach ($file in @(Get-ChildItem -LiteralPath $script:BinRoot -Filter 'fm-*.ps1' -File)) {
             if ($file.Name -eq 'fm-module-load.ps1') { continue }
             $text = [System.IO.File]::ReadAllText($file.FullName)
-            $text | Should -Match "(fm-module-load\.ps1|Import-Module|'module' 'Firstmate')" -Because $file.Name
+            if ($text -notmatch "\.\s+\(Join-Path\s+\`$PSScriptRoot\s+'fm-module-load\.ps1'\)\s+-RequiredCommand\s+'[A-Za-z]+-Fm[A-Za-z]+'") {
+                $offenders += "$($file.Name): does not dot-source fm-module-load.ps1 with -RequiredCommand"
+                continue
+            }
+            # An entry point that ALSO imports the manifest its own way is back
+            # to two mechanisms, and the second one wins whatever the first did.
+            if ($text -match '(?m)^\s*Import-Module') {
+                $offenders += "$($file.Name): imports the module a second way"
+            }
         }
+        ($offenders -join '; ') | Should -Be ''
+    }
+
+    It 'names a command the module exports in every entry point prelude call' {
+        # -RequiredCommand is what decides whether the dot-source fallback fires.
+        # A misspelled or renamed name is silent: the manifest import satisfies
+        # the call anyway, and the fallback stops covering the partial build it
+        # exists for.
+        $wrong = @()
+        foreach ($file in $script:EntryPoints) {
+            $text = [System.IO.File]::ReadAllText($file.FullName)
+            $m = [regex]::Match($text, "fm-module-load\.ps1'\)\s+-RequiredCommand\s+'([A-Za-z]+-Fm[A-Za-z]+)'")
+            if (-not $m.Success) { continue }
+            $name = $m.Groups[1].Value
+            if ($script:Exported -notcontains $name) { $wrong += "$($file.Name) requires $name, which is not exported" }
+            if ($text -notmatch [regex]::Escape($name) + '\s') { $wrong += "$($file.Name) requires $name but never calls it" }
+        }
+        ($wrong -join '; ') | Should -Be ''
     }
 
     It 'pins PowerShell 7 and strict mode in every bin/ entry point' {

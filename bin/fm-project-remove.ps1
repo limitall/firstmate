@@ -39,7 +39,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'fm-module-load.ps1')
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Remove-FmProject'
 
 if (-not $Name) {
     [Console]::Error.WriteLine('usage: fm-project-remove.ps1 <name> -Approved')

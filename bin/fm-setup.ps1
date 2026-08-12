@@ -26,6 +26,9 @@
     Claude settings file to register hooks in. Defaults to
     <RepoRoot>/.claude/settings.json.
 
+.PARAMETER HomePointerPath
+    Where to persist the chosen home. Defaults to <RepoRoot>/.fm-home.
+
 .PARAMETER SkipProfile
     Leave the profile alone.
 
@@ -38,6 +41,7 @@ param(
     [string]$RepoRoot,
     [string]$ProfilePath,
     [string]$HookSettingsPath,
+    [string]$HomePointerPath,
     [switch]$SkipProfile,
     [switch]$SkipHooks
 )
@@ -45,13 +49,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'fm-module-load.ps1')
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Install-FmHome'
 
 $setupArgs = @{
     SkipProfile = $SkipProfile
     SkipHooks   = $SkipHooks
 }
-foreach ($name in @('FirstmateHome', 'RepoRoot', 'ProfilePath', 'HookSettingsPath')) {
+foreach ($name in @('FirstmateHome', 'RepoRoot', 'ProfilePath', 'HookSettingsPath', 'HomePointerPath')) {
     if ($PSBoundParameters.ContainsKey($name)) { $setupArgs[$name] = $PSBoundParameters[$name] }
 }
 if (-not $setupArgs.ContainsKey('RepoRoot')) { $setupArgs['RepoRoot'] = (Split-Path -Parent $PSScriptRoot) }

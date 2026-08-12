@@ -108,7 +108,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'fm-module-load.ps1')
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Get-FmBacklog'
 
 $usage = @(
     'usage: fm-backlog.ps1 <command> [args]',

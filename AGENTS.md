@@ -61,6 +61,22 @@ message is not wrapped in a PowerShell error record. Entry points may only call
 **exported** functions - a private helper is unreachable once the manifest
 governs the import.
 
+**Every entry point loads the module exactly one way**, and it is not
+`Import-Module`:
+
+```powershell
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Invoke-FmThing'
+```
+
+That prelude is the only thing that makes a bin script work in a shell which
+loaded no profile - a herdr pane, a Claude hook, a dispatched worker. It puts
+`<checkout>/module` on `PSModulePath` for its own process (a module cannot fix
+that from inside itself), imports the manifest with a dot-source fallback for a
+partial build, and publishes the home into `$env:FM_HOME`. Three conventions
+used to coexist here; two of them looked equivalent and silently were not.
+`tests/FmModuleAssembly.Tests.ps1` now fails an entry point that imports the
+module any other way.
+
 ## Where the design notes live
 
 - `docs/herdr-backend-windows.md` - the Herdr session provider: what was ported
@@ -154,6 +170,60 @@ below are what those bugs cost.
   foundation suites import the manifest, and an imported module keeps exporting
   the name whatever the test session's function table says. Check such a test
   still fails when you revert the code it guards; several here did not.
+
+## Working without the PowerShell profile
+
+The profile block `fm-setup.ps1` writes is a **convenience** - it is what lets
+the captain type a bare `fm-doctor.ps1`. It is loaded by an interactive session
+and by nothing else, so nothing load-bearing may depend on it.
+
+- `FM_HOME` resolves without any environment variable, from `<checkout>/.fm-home`
+  written by setup. `Resolve-FmEntryPointHome` owns the precedence: explicit
+  parameter, then `$env:FM_HOME`/`$env:FM_ROOT_OVERRIDE` (delegated whole to
+  `Get-FmHome`, which keeps the bash contract's one owner), then the pointer,
+  then `Get-FmHome`'s tail. **The environment outranks the pointer** so a
+  secondmate or test home still wins.
+- `Initialize-FmEntryPointHome` publishes ONLY the pointer's value. Publishing
+  the fallback too would pin a guess into the environment where it outranks a
+  pointer written a moment later - which broke `fm-setup.ps1` followed by
+  `fm-home.ps1` in one session on the first attempt.
+- In the doctor, `[missing]` means broken and `[warn]` means it works but not as
+  ergonomically. `PSModulePath`, `PATH` and the profile block are all warnings:
+  they only affect what the captain can type. Reporting them as missing is what
+  made one correct install print `unhealthy: 3 missing` in a bare shell.
+- **A test that only ever runs inside an already-configured session cannot see
+  this class of bug** - that is exactly why it shipped with a green suite.
+  `tests/FmEntryPoint.Tests.ps1` runs real `pwsh -NoProfile` children against a
+  checkout copied to a temp path with `FM_*` and `PSModulePath` removed from the
+  child's environment, and pairs each one with a negative control that deletes
+  the pointer and asserts the old symptom returns. Add to that file when an
+  entry point gains a behaviour a bare shell must have.
+- Never name a Pester variable `$script:Home`: `$HOME` is read-only, and the
+  failure surfaces as Pester's misleading "a 'break' or 'continue' statement
+  escaped from your code". Same hazard as a `-Home` parameter.
+
+## Which directory a Claude session starts in
+
+**The checkout, and by default that is also the home.** On Linux the firstmate
+repo root IS the home - `config/ data/ projects/ state/` are gitignored beside
+`AGENTS.md` and `.claude/` - so every doc says `cd <firstmate>; claude`. This
+port defaulted the home elsewhere, the captain followed the docs into a
+directory with no instructions and no hooks, and nothing said so.
+
+- `Resolve-FmEntryPointHome`'s tail is the **checkout**, which is `Get-FmHome`'s
+  documented tail too. There is no second answer to "where does the home
+  default to" - the installer's copy was deleted, because the two disagreeing is
+  what produced the bug.
+- A home that is deliberately separate is supported and made to **fail loudly**:
+  setup writes a managed block into `<home>/AGENTS.md` and mirrors it to
+  `<home>/CLAUDE.md`, naming the checkout. The block goes first in the file.
+- **This repo's `CLAUDE.md` is a symlink, and a Windows clone does not get one.**
+  Git with `core.symlinks=false` (the Windows default) writes a 9-byte file
+  containing the text `AGENTS.md`. `Test-FmAgentsLinkPlaceholder` recognises
+  that as a link the host failed to materialize, and setup repairs it. Anything
+  that reads `CLAUDE.md` on Windows must assume this until setup has run.
+- The doctor's `start Claude in` check answers the question outright, and calls a
+  silent split - or a placeholder `CLAUDE.md` - `[missing]`, not `[warn]`.
 
 ## Module foundation
 

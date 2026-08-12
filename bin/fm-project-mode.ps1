@@ -27,7 +27,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'fm-module-load.ps1')
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Get-FmProjectMode'
 
 # The bash original warns on stderr with a bare "warn: " prefix. Keep that shape
 # rather than PowerShell's WARNING banner, because these lines are read by the

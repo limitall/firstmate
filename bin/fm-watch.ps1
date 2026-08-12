@@ -37,12 +37,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$moduleRoot = Join-Path $PSScriptRoot '..' 'module' 'Firstmate'
-foreach ($area in @('Private', 'Public')) {
-    foreach ($file in (Get-ChildItem -Path (Join-Path $moduleRoot $area) -Filter '*.ps1' -ErrorAction SilentlyContinue | Sort-Object Name)) {
-        . $file.FullName
-    }
-}
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Start-FmWatch'
 
 $result = Start-FmWatch -MaxCycles $MaxCycles -SkipTerminalWait:$SkipTerminalWait
 exit $result.ExitCode

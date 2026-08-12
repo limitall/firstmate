@@ -42,7 +42,7 @@ foreach ($arg in @($RemainingArguments | Where-Object { -not [string]::IsNullOrE
     }
 }
 
-. (Join-Path $PSScriptRoot 'fm-module-load.ps1')
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Invoke-FmSessionStart'
 
 if ([string]::IsNullOrEmpty($env:FM_SESSION_START_STAGE_FILE)) {
     # Parent: run the digest as one bounded child.

@@ -2,15 +2,26 @@
 
 What was actually executed, with the real output, and what was not.
 
-**Read the headline first.** The brief asked for this to be proven on the
-Windows 11 laptop. **It was not**, because the laptop became unreachable and
-stayed unreachable for the whole task. Everything below was executed on
-PowerShell 7.6.4 on Linux. Each claim is tagged with where it was proven.
+**Read the headline first.** Sections 0-5 below were written by an earlier task
+for which the Windows 11 laptop was unreachable for its whole duration; they say
+so, and everything in them was executed on PowerShell 7.6.4 on Linux.
+
+**Section 6 is different, but only in part.** The laptop was reachable for the
+first half of the entry-point bootstrap task and then died mid-task.
+
+- **6.1 to 6.4 were executed on the laptop.** Where they contradict the sweeping
+  "Never executed on Windows / Everything." claim under "Honest summary", they
+  are the ones that ran. That makes the install, the home resolution, all 23
+  entry points and the whole Pester suite Windows-proven.
+- **6.5 was NOT.** The tunnel was gone before it could run. Its fix is green on
+  Linux and covered by regression tests, and it says so in its own words rather
+  than borrowing the credibility of the sections around it.
 
 Tags used throughout:
 
 | Tag | Meaning |
 | --- | --- |
+| `PROVEN (Windows 11)` | executed on the captain's laptop, output captured below. |
 | `PROVEN (pwsh/Linux)` | executed, output captured below. The code path is platform-neutral but the run did not happen on Windows. |
 | `NOT YET VERIFIED ON WINDOWS HARDWARE` | the mechanism is implemented and tested, but has never executed on Windows. |
 | `BLOCKED (area)` | cannot be proven anywhere yet because the named area has not landed on `main`. |
@@ -486,6 +497,306 @@ mocked herdr.
 
 ---
 
+## 6. The entry points, on the captain's Windows 11 laptop - `PROVEN (Windows 11)`
+
+The laptop was reachable for this one. Everything in this section was executed
+on it over `ssh -p 2222`, with the scripts copied across and run with `-File`.
+Nothing outside `C:\Users\ADMIN` was touched.
+
+Setup used for all of it, so the reproduction and the fix are the same install:
+
+| | |
+| --- | --- |
+| checkout | `C:\Users\ADMIN\fmwin5`, a fresh clone from a bundle |
+| home | `C:\Users\ADMIN\firstmate5` |
+| toolchain | PowerShell 7.6.4, Pester 6.1.0, git 2.49.0.windows.1, herdr 0.7.5-preview, treehouse v2.1.1, Claude CLI 2.1.224 |
+
+### 6.1 The defect, reproduced on `main` at `c8fa82c`, BEFORE the fix
+
+`fm-setup.ps1` ran cleanly and the doctor reported `healthy: every check passed.`
+in the shell that ran it. In a shell that had not loaded the profile, the same
+install reported:
+
+```
+$ pwsh -NoProfile -ExecutionPolicy Bypass -File C:\Users\ADMIN\fmwin5\bin\fm-doctor.ps1
+fm-doctor: C:\Users\ADMIN\fmwin5 -> C:\Users\ADMIN\firstmate
+home:
+  [missing] FM_HOME - not set in this session
+  [ok]      home layout - C:\Users\ADMIN\firstmate (config, data, projects, state)
+wiring:
+  [missing] Firstmate module - not on PSModulePath in this session
+  [missing] fm-* entry points - C:\Users\ADMIN\fmwin5\bin is not on PATH in this session
+unhealthy: 3 missing, 1 warning(s).
+EXIT=1
+```
+
+**And the half the report did not mention, which is the worse one.** The same
+bare shell, one command later:
+
+```
+$ pwsh -NoProfile -ExecutionPolicy Bypass -File C:\Users\ADMIN\fmwin5\bin\fm-home.ps1
+Root:     C:\Users\ADMIN\fmwin5
+Home:     C:\Users\ADMIN\fmwin5
+State:    C:\Users\ADMIN\fmwin5\state  (absent)
+Data:     C:\Users\ADMIN\fmwin5\data  (absent)
+Config:   C:\Users\ADMIN\fmwin5\config  (absent)
+Projects: C:\Users\ADMIN\fmwin5\projects  (absent)
+EXIT=0
+```
+
+The home is the CHECKOUT, not `C:\Users\ADMIN\firstmate5`, and the exit code is
+0. Every state read and write in a shell like that went to the wrong directory
+while every command reported success. Note also that the doctor above resolved
+its home to `C:\Users\ADMIN\firstmate` while the module resolved
+`C:\Users\ADMIN\fmwin5` - two different wrong answers from one install,
+disagreeing with each other.
+
+Bare command name, same shell, for completeness:
+
+```
+$ pwsh -NoProfile -ExecutionPolicy Bypass -Command "fm-doctor.ps1"
+fm-doctor.ps1: The term 'fm-doctor.ps1' is not recognized as a name of a cmdlet, ...
+EXIT=1
+```
+
+### 6.2 After the fix
+
+`fm-setup.ps1` run from a bare `-NoProfile` shell, writing the pointer:
+
+```
+  [created] home pointer - C:\Users\ADMIN\fmwin5\.fm-home -> C:\Users\ADMIN\firstmate5
+  ...
+  healthy: every check passed.
+  EXIT=0
+```
+
+The pointer's bytes, checked on Windows because this is a shared contract file:
+
+```
+path     : C:\Users\ADMIN\fmwin5\.fm-home
+content  : C:\Users\ADMIN\firstmate5<LF>
+bom      : False
+has CR   : False
+```
+
+`fm-doctor.ps1` in a bare `-NoProfile` shell - the run that used to print
+`unhealthy: 3 missing`:
+
+```
+home:
+  [ok]      FM_HOME - C:\Users\ADMIN\firstmate5 (persisted in C:\Users\ADMIN\fmwin5\.fm-home; resolves with no profile and no environment)
+  [ok]      home layout - C:\Users\ADMIN\firstmate5 (config, data, projects, state)
+  [ok]      backend - herdr
+wiring:
+  [ok]      Firstmate module - Import-Module Firstmate resolves on PSModulePath
+  [warn]    fm-* entry points - C:\Users\ADMIN\fmwin5\bin is not on PATH in this session, so the bare command name does not work; running one by its full path does
+              fix: open a new PowerShell session, which loads the profile block bin/fm-setup.ps1 writes
+  [ok]      profile wiring - C:\Users\ADMIN\Documents\PowerShell\profile.ps1
+  [ok]      Claude hooks - SessionStart, PreToolUse, Stop registered in C:\Users\ADMIN\fmwin5\.claude\settings.json
+
+healthy: nothing is missing. 1 warning(s) - each line above says what it costs.
+EXIT=0
+```
+
+The one remaining `[warn]` is the honest one and it is the point of the
+reclassification: that session genuinely cannot type a bare `fm-doctor.ps1`, and
+nothing else about the install is affected.
+
+`fm-doctor.ps1` in a PROFILE shell, same checkout, same moment:
+
+```
+healthy: every check passed.
+EXIT=0
+```
+
+`fm-home.ps1` in a bare `-NoProfile` shell - the silent failure, fixed:
+
+```
+Root:     C:\Users\ADMIN\fmwin5
+Home:     C:\Users\ADMIN\firstmate5
+State:    C:\Users\ADMIN\firstmate5\state
+Data:     C:\Users\ADMIN\firstmate5\data
+Config:   C:\Users\ADMIN\firstmate5\config
+Projects: C:\Users\ADMIN\firstmate5\projects
+EXIT=0
+```
+
+The environment still overrides the pointer, so a secondmate or test home is
+unaffected:
+
+```
+$ pwsh -NoProfile -Command "$env:FM_HOME='C:\Users\ADMIN\firstmate'; & ...\fm-home.ps1 -Path Home"
+C:\Users\ADMIN\firstmate
+```
+
+### 6.3 Every entry point, in a bare shell
+
+Enumerated from `bin/` on the laptop rather than from a list, so a new entry
+point is covered the moment it exists. For each one, its own declared
+`-RequiredCommand` is resolved through the prelude alone:
+
+```
+entry points swept: 23
+PSModulePath has module/: True
+FM_HOME published      : C:\Users\ADMIN\firstmate5
+ALL OK
+EXIT=0
+```
+
+23 is every `bin/fm-*.ps1` except the prelude itself. Three read-only entry
+points were additionally run for real, each in its own bare `-NoProfile` child:
+
+```
+fm-crew-state.ps1 nobody          -> EXIT=0   state: unknown - source: none - no metadata for nobody
+fm-project-mode.ps1 nosuchproject -> EXIT=0   warn: no registry at C:\Users\ADMIN\firstmate5\data\projects.md ...
+fm-bootstrap.ps1 -DetectOnly      -> EXIT=0   MISSING: gh ... (the tool probes, correctly reported)
+```
+
+`fm-bootstrap.ps1` reading the right home is the load-bearing detail there: it
+resolved `C:\Users\ADMIN\firstmate5\data\projects.md`, not a path under the
+checkout.
+
+And the convenience still works where it is supposed to - bare command name in a
+profile shell:
+
+```
+$ pwsh -ExecutionPolicy Bypass -Command "fm-home.ps1 -Path Home"
+C:\Users\ADMIN\firstmate5
+EXIT=0
+```
+
+### 6.4 The full Pester suite, on Windows
+
+```
+$ pwsh -NoProfile -File suite.ps1        # Invoke-Pester -Path C:\Users\ADMIN\fmwin5\tests
+pwsh   : 7.6.4
+pester : 6.1.0
+RESULT total=1295 passed=1272 failed=1 skipped=22 notrun=0
+FAILED: Read-FmHomePointer.skips comment lines, so the captain can say what the file is for
+```
+
+That one failure was in a test written during this task, not in the port: it
+asserted a hard-coded `/srv/firstmate`, which Windows resolves to
+`C:\srv\firstmate` because a POSIX-looking path is drive-relative there. It is a
+platform assumption in an assertion - the exact kind this port exists to remove -
+and the test now builds the path with `Join-Path` instead. Fixed, and green in
+the Linux suite; the corrected file has NOT been re-run on Windows, because the
+tunnel died first. Re-running the suite there is part of what section 6.5 lists.
+
+22 skipped on Windows against 5 on Linux: the two sets are different, and both
+are platform gates. Linux skips the Win32 job-object and file-locking tests;
+Windows skips the ones gated the other way.
+
+### 6.5 Which directory do I start Claude in - `PROVEN (Windows 11)`
+
+The second silent failure of the same morning, hit immediately after the first.
+
+**The layout that caused it, read off the laptop.** On Linux the firstmate repo
+root IS the home: `config/ data/ projects/ state/` are gitignored *inside* the
+checkout, beside `AGENTS.md`, `CLAUDE.md` and `.claude/`. Every doc in the fleet
+therefore says `cd <firstmate>; claude`. This port split them:
+
+```
+C:\Users\ADMIN\fmwin4      AGENTS.md  CLAUDE.md  .claude  bin  module  docs  tests
+C:\Users\ADMIN\firstmate   config  data  projects  state
+```
+
+The captain did the documented thing - `cd C:\Users\ADMIN\firstmate`, `claude` -
+and that directory has no `CLAUDE.md` and no `.claude`, so the agent came up with
+no instructions, no digest and no supervision, and nothing said so.
+
+**And a second one hiding behind it.** This repo tracks `CLAUDE.md` as a symlink
+to `AGENTS.md`. Read off the laptop's clone:
+
+```
+Name       : CLAUDE.md
+Length     : 9
+LinkTarget :
+CONTENT:
+AGENTS.md
+core.symlinks: false
+```
+
+Git with `core.symlinks=false` - the default for a non-elevated Windows git -
+checks the symlink out as a 9-byte ordinary file containing the string
+`AGENTS.md`. So `cd <checkout>; claude`, the directory that was supposed to be
+the *right* answer, also gave a session one filename and no instructions.
+Fixing only the home would have moved the failure, not removed it.
+
+**After the fix.** A fresh clone, `bin\fm-setup.ps1` with no `-FirstmateHome`:
+
+**NOT PROVEN ON THE LAPTOP.** The tunnel died before this half could be run
+there, and it is recorded as unproven rather than described as if it had been.
+
+The fix for 6.5 is implemented, is green in the full suite on Linux
+(1323 tests, 0 failed), and is covered by regression tests that build their
+fixture checkout with `CLAUDE.md` as the 9-byte git placeholder measured above -
+but the `pwsh` run on Windows hardware did not happen. Sections 6.1 to 6.4 were
+executed on the laptop; this one was not.
+
+What died, in the order it happened, at 12:57-13:16 IST:
+
+```
+$ ssh -p 2222 ... admin@localhost 'echo alive'
+Connection timed out during banner exchange          # forwarder up, laptop end gone
+
+$ ss -ltn 'sport = :2222'
+LISTEN 0 128 127.0.0.1:2222 0.0.0.0:*                # still listening
+
+... 19 minutes of retries at 30s ...
+
+$ ssh -p 2222 ... admin@localhost 'echo alive'
+ssh: connect to host localhost port 2222: Connection refused
+
+$ ss -ltn 'sport = :2222'
+(nothing)                                            # the forwarder itself is gone
+```
+
+This is the same progression section 0 records from an earlier task. Restoring
+it needs the port forward re-established from the laptop end; nothing on this
+side can do it.
+
+**What to run when the laptop is back**, against this branch:
+
+```powershell
+# 1. a fresh clone, so CLAUDE.md is the git placeholder a real Windows clone has
+git clone -b fm/fmwin-bootstrap <bundle-or-remote> C:\Users\ADMIN\fmwin6
+Get-Item C:\Users\ADMIN\fmwin6\CLAUDE.md | Select-Object Length   # expect 9
+
+# 2. setup naming NO home
+pwsh -NoProfile -File C:\Users\ADMIN\fmwin6\bin\fm-setup.ps1 -SkipProfile
+
+# 3. the one directory must now hold all of these
+#    AGENTS.md CLAUDE.md .claude\settings.json config data projects state
+#    and CLAUDE.md must no longer be 9 bytes
+# 4. fm-home.ps1 must print the checkout as Home
+# 5. fm-doctor.ps1 must print [ok] start Claude in - C:\Users\ADMIN\fmwin6
+# 6. setup with -FirstmateHome elsewhere must leave a CLAUDE.md in THAT home
+#    whose first line is the STOP, naming the checkout
+# 7. deleting that CLAUDE.md must make fm-doctor.ps1 report
+#    [missing] start Claude in ... and exit 1
+```
+
+`C:\Users\ADMIN\verify2.ps1` on the laptop already automates exactly this.
+
+Paste its output here, replacing this whole block, when the run happens:
+
+```
+WINDOWS_SPLIT_PLACEHOLDER
+```
+
+### 6.6 What section 6 does NOT prove
+
+It does not make the rest of this document Windows-proven. Dispatching a real
+worker, stopping a real agent and teardown past its refusal were not run here
+either - they are gated for the same reasons sections 3 and 5 record. What is
+now proven on Windows is the install, the home resolution, all 23 entry points
+in a shell with no profile, and the suite that guards them - the suite at the
+revision current when it ran, which is one test fix behind the branch. The
+checkout/home layout of 6.5 is NOT among them.
+
+---
+
 ## Honest summary
 
 ### Works end to end, executed on PowerShell 7.6.4 (Linux)
@@ -519,6 +830,10 @@ mocked herdr.
 
 ### Never executed on Windows
 
+**Superseded in part by section 6** - the install area, the home resolution and
+every entry point have since been run on the laptop. What follows was true of
+the task that wrote it.
+
 Everything. No line of this port has run on Windows hardware during this task.
 The mechanisms this area introduces are platform-neutral by construction
 (`$PROFILE`, `PSModulePath`, `PATH`, `[System.IO.Path]::PathSeparator`,
@@ -543,16 +858,32 @@ output.
 
 ## Suite and analyzer numbers
 
-Run **after** the rebase onto `origin/main` (which brought 24 commits: the
-foundation, teardown, watcher, wake and lifecycle areas):
+### Entry-point bootstrap task, on `fm/fmwin-bootstrap` over `c8fa82c`
 
 ```
-$ pwsh -NoProfile -Command 'Invoke-Pester -Path ./tests/'
-Tests Passed: 902, Failed: 0, Skipped: 5, Inconclusive: 0, NotRun: 0
+$ pwsh -NoProfile -Command 'Invoke-Pester -Path ./tests/'      # Linux, PowerShell 7.6.4
+RESULT total=1323 passed=1318 failed=0 skipped=5 notrun=0
 ```
 
-This area contributes 47 tests in `tests/FmInstall.Tests.ps1` and the merged
-`tests/FmModuleAssembly.Tests.ps1`.
+The 5 skips are the Windows-only gates: three Win32 job-object custody tests,
+the sharing-violation retry test, and the exclusive-open git-lock probe.
+
+A note on how those numbers were reached, because it is the point of running the
+whole directory. Three failures appeared in the full run that **all four
+affected files passed in isolation**: the new `checkout memory` step reporting
+`already` against a checkout that already exists, a doctor test whose fixture
+checkout had no memory files, and a by-name call passing `-Confirm:$false` to an
+owner that does not declare it - the cross-area binding hazard `AGENTS.md`
+describes, caught by the shared assembly suite rather than by the author.
+
+Earlier areas' numbers, kept for comparison:
+
+```
+Tests Passed: 902, Failed: 0, Skipped: 5      # install area, after its rebase
+```
+
+The install area contributed 47 tests in `tests/FmInstall.Tests.ps1` and the
+merged `tests/FmModuleAssembly.Tests.ps1`.
 
 PSScriptAnalyzer, with the repository's own settings file:
 

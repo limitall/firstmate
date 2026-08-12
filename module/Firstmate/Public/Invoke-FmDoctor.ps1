@@ -14,18 +14,23 @@ Set-StrictMode -Version Latest
     Three statuses, and the difference between the last two is load-bearing:
 
       ok       verified, in this session
-      warn     firstmate installs and runs, but something it needs at dispatch
-               time is absent (herdr, treehouse, the Claude CLI, Pester)
+      warn     it works, but not as well as it could: either something needed
+               at dispatch time is absent (herdr, treehouse, the Claude CLI,
+               Pester) or a convenience the profile block provides is absent
+               (bin/ on PATH, a bare Import-Module Firstmate)
       missing  a required piece of the installation is absent
 
     Healthy means no 'missing'. A 'warn' does not make the environment
-    unhealthy, because a home with no herdr is still a correctly installed home
-    - it simply cannot dispatch yet, and the line says so.
+    unhealthy: a home with no herdr is still a correctly installed home that
+    cannot dispatch yet, and an entry point run by its own path works with no
+    profile wiring at all. Each warning line says which cost it is carrying.
 
     A check that could not be evaluated is never reported as passing.
 
 .PARAMETER FirstmateHome
-    The home to check. Defaults to $env:FM_HOME, then <userprofile>/firstmate.
+    The home to check. Defaults to $env:FM_HOME, then the home persisted in
+    <RepoRoot>/.fm-home, then the checkout itself - Resolve-FmEntryPointHome
+    owns that order.
 
 .PARAMETER RepoRoot
     The checkout to check. Defaults to the one this module was loaded from.
@@ -37,6 +42,10 @@ Set-StrictMode -Version Latest
 .PARAMETER HookSettingsPath
     The Claude settings file expected to carry the hooks. Defaults to
     <RepoRoot>/.claude/settings.json.
+
+.PARAMETER HomePointerPath
+    The file expected to carry the home that resolves without the environment.
+    Defaults to <RepoRoot>/.fm-home.
 
 .EXAMPLE
     bin/fm-doctor.ps1
@@ -50,17 +59,22 @@ function Invoke-FmDoctor {
         [string]$FirstmateHome = '',
         [string]$RepoRoot = '',
         [string]$ProfilePath = '',
-        [string]$HookSettingsPath = ''
+        [string]$HookSettingsPath = '',
+        [string]$HomePointerPath = ''
     )
 
     if (-not $RepoRoot) { $RepoRoot = Get-FmInstallRepoRoot }
-    if (-not $FirstmateHome) { $FirstmateHome = Get-FmInstallDefaultHome }
+    if (-not $HomePointerPath) { $HomePointerPath = Get-FmHomePointerPath -RepoRoot $RepoRoot }
+    if (-not $FirstmateHome) {
+        $FirstmateHome = Resolve-FmEntryPointHome -RepoRoot $RepoRoot -PointerPath $HomePointerPath
+    }
     if (-not $ProfilePath) { $ProfilePath = Get-FmInstallProfilePath }
     if (-not $HookSettingsPath) { $HookSettingsPath = Get-FmInstallHookSettingsPath -RepoRoot $RepoRoot }
 
     $groups = [ordered]@{
         'prerequisites' = @(Get-FmInstallPrerequisiteCheck)
-        'home'          = @(Get-FmInstallHomeCheck -FirstmateHome $FirstmateHome)
+        'home'          = @(Get-FmInstallHomeCheck -FirstmateHome $FirstmateHome -HomePointerPath $HomePointerPath `
+                -RepoRoot $RepoRoot)
         'wiring'        = @(Get-FmInstallWiringCheck -RepoRoot $RepoRoot -FirstmateHome $FirstmateHome `
                 -ProfilePath $ProfilePath -HookSettingsPath $HookSettingsPath)
     }
@@ -82,7 +96,12 @@ function Invoke-FmDoctor {
     if ($missing.Count -eq 0 -and $warn.Count -eq 0) {
         $lines += 'healthy: every check passed.'
     } elseif ($missing.Count -eq 0) {
-        $lines += "healthy: nothing is missing. $($warn.Count) warning(s) - firstmate is installed but cannot dispatch until they are cleared."
+        # NOT "cannot dispatch": a warning now covers two different costs - a
+        # missing dispatch dependency (herdr, treehouse) and a convenience the
+        # profile block provides (PATH, the bare Import-Module). Every warning
+        # line above says which one it is, so the summary points at them rather
+        # than asserting one cause for all of them.
+        $lines += "healthy: nothing is missing. $($warn.Count) warning(s) - each line above says what it costs."
     } else {
         $lines += "unhealthy: $($missing.Count) missing, $($warn.Count) warning(s). Fix the missing ones above, then re-run fm-doctor.ps1."
     }
@@ -97,5 +116,6 @@ function Invoke-FmDoctor {
         RepoRoot      = $RepoRoot
         ProfilePath   = $ProfilePath
         HookPath      = $HookSettingsPath
+        HomePointer   = $HomePointerPath
     }
 }

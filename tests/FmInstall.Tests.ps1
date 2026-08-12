@@ -60,6 +60,14 @@ BeforeAll {
             Home     = Join-Path $dir 'fmhome'
             Profile  = Join-Path $dir 'profile.ps1'
             Settings = Join-Path $dir 'settings.json'
+            # Setup is run against the REAL checkout - the profile block it
+            # writes has to name the real module/ and bin/, and the fresh-session
+            # test really imports the module - so the pointer has to be sent
+            # somewhere disposable, exactly like the profile and the settings.
+            # Without this every run of the suite would leave a .fm-home in the
+            # developer's working tree and change what a later test file
+            # resolves.
+            Pointer  = Join-Path $dir 'fm-home-pointer'
         }
     }
 
@@ -70,6 +78,7 @@ BeforeAll {
             RepoRoot         = $script:RepoRoot
             ProfilePath      = $Fixture.Profile
             HookSettingsPath = $Fixture.Settings
+            HomePointerPath  = $Fixture.Pointer
         }
         foreach ($key in $Extra.Keys) { $splat[$key] = $Extra[$key] }
         Install-FmHome @splat
@@ -96,9 +105,25 @@ Describe 'Install-FmHome: the home layout' {
     }
 
     It 'reports every step as created on the first run' {
+        # 'checkout memory' is exempt: every other step is about the HOME this
+        # fixture just made, but that one is about the checkout, which already
+        # exists and already has correct AGENTS.md/CLAUDE.md. Reporting 'already'
+        # there is the converge rule working, not a first run that was not first.
         $fixture = New-InstallFixture
         $report = Invoke-Setup -Fixture $fixture
-        @($report.Steps | Where-Object { $_.Action -eq 'already' }).Count | Should -Be 0
+        @($report.Steps |
+                Where-Object { $_.Name -ne 'checkout memory' } |
+                Where-Object { $_.Action -eq 'already' }).Count | Should -Be 0
+    }
+
+    It 'persists the home, and does so even under -SkipProfile' {
+        # -SkipProfile drops a convenience. It must not drop the one thing that
+        # makes the entry points work in a shell with no profile at all.
+        $fixture = New-InstallFixture
+        $report = Invoke-Setup -Fixture $fixture -Extra @{ SkipProfile = [switch]$true }
+
+        ($report.Steps | Where-Object { $_.Name -eq 'home pointer' }).Action | Should -Be 'created'
+        Read-FmHomePointer -Path $fixture.Pointer | Should -Be $fixture.Home
     }
 
     It 'is idempotent: the second run changes nothing and reports already' {
@@ -263,7 +288,7 @@ Describe 'Install-FmHome: the backend a fresh home gets' {
         [System.IO.File]::WriteAllText($path, "zellij`n")
 
         $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
 
         $check = $doctor.Checks | Where-Object { $_.Name -eq 'backend' }
         $check.Status | Should -Be 'warn'
@@ -467,13 +492,163 @@ Describe 'Test-FmInstallHookRegistered' {
     }
 }
 
+Describe 'the home and the checkout: where do I start Claude' {
+    # THE SECOND SILENT FAILURE OF THE SAME MORNING. On Linux the firstmate repo
+    # root IS the home - config/ data/ projects/ state/ are gitignored beside
+    # AGENTS.md and .claude/ - so every doc says `cd <firstmate>; claude` and it
+    # works. This port used to default the home to <userprofile>/firstmate, so
+    # the captain did the documented thing, landed in a directory with no
+    # instructions and no hooks, and nothing told him.
+
+    It 'defaults a fresh install to the checkout, so the two coincide as on Linux' {
+        $savedHome = $env:FM_HOME
+        $savedRoot = $env:FM_ROOT_OVERRIDE
+        try {
+            $env:FM_HOME = ''
+            $env:FM_ROOT_OVERRIDE = ''
+            $checkout = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+            $null = New-Item -ItemType Directory -Path (Join-Path $checkout 'module' 'Firstmate') -Force
+
+            Resolve-FmEntryPointHome -RepoRoot $checkout -PointerPath (Join-Path $checkout '.fm-home') |
+                Should -Be $checkout
+        } finally {
+            $env:FM_HOME = $savedHome
+            $env:FM_ROOT_OVERRIDE = $savedRoot
+        }
+    }
+
+    It 'writes no redirect when the home IS the checkout - there is nothing to redirect to' {
+        $checkout = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $checkout -Force
+
+        $result = Set-FmInstallHomeRedirect -FirstmateHome $checkout -RepoRoot $checkout -Confirm:$false
+        $result.Action | Should -Be 'already'
+        Test-Path -LiteralPath (Join-Path $checkout 'AGENTS.md') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $checkout 'CLAUDE.md') | Should -BeFalse
+    }
+
+    It 'writes a redirect naming the checkout into BOTH memory files when they are separate' {
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+
+        foreach ($name in @('AGENTS.md', 'CLAUDE.md')) {
+            $path = Join-Path $fixture.Home $name
+            Test-Path -LiteralPath $path -PathType Leaf | Should -BeTrue -Because "a session may read only $name"
+            $text = [System.IO.File]::ReadAllText($path)
+            $text | Should -BeLike '*STOP*'
+            $text | Should -BeLike "*$($script:RepoRoot)*" -Because 'it must NAME the directory to use'
+            $text | Should -BeLike "*$($fixture.Home)*"
+        }
+        [System.IO.File]::ReadAllText((Join-Path $fixture.Home 'AGENTS.md')) |
+            Should -Be ([System.IO.File]::ReadAllText((Join-Path $fixture.Home 'CLAUDE.md')))
+    }
+
+    It 'puts the stop FIRST, so an agent reading only the top of the file still hits it' {
+        $fixture = New-InstallFixture
+        $null = New-Item -ItemType Directory -Path $fixture.Home -Force
+        [System.IO.File]::WriteAllText((Join-Path $fixture.Home 'AGENTS.md'), "# the captain's own notes`n")
+        $null = Invoke-Setup -Fixture $fixture
+
+        $text = [System.IO.File]::ReadAllText((Join-Path $fixture.Home 'AGENTS.md'))
+        $text.StartsWith('<!-- >>> firstmate-win home >>> -->') | Should -BeTrue
+        $text | Should -BeLike "*the captain's own notes*" -Because 'text outside the markers is preserved'
+    }
+
+    It 'is idempotent: a second setup reports already and changes no bytes' {
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+        $before = [System.IO.File]::ReadAllBytes((Join-Path $fixture.Home 'CLAUDE.md'))
+
+        $second = Invoke-Setup -Fixture $fixture
+        ($second.Steps | Where-Object { $_.Name -eq 'home redirect' }).Action | Should -Be 'already'
+        [System.IO.File]::ReadAllBytes((Join-Path $fixture.Home 'CLAUDE.md')) | Should -Be $before
+    }
+
+    It 'rewrites the redirect when the checkout moves rather than adding a second one' {
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+        $moved = Join-Path $fixture.Root 'moved-checkout'
+        $null = New-Item -ItemType Directory -Path (Join-Path $moved 'module' 'Firstmate') -Force
+
+        $result = Set-FmInstallHomeRedirect -FirstmateHome $fixture.Home -RepoRoot $moved -Confirm:$false
+        $result.Action | Should -Be 'updated'
+        $text = [System.IO.File]::ReadAllText((Join-Path $fixture.Home 'AGENTS.md'))
+        @([regex]::Matches($text, [regex]::Escape('<!-- >>> firstmate-win home >>> -->'))).Count | Should -Be 1
+        $text | Should -BeLike "*$moved*"
+    }
+
+    It 'writes nothing under -WhatIf' {
+        $fixture = New-InstallFixture
+        $null = New-Item -ItemType Directory -Path $fixture.Home -Force
+        $result = Set-FmInstallHomeRedirect -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot -WhatIf
+        $result.Action | Should -Be 'skipped'
+        Test-Path -LiteralPath (Join-Path $fixture.Home 'AGENTS.md') | Should -BeFalse
+    }
+
+    It 'the doctor says ok, and names the directory, when the home IS the checkout' {
+        $checkout = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $checkout -Force
+        # A checkout with real memory files. Coinciding is not enough on its own:
+        # if CLAUDE.md there is the text git leaves for a symlink, a session
+        # started in the right directory still gets no instructions.
+        foreach ($name in @('AGENTS.md', 'CLAUDE.md')) {
+            [System.IO.File]::WriteAllText((Join-Path $checkout $name), "# real instructions`n")
+        }
+
+        $check = @(Get-FmInstallHomeLocationCheck -FirstmateHome $checkout -RepoRoot $checkout)[0]
+        $check.Status | Should -Be 'ok'
+        $check.Detail | Should -BeLike "*$checkout*"
+    }
+
+    It 'the doctor refuses to say ok when the checkout CLAUDE.md is the git placeholder' {
+        $checkout = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $checkout -Force
+        [System.IO.File]::WriteAllText((Join-Path $checkout 'AGENTS.md'), "# real instructions`n")
+        [System.IO.File]::WriteAllText((Join-Path $checkout 'CLAUDE.md'), 'AGENTS.md')
+
+        $check = @(Get-FmInstallHomeLocationCheck -FirstmateHome $checkout -RepoRoot $checkout)[0]
+        $check.Status | Should -Be 'missing'
+        $check.Detail | Should -BeLike '*symlink*'
+    }
+
+    It 'the doctor WARNS when they are separate but the home says so' {
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+
+        $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
+        $check = $doctor.Checks | Where-Object { $_.Name -eq 'start Claude in' }
+        $check.Status | Should -Be 'warn'
+        $check.Detail | Should -BeLike "*$($script:RepoRoot)*"
+        $doctor.Healthy | Should -BeTrue -Because 'a loud separate home is usable, just not the Linux layout'
+    }
+
+    It 'the doctor calls a SILENT separate home missing, and stays unhealthy' {
+        # The captain's actual install: home and code apart, and nothing in the
+        # home telling a session started there that it is in the wrong place.
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+        foreach ($name in @('AGENTS.md', 'CLAUDE.md')) {
+            Remove-Item -LiteralPath (Join-Path $fixture.Home $name) -Force
+        }
+
+        $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
+        $check = $doctor.Checks | Where-Object { $_.Name -eq 'start Claude in' }
+        $check.Status | Should -Be 'missing'
+        $check.Detail | Should -BeLike '*no instructions and no hooks*'
+        $check.Fix | Should -BeLike '*fm-setup.ps1*'
+        $doctor.Healthy | Should -BeFalse
+    }
+}
+
 Describe 'Invoke-FmDoctor' {
     It 'is healthy right after a successful setup' {
         $fixture = New-InstallFixture
         $report = Invoke-Setup -Fixture $fixture
 
         $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
         $doctor.Healthy | Should -BeTrue
         $report.Healthy | Should -BeTrue
     }
@@ -481,7 +656,7 @@ Describe 'Invoke-FmDoctor' {
     It 'reports an absent home as missing, with the command that fixes it' {
         $fixture = New-InstallFixture
         $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
 
         $doctor.Healthy | Should -BeFalse
         $layout = $doctor.Checks | Where-Object { $_.Name -eq 'home layout' }
@@ -495,7 +670,7 @@ Describe 'Invoke-FmDoctor' {
             $null = New-Item -ItemType Directory -Path (Join-Path $fixture.Home $name) -Force
         }
         $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
 
         $layout = $doctor.Checks | Where-Object { $_.Name -eq 'home layout' }
         $layout.Status | Should -Be 'missing'
@@ -507,18 +682,72 @@ Describe 'Invoke-FmDoctor' {
         $null = Invoke-Setup -Fixture $fixture -Extra @{ SkipHooks = [switch]$true }
 
         $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
         ($doctor.Checks | Where-Object { $_.Name -eq 'Claude hooks' }).Status | Should -Be 'missing'
         $doctor.Healthy | Should -BeFalse
     }
 
-    It 'reports an absent profile as missing' {
+    It 'reports an absent profile as a WARNING, and stays healthy' {
+        # It used to be 'missing'. An install with no profile wiring is not
+        # broken: every entry point runs by its own path and resolves the home
+        # from the pointer. What the captain loses is being able to type
+        # `fm-doctor.ps1` bare, and the line says so. Calling that unhealthy is
+        # what made a correct install report 'unhealthy: 3 missing' in a shell
+        # that had not loaded the profile.
         $fixture = New-InstallFixture
         $null = Invoke-Setup -Fixture $fixture -Extra @{ SkipProfile = [switch]$true }
 
         $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings
-        ($doctor.Checks | Where-Object { $_.Name -eq 'profile wiring' }).Status | Should -Be 'missing'
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
+        $check = $doctor.Checks | Where-Object { $_.Name -eq 'profile wiring' }
+        $check.Status | Should -Be 'warn'
+        $check.Required | Should -BeFalse
+        $doctor.Healthy | Should -BeTrue
+    }
+
+    It 'reports the home as resolving without the environment, and names the pointer' {
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+
+        $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
+        $check = $doctor.Checks | Where-Object { $_.Name -eq 'FM_HOME' }
+        $check.Status | Should -Be 'ok'
+        $check.Detail | Should -BeLike "*$($fixture.Pointer)*"
+    }
+
+    It 'reports a MISSING home pointer, and names the home a bare shell would have used' {
+        # The defect this replaced the old '$env:FM_HOME is set' check for. With
+        # no pointer, a shell that loaded no profile falls through to
+        # Get-FmHome's tail - the checkout - and every state read and write goes
+        # to the wrong directory while every command exits 0.
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+        Remove-Item -LiteralPath $fixture.Pointer -Force
+
+        $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
+        $check = $doctor.Checks | Where-Object { $_.Name -eq 'FM_HOME' }
+        $check.Status | Should -Be 'missing'
+        $check.Detail | Should -BeLike "*$($fixture.Pointer)*"
+        $check.Detail | Should -BeLike "*$(Get-FmHome)*"
+        $check.Fix | Should -BeLike '*fm-setup.ps1*'
+        $doctor.Healthy | Should -BeFalse
+    }
+
+    It 'calls an environment variable over the pointer an override, not a fault' {
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+        $elsewhere = Join-Path $fixture.Root 'secondmate-home'
+        foreach ($name in @('config', 'data', 'projects', 'state')) {
+            $null = New-Item -ItemType Directory -Path (Join-Path $elsewhere $name) -Force
+        }
+
+        $doctor = Invoke-FmDoctor -FirstmateHome $elsewhere -RepoRoot $script:RepoRoot `
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
+        $check = $doctor.Checks | Where-Object { $_.Name -eq 'FM_HOME' }
+        $check.Status | Should -Be 'ok'
+        $check.Detail | Should -BeLike '*overriding the persisted*'
     }
 
     It 'warns rather than fails when the checkout or the home has moved' {
@@ -527,7 +756,7 @@ Describe 'Invoke-FmDoctor' {
 
         # Same profile, different home: the block is present but stale.
         $doctor = Invoke-FmDoctor -FirstmateHome (Join-Path $fixture.Root 'elsewhere') -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
         ($doctor.Checks | Where-Object { $_.Name -eq 'profile wiring' }).Status | Should -Be 'warn'
     }
 
@@ -539,18 +768,26 @@ Describe 'Invoke-FmDoctor' {
         }
 
         $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
 
+        # Named, not counted. Pinning the total made this fail the moment a new
+        # check legitimately started warning, which said nothing about the
+        # behaviour under test.
         $doctor.Healthy | Should -BeTrue
-        $doctor.Warnings.Count | Should -Be 1
-        ($doctor.Lines -join "`n") | Should -BeLike '*cannot dispatch*'
+        @($doctor.Warnings | Where-Object { $_.Name -eq 'herdr' }).Count | Should -Be 1
+        @($doctor.Missing).Count | Should -Be 0
+        # The summary points at the warning lines rather than asserting one
+        # cause for all of them: a warning is now either a missing dispatch
+        # dependency or an absent convenience, and only the line knows which.
+        ($doctor.Lines -join "`n") | Should -BeLike '*warning(s) - each line above says what it costs*'
+        ($doctor.Lines -join "`n") | Should -BeLike '*not on PATH*'
     }
 
     It 'prints every check, passing or not' {
         $fixture = New-InstallFixture
         $null = Invoke-Setup -Fixture $fixture
         $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
 
         foreach ($check in $doctor.Checks) {
             ($doctor.Lines -join "`n") | Should -BeLike "*$($check.Name)*"
@@ -561,7 +798,7 @@ Describe 'Invoke-FmDoctor' {
     It 'prints a fix for every check that is not ok' {
         $fixture = New-InstallFixture
         $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
 
         foreach ($check in ($doctor.Checks | Where-Object { $_.Status -ne 'ok' })) {
             $check.Fix | Should -Not -BeNullOrEmpty -Because "$($check.Name) is $($check.Status)"
@@ -578,7 +815,7 @@ Describe 'the entry points' {
         $fixture = New-InstallFixture
         $out = & $script:Pwsh -NoProfile -NonInteractive -File (Join-Path -Path $script:RepoRoot -ChildPath 'bin' -AdditionalChildPath 'fm-setup.ps1') `
             -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings 2>&1
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer 2>&1
         $LASTEXITCODE | Should -Be 0 -Because ($out -join "`n")
         ($out -join "`n") | Should -BeLike '*healthy*'
     }
@@ -587,7 +824,7 @@ Describe 'the entry points' {
         $fixture = New-InstallFixture
         $out = & $script:Pwsh -NoProfile -NonInteractive -File (Join-Path -Path $script:RepoRoot -ChildPath 'bin' -AdditionalChildPath 'fm-doctor.ps1') `
             -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings 2>&1
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer 2>&1
         $LASTEXITCODE | Should -Be 1
         ($out -join "`n") | Should -BeLike '*unhealthy*'
         ($out -join "`n") | Should -BeLike '*home layout*'
@@ -597,10 +834,10 @@ Describe 'the entry points' {
         $fixture = New-InstallFixture
         $null = & $script:Pwsh -NoProfile -NonInteractive -File (Join-Path -Path $script:RepoRoot -ChildPath 'bin' -AdditionalChildPath 'fm-setup.ps1') `
             -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings 2>&1
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer 2>&1
         $out = & $script:Pwsh -NoProfile -NonInteractive -File (Join-Path -Path $script:RepoRoot -ChildPath 'bin' -AdditionalChildPath 'fm-doctor.ps1') `
             -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
-            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings 2>&1
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer 2>&1
         $LASTEXITCODE | Should -Be 0 -Because ($out -join "`n")
     }
 }

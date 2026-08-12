@@ -56,7 +56,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'fm-module-load.ps1')
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Start-FmWorker'
 
 if (-not $TaskId -or -not $Project) {
     [Console]::Error.WriteLine('usage: fm-spawn.ps1 <task-id> <project-dir> -Mode <no-mistakes|direct-PR|local-only> -Yolo <on|off> [-Harness <name>] [-Model <name>] [-Effort <level>]')

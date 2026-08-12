@@ -23,10 +23,19 @@ Public functions: `Install-FmHome`, `Invoke-FmDoctor`.
 1. **Home layout** - `config/ data/ projects/ state/` under `FM_HOME`.
 2. **Backend** - writes `config/backend=herdr` when the home has not already
    chosen one. See "Why setup picks a backend" below.
-3. **Profile wiring** - the managed block in `$PROFILE.CurrentUserAllHosts`.
-4. **Claude hooks** - `SessionStart`, `PreToolUse`, `Stop` in the checkout's
+3. **Home pointer** - writes the chosen home to `<checkout>/.fm-home`. See
+   "Working without the profile" below; this is the step that makes the entry
+   points work in a shell that loads no profile, so `-SkipProfile` does not skip
+   it.
+4. **Home redirect** - when the home is NOT the checkout, writes an
+   `AGENTS.md`/`CLAUDE.md` into the home that stops a session started there and
+   names the checkout. See "Which directory do I start Claude in" below.
+5. **Checkout memory** - repairs the checkout's own `CLAUDE.md` when git left it
+   as the text of a symlink it could not create.
+6. **Profile wiring** - the managed block in `$PROFILE.CurrentUserAllHosts`.
+7. **Claude hooks** - `SessionStart`, `PreToolUse`, `Stop` in the checkout's
    `.claude/settings.json`.
-5. **Doctor** - re-reads the environment and returns the report.
+8. **Doctor** - re-reads the environment and returns the report.
 
 ## The three rules this area is built on
 
@@ -51,12 +60,135 @@ compare the bytes, not the exit code.
 mechanical here: setup reports the command and stops. `Install-FmTool -Approved`
 is the only thing in this module that installs anything.
 
+## Working without the profile
+
+The profile block is loaded by an interactive PowerShell session and by nothing
+else. Not by a herdr pane, a Claude hook, a scheduled task, an IDE terminal, a
+window opened before setup ran - and not by the worker sessions firstmate
+dispatches itself. On the captain's laptop, one install produced both of these:
+
+```
+pwsh -ExecutionPolicy Bypass -Command "fm-doctor.ps1"          -> healthy, exit 0
+pwsh -NoProfile -ExecutionPolicy Bypass -File ...fm-doctor.ps1 -> 3 missing, exit 1
+```
+
+and, silently, `bin/fm-home.ps1` in the same bare shell printed the **checkout**
+as the home and exited 0 - because with `FM_HOME` unset `Get-FmHome` falls
+through to the code root, which is the bash contract where the checkout *is* the
+home. Every state read and write in that session went to the wrong directory
+while every command reported success. That is the dispatch-breaking half of this
+defect, and it is the half nothing was reporting.
+
+Two mechanisms fix it, and neither is an environment variable.
+
+**`bin/fm-module-load.ps1` is the one prelude every entry point dot-sources.**
+It derives the checkout from its own `$PSScriptRoot`, prepends `<checkout>/module`
+to `PSModulePath` for its own process, imports the manifest, and publishes the
+resolved home into `$env:FM_HOME`. `PSModulePath` genuinely cannot be fixed from
+inside a module - the module has to be importable first - which is why this one
+rule lives in a script rather than in the module.
+
+It publishes `FM_HOME` rather than leaving each caller to look the home up
+because nine functions across seven areas read `$env:FM_HOME` directly
+(`Get-FmPane`, `Send-FmText`, `Start-FmWorker`, `Stop-FmWorker`,
+`Invoke-FmTeardown`, the session-start paths, the lifecycle paths, the herdr
+backend, the install default). One publication fixes all of them, fixes every
+area that lands later without its author knowing this rule exists, and fixes the
+herdr pane a dispatched worker runs in, which inherits its launcher's
+environment.
+
+It deliberately does **not** put `bin/` on `PATH`. Nothing here invokes an entry
+point by bare name, and doing so would make the doctor's `PATH` check pass in
+its own process while the captain's shell still could not type `fm-doctor.ps1`.
+
+**`<checkout>/.fm-home` is where setup persists the home.** A file beside the
+script is readable from the script's own location with nothing configured, which
+is the only property that survives a bare shell. It is one absolute path, UTF-8
+without a BOM, LF-only; blank lines and `#` comments are skipped; an unreadable
+or empty pointer degrades to "no pointer" and never throws, because it is read
+before anything else an entry point does. It is per-machine and gitignored - two
+checkouts can point at two homes and each stays self-consistent.
+
+`Resolve-FmEntryPointHome` owns the precedence:
+
+| | Source | Why it is where it is |
+| --- | --- | --- |
+| 1 | an explicit `-HomePath` | the caller said so |
+| 2 | `$env:FM_HOME`, then `$env:FM_ROOT_OVERRIDE` | delegated whole to `Get-FmHome`, so the bash contract keeps one owner; **the environment outranks the pointer** so a secondmate home, a test home or a one-off override still wins |
+| 3 | `<checkout>/.fm-home` | the new step, and the only one that works with nothing configured |
+| 4 | `Get-FmHome`'s documented tail | unchanged: `FM_ROOT_OVERRIDE`, then the code root |
+
+`Initialize-FmEntryPointHome` is what the prelude calls, and it publishes **only**
+step 3. Publishing step 4 as well would be writing a guess into the environment,
+where it then outranks a pointer written a moment later and is exported to every
+child. The first version did exactly that, and a setup run followed by
+`fm-home.ps1` in the same session printed the checkout as the home - setup's own
+prelude had pinned the fallback before setup wrote the pointer.
+
+`tests/FmEntryPoint.Tests.ps1` runs real `pwsh -NoProfile` children against a
+checkout copied to a temporary path with `FM_*` and `PSModulePath` stripped from
+the child's environment, because a test that only ever runs inside an
+already-configured session cannot see this class of bug - which is precisely why
+it shipped. Every one of those tests is paired with a negative control that
+deletes the pointer and asserts the old symptom returns.
+
+## Which directory do I start Claude in
+
+**The checkout**, and by default that is also the home.
+
+On Linux the two are one directory: the firstmate repo root IS the home, with
+`config/ data/ projects/ state/` gitignored beside `AGENTS.md`, `CLAUDE.md` and
+`.claude/`. Every doc in the fleet therefore says `cd <firstmate>; claude`, and
+it gives a session the instructions, the hooks and the state at once.
+
+This port used to default the home to `%USERPROFILE%\firstmate`, separate from
+the checkout. The captain did the documented thing - `cd C:\Users\ADMIN\firstmate`,
+`claude` - and landed in a directory with no `CLAUDE.md` and no `.claude/`, so
+the agent came up with **no instructions at all and no indication anything was
+wrong**. Same class as the profile defect: the install is correct, the user does
+the obvious thing, and it silently does not work.
+
+Three things now make that impossible to hit silently.
+
+**The default is the checkout.** `Resolve-FmEntryPointHome`'s tail is the
+checkout, which is also `Get-FmHome`'s own documented tail - so the installer
+stopped contradicting the module, and a fresh install reproduces the Linux
+layout exactly. `.gitignore` carries the same four directories the Linux repo
+ignores, for the same reason.
+
+**A home that IS separate says so, in both memory files.** A separate home stays
+supported - a secondmate home, another drive, a home shared with a Linux
+firstmate - so it is not refused; it is made to fail loudly. Setup splices a
+managed block into `<home>/AGENTS.md` and mirrors it to `<home>/CLAUDE.md`
+(identical bytes, because the file is generated and never hand-edited, and the
+agent-memory area already treats a byte-identical real `CLAUDE.md` on Windows as
+a materialized link). The block goes FIRST in the file, so an agent that reads
+only the top still hits the stop, and text outside the markers is preserved.
+
+**The checkout's own `CLAUDE.md` is repaired.** This repo tracks `CLAUDE.md` as a
+symlink to `AGENTS.md`. Git with `core.symlinks=false` - the default for a
+non-elevated Windows git - checks that out as a 9-byte ordinary file containing
+the string `AGENTS.md`. MEASURED on the captain's laptop. A session started in
+the checkout then reads one filename and gets nothing, which would have defeated
+the whole fix. `Test-FmAgentsLinkPlaceholder` recognises it as a link the host
+failed to materialize rather than a second memory file, and `Set-FmAgentsMemory`
+replaces it. Two genuinely different real files are still a refusal.
+
+The doctor's `start Claude in` check names the directory in every case:
+
+| | |
+| --- | --- |
+| `ok` | the home IS the checkout, and its `CLAUDE.md` holds the instructions |
+| `warn` | they are separate, but the home carries the redirect that names the checkout |
+| `missing` | they are separate and nothing says so; or the checkout's `CLAUDE.md` is the git placeholder |
+
 ## Why the profile block, and not a User environment variable
 
-`Import-Module Firstmate` from any session and `fm-*.ps1` on PATH are both
-achieved by ONE mechanism: a managed block in the user's PowerShell profile that
-prepends the checkout's `module/` to `PSModulePath` and `bin/` to `PATH`, and
-sets `FM_HOME`.
+The profile block is now a **convenience**, not the foundation: it is what lets
+the captain type `Import-Module Firstmate` and a bare `fm-doctor.ps1` in an
+interactive session. Both are achieved by ONE mechanism: a managed block in the
+user's PowerShell profile that prepends the checkout's `module/` to
+`PSModulePath` and `bin/` to `PATH`, and sets `FM_HOME`.
 
 The rejected alternative was `[Environment]::SetEnvironmentVariable(..., 'User')`
 (the Windows registry route). It reaches cmd.exe as well, but:
@@ -125,12 +257,25 @@ and is likewise not this area's to edit.
 | Group | Checks |
 | --- | --- |
 | prerequisites | PowerShell 7 (required), git (required), Pester 5+, herdr, treehouse incl. `get --lease` support, Claude CLI |
-| home | `FM_HOME` set, the four directories, the resolved backend |
+| home | the home resolves without the environment (`.fm-home`), the four directories, the resolved backend |
 | wiring | `Import-Module Firstmate` resolves on `PSModulePath`, `bin/` on `PATH`, the profile block is current, the hooks are registered |
 
 Statuses are `ok` / `warn` / `missing`; healthy means no `missing`. Every check
 prints whether or not it passed, and every non-`ok` check carries a fix - a test
 asserts that, so a check cannot be added without an actionable remedy.
+
+**`missing` means broken; `warn` means it works but not as ergonomically.** The
+three wiring checks about `PSModulePath`, `PATH` and the profile block are all
+about the captain's *interactive shell* being able to type `Import-Module
+Firstmate` and `fm-doctor.ps1` bare. Running an entry point by its own path
+works without any of them, so they are warnings. Reporting them as `missing` is
+what made one correct install print `unhealthy: 3 missing` the moment it ran in
+a shell that had not loaded the profile.
+
+The `FM_HOME` check is no longer "the variable is set". It asks the question
+that actually matters - does the home resolve with nothing configured - and so
+it tests the pointer. An environment variable on top of the pointer is an
+override and the line says which one is winning.
 
 Install commands have one owner: `Get-FmBootstrapInstallCommand` and
 `Get-FmBootstrapManualInstallUrl` in the bootstrap area, which are already

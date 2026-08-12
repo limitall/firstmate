@@ -19,9 +19,6 @@
     bin/fm-teardown.ps1 fmwin-teardown --force --approved-by "captain, 2026-08-12"
 #>
 [CmdletBinding()]
-# fmRequiredCommand is read by fm-module-load.ps1, which is dot-sourced below.
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'fmRequiredCommand',
-    Justification = 'fmRequiredCommand is read by fm-module-load.ps1, which is dot-sourced below.')]
 param(
     [Parameter(Position = 0)][string]$TaskId,
     [Parameter(ValueFromRemainingArguments)][string[]]$RemainingArguments
@@ -97,8 +94,7 @@ if ($force -and -not $approvedBy) {
     exit 2
 }
 
-$fmRequiredCommand = 'Invoke-FmTeardown'
-. (Join-Path $PSScriptRoot 'fm-module-load.ps1')
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Invoke-FmTeardown'
 
 try {
     $result = Invoke-FmTeardown -TaskId $TaskId -Force:$force -DiscardApprovedBy $approvedBy -Confirm:$false

@@ -46,7 +46,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-Import-Module (Join-Path $PSScriptRoot '..' 'module' 'Firstmate' 'Firstmate.psd1') -Force
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Get-FmHomeLayout'
 
 $layout = if ($Initialize) { Initialize-FmHome } else { Get-FmHomeLayout }
 

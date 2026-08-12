@@ -1,0 +1,10 @@
+# The operational home lives in the checkout, exactly as it does in the Linux
+# firstmate repo, so these four are ignored here for the same reason.
+config/
+data/
+projects/
+state/
+
+# Written by bin/fm-setup.ps1: the home this checkout resolves to when no
+# profile and no environment variable supply one. Per-machine, never shared.
+.fm-home
