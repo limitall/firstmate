@@ -476,10 +476,21 @@ Describe 'Real concurrency across processes' {
         # downstream as a lost line, and only one of those is a defect in the
         # append. Name which one it was rather than letting the count assertion
         # report a lock timeout as data loss.
-        $unfinished = @($jobs | Where-Object { $_.State -ne 'Completed' } |
-            ForEach-Object { "$($_.Id):$($_.State)" })
+        # Collect the reason WITH the state. Reporting them as separate
+        # assertions loses the diagnosis: Pester stops an It at the first
+        # failure, so when a writer died the run printed "13:Failed" and never
+        # reached the line that would have said what it threw. That is exactly
+        # what came back from the Windows 11 laptop, and it cost a round trip -
+        # the failure has to carry its own cause, because the machine that can
+        # reproduce it is not the machine this suite usually runs on.
         $writerErrors = @($jobs | ForEach-Object { $_.ChildJobs[0].Error } |
             ForEach-Object { [string]$_ })
+        $unfinished = @($jobs | Where-Object { $_.State -ne 'Completed' } |
+            ForEach-Object {
+                $why = @($_.ChildJobs[0].Error | ForEach-Object { [string]$_ }) -join ' | '
+                if (-not $why) { $why = '(no error recorded - still running at the deadline)' }
+                "$($_.Id):$($_.State): $why"
+            })
         $jobs | Remove-Job -Force
         $unfinished | Should -BeNullOrEmpty -Because 'every writer must finish before the file is judged'
         $writerErrors | Should -BeNullOrEmpty -Because 'a writer that threw did not lose a line, it never wrote one'

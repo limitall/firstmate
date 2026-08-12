@@ -87,6 +87,30 @@ function Get-FmLockKey {
     return $Path
 }
 
+# One sidecar of a lock directory, or $null when it cannot be read for ANY
+# reason. Separate from Read-FmStateFile on purpose: that owner is a general
+# reader and must still report a real IO failure to a caller that is writing
+# state. Here the answer to "could not read it" is genuinely $null, because the
+# only caller is an inspection that must not throw.
+function Read-FmLockSidecar {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$LockPath,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    $value = $null
+    try { $value = Read-FmStateFile -Path (Join-Path $LockPath $Name) } catch {
+        Write-Verbose "firstmate: could not read lock sidecar '$Name' under '$LockPath'"
+        return $null
+    }
+    if ($null -eq $value) { return $null }
+    $trimmed = $value.Trim()
+    if ($trimmed) { return $trimmed }
+    return $null
+}
+
 function Get-FmLockInfo {
     <#
         .SYNOPSIS
@@ -147,15 +171,46 @@ function Get-FmLockInfo {
     }
 
     $info.ProcessId = [int]$trimmed
-    $info.Identity = (Read-FmStateFile -Path (Join-Path $full 'pid-identity'))
-    if ($info.Identity) { $info.Identity = $info.Identity.Trim() }
+    # EVERY sidecar read is wrapped, exactly as the pid read above is, because
+    # THIS FUNCTION MUST NOT THROW. It is an inspection: its callers are
+    # Request-FmLock deciding whether to wait, and reporters naming a holder.
+    # An exception here does not degrade, it propagates - out of Request-FmLock,
+    # out of Wait-FmLock, out of Invoke-FmWithLock, and out of the
+    # Add-FmStateLine that was only trying to append one status line. The worker
+    # then dies with the line unwritten, and a status line is how a crewmate
+    # reports done or blocked.
+    #
+    # WINDOWS IS WHY THIS IS NOT BELT AND BRACES. A releasing holder deletes
+    # these sidecars while a competitor is reading them. On POSIX the unlink is
+    # immediate, the next File.Exists is false, and Read-FmStateFile answers
+    # null - which is what the read-path fix in this same tree handles, and why
+    # this never fires on Linux.
+    #
+    # WINDOWS-UNVERIFIED: no Windows box here. What IS measured on Windows 11 is
+    # the symptom - a writer job in the concurrent-append test died while every
+    # writer survived on Linux, and the run could only report "13:Failed". The
+    # mechanism below is inferred from that plus the platform's documented
+    # semantics, not observed: a delete against handles opened with
+    # FileShare.Delete leaves the name in DELETE-PENDING, so opens keep failing
+    # with UnauthorizedAccessException until the last handle closes. That IS
+    # retried (Test-FmTransientIOException), but the budget is finite - 12
+    # attempts, ~200ms cap - and an exhausted retry is rethrown by
+    # Invoke-FmFileRetry as an IOException at whoever asked.
+    #
+    # The fix does not depend on that inference being right. Whatever the read
+    # throws and for whatever reason, an inspection answering instead of
+    # throwing is correct, and the concurrent-append test on Windows is the
+    # thing that says whether it was the whole cause.
+    #
+    # A lock whose sidecars cannot be read is answered as a lock with no
+    # recorded identity, which the liveness check below already treats as
+    # "cannot prove anything" and resolves to plain liveness - held, never
+    # stealable. Failing quiet in that direction is the safe one.
+    $info.Identity = Read-FmLockSidecar -LockPath $full -Name 'pid-identity'
     # Not $home: PowerShell's $HOME is read-only and assigning to it fails.
-    $recordedHome = Read-FmStateFile -Path (Join-Path $full 'fm-home')
-    if ($recordedHome) { $info.Home = $recordedHome.Trim() }
-    $role = Read-FmStateFile -Path (Join-Path $full 'role')
-    if ($role) { $info.Role = $role.Trim() }
-    $watcher = Read-FmStateFile -Path (Join-Path $full 'watcher-path')
-    if ($watcher) { $info.WatcherPath = $watcher.Trim() }
+    $info.Home = Read-FmLockSidecar -LockPath $full -Name 'fm-home'
+    $info.Role = Read-FmLockSidecar -LockPath $full -Name 'role'
+    $info.WatcherPath = Read-FmLockSidecar -LockPath $full -Name 'watcher-path'
 
     $aliveArgs = @{ Id = $info.ProcessId }
     # No recorded identity (a mid-claim, or a lock written by the bash side)

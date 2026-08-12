@@ -218,6 +218,55 @@ Describe 'Stale-holder recovery' {
         }
     }
 
+    It 'answers a lock whose sidecars cannot be read, instead of throwing at its caller' {
+        # THE WINDOWS DEFECT THIS PINS, reported from a Windows 11 run where
+        # every writer in the concurrent-append test survives on Linux and one
+        # died on Windows with the suite only able to say "13:Failed".
+        #
+        # Get-FmLockInfo wrapped its pid read but not its four sidecar reads. A
+        # releasing holder deletes those sidecars while a competitor inspects
+        # them; on POSIX the unlink is immediate and the read answers null, but
+        # on Windows the name sits in DELETE-PENDING and opens keep failing
+        # until the last handle closes. That is retried, but the budget is
+        # finite, and an exhausted retry is rethrown as an IOException - which
+        # escaped Get-FmLockInfo, then Request-FmLock, then Wait-FmLock, and
+        # killed the Add-FmStateLine that was only appending one status line.
+        #
+        # Mocked rather than staged: the platform-specific window cannot be
+        # opened reliably on Linux, and the property under test is not "Windows
+        # throws this particular exception" but "an inspection answers whatever
+        # its reads do". That holds on both platforms and is what the caller
+        # actually depends on.
+        InModuleScope Firstmate {
+            $path = Join-Path ([System.IO.Path]::GetTempPath()) ("sidecar-" + [guid]::NewGuid().ToString('N'))
+            $null = New-Item -ItemType Directory -Path $path -Force
+            [System.IO.File]::WriteAllText((Join-Path $path 'pid'), "$PID`n")
+            [System.IO.File]::WriteAllText((Join-Path $path 'pid-identity'), "recorded-earlier`n")
+            # Exactly what an exhausted retry against a delete-pending file
+            # raises by the time it reaches this caller.
+            Mock Read-FmStateFile {
+                if ($Path -like '*pid-identity' -or $Path -like '*fm-home' -or
+                    $Path -like '*role' -or $Path -like '*watcher-path') {
+                    throw [System.IO.IOException]::new(
+                        "firstmate: read state file failed after 12 attempts on '$Path': access denied")
+                }
+                "$PID`n"
+            }
+            try {
+                # Called directly, not through a { } | Should -Not -Throw: the
+                # scriptblock has its own scope, so the result would not come
+                # back out and the verdict below could not be checked at all. A
+                # throw fails the test here just as loudly.
+                $info = Get-FmLockInfo -Path $path
+                # And it still reaches a usable verdict: no provable identity
+                # means fall back to plain liveness, which is HELD, never
+                # stealable.
+                $info.State | Should -Be 'held'
+                $info.Identity | Should -BeNullOrEmpty
+            } finally { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
     It 'refuses a break whose stale verdict the lock has already outlived' {
         # THE DEFECT THIS PINS. Request-FmLock judges staleness with
         # Get-FmLockInfo and breaks in a SEPARATE step. Between the two, another
