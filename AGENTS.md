@@ -200,9 +200,13 @@ helper and Pester fixture carrying its own reason for opting out.
 
 The lock and state suites spawn real background processes on purpose - every
 concurrency defect found in this port was found by running them, never by
-reading the code. `tests/FmState.Tests.ps1`'s multi-process append test is
-known to fail intermittently under load; re-run before treating it as a
-regression.
+reading the code. Treat an intermittent failure there as a real race until
+proven otherwise: the multi-process append test looked like load flakiness and
+was a genuine one (`Read-FmStateFile` raised instead of answering "missing"
+when another process deleted a lock's `pid-identity` mid-open, losing status
+lines). Run those suites under CPU load - several `Invoke-ScriptAnalyzer`
+sweeps in parallel is enough - because a race that never loses at idle loses
+reliably when contended.
 
 ## Maintaining this file
 
