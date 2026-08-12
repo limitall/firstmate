@@ -99,6 +99,44 @@ namespace Firstmate
         public const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
         private const int ERROR_MORE_DATA = 234;
 
+        // Declared rather than hand-measured, so the marshaller supplies the
+        // x64 padding. See CreateKillOnClose for what hand-measuring cost.
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+        {
+            public long PerProcessUserTimeLimit;
+            public long PerJobUserTimeLimit;
+            public uint LimitFlags;
+            public UIntPtr MinimumWorkingSetSize;
+            public UIntPtr MaximumWorkingSetSize;
+            public uint ActiveProcessLimit;
+            public UIntPtr Affinity;
+            public uint PriorityClass;
+            public uint SchedulingClass;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct IO_COUNTERS
+        {
+            public ulong ReadOperationCount;
+            public ulong WriteOperationCount;
+            public ulong OtherOperationCount;
+            public ulong ReadTransferCount;
+            public ulong WriteTransferCount;
+            public ulong OtherTransferCount;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+        {
+            public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+            public IO_COUNTERS IoInfo;
+            public UIntPtr ProcessMemoryLimit;
+            public UIntPtr JobMemoryLimit;
+            public UIntPtr PeakProcessMemoryUsed;
+            public UIntPtr PeakJobMemoryUsed;
+        }
+
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern IntPtr CreateJobObjectW(IntPtr lpJobAttributes, string lpName);
 
@@ -164,17 +202,33 @@ namespace Firstmate
         {
             IntPtr job = CreateJobObjectW(IntPtr.Zero, null);
             if (job == IntPtr.Zero) { return IntPtr.Zero; }
-            // JOBOBJECT_EXTENDED_LIMIT_INFORMATION laid out by hand: a
-            // BASIC_LIMIT_INFORMATION, then IO_COUNTERS, then four pointers.
-            // Only LimitFlags is set, at its documented offset.
-            int basicSize = (2 * sizeof(long)) + sizeof(uint) + (2 * IntPtr.Size)
-                + sizeof(uint) + IntPtr.Size + (2 * sizeof(uint));
-            int size = basicSize + (6 * sizeof(ulong)) + (4 * IntPtr.Size);
+            // THE LAYOUT IS THE MARSHALLER'S JOB, NOT ARITHMETIC'S. This was
+            // hand-computed as
+            //     (2*8) + 4 + (2*8) + 4 + 8 + (2*4) + (6*8) + (4*8)
+            // which sums the FIELDS and misses the x64 padding the compiler
+            // inserts twice: 4 bytes after LimitFlags before the pointer-sized
+            // MinimumWorkingSetSize, and 4 more after ActiveProcessLimit before
+            // Affinity. That yields 136 where the real
+            // JOBOBJECT_EXTENDED_LIMIT_INFORMATION is 144, and
+            // SetInformationJobObject validates cbJobObjectInformationLength
+            // EXACTLY - it failed with ERROR_BAD_LENGTH (24) every time.
+            //
+            // So CreateKillOnClose returned IntPtr.Zero on every Windows call
+            // it ever made, and both callers took their documented fallback
+            // without complaint: bounded runs silently used Process.Kill(true)
+            // instead of a job, which is the weaker taskkill /T guarantee a
+            // child can escape by re-parenting. Measured on Windows 11:
+            // len=136 -> false, GetLastError 24; len=144 -> true.
+            //
+            // Marshal.SizeOf of a real [StructLayout(Sequential)] struct gets
+            // the padding right by construction, so this cannot drift again.
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            int size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
             IntPtr buffer = Marshal.AllocHGlobal(size);
             try
             {
-                for (int i = 0; i < size; i++) { Marshal.WriteByte(buffer, i, 0); }
-                Marshal.WriteInt32(buffer, 2 * sizeof(long), (int)JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE);
+                Marshal.StructureToPtr(info, buffer, false);
                 if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, buffer, (uint)size))
                 {
                     CloseHandle(job);
