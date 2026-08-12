@@ -229,12 +229,26 @@ function Read-FmStateFile {
 
     $full = Resolve-FmFullPath -Path $Path
     $bytes = Invoke-FmFileRetry -Operation 'read state file' -Path $full -Action {
+        # Missing is the ANSWER, and it stays the answer when the file
+        # disappears between the check and the open. That window is not
+        # theoretical: a lock holder releasing its lock deletes pid-identity
+        # while another process is inspecting the same lock, and the resulting
+        # FileNotFoundException used to escape Read-FmStateFile, kill the
+        # caller's append, and lose the line it was writing. Not retryable
+        # either - retrying a file that is gone only delays the same answer.
         if (-not [System.IO.File]::Exists($full)) { return $null }
-        $stream = [System.IO.File]::Open(
-            $full,
-            [System.IO.FileMode]::Open,
-            [System.IO.FileAccess]::Read,
-            [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+        $stream = $null
+        try {
+            $stream = [System.IO.File]::Open(
+                $full,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read,
+                [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+        } catch [System.IO.FileNotFoundException] {
+            return $null
+        } catch [System.IO.DirectoryNotFoundException] {
+            return $null
+        }
         try {
             $buffer = [System.IO.MemoryStream]::new()
             try {

@@ -495,6 +495,43 @@ Describe 'Real concurrency across processes' {
         }
     }
 
+    It 'answers null, not an exception, when a file vanishes mid-read' {
+        # THE DEFECT THIS PINS. Read-FmStateFile checked File.Exists and then
+        # opened the file, and a delete landing between the two threw
+        # FileNotFoundException straight out of a reader whose whole contract is
+        # "missing is the answer". It is not a theoretical window: a lock holder
+        # releasing its lock deletes pid-identity while another process is
+        # inspecting that same lock, which killed the inspecting process's
+        # append and LOST the line it was writing (measured: 8 escapes per run
+        # of this loop before the fix, 0 after; and roughly one in three runs of
+        # the append test above failed on it).
+        $dir = Join-Path $script:TempRoot ('vanish-' + [guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $dir -Force
+        $file = Join-Path $dir 'pid-identity'
+
+        $churn = Start-Job -ArgumentList $file -ScriptBlock {
+            param($File)
+            for ($i = 0; $i -lt 400; $i++) {
+                [System.IO.File]::WriteAllText($File, "identity $i")
+                [System.IO.File]::Delete($File)
+            }
+        }
+        try {
+            $thrown = @()
+            $deadline = [datetime]::UtcNow.AddSeconds(60)
+            while ($churn.State -eq 'Running' -and [datetime]::UtcNow -lt $deadline) {
+                try { $null = Read-FmStateFile -Path $file }
+                catch { $thrown += [string]$_ }
+            }
+            $null = $churn | Wait-Job -Timeout 60
+            $thrown | Should -BeNullOrEmpty -Because 'a file that is gone is an answer, not a failure'
+        }
+        finally {
+            $churn | Remove-Job -Force
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'never shows a reader a half-published file' {
         $path = Join-Path $script:TempRoot ('publish-' + [guid]::NewGuid().ToString('N') + '.meta')
         $short = 'window=fm:1'
