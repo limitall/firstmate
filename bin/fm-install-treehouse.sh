@@ -10,6 +10,9 @@
 #   fm-install-treehouse.sh <destination-directory>
 #
 # Pins Treehouse v2.0.1, the version exercised by the local real-Herdr suite.
+# Linux, macOS, and Windows (Git Bash/MSYS2/Cygwin) are all supported: the
+# Windows assets are zips holding treehouse.exe, so the only platform delta is
+# the extractor and the installed file name.
 set -eu
 
 FM_TREEHOUSE_CI_VERSION=2.0.1
@@ -44,8 +47,33 @@ case "${os}-${arch}" in
     ARCHIVE=treehouse-v${FM_TREEHOUSE_CI_VERSION}-darwin-amd64.tar.gz
     SHA256=1cf44580a5837f995e1d3bb74f4fbd3112b642acd20406087d9735a8106112fd
     ;;
+  # Windows (Git Bash/MSYS2/Cygwin). Treehouse ships official windows-amd64 and
+  # windows-arm64 zips in the same pinned release, and the extracted
+  # treehouse.exe reports `v2.0.1` and advertises `get --lease` exactly like the
+  # Unix builds, so the worktree provider every spawn depends on is genuinely
+  # available here. These SHA-256 values come from the release's own
+  # checksums.txt, which also reproduces all four Unix pins above.
+  MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64)
+    ARCHIVE=treehouse-v${FM_TREEHOUSE_CI_VERSION}-windows-amd64.zip
+    SHA256=d4c7bebc876b6dc1f9cf2f2b934803234d4f2f6e1c1c314505db85e64f5100bc
+    ;;
+  MINGW*-aarch64|MINGW*-arm64|MSYS*-aarch64|MSYS*-arm64|CYGWIN*-aarch64|CYGWIN*-arm64)
+    ARCHIVE=treehouse-v${FM_TREEHOUSE_CI_VERSION}-windows-arm64.zip
+    SHA256=4cb39138565822c26f694a5594787b770296061247cc6f3a3b6852d7c4212381
+    ;;
   *)
-    die "unsupported platform ${os}-${arch}; official Treehouse assets are linux/darwin amd64 and arm64"
+    die "unsupported platform ${os}-${arch}; official Treehouse assets are linux/darwin/windows amd64 and arm64"
+    ;;
+esac
+
+# The Windows assets are zips holding treehouse.exe; every Unix asset stays a
+# gzip tarball holding treehouse. BIN_NAME keeps the Unix path byte-identical.
+BIN_NAME=treehouse
+case "$ARCHIVE" in
+  *.zip)
+    BIN_NAME=treehouse.exe
+    command -v unzip >/dev/null 2>&1 \
+      || die "need unzip to extract $ARCHIVE (MSYS2: pacman -S unzip)"
     ;;
 esac
 
@@ -67,21 +95,25 @@ fi
 
 [ "$ACTUAL_SHA256" = "$SHA256" ] || die "checksum mismatch for $ARCHIVE (expected $SHA256, got $ACTUAL_SHA256)"
 
-tar -xzf "$TMP/$ARCHIVE" -C "$TMP"
-# Archive layout: a single `treehouse` binary at the archive root (verified for v2.0.1).
-if [ -f "$TMP/treehouse" ]; then
-  BIN="$TMP/treehouse"
-elif [ -f "$TMP/treehouse-v${FM_TREEHOUSE_CI_VERSION}/treehouse" ]; then
-  BIN="$TMP/treehouse-v${FM_TREEHOUSE_CI_VERSION}/treehouse"
+case "$ARCHIVE" in
+  *.zip) unzip -q -o "$TMP/$ARCHIVE" -d "$TMP" || die "could not extract $ARCHIVE" ;;
+  *) tar -xzf "$TMP/$ARCHIVE" -C "$TMP" ;;
+esac
+# Archive layout: a single `treehouse` binary at the archive root (verified for
+# v2.0.1 on Unix and Windows alike).
+if [ -f "$TMP/$BIN_NAME" ]; then
+  BIN="$TMP/$BIN_NAME"
+elif [ -f "$TMP/treehouse-v${FM_TREEHOUSE_CI_VERSION}/$BIN_NAME" ]; then
+  BIN="$TMP/treehouse-v${FM_TREEHOUSE_CI_VERSION}/$BIN_NAME"
 else
-  BIN=$(find "$TMP" -type f -name treehouse | head -n 1)
+  BIN=$(find "$TMP" -type f -name "$BIN_NAME" | head -n 1)
   [ -n "$BIN" ] || die "archive $ARCHIVE did not contain a treehouse binary"
 fi
 
 mkdir -p "$DESTINATION"
-install -m 0755 "$BIN" "$DESTINATION/treehouse"
+install -m 0755 "$BIN" "$DESTINATION/$BIN_NAME"
 
-installed_version=$("$DESTINATION/treehouse" --version 2>/dev/null | tr -d '[:space:]')
+installed_version=$("$DESTINATION/$BIN_NAME" --version 2>/dev/null | tr -d '[:space:]')
 # treehouse prints "v2.0.1" (leading v) on --version.
 case "$installed_version" in
   "v${FM_TREEHOUSE_CI_VERSION}"|"${FM_TREEHOUSE_CI_VERSION}") ;;
@@ -91,5 +123,5 @@ case "$installed_version" in
 esac
 
 printf 'fm-install-treehouse.sh: installed treehouse %s to %s\n' \
-  "$installed_version" "$DESTINATION/treehouse" >&2
-"$DESTINATION/treehouse" --version
+  "$installed_version" "$DESTINATION/$BIN_NAME" >&2
+"$DESTINATION/$BIN_NAME" --version

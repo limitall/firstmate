@@ -18,6 +18,17 @@ Wire protocol (verified: herdr 0.7.3, protocol 16, newline-delimited JSON):
   stream  : {"event":"pane.agent_status_changed",
              "data":{"pane_id","workspace_id","agent_status","agent",...}}\n
 
+Windows transport (verified: herdr 0.7.5-preview on Windows 11): the server
+"listens on" the herdr.sock PATH, but that path is a regular marker file
+holding "pid:starttime" for staleness detection - the actual listener is a
+NAMED PIPE whose name is the pipe namespace plus the sock file's full Windows
+path, i.e. \\\\.\\pipe\\C:\\...\\herdr.sock (confirmed by pipe-namespace
+listing and by a live subscribe answered over it). The pipe speaks the same
+newline-delimited JSON with no extra authentication, so only the byte
+transport differs: _WinPipeSock adapts the pipe's file API to the small
+socket surface _read_line uses (settimeout/recv/sendall), providing timeout
+semantics through a reader thread because the file API has none.
+
 Usage: herdr-eventwait.py <socket_path> <timeout_seconds> <pane_id> [<pane_id> ...]
 
 Output (one line per pane.agent_status_changed event, TAB-separated, a raw
@@ -43,6 +54,87 @@ import time
 CONNECT_TIMEOUT = 5.0
 ACK_TIMEOUT = 5.0
 RECV_CHUNK = 65536
+
+
+def _win_pipe_name(sock_path):
+    """Derive the herdr named-pipe name from the sock file path. Accepts the
+    MSYS form (/c/Users/...) the bash caller naturally passes as well as the
+    native form (C:\\Users\\... or C:/Users/...)."""
+    path = sock_path
+    if (
+        len(path) > 2
+        and path[0] == "/"
+        and path[2] == "/"
+        and path[1].isalpha()
+    ):
+        path = path[1].upper() + ":" + path[2:]
+    path = path.replace("/", "\\")
+    return "\\\\.\\pipe\\" + path
+
+
+class _WinPipeSock:
+    """Just enough of the socket surface (settimeout/recv/sendall) for
+    _read_line, over a Windows named pipe. The pipe's blocking file API has no
+    read timeouts, so a daemon reader thread pumps chunks into a queue and
+    recv() waits on the queue with the configured timeout; socket.timeout is
+    raised exactly like a real socket would, and a drained pipe yields b'' so
+    the caller's closed-stream handling stays identical.
+
+    The pump thread starts LAZILY on the first recv(), not in the constructor:
+    the handle is synchronous, so a pending blocking ReadFile serializes with
+    (and indefinitely blocks) a WriteFile on the same handle - starting the
+    reader before the subscribe request is written deadlocks the whole
+    conversation (verified live: the ack never arrives). This transport
+    therefore supports the one-request-then-stream shape this script uses,
+    and nothing more: a sendall() after the first recv() would reintroduce
+    exactly that deadlock."""
+
+    def __init__(self, sock_path):
+        import queue
+        import threading
+
+        self._file = open(_win_pipe_name(sock_path), "r+b", buffering=0)
+        self._queue = queue.Queue()
+        self._empty = queue.Empty
+        self._threading = threading
+        self._thread = None
+        self._timeout = None
+        self._pending = b""
+
+    def _pump(self):
+        try:
+            while True:
+                chunk = self._file.read(RECV_CHUNK)
+                if not chunk:
+                    self._queue.put(("closed", b""))
+                    return
+                self._queue.put(("data", chunk))
+        except OSError:
+            self._queue.put(("error", b""))
+
+    def settimeout(self, value):
+        self._timeout = value
+
+    def sendall(self, data):
+        self._file.write(data)
+
+    def recv(self, size):
+        if self._thread is None:
+            self._thread = self._threading.Thread(target=self._pump, daemon=True)
+            self._thread.start()
+        if self._pending:
+            out, self._pending = self._pending[:size], self._pending[size:]
+            return out
+        try:
+            kind, chunk = self._queue.get(timeout=self._timeout)
+        except self._empty:
+            raise socket.timeout()
+        if kind == "closed":
+            return b""
+        if kind == "error":
+            raise OSError("herdr named pipe read failed")
+        out, self._pending = chunk[:size], chunk[size:]
+        return out
 
 
 def _read_line(sock, buf, deadline):
@@ -72,6 +164,15 @@ def _clean(value):
 
 
 def main(argv):
+    # Windows text-mode stdout translates \n to \r\n even into the fifo the
+    # bash caller reads, and that caller compares the @subscribed handshake
+    # byte-exactly and cuts stream records on exact tabs/newlines. Emit
+    # untranslated newlines everywhere; harmless where \n already passes
+    # through untouched.
+    try:
+        sys.stdout.reconfigure(newline="\n")
+    except (AttributeError, OSError):
+        pass
     if len(argv) < 4:
         return 2
     sock_path = argv[1]
@@ -84,9 +185,14 @@ def main(argv):
         return 2
 
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(CONNECT_TIMEOUT)
-        sock.connect(sock_path)
+        if sys.platform == "win32":
+            # See "Windows transport" in the module docstring: the sock path
+            # is a marker file; the listener is the derived named pipe.
+            sock = _WinPipeSock(sock_path)
+        else:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(CONNECT_TIMEOUT)
+            sock.connect(sock_path)
     except OSError:
         return 2
 

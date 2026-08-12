@@ -1,0 +1,13 @@
+# Firstmate is a bash-first agent distro: every tracked text file must reach
+# the working tree with LF endings on every platform. A Windows clone under
+# git's default core.autocrlf=true would otherwise materialize CRLF scripts,
+# which breaks heredoc-generated files, `read` loops over tracked fixtures,
+# and byte-exact test comparisons even where bash itself tolerates the \r.
+* text=auto eol=lf
+
+# Binary assets: never subject to end-of-line normalization.
+*.png binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.ico binary

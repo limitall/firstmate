@@ -102,12 +102,25 @@ for _ in $(seq 1 100); do
 done
 [ "$PANE_READY" = true ] || fail "the startup workspace's shell did not become ready"
 
+# Windows: this pane simulates a captain's own pre-existing workspace shell,
+# which herdr starts as PowerShell there; the POSIX heartbeat loop below needs
+# the same Git-bash bootstrap production task panes receive. No-op elsewhere.
+fm_backend_herdr_pane_posixify "$SESSION" "$LIVE_PANE_ID" \
+  || fail "could not bootstrap the startup pane to a POSIX shell for the heartbeat"
+
 MARKER="$SCRATCH/heartbeat.log"
 fm_backend_herdr_cli "$SESSION" pane run "$LIVE_PANE_ID" \
   "sh -c 'while true; do date +%s >> $MARKER; sleep 1; done'" >/dev/null 2>&1 \
   || fail "could not start the live heartbeat process in the startup workspace's pane"
-sleep 2
-[ -s "$MARKER" ] || fail "the live heartbeat process did not start writing its marker file"
+# First beat is polled, not slept for once: on Windows the MSYS process-spawn
+# latency means the marker file appears (the >> open) seconds before the first
+# date append lands, so a fixed 2s window read the file empty (verified live).
+HEARTBEAT_STARTED=false
+for _ in $(seq 1 75); do
+  [ -s "$MARKER" ] && { HEARTBEAT_STARTED=true; break; }
+  sleep 0.2
+done
+[ "$HEARTBEAT_STARTED" = true ] || fail "the live heartbeat process did not start writing its marker file"
 BEFORE_COUNT=$(wc -l < "$MARKER" | tr -d '[:space:]')
 pass "repro setup: a live long-running process is running in the startup workspace's single tab (label '1'), heartbeating to a marker file"
 

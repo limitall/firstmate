@@ -101,19 +101,72 @@ fmx_single_link_file_valid() {
   [ -z "$expected_device" ] || [ "$device" = "$expected_device" ]
 }
 
+# fmx_mode_enforcement_inert <dir>: capability probe for filesystems where
+# chmod is accepted but PROVABLY does nothing - Git Bash mounts its drives and
+# /tmp with noacl (verified live: mount shows "noacl,posix=0,usertemp" and
+# mkdir -m 700 reads back 755), so every strict mode-equality gate below is
+# unsatisfiable there while remaining fully meaningful everywhere else. The
+# probe creates a private sibling file in <dir>, chmods it to 0, and checks
+# whether the mode read back still shows group/other bits: only an
+# inert-chmod filesystem does that. It runs ONLY after a mode gate has
+# already failed (so mode-honoring hosts keep their exact behavior and pay
+# nothing on the happy path), never mutates the artifact under test, and
+# caches the last directory's verdict because validations cluster per dir
+# (plain vars, not an associative array, for bash 3.2 compatibility).
+#
+# Security posture on an inert mount: the POSIX mode BIT cannot be expressed,
+# but these mounts are the user's own NTFS profile locations, private at the
+# Windows ACL layer (the same reasoning as the herdr presentation-lock
+# namespace gate in bin/backends/herdr.sh); ownership and the
+# single-hard-link, same-device shape stay enforced by the callers.
+FMX_MODE_INERT_DIR=
+FMX_MODE_INERT_VERDICT=
+fmx_mode_enforcement_inert() {
+  local dir=$1 probe mode
+  [ -d "$dir" ] || return 1
+  if [ "$dir" = "$FMX_MODE_INERT_DIR" ] && [ -n "$FMX_MODE_INERT_VERDICT" ]; then
+    return "$FMX_MODE_INERT_VERDICT"
+  fi
+  FMX_MODE_INERT_DIR=$dir
+  FMX_MODE_INERT_VERDICT=1
+  probe=$(umask 077; mktemp "$dir/.fmx-modeprobe.XXXXXX" 2>/dev/null) || return 1
+  chmod 0 "$probe" 2>/dev/null
+  if [ "$(uname)" = Darwin ]; then
+    mode=$(stat -f %Lp "$probe" 2>/dev/null)
+  else
+    mode=$(stat -c %a "$probe" 2>/dev/null)
+  fi
+  rm -f -- "$probe" 2>/dev/null
+  case "$mode" in
+    0|00|000) FMX_MODE_INERT_VERDICT=1 ;;
+    '') FMX_MODE_INERT_VERDICT=1 ;;
+    *) FMX_MODE_INERT_VERDICT=0 ;;
+  esac
+  return "$FMX_MODE_INERT_VERDICT"
+}
+
 fmx_single_link_file_mode_valid() {
-  local file=$1 expected_mode=$2 expected_device=${3-} mode
+  local file=$1 expected_mode=$2 expected_device=${3-} mode owner
   fmx_single_link_file_valid "$file" "$expected_device" || return 1
   if [ "$(uname)" = Darwin ]; then
     mode=$(stat -f %Lp "$file" 2>/dev/null) || return 1
   else
     mode=$(stat -c %a "$file" 2>/dev/null) || return 1
   fi
-  [ "$mode" = "$expected_mode" ]
+  [ "$mode" = "$expected_mode" ] && return 0
+  # Inert-chmod filesystems cannot express the mode bit at all; accept the
+  # artifact there iff this user owns it (see fmx_mode_enforcement_inert).
+  fmx_mode_enforcement_inert "$(dirname "$file")" || return 1
+  if [ "$(uname)" = Darwin ]; then
+    owner=$(stat -f %u "$file" 2>/dev/null) || return 1
+  else
+    owner=$(stat -c %u "$file" 2>/dev/null) || return 1
+  fi
+  [ "$owner" = "$(id -u 2>/dev/null)" ]
 }
 
 fmx_private_artifact_dir_device() {
-  local dir=$1 mode device
+  local dir=$1 mode device owner
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   if [ "$(uname)" = Darwin ]; then
     mode=$(stat -f %Lp "$dir" 2>/dev/null) || return 1
@@ -122,7 +175,17 @@ fmx_private_artifact_dir_device() {
     mode=$(stat -c %a "$dir" 2>/dev/null) || return 1
     device=$(stat -c %d "$dir" 2>/dev/null) || return 1
   fi
-  [ "$mode" = 700 ] || return 1
+  if [ "$mode" != 700 ]; then
+    # Same inert-chmod acceptance as fmx_single_link_file_mode_valid: the
+    # 0700 bit cannot exist on a noacl mount, so require ownership instead.
+    fmx_mode_enforcement_inert "$dir" || return 1
+    if [ "$(uname)" = Darwin ]; then
+      owner=$(stat -f %u "$dir" 2>/dev/null) || return 1
+    else
+      owner=$(stat -c %u "$dir" 2>/dev/null) || return 1
+    fi
+    [ "$owner" = "$(id -u 2>/dev/null)" ] || return 1
+  fi
   printf '%s\n' "$device"
 }
 
@@ -936,37 +999,45 @@ fmx_meta_tmp() {
 # budget against a binding the relay already knows about. Returns non-zero if
 # <meta> is missing or the rewrite fails.
 fmx_meta_link_set() {
-  local meta=$1 rid=$2 ts=$3 followups=${4:-0} platform=${5:-} reply_max=${6:-} tmp
+  local meta=$1 rid=$2 ts=$3 followups=${4:-0} platform=${5:-} reply_max=${6:-} tmp lock
   [ -f "$meta" ] || return 1
-  tmp=$(fmx_meta_tmp "$meta") || return 1
+  lock=$(fm_meta_lock_path "$meta") || return 1
+  fm_lock_acquire_wait "$lock"
+  [ -f "$meta" ] || { fm_lock_release "$lock"; return 1; }
+  tmp=$(fmx_meta_tmp "$meta") || { fm_lock_release "$lock"; return 1; }
   if ! { grep -vE '^x_request=|^x_request_ts=|^x_followups=|^x_platform=|^x_reply_max_chars=' "$meta" || true; } > "$tmp"; then
-    rm -f "$tmp"; return 1
+    rm -f "$tmp"; fm_lock_release "$lock"; return 1
   fi
-  printf 'x_request=%s\n' "$rid" >> "$tmp" || { rm -f "$tmp"; return 1; }
-  printf 'x_request_ts=%s\n' "$ts" >> "$tmp" || { rm -f "$tmp"; return 1; }
-  printf 'x_followups=%s\n' "$followups" >> "$tmp" || { rm -f "$tmp"; return 1; }
+  printf 'x_request=%s\n' "$rid" >> "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  printf 'x_request_ts=%s\n' "$ts" >> "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  printf 'x_followups=%s\n' "$followups" >> "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
   if [ -n "$platform" ]; then
-    printf 'x_platform=%s\n' "$platform" >> "$tmp" || { rm -f "$tmp"; return 1; }
+    printf 'x_platform=%s\n' "$platform" >> "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
   fi
   case "$reply_max" in
     ''|*[!0-9]*) ;;
-    *) printf 'x_reply_max_chars=%s\n' "$reply_max" >> "$tmp" || { rm -f "$tmp"; return 1; } ;;
+    *) printf 'x_reply_max_chars=%s\n' "$reply_max" >> "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; } ;;
   esac
-  mv -f "$tmp" "$meta" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$meta" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  fm_lock_release "$lock"
 }
 
 # fmx_meta_followups_set <meta> <n>: atomically rewrite just the x_followups
 # line, preserving every other meta line including link and reply context.
 # Returns non-zero if <meta> is missing or the rewrite fails.
 fmx_meta_followups_set() {
-  local meta=$1 n=$2 tmp
+  local meta=$1 n=$2 tmp lock
   [ -f "$meta" ] || return 1
-  tmp=$(fmx_meta_tmp "$meta") || return 1
+  lock=$(fm_meta_lock_path "$meta") || return 1
+  fm_lock_acquire_wait "$lock"
+  [ -f "$meta" ] || { fm_lock_release "$lock"; return 1; }
+  tmp=$(fmx_meta_tmp "$meta") || { fm_lock_release "$lock"; return 1; }
   if ! { grep -vE '^x_followups=' "$meta" || true; } > "$tmp"; then
-    rm -f "$tmp"; return 1
+    rm -f "$tmp"; fm_lock_release "$lock"; return 1
   fi
-  printf 'x_followups=%s\n' "$n" >> "$tmp" || { rm -f "$tmp"; return 1; }
-  mv -f "$tmp" "$meta" || { rm -f "$tmp"; return 1; }
+  printf 'x_followups=%s\n' "$n" >> "$tmp" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  mv -f "$tmp" "$meta" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  fm_lock_release "$lock"
 }
 
 # fmx_meta_link_clear <meta>: atomically remove the x_request/x_request_ts/
@@ -974,11 +1045,15 @@ fmx_meta_followups_set() {
 # succeeds whether or not a link is present, and is a no-op when <meta> is
 # missing.
 fmx_meta_link_clear() {
-  local meta=$1 tmp
+  local meta=$1 tmp lock
   [ -f "$meta" ] || return 0
-  tmp=$(fmx_meta_tmp "$meta") || return 1
+  lock=$(fm_meta_lock_path "$meta") || return 1
+  fm_lock_acquire_wait "$lock"
+  [ -f "$meta" ] || { fm_lock_release "$lock"; return 0; }
+  tmp=$(fmx_meta_tmp "$meta") || { fm_lock_release "$lock"; return 1; }
   if ! { grep -vE '^x_request=|^x_request_ts=|^x_followups=|^x_platform=|^x_reply_max_chars=' "$meta" || true; } > "$tmp"; then
-    rm -f "$tmp"; return 1
+    rm -f "$tmp"; fm_lock_release "$lock"; return 1
   fi
-  mv -f "$tmp" "$meta" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$meta" || { rm -f "$tmp"; fm_lock_release "$lock"; return 1; }
+  fm_lock_release "$lock"
 }

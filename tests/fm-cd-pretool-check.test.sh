@@ -304,7 +304,7 @@ test_fail_open_missing_node() {
   fakebin=$(fm_fakebin "$TMP_ROOT/nonode")
   for tool in bash sh git dirname cat printf sed tr jq; do
     tool_path=$(command -v "$tool") || continue
-    ln -s "$tool_path" "$fakebin/$tool"
+    fm_fakebin_tool "$fakebin" "$tool" "$tool_path"
   done
   # node deliberately absent from this PATH.
   out=$(PATH="$fakebin" "$CHECK" --command 'cd projects/foo' 2>&1); rc=$?
@@ -318,7 +318,7 @@ test_fail_open_missing_jq_on_stdin() {
   fakebin=$(fm_fakebin "$TMP_ROOT/nojq")
   for tool in bash sh git dirname cat printf sed tr node; do
     tool_path=$(command -v "$tool") || continue
-    ln -s "$tool_path" "$fakebin/$tool"
+    fm_fakebin_tool "$fakebin" "$tool" "$tool_path"
   done
   # jq deliberately absent: the stdin transport cannot extract the command.
   out=$(printf '{"tool_input":{"command":"cd projects/foo"}}' | PATH="$fakebin" "$CHECK" 2>&1); rc=$?
@@ -337,7 +337,7 @@ test_prefilter_skips_node_without_cd_substring() {
   marker="$TMP_ROOT/prefilter-node-called"
   for tool in bash sh git dirname cat printf sed tr jq; do
     tool_path=$(command -v "$tool") || continue
-    ln -s "$tool_path" "$fakebin/$tool"
+    fm_fakebin_tool "$fakebin" "$tool" "$tool_path"
   done
   cat > "$fakebin/node" <<EOF
 #!/usr/bin/env bash

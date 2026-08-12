@@ -167,7 +167,7 @@ run_spawn() {
     FM_FAKE_BRIEF_REAL="$(cd "$home/data/$id" && pwd -P)/brief.md" \
     FM_KIMI_READY_POLLS=2 FM_KIMI_DELIVERY_POLLS=2 FM_KIMI_POLL_INTERVAL=0 \
     PATH="$fakebin:$BASE_PATH" \
-    "$SPAWN" "$id" "$proj" --harness kimi "$@" 2>&1
+    "$SPAWN" "$id" "$proj" --harness kimi --mode no-mistakes --yolo off "$@" 2>&1
 }
 
 read_spawn_record() {
@@ -341,8 +341,8 @@ test_kimi_hook_install_refuses_without_jq() {
   mkdir -p "$home/.kimi-code"
   printf '# Captain config\nmodel = "test"\n' > "$config"
   cp "$config" "$before"
-  ln -s "$(command -v bash)" "$fakebin/bash"
-  ln -s "$(command -v python3)" "$fakebin/python3"
+  fm_fakebin_tool "$fakebin" bash
+  fm_fakebin_tool "$fakebin" python3
 
   rc=0
   out=$(HOME="$home" PATH="$fakebin" "$KIMI_HOOK" install 2>&1) || rc=$?
@@ -389,7 +389,7 @@ test_kimi_hook_is_silent_and_requires_registered_workspace_token() {
 
   rm "$target"
   fakebin=$(fm_fakebin "$CASE_DIR/no-jq")
-  ln -s "$(command -v bash)" "$fakebin/bash"
+  fm_fakebin_tool "$fakebin" bash
   out=$(printf '{"hook_event_name":"Stop","session_id":"crew","cwd":"%s","stop_hook_active":false}\n' "$WT_DIR" \
     | HOME="$HOME_DIR" PATH="$fakebin" "$hook" 2>&1)
   rc=$?

@@ -246,6 +246,15 @@ POST_SM_PANE=$(herdr pane get "$SM_PANE_ID" --session "$SESSION" 2>/dev/null | j
 [ "$POST_SM_PANE" = "$SM_PANE_ID" ] || fail "the secondmate task's pane id did not survive the restart: before=$SM_PANE_ID after=$POST_SM_PANE"
 pass "real herdr: BOTH workspace ids/labels AND both tasks' pane ids survive a session stop + fresh server restart (multi-workspace shape)"
 
+# Windows: herdr restores every pane into a fresh PowerShell (the platform's
+# default pane shell), so the POSIX shell that create_task bootstrapped into
+# this pane did not survive the restart. Production never types POSIX into a
+# restored pane either - recovery replaces husks through create/reclaim, which
+# re-bootstrap - so mirror that here before the POSIX send/current_path
+# sections below. No-op off Windows.
+fm_backend_herdr_pane_posixify "$SESSION" "$PANE_ID" \
+  || fail "could not re-bootstrap the restored pane to a POSIX shell"
+
 fm_backend_herdr_kill "$SESSION:$SM_PANE_ID"
 
 # --- send_text_line (atomic run) ---------------------------------------------

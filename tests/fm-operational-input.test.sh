@@ -126,7 +126,10 @@ EOF
 
 test_cross_language_adapter_uses_the_owner() {
   local encoded parsed
-  encoded=$(FM_TEST_ROOT="$ROOT" HELPER="$ROOT/.opencode/plugins/lib/fm-operational-input.js" \
+  # HELPER is consumed by NATIVE node, which cannot resolve an MSYS path
+  # (verified: "On Windows, absolute paths must be valid file:// URLs").
+  # fm_test_native_path is a no-op on macOS/Linux.
+  encoded=$(FM_TEST_ROOT="$ROOT" HELPER="$(fm_test_native_path "$ROOT/.opencode/plugins/lib/fm-operational-input.js")" \
     node --input-type=module <<'JS'
 import { pathToFileURL } from "node:url";
 const { encodeFirstmateOperationalInput } = await import(pathToFileURL(process.env.HELPER).href);

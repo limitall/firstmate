@@ -78,8 +78,10 @@ fm_path_age() {
   echo $(( $(date +%s) - m ))
 }
 
+FM_WATCHER_MATCHED_IDENTITY=
 fm_watcher_lock_matches_pid() {
   local state=$1 watch_path=$2 pid=$3 home=${4:-$FM_HOME} lockdir lock_home lock_path lock_identity current_identity
+  FM_WATCHER_MATCHED_IDENTITY=
   lockdir="$state/.watch.lock"
   lock_home=$(cat "$lockdir/fm-home" 2>/dev/null || true)
   lock_path=$(cat "$lockdir/watcher-path" 2>/dev/null || true)
@@ -88,23 +90,241 @@ fm_watcher_lock_matches_pid() {
   [ "$lock_path" = "$watch_path" ] || return 1
   [ -n "$lock_identity" ] || return 1
   current_identity=$(fm_pid_identity "$pid") || return 1
-  [ "$current_identity" = "$lock_identity" ]
+  [ "$current_identity" = "$lock_identity" ] || return 1
+  FM_WATCHER_MATCHED_IDENTITY=$lock_identity
 }
 
 FM_WATCHER_HEALTHY_PID=
+FM_WATCHER_HEALTHY_IDENTITY=
 fm_watcher_healthy() {
-  local state=$1 watch_path=$2 grace=${3:-${FM_GUARD_GRACE:-300}} home=${4:-$FM_HOME} lockdir beat pid age
+  local state=$1 watch_path=$2 grace=${3:-${FM_GUARD_GRACE:-300}} home=${4:-$FM_HOME} lockdir beat pid identity age
   FM_WATCHER_HEALTHY_PID=
+  FM_WATCHER_HEALTHY_IDENTITY=
   lockdir="$state/.watch.lock"
   beat="$state/.last-watcher-beat"
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
   fm_pid_alive "$pid" || return 1
   fm_watcher_lock_matches_pid "$state" "$watch_path" "$pid" "$home" || return 1
+  identity=$FM_WATCHER_MATCHED_IDENTITY
   age=$(fm_path_age "$beat")
   [ "$age" -lt "$grace" ] || return 1
   # shellcheck disable=SC2034 # Read by callers after fm_watcher_healthy returns.
   FM_WATCHER_HEALTHY_PID=$pid
+  # shellcheck disable=SC2034 # Read by callers after fm_watcher_healthy returns.
+  FM_WATCHER_HEALTHY_IDENTITY=$identity
   return 0
+}
+
+# fm_watcher_healthy above is the PID-STRICT primitive: true only when a live,
+# identity-matched watcher PROCESS holds this home's lock with a fresh beacon. The
+# arm layer (bin/fm-watch-arm.sh, bin/fm-claude-stop-autoarm.sh) needs exactly
+# that - it decides whether to start, attach to, or replace a real watcher
+# process, so a leftover beacon must never satisfy it. bin/fm-turnend-guard.sh
+# also keeps this strict check because it fires at the turn boundary where the
+# auto-arm brings a fresh watcher up. The pull warning (bin/fm-guard.sh) fires
+# mid-turn, where the auto-arm model runs no watcher at all, so it wants a
+# different, model-aware question:
+
+# fm_supervision_model
+# Print the supervision model of this home's PRIMARY harness:
+#   autoarm     Claude Stop-hook auto-arm: the watcher is armed at each turn end
+#               and exits on its wake, so it runs only BETWEEN turns. Mid-turn a
+#               fresh beacon with no live watcher process is the healthy state.
+#   persistent  every other harness (codex foreground checkpoint, opencode/pi/grok
+#               background arm, tmux, unknown): the watcher runs as a tracked live
+#               process, so a live identity-matched pid is the real liveness signal.
+# FM_SUPERVISION_MODEL overrides detection (tests, and callers that already know
+# the harness). Otherwise bin/fm-harness.sh is the single detection owner, so this
+# stays consistent with the harness-specific repair line the guards already emit.
+fm_supervision_model() {
+  local harness
+  case "${FM_SUPERVISION_MODEL:-}" in
+    autoarm|persistent) printf '%s\n' "$FM_SUPERVISION_MODEL"; return 0 ;;
+  esac
+  harness=$("$FM_WAKE_LIB_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
+  case "$harness" in
+    claude) printf 'autoarm\n' ;;
+    *) printf 'persistent\n' ;;
+  esac
+}
+
+# fm_watcher_supervision_verdict <state> <watch-path> [grace] [home]
+# Model-aware "is supervision healthy right now" verdict for the pull warning
+# guard (bin/fm-guard.sh), NOT the arm layer or the turn-end guard. Sets:
+#   FM_WATCHER_VERDICT_OK      true when supervision is healthy for this model
+#   FM_WATCHER_VERDICT_REASON  when not ok, the true failing condition:
+#                              no-watcher   - a live watcher process is the real
+#                                             signal for this model but none holds
+#                                             the lock (the beacon is still fresh)
+#                              stale-beacon - the beacon is stale beyond grace or
+#                                             absent (a genuine supervision lapse)
+# autoarm: a fresh beacon within grace is healthy even with no live watcher,
+# because the watcher only runs between turns; only a stale beacon is a lapse.
+# persistent: require a live identity-matched watcher with a fresh beacon
+# (fm_watcher_healthy); a fresh leftover beacon with no live watcher is still down.
+# shellcheck disable=SC2034 # Read by callers after the function returns.
+FM_WATCHER_VERDICT_OK=false
+# shellcheck disable=SC2034 # Read by callers after the function returns.
+FM_WATCHER_VERDICT_REASON=stale-beacon
+fm_watcher_supervision_verdict() {
+  local state=$1 watch=$2 grace=${3:-${FM_GUARD_GRACE:-300}} home=${4:-$FM_HOME}
+  local beat age fresh=false
+  FM_WATCHER_VERDICT_OK=false
+  FM_WATCHER_VERDICT_REASON=stale-beacon
+  beat="$state/.last-watcher-beat"
+  age=$(fm_path_age "$beat")
+  case "$age" in
+    ''|*[!0-9]*) ;;
+    *) [ "$age" -lt "$grace" ] && fresh=true ;;
+  esac
+  if [ "$(fm_supervision_model)" = autoarm ]; then
+    [ "$fresh" = true ] && FM_WATCHER_VERDICT_OK=true
+    return 0
+  fi
+  if fm_watcher_healthy "$state" "$watch" "$grace" "$home"; then
+    # shellcheck disable=SC2034 # Read by callers after the function returns.
+    FM_WATCHER_VERDICT_OK=true
+  elif [ "$fresh" = true ]; then
+    # shellcheck disable=SC2034 # Read by callers after the function returns.
+    FM_WATCHER_VERDICT_REASON=no-watcher
+  fi
+  return 0
+}
+
+# --- Lock representation ----------------------------------------------------
+# The primitive this protocol needs is "publish a uniquely named owner handle at
+# a fixed path, atomically, and lose if anyone got there first". On macOS/Linux
+# that is `ln -s "$ownerdir" "$lockdir"`: the symlink either appears or it does
+# not, the owner name is unforgeable (mktemp made it), and $lockdir/pid resolves
+# straight through to $ownerdir/pid - so the lock publishes its holder in the
+# same instant it becomes visible.
+#
+# Stock Git Bash/MSYS has no usable symlinks: without Developer Mode `ln -s`
+# silently COPIES (a directory target is copied recursively), [ -L ] is false and
+# readlink fails. Left alone, fm_lock_try_create copies the prepared owner dir -
+# pid file included - onto $lockdir, fails its readlink verification, and leaves
+# a directory naming its own live pid behind: a lock that can never be acquired
+# and never be reclaimed. So where symlinks do not work the lock is published as:
+#
+#   claim gate : mkdir "$lockdir"              (atomic; the second mkdir gets EEXIST)
+#   holder pid : $lockdir/pid                  (mirrors the prepared owner's pid)
+#   owner token: $lockdir/.fm-lock-owner       (the owner dir path, as identity)
+#
+# The lock path stays a DIRECTORY in both modes deliberately. fm-watch.sh and
+# fm-watch-arm.sh read and write $lockdir/pid, /fm-home, /pid-identity and
+# /watcher-path directly, which only works today because a symlinked lock is its
+# owner dir. A regular-file lock would make every one of those ENOTDIR and the
+# watcher singleton would quietly stop being a singleton.
+#
+# What the fallback gives up is publishing the pid in the same atomic step as the
+# lock. That window is not new: it is exactly the legacy directory lock's window,
+# and fm_lock_mid_acquire_is_fresh's minimum grace exists to cover it. It is kept
+# to a single printf by mirroring the pid immediately after mkdir, before the
+# token, so a contender that loses the gate still sees a holder pid to report.
+# The owner token restores the half of the symlink that actually matters for
+# safety: a claimant can still prove the lock it is about to write into is the
+# same lock instance it published, so a claimant that stalled past the grace
+# cannot clobber a lock that was reclaimed and recreated underneath it.
+
+# Owner-token filename for a fallback lock. Listed in fm_lock_clean_known_files
+# so a lock directory always stays rmdir-able through the normal removal paths.
+FM_LOCK_OWNER_TOKEN_FILE=.fm-lock-owner
+
+# dirname without forking. fm_lock_points_to_owner reaches this on every poll of
+# a held lock, and the platform that needs the fallback is the one that pays
+# 10-30x for a fork (see the _FM_UNAME note at the top of this file).
+FM_LOCK_PATH_DIR=
+fm_lock_path_dir() {  # <path> -> FM_LOCK_PATH_DIR
+  local path=$1
+  case "$path" in
+    */*)
+      FM_LOCK_PATH_DIR=${path%/*}
+      [ -n "$FM_LOCK_PATH_DIR" ] || FM_LOCK_PATH_DIR=/
+      ;;
+    *) FM_LOCK_PATH_DIR=. ;;
+  esac
+}
+
+# Memoized per directory, not per process: the verdict is a property of the
+# filesystem the lock sits on, and callers (tests especially) hand this library
+# lock paths outside $STATE. A process locks in one state dir in practice, so
+# this probes once and every later call is a string compare - the hot polling
+# paths never re-probe. Verified rather than assumed from uname, because the same
+# MSYS host answers differently with Developer Mode or MSYS=winsymlinks set.
+_FM_LOCK_SYMLINK_DIR=
+_FM_LOCK_SYMLINK_OK=1
+fm_lock_symlinks_work() {  # <lockdir>
+  local lockdir=$1 dir probe rc=1 target=fm-lock-symlink-probe
+  fm_lock_path_dir "$lockdir"
+  dir=$FM_LOCK_PATH_DIR
+  if [ "$dir" = "$_FM_LOCK_SYMLINK_DIR" ]; then
+    return "$_FM_LOCK_SYMLINK_OK"
+  fi
+  # A deliberately dangling target: where ln -s really links, a dangling link is
+  # still a link and survives the [ -L ] + readlink round-trip; where ln -s
+  # copies, it has nothing to copy and fails outright, leaving no debris that
+  # could later be mistaken for a lock or an owner dir.
+  probe="$dir/.fm-lock-symprobe.${BASHPID:-$$}.$RANDOM"
+  if [ -e "$probe" ] || [ -L "$probe" ]; then
+    rm -f "$probe" 2>/dev/null || true
+  fi
+  if ln -s "$target" "$probe" 2>/dev/null; then
+    if [ -L "$probe" ] && [ "$(readlink "$probe" 2>/dev/null || true)" = "$target" ]; then
+      rc=0
+    fi
+    rm -f "$probe" 2>/dev/null || true
+  elif [ ! -d "$dir" ]; then
+    # No verdict to cache: nothing can be locked here yet, and memoizing "no
+    # symlinks" off a directory that merely does not exist would strand a real
+    # symlink host in fallback mode for the rest of its life.
+    return 1
+  fi
+  _FM_LOCK_SYMLINK_DIR=$dir
+  _FM_LOCK_SYMLINK_OK=$rc
+  return "$rc"
+}
+
+# A fallback lock is a plain directory, so its owner token is ordinary file
+# content - never trust it as a path unless it has the exact shape this library
+# would have written: absolute, in the lock's own directory, and named
+# "<lockbase>.owner.<mktemp suffix>". Anything else is somebody else's file.
+fm_lock_owner_shape_ok() {  # <lockdir> <candidate-owner-dir>
+  local lockdir=$1 candidate=$2 base prefix rest candidate_dir abs
+  case "$candidate" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  base=${lockdir##*/}
+  prefix="$base.owner."
+  rest=${candidate##*/}
+  [ "${rest#"$prefix"}" != "$rest" ] || return 1
+  [ -n "${rest#"$prefix"}" ] || return 1
+  fm_lock_path_dir "$candidate"
+  candidate_dir=$FM_LOCK_PATH_DIR
+  fm_lock_path_dir "$lockdir"
+  [ "$candidate_dir" != "$FM_LOCK_PATH_DIR" ] || return 0
+  # The token was written from fm_lock_abs_path's resolved directory, so a caller
+  # that passed a relative or unresolved lock path still matches - just not free.
+  abs=$(fm_lock_abs_path "$lockdir") || return 1
+  fm_lock_path_dir "$abs"
+  [ "$candidate_dir" = "$FM_LOCK_PATH_DIR" ]
+}
+
+# Owner handle of a fallback lock, or failure if this path is not one (a legacy
+# pid-only directory lock, a symlink, or nothing at all). Uses the read builtin
+# rather than $(cat) because held-lock polling calls it repeatedly.
+FM_LOCK_FALLBACK_OWNER=
+fm_lock_fallback_owner() {  # <lockdir> -> FM_LOCK_FALLBACK_OWNER
+  local lockdir=$1 token=
+  FM_LOCK_FALLBACK_OWNER=
+  [ -d "$lockdir" ] && [ ! -L "$lockdir" ] || return 1
+  # 2>/dev/null precedes the input redirect on purpose: redirections apply left
+  # to right, so a trailing one would not be in effect yet when the open of a
+  # missing token file fails, and the shell's error would reach the caller's stderr.
+  IFS= read -r token 2>/dev/null < "$lockdir/$FM_LOCK_OWNER_TOKEN_FILE" || true
+  [ -n "$token" ] || return 1
+  fm_lock_owner_shape_ok "$lockdir" "$token" || return 1
+  FM_LOCK_FALLBACK_OWNER=$token
 }
 
 fm_lock_clean_known_files() {
@@ -113,8 +333,59 @@ fm_lock_clean_known_files() {
     "$lockdir/pid" \
     "$lockdir/fm-home" \
     "$lockdir/pid-identity" \
+    "$lockdir/role" \
     "$lockdir/watcher-path" \
+    "$lockdir/$FM_LOCK_OWNER_TOKEN_FILE" \
     2>/dev/null || true
+}
+
+# Tear down a fallback lock directory pid FIRST. Removing the owner token while
+# the holder pid survives leaves the one shape nothing in this protocol can ever
+# reclaim: a directory that reads as a legacy lock held by a live process, so
+# fm_pid_alive answers "held" forever. If the pid will not go (Windows can refuse
+# a delete another process holds open) the lock is left whole and still
+# attributed to its holder, and the failure reads as "still held, retry" - which
+# resolves by itself as soon as that holder exits.
+fm_lock_teardown_dir() {  # <lockdir>
+  local lockdir=$1
+  rm -f "$lockdir/pid" 2>/dev/null || true
+  [ ! -e "$lockdir/pid" ] || return 1
+  fm_lock_clean_known_files "$lockdir"
+  rmdir "$lockdir" 2>/dev/null
+}
+
+# Does <pid> hold <lockdir> in a way this process must respect? A lock recording
+# our OWN pid cannot: the protocol never re-enters an acquire for a lock the same
+# shell already holds, so our own pid in a lock we are trying to take is a
+# leftover from an earlier iteration of ours that a torn removal could not
+# finish. Treating it as a live holder is a self-deadlock - the acquire loop waits
+# on itself for the life of the process, which is exactly how a wedged wake queue
+# stops forever instead of retrying. Fallback mode only: a symlinked lock has no
+# half-published state that can strand our pid, so Linux/macOS behavior is
+# unchanged.
+fm_lock_holder_is_live() {  # <lockdir> <pid>
+  local lockdir=$1 pid=$2
+  fm_pid_alive "$pid" || return 1
+  [ "$pid" = "${BASHPID:-$$}" ] || return 0
+  fm_lock_symlinks_work "$lockdir"
+}
+
+fm_lock_set_role() {
+  local lockdir=$1 role=$2 current pid back
+  case "$role" in
+    autoarm|terminal-check) : ;;
+    *) return 1 ;;
+  esac
+  current=${BASHPID:-$$}
+  pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+  [ "$pid" = "$current" ] || return 1
+  printf '%s\n' "$role" > "$lockdir/role" 2>/dev/null || return 1
+  back=$(cat "$lockdir/role" 2>/dev/null || true)
+  [ "$back" = "$role" ]
+}
+
+fm_lock_role() {
+  cat "$1/role" 2>/dev/null
 }
 
 fm_lock_abs_path() {
@@ -139,20 +410,120 @@ fm_lock_prepare_owner() {
   [ "$back" = "$mypid" ]
 }
 
+# Owner handle a published lock names, in whichever representation this host
+# uses. Symlink first, always: where symlinks work this is byte-for-byte the
+# original readlink path, so nothing about Linux/macOS behavior moves.
 fm_lock_link_owner() {
   local lockdir=$1 owner
-  owner=$(readlink "$lockdir" 2>/dev/null) || return 1
-  [ -n "$owner" ] || return 1
-  case "$owner" in
-    /*) printf '%s\n' "$owner" ;;
-    *) printf '%s/%s\n' "$(dirname "$lockdir")" "$owner" ;;
-  esac
+  if [ -L "$lockdir" ]; then
+    owner=$(readlink "$lockdir" 2>/dev/null) || return 1
+    [ -n "$owner" ] || return 1
+    case "$owner" in
+      /*) printf '%s\n' "$owner" ;;
+      *) printf '%s/%s\n' "$(dirname "$lockdir")" "$owner" ;;
+    esac
+    return 0
+  fi
+  fm_lock_symlinks_work "$lockdir" && return 1
+  fm_lock_fallback_owner "$lockdir" || return 1
+  printf '%s\n' "$FM_LOCK_FALLBACK_OWNER"
 }
 
 fm_lock_points_to_owner() {
   local lockdir=$1 ownerdir=$2 actual
-  actual=$(readlink "$lockdir" 2>/dev/null) || return 1
-  [ "$actual" = "$ownerdir" ]
+  if [ -L "$lockdir" ]; then
+    actual=$(readlink "$lockdir" 2>/dev/null) || return 1
+    [ "$actual" = "$ownerdir" ]
+    return
+  fi
+  fm_lock_symlinks_work "$lockdir" && return 1
+  fm_lock_fallback_owner "$lockdir" || return 1
+  [ "$FM_LOCK_FALLBACK_OWNER" = "$ownerdir" ]
+}
+
+# Publish <ownerdir> at <lockdir>, atomically, losing to whoever got there first.
+fm_lock_publish_link() {  # <lockdir> <ownerdir>
+  local lockdir=$1 ownerdir=$2 owner_pid=
+  if fm_lock_symlinks_work "$lockdir"; then
+    ln -s "$ownerdir" "$lockdir" 2>/dev/null
+    return
+  fi
+  # mkdir is the atomic gate here: on MSYS the loser of a concurrent mkdir gets
+  # EEXIST exactly like the loser of a concurrent symlink create.
+  mkdir "$lockdir" 2>/dev/null || return 1
+  # Nobody else can be inside a directory we just won the gate for, so these are
+  # plain redirects - no noclobber subshell to fork, which keeps publication to
+  # two printfs.
+  #
+  # Token FIRST, holder pid second, and that order is load bearing. A publication
+  # torn between the two writes must never leave a pid without a token: that is
+  # the unreclaimable shape described on fm_lock_teardown_dir. Torn the other way
+  # it is a tokened lock that has not named its holder yet - an ordinary
+  # mid-acquire, which fm_lock_mid_acquire_is_fresh already covers and the stale
+  # path reclaims one grace period later.
+  if ! { printf '%s\n' "$ownerdir" > "$lockdir/$FM_LOCK_OWNER_TOKEN_FILE"; } 2>/dev/null; then
+    fm_lock_teardown_dir "$lockdir" || true
+    return 1
+  fi
+  # Mirroring the prepared owner's pid is what makes a fallback lock
+  # self-describing the way a symlinked one is: a contender that loses the gate
+  # can name the holder instead of reporting an anonymous mid-acquire.
+  IFS= read -r owner_pid 2>/dev/null < "$ownerdir/pid" || true
+  if [ -n "$owner_pid" ] && ! { printf '%s\n' "$owner_pid" > "$lockdir/pid"; } 2>/dev/null; then
+    fm_lock_teardown_dir "$lockdir" || true
+    return 1
+  fi
+  return 0
+}
+
+# Withdraw a lock this process published, and only while it still names our owner
+# handle. rm -f cannot delete a fallback lock (it is a directory), and Windows can
+# refuse a delete another process still holds open: a failure here has to read as
+# "still held, retry next poll", never as a crash or a silent takeover.
+fm_lock_unpublish() {  # <lockdir> <ownerdir>
+  local lockdir=$1 ownerdir=$2
+  fm_lock_points_to_owner "$lockdir" "$ownerdir" || return 1
+  if [ -L "$lockdir" ]; then
+    rm -f "$lockdir" 2>/dev/null
+    return
+  fi
+  fm_lock_teardown_dir "$lockdir"
+}
+
+# Record the claiming pid where readers of this lock will look for it. Under a
+# symlink the lock IS the owner dir, so writing $ownerdir/pid publishes through
+# the lock in one step. In fallback mode they are two directories and the lock's
+# own pid file is the one every consumer reads (fm-watch.sh, fm_watcher_healthy,
+# fm_lock_try_acquire), so the claim has to write there - carefully.
+fm_lock_write_claim_pid() {  # <lockdir> <ownerdir> <pid>
+  local lockdir=$1 ownerdir=$2 mypid=$3 back=
+  if [ -L "$lockdir" ] || fm_lock_symlinks_work "$lockdir"; then
+    { printf '%s\n' "$mypid" > "$ownerdir/pid"; } 2>/dev/null
+    return
+  fi
+  # Refuse to write into a lock that is no longer ours, and never replace a pid
+  # already recorded there: a claimant that stalled past the mid-acquire grace can
+  # find its lock reclaimed and recreated, and overwriting the new holder's pid
+  # would hand the lock to a process that does not hold it. set -C makes the write
+  # itself the check - it can create the pid file, never clobber one.
+  fm_lock_points_to_owner "$lockdir" "$ownerdir" || return 1
+  if (set -C; printf '%s\n' "$mypid" > "$lockdir/pid") 2>/dev/null; then
+    # noclobber succeeding means WE created that pid file, so we are free to
+    # withdraw it - and must, if the lock stopped being ours between the check
+    # above and the write. A reclaim that removed the token but could not finish
+    # its rmdir leaves an orphaned directory here, and dropping our live pid into
+    # it would manufacture the unreclaimable shape on fm_lock_teardown_dir out of
+    # a race we already lost.
+    if fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
+      return 0
+    fi
+    rm -f "$lockdir/pid" 2>/dev/null || true
+    return 1
+  fi
+  # Publication already mirrored our own prepared pid into the lock; any other
+  # value belongs to another claimant and is not ours to take over.
+  IFS= read -r back 2>/dev/null < "$lockdir/pid" || true
+  [ "$back" = "$mypid" ]
 }
 
 fm_lock_discard_owner() {
@@ -167,9 +538,25 @@ fm_lock_remove_stray_owner_link() {
   stray="$lockdir/$(basename "$ownerdir")"
   if [ -L "$stray" ] && [ "$(readlink "$stray" 2>/dev/null || true)" = "$ownerdir" ]; then
     rm -f "$stray" 2>/dev/null || true
+    return 0
   fi
+  # Copy-mode debris. Where `ln -s` copies, aiming it at an existing lock
+  # directory copies the owner dir INTO it recursively, leaving $lockdir/<owner
+  # basename> with a pid file in it. This library stops calling ln -s once the
+  # probe says so, but a concurrent process still running the old path can leave
+  # that shape behind. Only this attempt could own that name (mktemp made it
+  # unique), so removing it cannot touch another holder's state, and clearing
+  # known filenames plus rmdir keeps the never-rm -rf rule intact.
+  if ! fm_lock_symlinks_work "$lockdir" && [ -d "$stray" ] && [ ! -L "$stray" ]; then
+    fm_lock_clean_known_files "$stray"
+    rmdir "$stray" 2>/dev/null || true
+  fi
+  return 0
 }
 
+# Representation-agnostic: [ -e ] covers a symlink steal lock and a fallback
+# steal directory alike, and the owner comparison goes through the generalized
+# fm_lock_points_to_owner.
 fm_lock_claim_blocked_by_steal() {
   local lockdir=$1 allowed_steal_owner=${2:-} steal
   steal="$lockdir.steal"
@@ -183,11 +570,15 @@ fm_lock_claim_blocked_by_steal() {
 fm_lock_claim() {
   local lockdir=$1 ownerdir=$2 allowed_steal_owner=${3:-} mypid back
   mypid=${BASHPID:-$$}
-  if ! { printf '%s\n' "$mypid" > "$ownerdir/pid"; } 2>/dev/null; then
+  if ! fm_lock_write_claim_pid "$lockdir" "$ownerdir" "$mypid"; then
     fm_lock_discard_owner "$ownerdir"
     return 1
   fi
-  back=$(cat "$ownerdir/pid" 2>/dev/null || true)
+  if [ -L "$lockdir" ] || fm_lock_symlinks_work "$lockdir"; then
+    back=$(cat "$ownerdir/pid" 2>/dev/null || true)
+  else
+    back=$(cat "$lockdir/pid" 2>/dev/null || true)
+  fi
   if [ "$back" != "$mypid" ]; then
     fm_lock_discard_owner "$ownerdir"
     return 1
@@ -197,9 +588,7 @@ fm_lock_claim() {
     return 1
   fi
   if fm_lock_claim_blocked_by_steal "$lockdir" "$allowed_steal_owner"; then
-    if fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
-      rm -f "$lockdir" 2>/dev/null || true
-    fi
+    fm_lock_unpublish "$lockdir" "$ownerdir" || true
     fm_lock_discard_owner "$ownerdir"
     return 1
   fi
@@ -218,14 +607,12 @@ fm_lock_try_create() {
     fm_lock_discard_owner "$ownerdir"
     return 1
   fi
-  if ln -s "$ownerdir" "$lockdir" 2>/dev/null && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
+  if fm_lock_publish_link "$lockdir" "$ownerdir" && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
     if fm_lock_claim "$lockdir" "$ownerdir" "$allowed_steal_owner"; then
       FM_LOCK_OWNER_DIR=$ownerdir
       return 0
     fi
-    if fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
-      rm -f "$lockdir" 2>/dev/null || true
-    fi
+    fm_lock_unpublish "$lockdir" "$ownerdir" || true
   else
     fm_lock_remove_stray_owner_link "$lockdir" "$ownerdir"
   fi
@@ -239,6 +626,16 @@ fm_lock_remove_path() {
     ownerdir=$(fm_lock_link_owner "$lockdir" 2>/dev/null || true)
     rm -f "$lockdir" 2>/dev/null || return 1
     [ -n "$ownerdir" ] && fm_lock_discard_owner "$ownerdir"
+    return 0
+  fi
+  # A fallback lock is a directory too, so read its owner handle before the
+  # directory goes away - otherwise the mktemp owner dir behind it leaks. A legacy
+  # pid-only directory lock yields nothing here and takes the original path.
+  ownerdir=
+  if ! fm_lock_symlinks_work "$lockdir" && fm_lock_fallback_owner "$lockdir"; then
+    ownerdir=$FM_LOCK_FALLBACK_OWNER
+    fm_lock_teardown_dir "$lockdir" || return 1
+    fm_lock_discard_owner "$ownerdir"
     return 0
   fi
   fm_lock_clean_known_files "$lockdir"
@@ -264,10 +661,17 @@ fm_lock_recheck_stale_owner() {
     fm_lock_points_to_owner "$lockdir" "$expected_owner" || return 1
   elif [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
     [ -d "$lockdir" ] && [ ! -L "$lockdir" ] || return 1
+    # A fallback lock is a directory as well, so this legacy branch must not
+    # swallow one. Reaching here with no expected owner means the caller read the
+    # lock before any token existed; if a token is there now, the lock was
+    # published underneath us and is not a stale legacy directory to reclaim.
+    if ! fm_lock_symlinks_work "$lockdir" && fm_lock_fallback_owner "$lockdir"; then
+      return 1
+    fi
   fi
   actual_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
   [ "$actual_pid" = "$expected_pid" ] || return 1
-  if fm_pid_alive "$actual_pid"; then
+  if fm_lock_holder_is_live "$lockdir" "$actual_pid"; then
     return 1
   fi
   if fm_lock_mid_acquire_is_fresh "$lockdir" "$actual_pid"; then
@@ -286,7 +690,7 @@ fm_lock_try_acquire() {
   fi
 
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
-  if fm_pid_alive "$pid"; then
+  if fm_lock_holder_is_live "$lockdir" "$pid"; then
     FM_LOCK_HELD_PID=$pid
     return 1
   fi
@@ -304,7 +708,7 @@ fm_lock_try_acquire() {
   steal_owner=${FM_LOCK_OWNER_DIR:-}
 
   cur=$(cat "$lockdir/pid" 2>/dev/null || true)
-  if fm_pid_alive "$cur"; then
+  if fm_lock_holder_is_live "$lockdir" "$cur"; then
     fm_lock_release "$steal"
     FM_LOCK_HELD_PID=$cur
     FM_LOCK_OWNER_DIR=
@@ -324,7 +728,7 @@ fm_lock_try_acquire() {
   fi
 
   primary_owner=
-  if [ -L "$lockdir" ]; then
+  if [ -L "$lockdir" ] || ! fm_lock_symlinks_work "$lockdir"; then
     primary_owner=$(fm_lock_link_owner "$lockdir" 2>/dev/null || true)
   fi
   cur=$(cat "$lockdir/pid" 2>/dev/null || true)
@@ -369,10 +773,99 @@ fm_lock_release() {
     fm_lock_discard_owner "$ownerdir"
     return 0
   fi
+  # Fallback lock: same sequence as the symlink branch above - owner handle, then
+  # holder pid, then a re-verification that the lock is still the instance we
+  # published - because between those reads it could have been reclaimed. Without
+  # a token this is a plain legacy directory lock and falls through unchanged.
+  if ! fm_lock_symlinks_work "$lockdir" && fm_lock_fallback_owner "$lockdir"; then
+    ownerdir=$FM_LOCK_FALLBACK_OWNER
+    pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+    [ "$pid" = "$current" ] || return 0
+    fm_lock_points_to_owner "$lockdir" "$ownerdir" || return 0
+    # A teardown Windows refuses leaves the lock held rather than half-released.
+    # It then reads as held by this process until this process exits, which is
+    # the truth, and the ordinary stale path reclaims it after that.
+    fm_lock_teardown_dir "$lockdir" || return 0
+    fm_lock_discard_owner "$ownerdir"
+    return 0
+  fi
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
   [ "$pid" = "$current" ] || return 0
   fm_lock_clean_known_files "$lockdir"
   rmdir "$lockdir" 2>/dev/null || true
+}
+
+fm_meta_lock_path() {
+  local meta=$1 dir base id
+  dir=${meta%/*}
+  base=${meta##*/}
+  [ "$dir" != "$meta" ] || dir=.
+  case "$base" in
+    *.meta) id=${base%.meta} ;;
+    *) return 1 ;;
+  esac
+  case "$id" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  printf '%s/.meta-%s.lock\n' "$dir" "$id"
+}
+
+# fm_task_set_lock_path: the per-home lock guarding WHICH tasks exist in a home,
+# as opposed to fm_meta_lock_path, which guards one task's record.
+#
+# A per-task lock cannot protect a task that does not exist yet. Forced
+# secondmate teardown enumerates a home's task set, locks what it found, and
+# then re-enumerates while removing; a fresh spawn publishing a record inside
+# that window is invisible to the first enumeration and visible to the second,
+# so it gets destructively processed while never lifecycle-locked (reproduced
+# with real agents: a record published 0.249s after teardown began was removed
+# and its worktree returned to the pool, with both commands reporting success).
+# Holding this lock from enumeration through cleanup makes the two operations
+# serialize: either the spawn publishes first and the teardown's preflight
+# covers it, or the teardown owns the set and the spawn refuses. Both directions
+# fail closed.
+fm_task_set_lock_path() {  # <state-dir>
+  local state=$1
+  [ -n "$state" ] || return 1
+  case "$state" in *[$'\n\r\t']*) return 1 ;; esac
+  printf '%s/.task-set.lock\n' "$state"
+}
+
+fm_failure_episode_reset() {
+  local state=$1 mode=${2:-acquire} lock current pid acquired=0 path
+  lock="$state/.turnend-claude-blocks.lock"
+  case "$mode" in
+    acquire)
+      fm_lock_try_acquire "$lock" || return 1
+      acquired=1
+      ;;
+    held)
+      current=${BASHPID:-$$}
+      pid=$(cat "$lock/pid" 2>/dev/null || true)
+      [ "$pid" = "$current" ] || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  for path in \
+    "$state/.turnend-claude-blocks" \
+    "$state/.claude-autoarm-failure-notified" \
+    "$state/.claude-autoarm-failure-alarmed"
+  do
+    if [ -d "$path" ] && [ ! -L "$path" ]; then
+      [ "$acquired" -eq 0 ] || fm_lock_release "$lock"
+      return 1
+    fi
+  done
+  if ! rm -f \
+    "$state/.turnend-claude-blocks" \
+    "$state/.claude-autoarm-failure-notified" \
+    "$state/.claude-autoarm-failure-alarmed" \
+    2>/dev/null; then
+    [ "$acquired" -eq 0 ] || fm_lock_release "$lock"
+    return 1
+  fi
+  [ "$acquired" -eq 0 ] || fm_lock_release "$lock"
+  return 0
 }
 
 fm_wake_clean_field() {
@@ -404,6 +897,28 @@ fm_wake_append() {
   fi
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   return "$status"
+}
+
+# fm_wake_queued_keys <kind>
+# Print the distinct keys currently queued for <kind>, oldest first. Read under
+# the append lock so a concurrent append is never observed half-written. The
+# durable queue stays the authority: a key appears here exactly while a record
+# for it is queued and unconsumed, and disappears when a drain consumes it.
+fm_wake_queued_keys() {
+  local kind=$1
+  case "$kind" in
+    signal|stale|check|heartbeat) ;;
+    *) printf 'fm_wake_queued_keys: invalid wake kind: %s\n' "$kind" >&2; return 2 ;;
+  esac
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_wake_queued_keys_locked "$kind"
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+}
+
+fm_wake_queued_keys_locked() {
+  local kind=$1
+  awk -F '\t' -v kind="$kind" 'NF >= 5 && $3 == kind && !seen[$4]++ { print $4 }' \
+    "$FM_WAKE_QUEUE" 2>/dev/null || true
 }
 
 fm_wake_restore_queue() {
