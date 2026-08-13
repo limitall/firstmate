@@ -2287,12 +2287,16 @@ sent, not merely that the reported action was a stand-down. That is
 ### 18.6 The suite, on both platforms - `PROVEN (Windows 11)` and `PROVEN (pwsh/Linux)`
 
 ```
-Linux,   PowerShell 7.6.4, Pester 6.1.0
+Linux,      PowerShell 7.6.4, Pester 6.1.0        (branch tip)
 RESULT total=1572 passed=1567 failed=0 skipped=5 notrun=0
 
-Windows 11, PowerShell 7.6.4, Pester 6.1.0, 1413s
+Windows 11, PowerShell 7.6.4, Pester 6.1.0, 1413s (at 37e3b29)
 total 1572  passed 1550  failed 6  skipped 16  notrun 0
 ```
+
+The laptop run is recorded at the commit it ran at. Nothing executable changed
+between it and the branch tip - one comment in `FmAutolaunch.ps1` and this file
+- and the Linux number above is the tip.
 
 This area's own file is green on both: `tests/FmAutolaunch.Tests.ps1`, 47 tests,
 47 passed, 0 failed on the laptop.
