@@ -3393,6 +3393,15 @@ repository, which is a worse outcome than the failures were.
 
 The consequence is the one this port cares about most: a crewmate that merely
 ran the test suite leaves uncommitted changes to tracked files, and its worktree
-can then only be torn down with `--force`. Reported rather than fixed here,
-because it belongs to the install area and rewriting another area's suite from
-this lane would collide with it.
+can then only be torn down with `--force`.
+
+Undoing it has a sharper edge still, measured here. The repair points
+`.claude/skills` at an ABSOLUTE path inside the same checkout, so the obvious
+cleanup - `git checkout -- .claude/skills`, putting the tracked placeholder back
+- followed the link while removing it and deleted all 19 `SKILL.md` files out of
+`.agents/skills/`. They are tracked, so `git checkout -- .agents/skills` brought
+them back, but a session that had done that and not looked would have been left
+loading zero skills in a tree `git status` called clean.
+
+Reported rather than fixed here, because it belongs to the install area and
+rewriting another area's suite from this lane would collide with it.
