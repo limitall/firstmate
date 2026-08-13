@@ -257,9 +257,10 @@ function Test-FmAutolaunchWorkerPane {
 
 # New-FmAutolaunchResult: the one shape every exit from the state machine takes.
 #
-#   submitted    - Enter was sent and herdr confirmed a turn started.
-#   unconfirmed  - Enter was sent and the confirmation could not be read. The
-#                  command may or may not be running; the caller must say so.
+#   submitted    - Enter was sent and the pane was seen to act on it.
+#   unconfirmed  - Enter was sent and nothing was seen to happen within the
+#                  budget. The command may or may not be running, and the caller
+#                  must say exactly that rather than claim either.
 #   stood-down   - the command was typed, the captain (or an unreadable pane)
 #                  interrupted the window, and nothing was submitted.
 #   refused      - nothing was typed at all, and Reason says what stopped it.

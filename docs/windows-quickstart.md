@@ -156,6 +156,25 @@ not a teardown. Nothing in this port discards a worker's uncommitted work: the
 pooled-worktree refresh refuses outright on a dirty copy rather than resetting
 over it.
 
+## Optional: have a pane start Claude for you
+
+Off unless you ask for it. Write `config/autolaunch` in the home:
+
+```
+command=claude --dangerously-skip-permissions --continue --chrome
+delay=10
+```
+
+Then point `fm-autolaunch.ps1` at a herdr pane (`<session>:<pane-id>`). It types
+that command into the pane without submitting it, waits the delay, and presses
+Enter only if you have not touched the pane in the meantime. Touch it - type
+anything at all - and it stands down and leaves your text alone.
+
+`fm-doctor.ps1` prints the command whenever this is on, which matters here:
+`--dangerously-skip-permissions` turns off Claude's permission checks for every
+session it starts. That is your call to make, and the doctor line is so it is
+never a surprise. [`autolaunch-windows.md`](autolaunch-windows.md) has the rest.
+
 ## When something is wrong
 
 ```powershell

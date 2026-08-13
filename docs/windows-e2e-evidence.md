@@ -2177,6 +2177,14 @@ a separate defect; what is closed is the question of whose they are.
   pre-existing at `99a0e96`, unattributed as to which file leaks into them.
 - **`gh` is absent on the laptop**, so `direct-PR` cannot complete there. An
   install, not a code defect (section 13).
+- **Four Windows-only test failures are open at `2e60e39`** and are nobody's
+  regression (18.8 measures them at the base commit): two in
+  `tests/FmAnalyzer.Tests.ps1`, where `Invoke-FmAnalyzerSweep`'s own crash and
+  recovery cases raise `The property 'Analysed' cannot be found on this
+  object`, and one each in `tests/FmPaths.Tests.ps1` (`$id cannot be
+  retrieved`) and `tests/FmState.Tests.ps1` (`Count` missing on a read result).
+  They belong to the analyzer harness and the foundation area, so they are
+  reported here rather than edited by a lane that does not own them.
 
 ## 18. Autolaunch, on the captain's Windows 11 laptop - `PROVEN (Windows 11)` in part, `BLOCKED (brief gate)` in part
 
@@ -2187,7 +2195,9 @@ The captain's own checkout at `C:\Users\ADMIN\firstmate-win` was **not touched**
 The branch was carried over as a `git bundle`, cloned to
 `C:\Users\ADMIN\fmwin-autolaunch`, and set up there with `-SkipProfile`, so the
 captain's PowerShell profile and their global Claude settings were left alone.
-The one file this run wrote into that clone's `config/` was removed afterwards.
+Everything this run created on the laptop - the clone, the transferred bundle,
+and the runner scripts - was removed afterwards, and the `win-*.ps1` files from
+earlier lanes were left alone.
 
 Environment, read on the laptop at the start of the run:
 
@@ -2273,3 +2283,96 @@ check accepts or refuses - including an idle agent, which is refused. Each stand
 sent, not merely that the reported action was a stand-down. That is
 `PROVEN (Windows 11)` as a test run (18.6) and
 `NOT YET VERIFIED ON WINDOWS HARDWARE` as live pane behaviour.
+
+### 18.6 The suite, on both platforms - `PROVEN (Windows 11)` and `PROVEN (pwsh/Linux)`
+
+```
+Linux,   PowerShell 7.6.4, Pester 6.1.0
+RESULT total=1572 passed=1567 failed=0 skipped=5 notrun=0
+
+Windows 11, PowerShell 7.6.4, Pester 6.1.0, 1413s
+total 1572  passed 1550  failed 6  skipped 16  notrun 0
+```
+
+This area's own file is green on both: `tests/FmAutolaunch.Tests.ps1`, 47 tests,
+47 passed, 0 failed on the laptop.
+
+The skip counts differ by platform because the guards do: Linux skips the 5
+Windows-only cases, and Windows skips 16 - the POSIX-only cases plus the ones
+gated on a tool that machine does not have (`tasks-axi`, the no-mistakes
+pipeline). Neither set was skipped by anything this area added.
+
+The **6 Windows failures are all outside this area**, and 18.8 establishes that
+by measurement rather than by argument.
+
+- `FmAnalyzer.Tests.ps1` x2 - `Invoke-FmAnalyzerSweep` raises
+  `The property 'Analysed' cannot be found on this object` from its own crash
+  and recovery cases. The analyzer harness, not the sweep it guards; the
+  repo-wide sweep test itself passes.
+- `FmContract.Tests.ps1` x2 - `MirrorState` reads `placeholder` and `CLAUDE.md`
+  contains the literal text `AGENTS.md`: the 9-byte placeholder a
+  `core.symlinks=false` checkout produces. This run produced it itself - the
+  refresh does `git reset --hard`, which rewrote both committed links back to
+  text after setup had repaired them.
+- `FmPaths.Tests.ps1` and `FmState.Tests.ps1` x1 each - `$id cannot be
+  retrieved`, and `Count` missing on the result of a read. Both are in the
+  foundation area.
+
+18.8 re-runs those four files at the base commit and on this branch, in a bare
+environment with the links repaired, and gets identical results.
+
+### 18.7 What only a live pane can still catch
+
+The mocked suite proves the state machine's decisions. It cannot prove the one
+thing underneath them: that this area reads herdr's real responses correctly.
+Specifically, three assumptions are modelled rather than measured -
+
+- a fresh Windows herdr shell pane answers `agent get` with `agent_not_found`,
+  which is what makes it a legal target here;
+- `pane read --source recent` over a quiet shell pane returns the same bytes
+  twice in a row, which is what "untouched" is built on;
+- `pane send-text` leaves the line visible and unsubmitted, and the following
+  `enter` runs it.
+
+Each is taken from `bin/backends/herdr.sh` and from this repo's own herdr notes
+rather than invented, and each is exactly what the blocked demonstrations in
+18.5 would have measured. Until they are, the live behaviour of this feature is
+`NOT YET VERIFIED ON WINDOWS HARDWARE` however green the suite is.
+
+### 18.8 Attributing all six, base against branch - `PROVEN (Windows 11)`
+
+The four affected files re-run twice on the laptop, at the base commit and on
+this branch, in the same bare environment: no `FM_HOME`, no
+`FM_ROOT_OVERRIDE`, and `fm-setup.ps1` re-run after each checkout so the two
+committed links are repaired rather than left as the placeholders a hard reset
+writes.
+
+```
+== BASE (origin/main) (2e60e39) ==
+total 148 passed 144 failed 4 skipped 0
+  FAIL: the sweep runner itself.gives up after the full attempt budget when every sweep crashes
+  FAIL: the sweep runner itself.recovers when a later attempt completes, and keeps that attempt s findings
+  FAIL: Get-FmTaskStatePath.composes state/<id>.<suffix>
+  FAIL: Reading.returns an empty collection of lines for a missing file
+
+== BRANCH (fm/fmwin-autolaunch) (37e3b29) ==
+total 148 passed 144 failed 4 skipped 0
+  FAIL: the sweep runner itself.gives up after the full attempt budget when every sweep crashes
+  FAIL: the sweep runner itself.recovers when a later attempt completes, and keeps that attempt s findings
+  FAIL: Get-FmTaskStatePath.composes state/<id>.<suffix>
+  FAIL: Reading.returns an empty collection of lines for a missing file
+```
+
+Identical, so:
+
+- **Four are pre-existing Windows failures** at `2e60e39`, in the analyzer
+  harness and the foundation area. This branch neither caused nor fixed them,
+  and they are reported to their owners rather than edited here.
+- **The two `FmContract` failures disappear** in both runs once the links are
+  repaired, which confirms them as an artifact of the `git reset --hard`
+  refresh and not a fault in the checkout or in this branch.
+
+One earlier guess is worth correcting rather than quietly dropping: the
+foundation pair looked like `FM_HOME` leaking out of the runner into the whole
+Pester process. It is not - they fail with the environment cleared, at the base
+commit, on their own.
