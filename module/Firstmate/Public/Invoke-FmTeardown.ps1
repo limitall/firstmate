@@ -176,33 +176,21 @@ function Invoke-FmTeardown {
             }
             & $note 'scout-report' 'passed' $report
 
-            # Two candidate names: the decision-hold area has not landed, and
-            # the two teardown ports that preceded this one each expected a
-            # different one. Accepting both means whichever it publishes works.
-            $gate = $null
-            $gateName = ''
-            foreach ($candidate in @('Test-FmDecisionHoldComplete', 'Test-FmDecisionHoldVerified')) {
-                $gate = Resolve-FmTeardownOwner -Name $candidate
-                if ($gate) { $gateName = $candidate; break }
-            }
+            $gate = Resolve-FmTeardownOwner -Name 'Test-FmDecisionHoldComplete'
             if (-not $gate) {
                 # Fail CLOSED: this gate exists to stop a scout's unresolved
                 # decisions being erased with its state. An absent owner cannot
                 # prove they are resolved, and teardown is destructive.
                 & $refuse @("REFUSED: scout task $TaskId cannot pass the unresolved-decision completion gate.",
-                    'Its owner (Test-FmDecisionHoldComplete or Test-FmDecisionHoldVerified) has not landed, so the gate did NOT run and cannot report a pass.',
+                    'Its owner (Test-FmDecisionHoldComplete) has not landed, so the gate did NOT run and cannot report a pass.',
                     'Inventory the report and any visual review through the decision-hold owner before teardown, or use --force after explicit discard approval.')
             }
-            $passed = if ($gateName -eq 'Test-FmDecisionHoldVerified') {
-                & $gate -Id $TaskId
-            } else {
-                & $gate -TaskId $TaskId -FirstmateHome $FirstmateHome
-            }
-            if (-not $passed) {
-                & $refuse @("REFUSED: scout task $TaskId has not passed the unresolved-decision completion gate.",
-                    'Inventory its report and any visual review through the decision-hold owner before teardown.')
-            }
-            & $note 'decision-hold-gate' 'passed' $gateName
+            # A VERDICT RECORD, not a boolean, and read as one on purpose: the
+            # refusal has to name the decision it refuses on, and `-not <record>`
+            # is always false, so a boolean test here would pass everything.
+            $verdict = & $gate -TaskId $TaskId -FirstmateHome $FirstmateHome
+            if ($verdict.Verdict -ne 'pass') { & $refuse $verdict.Message }
+            & $note 'decision-hold-gate' 'passed' $verdict.Detail
         } elseif ($kind -eq 'scout') {
             & $note 'scout-report' 'skipped' 'forced discard'
         }

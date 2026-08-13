@@ -314,7 +314,7 @@ No `--approved-by` overrides a live descendant of that home.
 
 A completed scout must leave a self-contained report before its scratch worktree can be discarded; read and relay its findings, record the report as the Done artifact, and re-evaluate the queue.
 A report may recommend implementation but does not authorize it.
-Before treating the investigation or any visual review as complete, load `decision-hold-lifecycle`; teardown enforces the scout report gate.
+Before treating the investigation or any visual review as complete, load `decision-hold-lifecycle`; teardown enforces both the scout report gate and the unresolved-decision gate, and the latter refuses while the backlog or the task's own status stream still carries an unresolved decision for it.
 When implementation is separately authorized, promote the existing scout through `bin/fm-promote.ps1` rather than creating a duplicate task.
 The promoted worker must inventory scratch state, return to a clean default-branch base, carry over only intended fix changes, create the ship branch, and follow the project's selected delivery path while leaving scratch commits and debug edits behind and turning a reproduced bug into the regression test.
 

@@ -87,6 +87,7 @@ BeforeAll {
     # `git` - and the git behaviour under test stays real.
     $script:RealChildProcess = ${function:Invoke-FmChildProcess}
     $script:RealInvokeGit = ${function:Invoke-FmGit}
+    $script:RealResolveOwner = ${function:Resolve-FmTeardownOwner}
 
     # A pid that is provably NOT running. 0 is not a safe choice: on Linux it
     # resolves to the kernel scheduler and reads as alive.
@@ -787,13 +788,86 @@ Describe 'Invoke-FmTeardown' {
             Should -Throw '*has no report at*'
     }
 
-    It 'REFUSES a scout when the decision-hold gate has no owner to run it' {
-        & $script:WriteMeta @{ kind = 'scout' }
-        $reportDir = Join-Path (Join-Path $script:fmHome 'data') 'alpha'
-        New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
-        Set-Content -LiteralPath (Join-Path $reportDir 'report.md') -Value '# findings'
-        { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
-            Should -Throw '*did NOT run*'
+    Context 'the unresolved-decision completion gate' {
+        # This suite dot-sources the teardown area only, so the gate's own rules
+        # are tested against real records in tests/FmDecisionHold.Tests.ps1.
+        # What belongs HERE is teardown's half of the contract: it asks the
+        # owner by name, it refuses when there is none, and it reports the
+        # owner's verdict rather than a verdict of its own.
+        BeforeEach {
+            & $script:WriteMeta @{ kind = 'scout' }
+            $reportDir = Join-Path (Join-Path $script:fmHome 'data') 'alpha'
+            New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $reportDir 'report.md') -Value '# findings'
+            # Staged at the seam, never by deleting the owner: the owner HAS
+            # landed now, and CONTRIBUTING is explicit that a degradation test
+            # which stops staging its absence stops testing the degradation.
+            Mock Resolve-FmTeardownOwner { & $script:RealResolveOwner -Name $Name }
+        }
+
+        It 'REFUSES when the gate has no owner to run it' {
+            Mock Resolve-FmTeardownOwner { $null } -ParameterFilter { $Name -eq 'Test-FmDecisionHoldComplete' }
+            { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
+                Should -Throw '*did NOT run*'
+            Test-Path -LiteralPath $script:metaPath | Should -BeTrue
+            Should -Invoke Remove-FmHerdrPane -Times 0
+        }
+
+        It 'REFUSES with the gate''s OWN message, so the refusal names the decision' {
+            Mock Resolve-FmTeardownOwner {
+                { param($TaskId, $FirstmateHome)
+                    [pscustomobject]@{
+                        Verdict = 'refuse'
+                        Message = @("REFUSED: $TaskId has an unresolved decision hold in $FirstmateHome.", '  api-shape - pick a response shape')
+                        Detail  = ''
+                    } }
+            } -ParameterFilter { $Name -eq 'Test-FmDecisionHoldComplete' }
+            { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
+                Should -Throw '*api-shape - pick a response shape*'
+            Test-Path -LiteralPath $script:metaPath | Should -BeTrue
+        }
+
+        It 'reads the VERDICT, not the truthiness of the record it gets back' {
+            # The trap this pins: every object is truthy, so `if (-not $verdict)`
+            # would pass a refusal straight through the one gate that exists to
+            # stop it.
+            Mock Resolve-FmTeardownOwner {
+                { param($TaskId, $FirstmateHome)
+                    [pscustomobject]@{
+                        Verdict = 'refuse'
+                        Message = @("REFUSED: $TaskId is still held, and $FirstmateHome is where that was read")
+                        Detail  = ''
+                    } }
+            } -ParameterFilter { $Name -eq 'Test-FmDecisionHoldComplete' }
+            { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
+                Should -Throw '*alpha is still held*'
+        }
+
+        It 'passes, and records what the gate actually read' {
+            # The stub echoes BOTH parameters teardown binds by name, so this
+            # also pins that it passes the pair the owner actually declares -
+            # the mismatch that makes a by-name caller degrade in silence.
+            Mock Resolve-FmTeardownOwner {
+                { param($TaskId, $FirstmateHome)
+                    [pscustomobject]@{ Verdict = 'pass'; Message = @(); Detail = "nothing open for $TaskId in $FirstmateHome" } }
+            } -ParameterFilter { $Name -eq 'Test-FmDecisionHoldComplete' }
+            $result = Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false
+            $result.Outcome | Should -Be 'complete'
+            $step = $result.Steps | Where-Object { $_.Step -eq 'decision-hold-gate' }
+            $step.Outcome | Should -Be 'passed'
+            $step.Detail | Should -Be "nothing open for alpha in $script:fmHome"
+        }
+
+        It 'is skipped by -Force, which still requires an authority' {
+            Mock Resolve-FmTeardownOwner { $null } -ParameterFilter { $Name -eq 'Test-FmDecisionHoldComplete' }
+            { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Force -Confirm:$false } |
+                Should -Throw '*requires -DiscardApprovedBy*'
+            $result = Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Force `
+                -DiscardApprovedBy 'captain' -Confirm:$false
+            $result.Outcome | Should -Be 'complete'
+            ($result.Steps | Where-Object { $_.Step -eq 'scout-report' }).Outcome | Should -Be 'skipped'
+            @($result.Steps | Where-Object { $_.Step -eq 'decision-hold-gate' }).Count | Should -Be 0
+        }
     }
 
     It 'REFUSES a backend this port does not drive' {

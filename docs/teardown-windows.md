@@ -37,8 +37,8 @@ record intact so a plain rerun is always safe.
 2. **Scout gate** - `kind=scout` declares the worktree scratch, so the report at
    `data/<id>/report.md` IS the work product. No report, no teardown. The
    unresolved-decision completion gate then runs through its owner
-   (`Test-FmDecisionHoldComplete`); an absent owner refuses, because a gate that
-   did not run cannot report a pass.
+   (`Test-FmDecisionHoldComplete`, below); an absent owner refuses, because a
+   gate that did not run cannot report a pass.
 3. **The landed-work test** - see below. The single most important thing here.
 4. **Process custody** - close the pane, terminate the task's job object, refuse
    on any survivor.
@@ -94,6 +94,53 @@ A `lock-blocked` verdict never becomes a pass by itself: the lock is cleared
 only if it is provably stale, and then the whole test runs again. The same
 re-run happens inside the pool return, so a lock discovered late cannot skip
 the test either.
+
+## The unresolved-decision completion gate
+
+`Test-FmDecisionHoldComplete` (`Private/FmDecisionHold.ps1`) is the read side of
+the policy `.agents/skills/decision-hold-lifecycle/SKILL.md` owns, and the skill
+stays the owner of that policy: this answers only the mechanical question of
+whether this home's durable records STILL carry an unresolved decision against
+one task. The semantic inventory is the agent's attestation, because no script
+can infer a decision from report prose or a visual review.
+
+Teardown is why the question is worth asking. Discarding a scout erases the task
+`bin/fm-promote.ps1` promotes in place once the captain authorises the work an
+investigation recommended (`AGENTS.md` section 7), so tearing one down while its
+decision is unanswered destroys what the answer would act on.
+
+There is no `fm-decision-hold` command here (`AGENTS.md` section 14) and no hold
+store, so the gate reads the two records that exist:
+
+- `state/<id>.status`, folded by the classifier that owns the rule:
+  `needs-decision`/`blocked` opens a keyed decision and only
+  `resolved`/`captain-held` carrying that exact key closes it
+  (`docs/lifecycle.md`). An open key is a decision that was raised and routed
+  nowhere.
+- this home's backlog, where the skill requires every unresolved captain
+  decision to become a durable held item. A hold counts when it is ACTIVE
+  (`Test-FmBacklogHoldActive`) and its kind is `captain` or absent;
+  `external`/`load`/`parked`/`future` are declared dispatch holds, not decisions.
+
+| Attribution the backlog itself states | Example |
+| --- | --- |
+| the held item IS the task's own item | `- [ ] <id> - ... (hold: ...) (hold-kind: captain)` |
+| the task's item is blocked by the held item | `blocked-by: <key>` on `<id>` |
+| the held item was discovered by the task | `discovered-from: <id>` on `<key>` |
+| the held item names the task's report | `data/<id>/report.md` in the held item's title |
+
+Nothing is inferred from prose, and every other hold in the backlog belongs to
+somebody else's work. That is also what keeps the skill's rule intact that a
+hold outlives the investigation that filed it: the gate reads, and never closes
+one - not even under `--force`, which skips the gate rather than resolving it.
+
+It returns a verdict record (`Verdict` / `Message` / `Detail`), not a boolean,
+for the same reason `Test-FmTeardownWorktreeSafety` does: the refusal has to
+name the decision. A caller must read `.Verdict`, because coercing any record to
+a boolean is always true and would pass everything. It refuses just as loudly
+when it cannot READ a record - an unparseable backlog, a status file that is not
+an ordinary file, a home that is not there - because a gate that answered "pass"
+on a file it failed to open is worse than the refusal it replaced.
 
 ## `--force` requires explicit authority
 
@@ -273,7 +320,7 @@ is reported as a step that did NOT run, never as one that passed.
 
 | Expected function | Replaces | Direction when absent |
 | --- | --- | --- |
-| `Test-FmDecisionHoldComplete -TaskId -FirstmateHome`, or `Test-FmDecisionHoldVerified -Id` (either name is accepted) | `bin/fm-decision-hold.sh verify` | REFUSE (fail closed - destructive step) |
+| `Test-FmDecisionHoldComplete -TaskId -FirstmateHome` (landed) | `bin/fm-decision-hold.sh verify` | REFUSE (fail closed - destructive step) |
 | `Invoke-FmNoMistakes`, `Get-FmNmField`, `Test-FmNmHeadMatchesWorktree` (crew-state area) | `bin/fm-nm-run-lib.sh` | the run-conclusion step reports nothing-to-do; the local fallback parse still attributes correctly |
 | `Test-FmLifecycleRegularFile`, `Test-FmLifecycleRegularDirectory` (lifecycle area) | the bash path-safety tests | a local copy of the same predicate is used |
 | `Test-FmSessionTasksAxiBackendAvailable -ConfigDir` (landed) | `fm_tasks_axi_backend_available` | fall back to the manual backlog reminder |

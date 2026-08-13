@@ -37,6 +37,9 @@ Use `bin/fm-backlog.ps1`; its header and `-h` output own the exact grammar:
 Because no script attests the inventory here, the completion attestation is yours: before declaring the investigation or review complete, state in the same turn either the full list of keys you filed or that the reviewed surface contained no unresolved captain decision.
 Do not declare completion and then go looking.
 
+Teardown enforces the READ side of this policy and nothing more: `Test-FmDecisionHoldComplete` refuses to discard a scout while its status stream carries a decision no `resolved`/`captain-held` line closed, or while the backlog carries an active captain hold it attributes to that task, and `docs/teardown-windows.md` owns the exact rules and the attribution edges.
+It never closes a hold, so the obligation above is unchanged by any teardown.
+
 ## Operating sequence
 
 1. Read the complete investigation result and complete the visual review before declaring either complete.

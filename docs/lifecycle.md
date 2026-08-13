@@ -51,7 +51,7 @@ honestly when it is absent:
 | --- | --- |
 | `Stop-FmBackendEndpoint` | warns and continues - the endpoint close is best effort in the original too |
 | `Get-FmBackendBusyVerdict` | `Get-FmCrewState` reports `unknown`, never `working`: absorb-only-when-provably-working means a missing reader must surface the wake |
-| `Test-FmDecisionHoldVerified` | scout teardown refuses; see `docs/teardown-windows.md` |
+| `Test-FmDecisionHoldComplete` (landed) | scout teardown refuses; see `docs/teardown-windows.md` |
 | `Test-FmTasksAxiCompatible` | the backlog reminder falls back to whether `tasks-axi` is on PATH |
 
 ## Classification
