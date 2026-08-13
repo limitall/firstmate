@@ -3273,7 +3273,13 @@ Run on 2026-08-14, PowerShell 7.6.4 on Windows 11 Pro 10.0.26200, in a
 disposable treehouse worktree of this repo on branch `fm/hold-gate`. Every
 command below is the real entry point against a real home; nothing is mocked.
 
-### 21.1 The refusal, reproduced first - at `9464471`, before the change
+The branch was cut from `9464471`, which `main` had already reconciled into
+`2f24ea0` by the time this finished, so everything below was measured twice:
+first at the branch point, then again after rebasing onto `2f24ea0` - where the
+backlog area this gate reads through had itself changed. Both demonstrations
+agree, and the second is the one that describes the tree being merged.
+
+### 21.1 The refusal, reproduced first - at the branch point, before the change
 
 A home carrying a finished scout: `data/demo-1/report.md`, a `state/demo-1.meta`
 recording `kind=scout` and `backend=herdr`, and a status stream ending `done:`.
@@ -3300,7 +3306,11 @@ Backlog: demo-1 just finished. Run tasks-axi done demo-1 --report data/demo-1/re
 EXIT=0
 ```
 
-No `--force`, and the two steps that could not run still say so.
+No `--force`, and the two steps that could not run still say so. Re-run
+unchanged after the rebase onto `2f24ea0`, which matters here rather than being
+box-ticking: `main` had reconciled the backlog resolver this gate reads through,
+including a migration that moves a pre-fix root-level backlog. Same pass, and
+the hold refusal in 21.3 re-runs identically too.
 
 ### 21.3 The three refusals, each through the same entry point
 
@@ -3348,12 +3358,30 @@ the task, never the captain's decision.
 
 ### 21.5 Suite and analyzer
 
-`Invoke-Pester -Path ./tests` on this branch, in that worktree, twice:
+`Invoke-Pester -Path ./tests` on this branch, in that worktree. Twice at the
+branch point, and twice more after the rebase onto `2f24ea0`, where the tree is
+`ad890ea` plus this section's own prose:
 
 ```
-first run   Tests Passed: 1533, Failed: 2, Skipped: 25   (1205s)
-second run  Tests Passed: 1535, Failed: 0, Skipped: 25   (1147s)
+branch point, run 1   Tests Passed: 1533, Failed: 2, Skipped: 25   (1205s)
+branch point, run 2   Tests Passed: 1535, Failed: 0, Skipped: 25   (1147s)
+rebased, run 1        Tests Passed: 1611, Failed: 1, Skipped: 25   (1087s)
+rebased, run 2        Tests Passed: 1612, Failed: 0, Skipped: 25
 ```
+
+The rebased runs are 76 tests larger because `main` gained 13 commits in the
+meantime; both were run with the two committed links materialized first, which
+is the protocol 18.8 established.
+
+The one failure in the third run was `bin/fm-teardown.ps1.exits 1 and preserves
+the task when work has not landed`, expecting exit 1 and getting **-1** - a
+child `pwsh` that did not run to completion, not a refusal that came out wrong.
+It is a ship task, so it never reaches this change's gate at all; the file
+passes on its own (15/15) and the failure is absent from the fourth run. Recorded
+rather than dismissed, because an intermittent failure in this repo has twice
+turned out to be a real race - what argues against that here is the -1 itself,
+which is the process never producing an exit code rather than producing a wrong
+one.
 
 The analyzer sweep inside it (`FmAnalyzer.Tests.ps1`, 12 tests) is green in
 both, so the repo-wide bar of zero findings at every severity holds with the new
@@ -3390,6 +3418,12 @@ before `FmInstall.Tests.ps1`, so the first run read the placeholders and failed,
 the install suite then repaired them mid-run, and the second run found a healthy
 surface and passed. The suite fixed its own two failures by mutating the
 repository, which is a worse outcome than the failures were.
+
+This also completes 18.6 and 18.8, which met the same two `FmContract` failures
+and settled them by running `fm-setup.ps1` before Pester. That is the right
+remedy and their measurement stands; what was missing is that the suite performs
+that repair itself, on the checkout it is running in, whether or not anybody
+asked it to.
 
 The consequence is the one this port cares about most: a crewmate that merely
 ran the test suite leaves uncommitted changes to tracked files, and its worktree

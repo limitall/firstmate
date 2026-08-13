@@ -274,6 +274,14 @@ function Test-FmDecisionHoldComplete {
     }
 
     # 2. This home's backlog.
+    #
+    # Through the backlog area's own resolver, never a local join: an explicit
+    # -Path, TASKS_AXI_FILE and a .tasks.toml pin all outrank the default, and a
+    # gate that read the default while the holds were filed in the pinned file
+    # would fail OPEN, which is the one direction it must not fail. Resolving
+    # also reconciles a pre-fix root-level backlog into the canonical location -
+    # that repair is the resolver's, guaranteed to every reader; this gate itself
+    # writes nothing and never closes a hold.
     $path = $BacklogPath
     if ([string]::IsNullOrEmpty($path)) {
         try {

@@ -121,6 +121,9 @@ store, so the gate reads the two records that exist:
   decision to become a durable held item. A hold counts when it is ACTIVE
   (`Test-FmBacklogHoldActive`) and its kind is `captain` or absent;
   `external`/`load`/`parked`/`future` are declared dispatch holds, not decisions.
+  Which file that is comes from `Get-FmBacklogConfig`, so a `.tasks.toml` pin or
+  `TASKS_AXI_FILE` is honoured - reading the default while the holds were filed
+  in the pinned file would fail OPEN, the one direction this gate must not fail.
 
 | Attribution the backlog itself states | Example |
 | --- | --- |
