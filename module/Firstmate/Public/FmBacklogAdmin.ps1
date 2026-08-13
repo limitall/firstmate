@@ -128,7 +128,13 @@ function Repair-FmBacklogLocation {
 # Resolve the effective backlog configuration for a home: which file, which
 # archive, and how many Done rows to keep. Precedence matches tasks-axi:
 # explicit -File, then TASKS_AXI_FILE, then the project .tasks.toml, then the
-# home ~/.tasks-axi/config.toml, then the first existing default candidate.
+# home ~/.tasks-axi/config.toml, then Get-FmBacklogPath.
+#
+# This is the single seam every read and every mutation goes through to find the
+# file, which is why the legacy reconciliation is called from here rather than
+# left to callers - the split it repairs was caused by more than one place
+# answering this question. It is the one thing here that can write, and it does
+# so only to move a file into the location every reader already uses.
 function Get-FmBacklogConfig {
     [CmdletBinding()]
     [OutputType([pscustomobject])]

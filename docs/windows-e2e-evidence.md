@@ -2628,8 +2628,7 @@ proving on the platform this port exists for. Two clones on the laptop - one at
 to back:
 
 ```
-================ BEFORE-THE-FIX ================
-commit:   326f7af Name the commit each suite run was measured at
+================ BEFORE-THE-FIX =========commit:   326f7af Name the commit each suite run was measured at
 <<RESULT>> action=submitted submitted=True
 <<REASON>> started 'echo FIRSTMATE-COMMAND' after 6s untouched - the pane took the command
 --- AFTER ---
@@ -2730,3 +2729,90 @@ One thing worth naming so a later reader does not misread it: that checkout
 writes that landed *after* this run had finished and cleaned up. That is another
 lane working in the captain's checkout concurrently, not this one. Timestamps
 there are not evidence about this task either way.
+=======
+
+---
+
+## 19. The backlog wrote one file and read another - `PROVEN (Windows 11)`
+
+The captain hit this in a real session on the laptop: a work item was added, and
+the next session start reported the queue absent. The tracked suite was green
+throughout, because every test that touched the backlog passed the file path in.
+
+### 19.1 The defect, reproduced on the laptop at `2e60e39`, BEFORE the fix
+
+A scratch home under `C:\Users\ADMIN`, `config\backlog-backend = manual`, one
+`bin\fm-backlog.ps1 add`, then `bin\fm-session-start.ps1`:
+
+```
+=== 1. add a work item to a fresh home ===
+add fmwin-demo -> queued
+=== 2. what is on disk under the home ===
+backlog.md
+config\backlog-backend
+=== 3. the session-start digest's backlog section ===
+ABSENT
+```
+
+The command confirmed the item. It went to `<home>\backlog.md`. The digest reads
+`<home>\data\backlog.md` and reported ABSENT. Nothing failed and nothing warned;
+the captain's task queue was invisible to every reader.
+
+### 19.2 After the fix, same script, same machine
+
+```
+=== 1. add a work item to a fresh home ===
+add fmwin-demo -> queued
+=== 2. what is on disk under the home ===
+config\backlog-backend
+data\backlog.md
+=== 3. the session-start digest's backlog section ===
+compact backlog listing (manual backend; done rows omitted; every in-flight, held, and blocked title line kept; other queued bounded to 20; indented task bodies omitted)
+## Queued
+- [ ] fmwin-demo - Ship the morning brief (since 2026-08-13)
+```
+
+### 19.3 The captain's own home was NOT in the split state
+
+Inspected, never written:
+
+```
+C:\Users\ADMIN\firstmate-win        no backlog.md at the root
+C:\Users\ADMIN\firstmate-win\data   0 File(s)
+```
+
+So the migration path had nothing to collect there. It still ships, because any
+home that ran `add` on the old code does have items in the wrong file, and
+losing them to the fix would repeat the bug the fix is for. All destructive
+testing used scratch homes under `C:\Users\ADMIN`.
+
+### 19.4 The two project-memory tests, on a machine WITHOUT Developer Mode
+
+Developer Mode is off on the laptop - `HKLM\...\AppModelUnlock` does not exist.
+What let the earlier runs create symlinks is that the SSH session is elevated, so
+its token holds `SeCreateSymbolicLinkPrivilege`. Removing that one privilege from
+the process token reproduces the captain's stock shell exactly, and the run says
+so rather than assuming it:
+
+```
+remaining SeCreateSymbolicLinkPrivilege: 0 (0 = removed)
+symlink now refused, exactly as a stock non-elevated shell does: Administrator privilege required for this operation.
+fallback produced: hardlink (no LinkTarget)
+```
+
+Same file, same machine, same removed privilege, at both commits:
+
+```
+BEFORE 2e60e39   T=36 P=28 F=2 S=6
+  FAILED: Set-FmAgentsMemory in an empty worktree.creates AGENTS.md ... and links CLAUDE.md to it
+  FAILED: Set-FmAgentsMemory promoting a lone CLAUDE.md.moves it to AGENTS.md ... and links CLAUDE.md back
+AFTER  fm/fmwin-backlogpath   T=36 P=30 F=0 S=6
+```
+
+The six SKIPPED are unchanged and are the fixture-privilege ones section 12
+already gated. These two were the leftover half: their subject is what
+`Set-FmAgentsMemory` produces, not whether a fixture can be built, so skipping
+them would have stopped checking the command on exactly the machine it has to
+work on. They now assert that both names resolve to the same content, by reading
+through both - which is true of a symlink, a hardlink and a copy alike. Section
+12's "a non-elevated Windows run is the outstanding confirmation" is now closed.
