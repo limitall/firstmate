@@ -1967,6 +1967,23 @@ Session lock 6, Stale-holder recovery 5, `Get-FmHarnessAncestry` 4,
 `FmIdentity`, `FmLock`, `FmState` - are three of the only four test files that
 import the module in-process at all.
 
+### Reproduced independently, on the laptop, elevated
+
+The same pair re-run from the same two clones, in one elevated session
+(`CONTEXT elevated=True`), reproduced it exactly:
+
+```
+BASE   99a0e96  1452 total  1436 passed   0 failed  16 skipped
+BRANCH 59d0f8e  1516 total  1460 passed  40 failed  16 skipped
+
+  12  Retry discipline          6  Session lock          4  Get-FmHarnessAncestry
+  12  Harness name matching     5  Stale-holder recovery  1  Test-FmProcessAlive
+```
+
+This clone reported 0 baseline failures rather than 2 - the shared pair is a
+fresh-clone artifact of a checkout setup has not run in, section 7 - so the
+delta measured here is exactly 40, the same 40, in the same six groups.
+
 ### The experiment that settles it
 
 Reverse the order. Same two clones, same one process, nothing else changed:
@@ -2023,3 +2040,103 @@ Nothing, if they use the helper. The rule is one line: **a test that uses
 it. The deeper rule is the one worth carrying: a green suite proves nothing
 about a comparison harness, and a failure that clusters in the area you just
 edited is a hypothesis, not a finding.
+
+---
+
+## 15. Two lock-entry-point defects the sweep's own test found - `PROVEN`
+
+The brief's warning was that giving an absent by-name owner a body can satisfy
+the name and miss the behaviour. It did, twice, in `bin/fm-lock.ps1` - and the
+reason both shipped is simpler than anything subtle: **the entry point had no
+test at all.** `grep -rn "fm-lock.ps1" tests/` returned nothing.
+
+### 15.1 `status` swallowed its own output
+
+Without `-PassThru` the command's only product IS the status line. The entry
+point wrote `$null = Invoke-FmLock -Status`, so:
+
+```
+$ pwsh -File bin/fm-lock.ps1 status        $ bash bin/fm-lock.sh status
+EXIT=0                                     lock: free
+                                           EXIT=0
+```
+
+A status command that reports no status, and exits 0 while doing it.
+
+### 15.2 Acquisition reported read-only on the path that had just succeeded
+
+`-PassThru` returned the human line **and** the result object, so `$result` was
+a two-element array and `$result.Acquired` threw under strict mode:
+
+```
+ParentContainsErrorRecordException: bin/fm-lock.ps1:47
+  47 |  if ($result -and $result.Acquired) { exit 0 }
+     |  The property 'Acquired' cannot be found on this object.
+EXIT=1
+```
+
+Exit 1 means "operate read-only until resolved" - while the lock file the same
+run had just written said the session owned it. A session would have believed it
+held nothing while holding everything. That is worse than either honest outcome,
+and it is the precise failure this whole task exists to end.
+
+Note what this does NOT mean: the digest's lock stage never went through this
+entry point, so section 10.1's acquisition stands. The standalone command was
+broken; the session path was not.
+
+### The fix and the contract it restores
+
+`-PassThru` returns the object INSTEAD OF the line, never both. The refusal goes
+to the error stream either way, because "operate read-only until resolved" is a
+diagnostic every caller needs. The entry point prints the line. Output is now
+byte-identical to `bin/fm-lock.sh`:
+
+```
+free    lock: free
+held    lock: held by live harness pid 2586502
+stale   lock: stale (pid 2147483600 dead or not a harness)
+acquire lock acquired: harness pid 2586502          exit 0
+```
+
+Five tests now cover it. The last one asserts the invariant that actually broke -
+**the exit code, the printed line and the lock file on disk agree** - without
+asserting whether this particular host has a harness in its ancestry, which is
+not the point and differs per machine.
+
+---
+
+## 16. The four whole-suite failures that were open, now settled - `PROVEN`
+
+An earlier section left four Linux whole-suite failures unattributed. Both
+commits were run to completion and the answer is unambiguous - identical lists:
+
+```
+BASE   99a0e96  1452 total  1443 passed  4 failed  5 skipped
+BRANCH 59d0f8e  1516 total  1507 passed  4 failed  5 skipped
+
+  the sweep runner itself.gives up after the full attempt budget when every sweep crashes
+  the sweep runner itself.recovers when a later attempt completes, and keeps that attempt s findings
+  Get-FmTaskStatePath.composes state/<id>.<suffix>
+  Reading.returns an empty collection of lines for a missing file
+```
+
+Same four, same names, at both commits. They are **pre-existing whole-suite
+cross-file interference** and this branch did not introduce them. Each passes
+when its own file runs alone, which is the signature of that class and matches
+the `FM_BACKEND` leak already recorded further up this file. They remain open as
+a separate defect; what is closed is the question of whose they are.
+
+---
+
+## 17. Findings left open for their owners
+
+- **`bin/fm-control.ps1` has no test at all.** Nothing under `tests/` references
+  it; `FmLifecycleCli.Tests.ps1` drives `fm-brief.ps1` and its siblings but not
+  this one. It is the entry point section 10.5 uses to stop a worker, and the
+  two defects in section 15 are exactly what an untested entry point looks like.
+  It belongs to the lifecycle area, not this one, so it is reported rather than
+  edited here - a second lane rewriting that file would collide.
+- **Four whole-suite Linux failures remain** (section 16). Established as
+  pre-existing at `99a0e96`, unattributed as to which file leaks into them.
+- **`gh` is absent on the laptop**, so `direct-PR` cannot complete there. An
+  install, not a code defect (section 13).
