@@ -485,7 +485,7 @@ Describe 'cross-area bindings' {
 
                     $assigns = @()
                     foreach ($m in [regex]::Matches($text,
-                            '\$(?<var>\w+)\s*=\s*Resolve-Fm\w*Command\s+-Name\s+(?<names>(''[^'']+''\s*,?\s*)+)')) {
+                            '\$(?<var>\w+)\s*=\s*Resolve-Fm\w*(?:Command|Owner)\s+-Name\s+(?<names>(''[^'']+''\s*,?\s*)+)')) {
                         $line = ($text.Substring(0, $m.Index) -split "`n").Count
                         $names = @([regex]::Matches($m.Groups['names'].Value, "'([^']+)'") |
                                 ForEach-Object { $_.Groups[1].Value })
@@ -523,14 +523,21 @@ Describe 'cross-area bindings' {
 
         # Every LITERAL by-name target in the tree, whatever mechanism binds it.
         # Four are in use and each one is a live hazard, so all four are read:
-        #   Resolve-Fm*Command -Name 'X'         (the session/bootstrap seam)
+        #   Resolve-Fm*Command / Resolve-Fm*Owner -Name 'X'
+        #                                        (the session/bootstrap and
+        #                                         teardown seams)
         #   Invoke-FmSeam / Test-FmSeam -Name 'X' (the watcher seam)
         #   -CommandName 'X' / @('X', 'Y')       (the composed-step helpers)
         #   Get-Command -Name X-FmY              (the direct probe)
+        #
+        # ...Owner was added after a gate shipped bound to two owner names that
+        # nothing defined: teardown resolves through Resolve-FmTeardownOwner, so
+        # every one of its by-name targets was invisible here - neither checked
+        # against the tree nor forced into the registry below.
         function Get-FmByNameTarget {
             $found = [System.Collections.Generic.List[object]]::new()
             $patterns = @(
-                "Resolve-Fm\w*Command\s+-Name\s+(?<names>('[^']+'\s*,?\s*)+)"
+                "Resolve-Fm\w*(?:Command|Owner)\s+-Name\s+(?<names>('[^']+'\s*,?\s*)+)"
                 "Invoke-FmSeam\s+-Name\s+(?<names>'[^']+')"
                 "Test-FmSeam\s+-Name\s+(?<names>'[^']+')"
                 "-CommandName\s+(?<names>@\(\s*('[^']+'\s*,?\s*)+\)|'[^']+')"
