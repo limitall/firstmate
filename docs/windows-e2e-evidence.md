@@ -2179,6 +2179,9 @@ a separate defect; what is closed is the question of whose they are.
   diagnosed and fixed (section 21.8); the other three are not.
 - **`gh` is absent on the laptop**, so `direct-PR` cannot complete there. An
   install, not a code defect (section 13).
+- **`tests/FmInstall.Tests.ps1` repairs the checkout it runs in** (section 21.6),
+  which dirties a fresh Windows worktree mid-suite and leaves it needing
+  `--force` to tear down. The install area's file, so it is reported here.
 - **Four Windows-only test failures are open at `2e60e39`** and are nobody's
   regression (18.8 measures them at the base commit): two in
   `tests/FmAnalyzer.Tests.ps1`, where `Invoke-FmAnalyzerSweep`'s own crash and
@@ -3264,3 +3267,132 @@ Both were found by running the thing, not by reading it.
    The other three of section 16's four were NOT diagnosed by this work.
 
 ---
+## 21. The unresolved-decision completion gate, on the captain's Windows 11 machine - `PROVEN (Windows 11)`
+
+Run on 2026-08-14, PowerShell 7.6.4 on Windows 11 Pro 10.0.26200, in a
+disposable treehouse worktree of this repo on branch `fm/hold-gate`. Every
+command below is the real entry point against a real home; nothing is mocked.
+
+### 21.1 The refusal, reproduced first - at `9464471`, before the change
+
+A home carrying a finished scout: `data/demo-1/report.md`, a `state/demo-1.meta`
+recording `kind=scout` and `backend=herdr`, and a status stream ending `done:`.
+
+```
+$ $env:FM_HOME = <scratch home>; ./bin/fm-teardown.ps1 demo-1
+REFUSED: scout task demo-1 cannot pass the unresolved-decision completion gate.
+Its owner (Test-FmDecisionHoldComplete or Test-FmDecisionHoldVerified) has not landed, so the gate did NOT run and cannot report a pass.
+Inventory the report and any visual review through the decision-hold owner before teardown, or use --force after explicit discard approval.
+EXIT=1
+```
+
+That is every completed investigation on this port, and the only way past it was
+the flag that discards work.
+
+### 21.2 The same task, after the owner landed
+
+```
+$ ./bin/fm-teardown.ps1 demo-1
+teardown: step process-custody did NOT run [did-not-run]: no custody job named Local\firstmate-task-demo-1 (win32 error 2); ...
+teardown: step worktree-return did NOT run [did-not-run]: no worktree on disk
+teardown demo-1 complete (window default:pane-1, worktree ...\repro-wt)
+Backlog: demo-1 just finished. Run tasks-axi done demo-1 --report data/demo-1/report.md, ...
+EXIT=0
+```
+
+No `--force`, and the two steps that could not run still say so.
+
+### 21.3 The three refusals, each through the same entry point
+
+An unresolved decision hold in the backlog, attributed by `discovered-from`:
+
+```
+REFUSED: task demo-1 has an unresolved decision hold in this home's backlog.
+  api-shape - captain must choose flat or nested responses (hold: choose the response shape) [hold-kind: captain] - it carries discovered-from: demo-1
+That decision is still the captain's to answer, and demo-1 is what bin/fm-promote.ps1 promotes once it is answered - tearing it down now discards what the answer would act on.
+Record the captain's answer and close the hold, or use --force after explicit discard approval.
+EXIT=1
+```
+
+A decision the task opened in its own status stream and never closed:
+
+```
+REFUSED: task demo-1 still has an unresolved decision recorded in its own status stream.
+  [key=api-shape] needs-decision: flat or nested response shape
+...\state\demo-1.status opened it and no resolved/captain-held line carrying the same key ever closed it.
+EXIT=1
+```
+
+No report - the separate gate, with its own message, unweakened:
+
+```
+REFUSED: scout task demo-1 has no report at ...\data\demo-1\report.md.
+The report is the work product. Have the crewmate write it, or use --force after explicit discard approval.
+EXIT=1
+```
+
+### 21.4 `--force` is unchanged
+
+```
+$ ./bin/fm-teardown.ps1 demo-1 --force
+fm-teardown: --force discards work that has not landed, so it requires --approved-by "<who approved it>"
+EXIT=2
+
+$ ./bin/fm-teardown.ps1 demo-1 --force --approved-by "captain, 2026-08-14"
+teardown demo-1 complete ...
+EXIT=0
+```
+
+The held item is still in the backlog afterwards, unclosed: teardown discards
+the task, never the captain's decision.
+
+### 21.5 Suite and analyzer
+
+`Invoke-Pester -Path ./tests` on this branch, in that worktree, twice:
+
+```
+first run   Tests Passed: 1533, Failed: 2, Skipped: 25   (1205s)
+second run  Tests Passed: 1535, Failed: 0, Skipped: 25   (1147s)
+```
+
+The analyzer sweep inside it (`FmAnalyzer.Tests.ps1`, 12 tests) is green in
+both, so the repo-wide bar of zero findings at every severity holds with the new
+area in it. The 25 skips are the pre-existing symlink-privilege ones: this
+session does not hold `SeCreateSymbolicLinkPrivilege`, so those fixtures cannot
+be built.
+
+**The first run's two failures are the fresh-worktree clone artifact, not this
+change**, and the second run is what proves it. They were `this checkout's own
+instruction surface.is healthy` and `.keeps the contract reachable under both
+names it is read by`. Git materialized this worktree with
+`core.symlinks=false`, so `CLAUDE.md` was the 9-byte placeholder and
+`.claude/skills` the 17-byte one that `CONTRIBUTING.md` already documents. Both
+files were byte-identical to the base commit (`git diff 9464471 -- CLAUDE.md
+.claude` empty), the captain's primary checkout has the real link and the real
+junction, and the second run passed both without any change to the tree except
+the one 18.6 describes.
+
+### 21.6 A finding for the install area's owner
+
+`tests/FmInstall.Tests.ps1` runs the real `bin/fm-setup.ps1` as a child process
+with `-RepoRoot $script:RepoRoot`, which is **the checkout the suite is running
+in**. Setup repairs the instruction surface of the root it is given, so in a
+checkout whose links are already materialized - the captain's own - it is a
+silent no-op and nobody has ever seen it. In a fresh Windows worktree it is not:
+the run rewrote this worktree's `CLAUDE.md` from the 9-byte placeholder into a
+51,707-byte hardlink of `AGENTS.md` and replaced the `.claude/skills`
+placeholder with a symlink, mid-suite, and `git status` went from clean to two
+modified tracked files.
+
+Observed here at 01:21 and 01:30 while `FmInstall.Tests.ps1` was the file under
+way. That is also the whole explanation of 21.5: `FmContract.Tests.ps1` sorts
+before `FmInstall.Tests.ps1`, so the first run read the placeholders and failed,
+the install suite then repaired them mid-run, and the second run found a healthy
+surface and passed. The suite fixed its own two failures by mutating the
+repository, which is a worse outcome than the failures were.
+
+The consequence is the one this port cares about most: a crewmate that merely
+ran the test suite leaves uncommitted changes to tracked files, and its worktree
+can then only be torn down with `--force`. Reported rather than fixed here,
+because it belongs to the install area and rewriting another area's suite from
+this lane would collide with it.

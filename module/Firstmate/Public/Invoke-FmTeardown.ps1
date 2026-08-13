@@ -23,7 +23,9 @@ fact. In order:
                          way in ITS OWN backlog and state records, and that
                          nothing in it is unlanded - all before any step runs,
   2. the scout gate    - a scout's worktree is scratch; its report IS the work
-                         product, so teardown refuses without one,
+                         product, so teardown refuses without one, and then
+                         Test-FmDecisionHoldComplete must report that nothing
+                         unresolved is still recorded against the task,
   3. the landed-work   - dirty / unpushed-and-unlanded / (local-only) unmerged.
      test                Uncommitted changes are NEVER landed. A git command
                          that cannot run is not a pass: when a git lock explains
