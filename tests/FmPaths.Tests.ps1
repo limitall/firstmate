@@ -189,6 +189,11 @@ Describe 'Get-FmBacklogPath' {
     # recomputed twice, the two answers differed, and work items were lost in the
     # gap; tests/FmBacklog.Tests.ps1 pins the behaviour that followed from that.
 
+    BeforeEach {
+        foreach ($name in $script:EnvNames) { [System.Environment]::SetEnvironmentVariable($name, $null) }
+        $env:FM_HOME = $script:TempRoot
+    }
+
     It 'is data/backlog.md under the resolved home' {
         Get-FmBacklogPath | Should -Be (Get-FmDataPath -Name 'backlog.md')
         Get-FmBacklogPath | Should -Be (Join-Path $script:TempRoot 'data' 'backlog.md')
