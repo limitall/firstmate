@@ -13,7 +13,7 @@
     The task id.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 
 .PARAMETER Date
     The date to stamp when one is needed. Defaults to today.
@@ -50,7 +50,7 @@ function Start-FmBacklogTask {
     The task id.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 
 .PARAMETER Date
     The date to stamp when one is needed. Defaults to today.

@@ -19,10 +19,58 @@ Public functions: `Get-FmBacklog`, `Get-FmBacklogTask`, `Get-FmBacklogReady`,
 `Get-FmBacklogHeld`, `Get-FmBacklogBlocked`, `Add-FmBacklogTask`,
 `Start-FmBacklogTask`, `Reset-FmBacklogTask`, `Complete-FmBacklogTask`,
 `Block-FmBacklogTask`, `Unblock-FmBacklogTask`, `Set-FmBacklogHold`,
-`Clear-FmBacklogHold`.
+`Clear-FmBacklogHold`, `Repair-FmBacklogLocation`.
 
 Exit codes are the repo's: 0 success, 1 refusal or failure, 2 usage. Refusals go
 to stderr as a plain line.
+
+## Where the backlog is, and why that is one function
+
+`data/backlog.md` under the home, and `Get-FmBacklogPath` in the foundation is
+the only thing that says so. That is what the Linux firstmate's tracked
+`.tasks.toml` pins, what its `docs/configuration.md` documents, and what
+`AGENTS.md` section 2 lists in the home layout.
+
+**It was two answers, and they disagreed.** `Get-FmBacklogConfig` used to fall
+back to a probe - `<home>/backlog.md` if it exists, else `<home>/data/backlog.md`,
+else create `<home>/backlog.md` - while the session-start digest joined
+`data/backlog.md` for itself. In a fresh home neither file existed, so `add`
+created the root one, the probe kept preferring it, and the two never reconciled.
+The captain added a work item, firstmate confirmed it, and startup reported the
+queue ABSENT. Nothing failed; the task queue was silently lost. Both callers now
+go through the one function, and `tests/FmBacklog.Tests.ps1` adds an item through
+the command and reads it back through the path startup computes.
+
+An explicit `-Path`, `TASKS_AXI_FILE`, or a `.tasks.toml` pin still wins, because
+that precedence is `tasks-axi`'s and a home shared with a Linux firstmate has to
+resolve the file both tools do. What changed is only the default.
+
+**A pre-fix root backlog is migrated, not orphaned.** `Repair-FmBacklogLocation`
+runs whenever resolution lands on the canonical location, and moves
+`<home>/backlog.md` - and its `done-archive.md`, which was its sibling - into
+`data/`. Migrating rather than refusing is deliberate: those are real captain
+work items that every reader looks for somewhere else, so refusing would leave
+firstmate unusable until someone moved a file by hand and the items invisible
+meanwhile - the same loss with an error message on top. The move is one rename
+into the location everything already reads, and it warns rather than going
+silent.
+
+Two cases refuse instead. **Both files present** means two real queues, and which
+items are current is a judgement about the captain's work, not a migration's - so
+both paths are named and neither is touched. **A held `<path>.lock`** on the
+legacy file means another writer is mid-mutation; moving the file out from under
+it is the one way this repair could itself lose an item.
+
+The session-start digest only REPORTS a legacy file, as one `LEGACY_BACKLOG:`
+line naming both paths. It never moves it, because the digest also runs in
+lock-refused read-only sessions where no fleet mutation is authorized.
+
+This port ships no tracked `.tasks.toml` of its own. The default is now in code,
+which is stronger: it holds in every home, including one deliberately kept
+separate from the checkout, where a tracked file would not be there at all. A
+bare `tasks-axi` run in such a home probes the root first and then
+`data/backlog.md`, so it finds the same file once that file exists - and if it
+ever creates a root one first, the migration above collects it.
 
 ## Why this is a real backend, not a stub
 

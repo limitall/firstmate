@@ -40,7 +40,7 @@
     Create the item directly in ## In flight.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 
 .PARAMETER Date
     The `since` date to stamp. Defaults to today.

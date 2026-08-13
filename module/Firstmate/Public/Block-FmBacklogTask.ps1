@@ -21,7 +21,7 @@
     Optional free-text reason, recorded after the edge.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 #>
 function Block-FmBacklogTask {
     [CmdletBinding(SupportsShouldProcess)]
@@ -75,7 +75,7 @@ function Block-FmBacklogTask {
     The blocker to clear.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 #>
 function Unblock-FmBacklogTask {
     [CmdletBinding(SupportsShouldProcess)]

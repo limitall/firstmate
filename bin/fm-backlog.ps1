@@ -74,7 +74,7 @@
     Skip retention on `done`.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 
 .EXAMPLE
     bin/fm-backlog.ps1 ready

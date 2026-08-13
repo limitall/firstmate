@@ -443,10 +443,21 @@ function Format-FmSessionBacklogCompact {
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$Label,
         [Parameter(Mandatory)][string]$ConfigDir,
+        [string]$LegacyPath = '',
         [int]$QueuedLimit = 20
     )
 
     $out = @(New-FmSessionSubsection -Title $Label)
+    # A home that added work items before the queue's location was single-sourced
+    # has them in <home>/backlog.md, which nothing reads. The digest NAMES that
+    # rather than reporting an empty queue - reporting ABSENT over a real queue
+    # is the exact symptom this line exists to end. It only reports: the digest
+    # runs in lock-refused read-only sessions too, and the move is the first
+    # backlog command's to make.
+    if (-not [string]::IsNullOrEmpty($LegacyPath) -and (Test-Path -LiteralPath $LegacyPath -PathType Leaf)) {
+        $out += "LEGACY_BACKLOG: work items are in $LegacyPath, the pre-fix location nothing reads. The next " +
+        "backlog command moves them to $Path, or refuses and names both files if both hold items."
+    }
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return ($out + 'ABSENT') }
     if ((Get-Item -LiteralPath $Path -Force).Length -eq 0) { return ($out + '(present, empty)') }
 
@@ -897,8 +908,12 @@ function Get-FmSessionStartDigest {
     # --- 6. fleet-state digest ------------------------------------------------
     Set-FmSessionStage -Name 'fleet-state'
     $out += New-FmSessionSection -Title 'FLEET STATE'
-    $out += Format-FmSessionBacklogCompact -Path (Join-Path $paths.Data 'backlog.md') -Label 'data/backlog.md' `
-        -ConfigDir $paths.Config -QueuedLimit $queuedLimit
+    # Get-FmBacklogPath, not a second Join-Path of its own: this digest and the
+    # backlog commands each used to compute the queue's location, they disagreed,
+    # and the digest reported ABSENT while the captain's items sat in the file
+    # the other one had created.
+    $out += Format-FmSessionBacklogCompact -Path (Get-FmBacklogPath -HomePath $paths.Home) -Label 'data/backlog.md' `
+        -LegacyPath (Get-FmBacklogLegacyPath -HomePath $paths.Home) -ConfigDir $paths.Config -QueuedLimit $queuedLimit
 
     $out += New-FmSessionSubsection -Title 'Work under way (state/*.meta)'
     $metaFiles = @()

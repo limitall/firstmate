@@ -267,6 +267,57 @@ function Get-FmDataPath {
     return Get-FmPath @splat
 }
 
+function Get-FmBacklogPath {
+    <#
+        .SYNOPSIS
+        This home's backlog file: <home>/data/backlog.md.
+
+        .DESCRIPTION
+        The ONE answer to "where is this home's task queue", and the reason it
+        is here rather than in the backlog area: the answer has two independent
+        readers - the backlog commands that WRITE the queue and the session-start
+        digest that READS it - and each used to compute it for itself.
+
+        They disagreed. The digest joined <home>/data/backlog.md, exactly as
+        bin/fm-session-start.sh does, while the backlog area probed
+        <home>/backlog.md first and fell back to creating it there. In a fresh
+        home neither file existed, so `add` created the root one, the probe kept
+        finding it, and the digest reported the queue ABSENT while the captain's
+        work items sat in a file nothing else read. That does not fail; it
+        LOSES, which is why the location is now a single function both callers
+        must go through.
+
+        data/backlog.md is the authoritative location: it is what the Linux
+        firstmate's tracked .tasks.toml pins, what docs/configuration.md
+        documents, what AGENTS.md section 2 lists in the home layout, and what
+        every other reader in this port already assumed.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([string]$HomePath)
+    $splat = @{ Name = 'backlog.md' }
+    if ($PSBoundParameters.ContainsKey('HomePath')) { $splat['HomePath'] = $HomePath }
+    return Get-FmDataPath @splat
+}
+
+function Get-FmBacklogLegacyPath {
+    <#
+        .SYNOPSIS
+        The pre-fix location a backlog could have been created in: <home>/backlog.md.
+
+        .DESCRIPTION
+        Named, not guessed at three call sites. A home that ran `fm-backlog.ps1
+        add` before the resolution was single-sourced has its real work items
+        here, and Repair-FmBacklogLocation is what reconciles that.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([string]$HomePath)
+    $splat = @{ Kind = 'Home'; ChildPath = 'backlog.md' }
+    if ($PSBoundParameters.ContainsKey('HomePath')) { $splat['HomePath'] = $HomePath }
+    return Get-FmPath @splat
+}
+
 function Get-FmConfigPath {
     <#
         .SYNOPSIS

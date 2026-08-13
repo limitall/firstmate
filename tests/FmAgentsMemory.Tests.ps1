@@ -33,6 +33,38 @@ BeforeAll {
         Resolve-FmPhysicalPath -Path $dir
     }
 
+    # THE CONTRACT, not the mechanism that satisfies it: after Set-FmAgentsMemory
+    # both names must resolve to the same content. Which mechanism produced that
+    # is the host's business - a symlink where the privilege is held, a hardlink
+    # on a stock non-elevated Windows shell, a copy where neither works - and
+    # New-FmAgentsClaudeLink deliberately falls through all three.
+    #
+    # Two tests here asserted Test-FmAgentsClaudeLink, which is TRUE ONLY FOR A
+    # SYMLINK. They were red on the captain's laptop for the same reason the six
+    # gated ones were, but they are not fixture-privilege tests: their subject is
+    # what the command produces, and skipping them would stop checking the
+    # command on exactly the machine it has to work on. So they assert the
+    # contract instead, by READING both names: a read follows a symlink, a
+    # hardlink and a copy alike, which is precisely the property that makes all
+    # three acceptable. (Test-FmAgentsMirror is not the check to reuse here - it
+    # compares FileInfo.Length, and a symlink's own length is its target string,
+    # so it answers a narrower question about two real files.)
+    function Test-FmAgentsPairResolves {
+        [OutputType([bool])]
+        param([Parameter(Mandatory)][string]$Directory)
+        try {
+            $agents = [System.IO.File]::ReadAllBytes((Join-Path $Directory 'AGENTS.md'))
+            $claude = [System.IO.File]::ReadAllBytes((Join-Path $Directory 'CLAUDE.md'))
+        } catch {
+            return $false
+        }
+        if ($agents.Length -ne $claude.Length) { return $false }
+        for ($i = 0; $i -lt $agents.Length; $i++) {
+            if ($agents[$i] -ne $claude[$i]) { return $false }
+        }
+        $true
+    }
+
     # The exact bytes bin/fm-ensure-agents-md.sh writes for a fresh skeleton.
     $script:ExpectedSkeleton = @(
         '# Project agent memory',
@@ -57,8 +89,7 @@ Describe 'Set-FmAgentsMemory in an empty worktree' {
         $result = Set-FmAgentsMemory -Path $dir
         $result.Message | Should -BeLike "created: AGENTS.md and*CLAUDE.md -> AGENTS.md in $dir"
         [System.IO.File]::ReadAllText((Join-Path $dir 'AGENTS.md')) | Should -Be $script:ExpectedSkeleton
-        Test-FmAgentsClaudeLink -ClaudePath (Join-Path $dir 'CLAUDE.md') -AgentsPath (Join-Path $dir 'AGENTS.md') |
-            Should -BeTrue
+        Test-FmAgentsPairResolves -Directory $dir | Should -BeTrue
     }
 
     It 'writes the skeleton LF-only with no BOM' {
@@ -182,8 +213,7 @@ Describe 'Set-FmAgentsMemory promoting a lone CLAUDE.md' {
         $text = [System.IO.File]::ReadAllText((Join-Path $dir 'AGENTS.md'))
         $text | Should -BeLike '*# Existing project knowledge*'
         $text | Should -BeLike '*## Maintaining this file*'
-        Test-FmAgentsClaudeLink -ClaudePath (Join-Path $dir 'CLAUDE.md') -AgentsPath (Join-Path $dir 'AGENTS.md') |
-            Should -BeTrue
+        Test-FmAgentsPairResolves -Directory $dir | Should -BeTrue
     }
 
     It 'creates AGENTS.md and keeps an already-correct dangling link' {

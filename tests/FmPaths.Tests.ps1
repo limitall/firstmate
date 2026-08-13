@@ -183,6 +183,29 @@ Describe 'Get-FmPath' {
     }
 }
 
+Describe 'Get-FmBacklogPath' {
+    # The backlog's location is a layout fact, so it lives here with the rest of
+    # the layout rather than being recomputed by each area that needs it. It was
+    # recomputed twice, the two answers differed, and work items were lost in the
+    # gap; tests/FmBacklog.Tests.ps1 pins the behaviour that followed from that.
+
+    It 'is data/backlog.md under the resolved home' {
+        Get-FmBacklogPath | Should -Be (Get-FmDataPath -Name 'backlog.md')
+        Get-FmBacklogPath | Should -Be (Join-Path $script:TempRoot 'data' 'backlog.md')
+    }
+
+    It 'follows an explicit home, so a secondmate or test home is never redirected' {
+        $other = Join-Path $script:TempRoot 'other-home'
+        Get-FmBacklogPath -HomePath $other | Should -Be (Join-Path $other 'data' 'backlog.md')
+        Get-FmBacklogLegacyPath -HomePath $other | Should -Be (Join-Path $other 'backlog.md')
+    }
+
+    It 'names the pre-fix location as a sibling of the home, never inside data/' {
+        Get-FmBacklogLegacyPath | Should -Be (Join-Path $script:TempRoot 'backlog.md')
+        Get-FmBacklogLegacyPath | Should -Not -Be (Get-FmBacklogPath)
+    }
+}
+
 Describe 'Test-FmTaskId' {
     It 'accepts the bash charset [A-Za-z0-9._-]' -ForEach @(
         @{ Id = 'fmwin-foundation' }

@@ -28,7 +28,7 @@
     Date gate, YYYY-MM-DD.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 
 .EXAMPLE
     Set-FmBacklogHold -Id fmwin-chain -Reason 'captain decision pending' -Kind captain
@@ -83,7 +83,7 @@ function Set-FmBacklogHold {
     The task id.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 #>
 function Clear-FmBacklogHold {
     [CmdletBinding(SupportsShouldProcess)]

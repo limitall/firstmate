@@ -142,6 +142,17 @@ read, so a file an operator edited with a Windows editor still parses.
 **Dot-prefixed files are hidden on Unix**, so every `Get-Item` on a state record
 passes `-Force`. This bit in practice and is covered by tests.
 
+**The fleet-state stage asks `Get-FmBacklogPath` where the queue is** instead of
+joining `data/backlog.md` the way `bin/fm-session-start.sh` does. That literal
+was correct and still produced a wrong digest: the backlog commands resolved the
+queue separately, preferred `<home>/backlog.md`, and created it there, so this
+stage reported ABSENT over a queue that existed. The location has one owner now
+(see [`backlog-manual-windows.md`](backlog-manual-windows.md)), and this stage is
+one of its two callers. It also prints a single `LEGACY_BACKLOG:` line when a
+pre-fix root-level backlog is still present, naming both files. It only reports:
+the digest runs in lock-refused read-only sessions too, where no fleet mutation
+is authorized, so moving the file is the next backlog command's job.
+
 ## The stages that write through the console, not the pipeline
 
 Two owners this digest composes are entry-point shaped: their report goes to the

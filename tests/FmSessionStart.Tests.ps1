@@ -159,6 +159,38 @@ Describe 'Format-FmSessionBacklogManualCompact' {
     }
 }
 
+Describe 'the digest reads the queue the backlog commands write' {
+    # The digest used to join <home>/data/backlog.md for itself while the backlog
+    # commands resolved <home>/backlog.md, so a captain could add a work item,
+    # be told it landed, and read ABSENT here. One owner now answers both.
+
+    It 'THE REGRESSION: an added item appears in the digest, not ABSENT' {
+        $home_ = New-TestHome
+        $null = Add-FmBacklogTask -Id 'fmwin-demo' -Title 'Ship the morning brief' `
+            -Path (Get-FmBacklogConfig -Root $home_ -HomeConfigPath (Join-Path $TestDrive 'absent.toml')).Path
+        $digest = @(Get-FmSessionStartDigest)
+        @($digest | Where-Object { $_ -like '*fmwin-demo - Ship the morning brief*' }).Count |
+            Should -Be 1 -Because 'the digest must render the item the backlog command just wrote'
+    }
+
+    It 'names a pre-fix root backlog rather than reporting the queue absent over it' {
+        $home_ = New-TestHome
+        [System.IO.File]::WriteAllText((Get-FmBacklogLegacyPath -HomePath $home_),
+            "# Backlog`n`n## Queued`n- [ ] old - the captain's item`n")
+        $digest = @(Get-FmSessionStartDigest)
+        @($digest | Where-Object { $_ -like 'LEGACY_BACKLOG: *' }).Count | Should -Be 1
+        # And it only REPORTS: the digest runs in lock-refused read-only sessions,
+        # where no fleet mutation is authorized.
+        Test-Path -LiteralPath (Get-FmBacklogLegacyPath -HomePath $home_) | Should -BeTrue
+        Test-Path -LiteralPath (Get-FmBacklogPath -HomePath $home_) | Should -BeFalse
+    }
+
+    It 'says nothing about a legacy file in a home that never had one' {
+        New-TestHome -Populated | Out-Null
+        @(Get-FmSessionStartDigest) | Where-Object { $_ -like 'LEGACY_BACKLOG:*' } | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'Format-FmSessionStatusTail' {
     It 'bounds the tail and labels it as wake-EVENT history with the full log path' {
         $home_ = New-TestHome -Populated

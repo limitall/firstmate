@@ -45,6 +45,86 @@ function Test-FmTasksAxiBackendAvailable {
     Test-FmTasksAxiCompatible
 }
 
+# Move a pre-fix root-level backlog into the canonical data/backlog.md, or
+# report the one case that must not be decided here.
+#
+# WHY MIGRATE RATHER THAN REFUSE. A home whose only backlog is <home>/backlog.md
+# holds real captain work items that every reader in this port - the session
+# digest, cleanup, a Linux firstmate sharing the home - looks for somewhere
+# else. Refusing would leave firstmate unusable until someone moved a file by
+# hand, and the items invisible in the meantime; that is the same loss, with an
+# error message on top. The move is one rename into the location everything
+# already reads, it preserves the file's bytes, and it is reported rather than
+# silent.
+#
+# WHY REFUSE WHEN BOTH EXIST. Two files then hold two real queues, and merging
+# them is a judgement about which items are current - the captain's call, not a
+# migration's. So that case is named with both paths and refused, which is the
+# only outcome here that stops work rather than continuing it.
+#
+# The Done archive moves with its backlog. The archive is derived as the
+# backlog's sibling, so a root-resolved home put it at <home>/done-archive.md;
+# leaving it behind would orphan the completed-work history the moment the queue
+# moved, which is the same defect one directory over.
+function Repair-FmBacklogLocation {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param([string]$HomePath)
+
+    $splat = @{}
+    if ($PSBoundParameters.ContainsKey('HomePath') -and -not [string]::IsNullOrEmpty($HomePath)) {
+        $splat['HomePath'] = $HomePath
+    }
+    $canonical = Get-FmBacklogPath @splat
+    $legacy = Get-FmBacklogLegacyPath @splat
+
+    $result = {
+        param($Action, $Message, $ArchiveMoved)
+        [pscustomobject]@{
+            Action       = $Action
+            Path         = $canonical
+            LegacyPath   = $legacy
+            ArchiveMoved = [bool]$ArchiveMoved
+            Message      = $Message
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $legacy -PathType Leaf)) { return & $result 'none' '' $false }
+    if (Test-FmPathEqual -Left $canonical -Right $legacy) { return & $result 'none' '' $false }
+
+    if (Test-Path -LiteralPath $canonical -PathType Leaf) {
+        return & $result 'conflict' ("two backlogs in this home: $legacy is the pre-fix location and $canonical is " +
+            'the one firstmate reads. Both hold work items, so nothing here decides which is current: move the ' +
+            "items you still want into $canonical, then delete $legacy.") $false
+    }
+
+    # A held lock means another writer is mid-mutation on the legacy file.
+    # Moving it out from under them would be the one way this repair could lose
+    # an item, so it waits for the next call instead.
+    if (Test-Path -LiteralPath "$legacy.lock") {
+        return & $result 'conflict' ("the pre-fix backlog $legacy is locked by another process ($legacy.lock), so it " +
+            'cannot be moved safely. Retry once that command has finished.') $false
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($legacy, "move to $canonical")) { return & $result 'none' '' $false }
+
+    New-FmDirectory -Path (Split-Path -Parent $canonical)
+    Move-Item -LiteralPath $legacy -Destination $canonical
+    $archiveMoved = $false
+    $legacyArchive = Join-Path (Split-Path -Parent $legacy) 'done-archive.md'
+    $canonicalArchive = Join-Path (Split-Path -Parent $canonical) 'done-archive.md'
+    if ((Test-Path -LiteralPath $legacyArchive -PathType Leaf) -and
+        -not (Test-Path -LiteralPath $canonicalArchive -PathType Leaf)) {
+        Move-Item -LiteralPath $legacyArchive -Destination $canonicalArchive
+        $archiveMoved = $true
+    }
+
+    $message = "moved the backlog from $legacy to $canonical" +
+        $(if ($archiveMoved) { ", and its done-archive.md with it" } else { '' })
+    Write-Warning "backlog: $message (it was created in the pre-fix location, where nothing else reads it)."
+    & $result 'migrated' $message $archiveMoved
+}
+
 # Resolve the effective backlog configuration for a home: which file, which
 # archive, and how many Done rows to keep. Precedence matches tasks-axi:
 # explicit -File, then TASKS_AXI_FILE, then the project .tasks.toml, then the
@@ -82,15 +162,34 @@ function Get-FmBacklogConfig {
     if ([string]::IsNullOrEmpty($chosen)) {
         $chosen = if (-not [string]::IsNullOrEmpty($projectToml.Path)) { $projectToml.Path } else { $homeToml.Path }
     }
+    # The default is Get-FmBacklogPath and nothing else. It used to be a probe -
+    # "<home>/backlog.md if it exists, else <home>/data/backlog.md, else create
+    # <home>/backlog.md" - which in a fresh home resolved to the root file while
+    # every other reader in the port, and the Linux firstmate, read
+    # data/backlog.md. Two owners of one path is the defect; a probe that
+    # PREFERS the wrong one is how it stayed invisible.
+    #
+    # An explicit -Path, TASKS_AXI_FILE, or a .tasks.toml pin still wins, because
+    # that precedence is tasks-axi's and a home shared with a Linux firstmate
+    # must resolve the same file both tools do.
     $resolved = ''
     if (-not [string]::IsNullOrEmpty($chosen)) {
         $resolved = if ([System.IO.Path]::IsPathRooted($chosen)) { $chosen } else { Join-Path $Root $chosen }
     } else {
-        foreach ($candidate in @('backlog.md', (Join-Path 'data' 'backlog.md'))) {
-            $full = Join-Path $Root $candidate
-            if (Test-Path -LiteralPath $full -PathType Leaf) { $resolved = $full; break }
-        }
-        if ([string]::IsNullOrEmpty($resolved)) { $resolved = Join-Path $Root 'backlog.md' }
+        $resolved = Get-FmBacklogPath -HomePath $Root
+    }
+    # Normalize whatever branch produced it, so a toml-pinned "data/backlog.md"
+    # and Get-FmBacklogPath are the SAME string - the lock path, the archive
+    # sibling, and the canonical-location comparison below all key off it.
+    $resolved = Resolve-FmFullPath -Path $resolved
+
+    # Reconcile a pre-fix root-level backlog before anyone reads or writes this
+    # home's queue. Only when the resolved file IS the canonical location: a
+    # home that deliberately pins somewhere else has not lost anything here, and
+    # moving a file it never named would be the surprise, not the fix.
+    if (Test-FmPathEqual -Left $resolved -Right (Get-FmBacklogPath -HomePath $Root)) {
+        $repair = Repair-FmBacklogLocation -HomePath $Root
+        if ($repair.Action -eq 'conflict') { throw $repair.Message }
     }
 
     $archive = if (-not [string]::IsNullOrEmpty($projectToml.Archive)) { $projectToml.Archive } else { $homeToml.Archive }

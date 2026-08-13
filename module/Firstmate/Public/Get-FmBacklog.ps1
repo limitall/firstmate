@@ -13,7 +13,7 @@
     keeps its original bytes.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 
 .PARAMETER State
     Only tasks in this state (queued, in_flight, done).
@@ -56,7 +56,7 @@ function Get-FmBacklog {
     The task id.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 #>
 function Get-FmBacklogTask {
     [CmdletBinding()]
@@ -84,7 +84,7 @@ function Get-FmBacklogTask {
     excluded.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 
 .PARAMETER Repo
     Only tasks tagged with this repo.
@@ -116,7 +116,7 @@ function Get-FmBacklogReady {
     Queued work whose structured dispatch hold is still active.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 
 .PARAMETER Today
     Evaluate hold-until against this date instead of today. Test seam.
@@ -137,7 +137,7 @@ function Get-FmBacklogHeld {
     Tasks that are blocked by an unfinished blocker.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 #>
 function Get-FmBacklogBlocked {
     [CmdletBinding()]

@@ -53,6 +53,15 @@ returns `''`. That difference is meaningful in firstmate - an absent
 validated for you, including the traversal and trailing-dot cases that only bite
 on Windows.
 
+That rule is not style. A durable record read by more than one area needs ONE
+function that answers where it is, and `Get-FmBacklogPath` exists because the
+backlog did not have one: the session-start digest joined `data/backlog.md` for
+itself while the backlog commands probed `<home>/backlog.md` first and created it
+there. In a fresh home the two answers differed permanently, so a captain could
+add a work item, be told it landed, and see startup report the queue absent.
+Nothing failed - the queue was silently lost. Add a named accessor here before a
+second area needs the same path, not after.
+
 **Take a lock with `Invoke-FmWithLock`.** It releases in a `finally`, so a throw
 inside the body cannot leave the home locked - the failure that turns one broken
 operation into a wedged fleet. `Request-FmLock` (try once) and `Wait-FmLock`

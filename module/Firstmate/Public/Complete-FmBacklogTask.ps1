@@ -38,7 +38,7 @@
     Close the item without applying retention.
 
 .PARAMETER Path
-    The backlog file. Defaults to the file .tasks.toml selects for this home.
+    The backlog file. Defaults to this home's data/backlog.md, or the file .tasks.toml pins.
 
 .PARAMETER Date
     The closure date to stamp. Defaults to today.

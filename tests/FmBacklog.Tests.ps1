@@ -652,7 +652,155 @@ Describe '.tasks.toml' {
         New-Item -ItemType Directory -Path $root -Force | Out-Null
         $config = Get-FmBacklogConfig -Root $root -HomeConfigPath (Join-Path $TestDrive 'absent.toml')
         $config.DoneKeep | Should -Be 10
-        $config.ArchivePath | Should -Be (Join-Path $root 'done-archive.md')
+        # A sibling of data/backlog.md, which is where the backlog is - this
+        # asserted <root>/done-archive.md while the default resolved to the root
+        # file, and that default was the defect.
+        $config.ArchivePath | Should -Be (Resolve-FmFullPath -Path (Join-Path $root 'data' 'done-archive.md'))
+    }
+
+    It 'still lets a home pin its own path, which is how a Linux-shared home stays legible' {
+        $root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $root '.tasks.toml'),
+            "backend = `"markdown`"`n`n[markdown]`npath = `"queue/backlog.md`"`n")
+        (Get-FmBacklogConfig -Root $root -HomeConfigPath (Join-Path $TestDrive 'absent.toml')).Path |
+            Should -Be (Resolve-FmFullPath -Path (Join-Path $root 'queue' 'backlog.md'))
+    }
+}
+
+Describe 'the backlog has ONE location' {
+    # THE BUG THIS PINS. `fm-backlog.ps1 add` in a fresh home created
+    # <home>/backlog.md, because the resolver probed the root first and fell
+    # back to creating it there. Every reader - the session-start digest,
+    # cleanup, a Linux firstmate sharing the home - reads <home>/data/backlog.md.
+    # So the captain added a work item, firstmate said fine, and startup reported
+    # the queue ABSENT. It did not fail; it lost the captain's task queue.
+
+    BeforeAll {
+        function New-EmptyHome {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+                Justification = 'A Pester fixture builder: it creates a disposable home under TestDrive.')]
+            [CmdletBinding()]
+            param()
+            $home_ = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+            foreach ($dir in @('data', 'state', 'config', 'projects')) {
+                New-Item -ItemType Directory -Path (Join-Path $home_ $dir) -Force | Out-Null
+            }
+            Resolve-FmFullPath -Path $home_
+        }
+    }
+
+    It 'is data/backlog.md, and the legacy location is named rather than guessed at' {
+        $home_ = New-EmptyHome
+        Get-FmBacklogPath -HomePath $home_ | Should -Be (Resolve-FmFullPath -Path (Join-Path $home_ 'data' 'backlog.md'))
+        Get-FmBacklogLegacyPath -HomePath $home_ | Should -Be (Resolve-FmFullPath -Path (Join-Path $home_ 'backlog.md'))
+    }
+
+    It 'resolves an empty home to data/backlog.md, not to the home root' {
+        $home_ = New-EmptyHome
+        (Get-FmBacklogConfig -Root $home_ -HomeConfigPath (Join-Path $TestDrive 'absent.toml')).Path |
+            Should -Be (Get-FmBacklogPath -HomePath $home_)
+    }
+
+    It 'THE REGRESSION: an added item is found through the path session start reads' {
+        # Deliberately end to end and deliberately asymmetric: the item goes in
+        # through the command the captain uses, and comes back out through the
+        # path the startup digest computes for itself. Before the fix the write
+        # went to <home>/backlog.md, this read found nothing, and the digest
+        # printed ABSENT.
+        $home_ = New-EmptyHome
+        $null = Add-FmBacklogTask -Id 'fmwin-demo' -Title 'Ship the morning brief' `
+            -Path (Get-FmBacklogConfig -Root $home_ -HomeConfigPath (Join-Path $TestDrive 'absent.toml')).Path
+
+        $startupPath = Get-FmBacklogPath -HomePath $home_
+        Test-Path -LiteralPath $startupPath -PathType Leaf |
+            Should -BeTrue -Because 'session start reads exactly this path and reports ABSENT when it is missing'
+        Test-Path -LiteralPath (Get-FmBacklogLegacyPath -HomePath $home_) |
+            Should -BeFalse -Because 'nothing may still be written to the pre-fix location'
+        @(Get-FmBacklog -Path $startupPath).Id | Should -Be 'fmwin-demo'
+    }
+
+    It 'migrates a pre-fix root backlog, and its archive, into data/' {
+        $home_ = New-EmptyHome
+        $legacy = Get-FmBacklogLegacyPath -HomePath $home_
+        [System.IO.File]::WriteAllText($legacy, "# Backlog`n`n## Queued`n- [ ] old - the captain's item (since 2026-08-01)`n")
+        [System.IO.File]::WriteAllText((Join-Path $home_ 'done-archive.md'), "## Archived 2026-08-01`n- [x] older - done`n")
+
+        $result = Repair-FmBacklogLocation -HomePath $home_ -WarningAction SilentlyContinue
+        $result.Action | Should -Be 'migrated'
+        $result.ArchiveMoved | Should -BeTrue
+        $result.Message | Should -BeLike "*moved the backlog from $legacy*"
+        Test-Path -LiteralPath $legacy | Should -BeFalse
+        @(Get-FmBacklog -Path (Get-FmBacklogPath -HomePath $home_)).Id | Should -Be 'old'
+        Test-Path -LiteralPath (Join-Path $home_ 'data' 'done-archive.md') | Should -BeTrue
+    }
+
+    It 'migrates on the next backlog command, so items are never orphaned by the fix' {
+        $home_ = New-EmptyHome
+        [System.IO.File]::WriteAllText((Get-FmBacklogLegacyPath -HomePath $home_),
+            "# Backlog`n`n## Queued`n- [ ] old - the captain's item (since 2026-08-01)`n")
+        $config = Get-FmBacklogConfig -Root $home_ -HomeConfigPath (Join-Path $TestDrive 'absent.toml') `
+            -WarningAction SilentlyContinue
+        $config.Path | Should -Be (Get-FmBacklogPath -HomePath $home_)
+        @(Get-FmBacklog -Path $config.Path).Id | Should -Be 'old'
+    }
+
+    It 'is a no-op in a home that never had one, and idempotent after a migration' {
+        $home_ = New-EmptyHome
+        (Repair-FmBacklogLocation -HomePath $home_).Action | Should -Be 'none'
+        [System.IO.File]::WriteAllText((Get-FmBacklogLegacyPath -HomePath $home_), "# Backlog`n")
+        (Repair-FmBacklogLocation -HomePath $home_ -WarningAction SilentlyContinue).Action | Should -Be 'migrated'
+        (Repair-FmBacklogLocation -HomePath $home_).Action | Should -Be 'none'
+    }
+
+    It 'moves nothing under -WhatIf' {
+        $home_ = New-EmptyHome
+        $legacy = Get-FmBacklogLegacyPath -HomePath $home_
+        [System.IO.File]::WriteAllText($legacy, "# Backlog`n")
+        (Repair-FmBacklogLocation -HomePath $home_ -WhatIf).Action | Should -Be 'none'
+        Test-Path -LiteralPath $legacy | Should -BeTrue
+    }
+
+    It 'REFUSES when both files hold a queue, naming both and merging neither' {
+        $home_ = New-EmptyHome
+        $legacy = Get-FmBacklogLegacyPath -HomePath $home_
+        $canonical = Get-FmBacklogPath -HomePath $home_
+        [System.IO.File]::WriteAllText($legacy, "# Backlog`n`n## Queued`n- [ ] a - one`n")
+        [System.IO.File]::WriteAllText($canonical, "# Backlog`n`n## Queued`n- [ ] b - two`n")
+
+        $result = Repair-FmBacklogLocation -HomePath $home_
+        $result.Action | Should -Be 'conflict'
+        $result.Message | Should -BeLike "*$legacy*"
+        $result.Message | Should -BeLike "*$canonical*"
+        { Get-FmBacklogConfig -Root $home_ -HomeConfigPath (Join-Path $TestDrive 'absent.toml') } |
+            Should -Throw '*two backlogs in this home*'
+        # Neither file was touched: which items are current is the captain's call.
+        [System.IO.File]::ReadAllText($legacy) | Should -Match ([regex]::Escape('- [ ] a - one'))
+        [System.IO.File]::ReadAllText($canonical) | Should -Match ([regex]::Escape('- [ ] b - two'))
+    }
+
+    It 'refuses to move a legacy backlog another process holds the lock on' {
+        $home_ = New-EmptyHome
+        $legacy = Get-FmBacklogLegacyPath -HomePath $home_
+        [System.IO.File]::WriteAllText($legacy, "# Backlog`n")
+        [System.IO.File]::WriteAllText("$legacy.lock", "12345:abc:1`n")
+        $result = Repair-FmBacklogLocation -HomePath $home_
+        $result.Action | Should -Be 'conflict'
+        $result.Message | Should -BeLike '*locked by another process*'
+        Test-Path -LiteralPath $legacy | Should -BeTrue
+    }
+
+    It 'leaves a home that deliberately pins another path alone' {
+        # A pinned backlog is not the pre-fix accident, and moving a file the
+        # home never named would be the surprise.
+        $home_ = New-EmptyHome
+        [System.IO.File]::WriteAllText((Join-Path $home_ '.tasks.toml'),
+            "backend = `"markdown`"`n`n[markdown]`npath = `"data/elsewhere.md`"`n")
+        $legacy = Get-FmBacklogLegacyPath -HomePath $home_
+        [System.IO.File]::WriteAllText($legacy, "# Backlog`n")
+        $config = Get-FmBacklogConfig -Root $home_ -HomeConfigPath (Join-Path $TestDrive 'absent.toml')
+        $config.Path | Should -Be (Resolve-FmFullPath -Path (Join-Path $home_ 'data' 'elsewhere.md'))
+        Test-Path -LiteralPath $legacy | Should -BeTrue
     }
 
     It 'ignores comments and unsupported tables' {

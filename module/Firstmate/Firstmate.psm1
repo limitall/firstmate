@@ -36,6 +36,8 @@ $script:FmFoundationExports = @(
     'Get-FmPath'
     'Get-FmStatePath'
     'Get-FmDataPath'
+    'Get-FmBacklogPath'
+    'Get-FmBacklogLegacyPath'
     'Get-FmConfigPath'
     'Get-FmProjectPath'
     'Get-FmTaskStatePath'
