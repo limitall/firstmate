@@ -22,7 +22,12 @@
 # does not need the privilege - the CLAUDE.md placeholder repair, the hardlink
 # and copy fallbacks, and every refusal path stay live on a stock Windows shell.
 
-Set-StrictMode -Version Latest
+# NOTE ON STRICT MODE. It is set inside each function, not at file scope. A
+# dot-sourced helper's top-level Set-StrictMode applies to the scope that
+# dot-sourced it, so a file-scope one here would turn strict mode ON for whole
+# suites that never asked for it - three of the four that call this do not set
+# it themselves - and silently change assertions that have nothing to do with
+# symlinks. A helper is strict about itself and leaves its caller alone.
 
 $script:FmTestSymlinkSupported = $null
 
@@ -34,6 +39,7 @@ function Test-FmTestSymlinkSupported {
     [OutputType([bool])]
     param()
 
+    Set-StrictMode -Version Latest
     if ($null -ne $script:FmTestSymlinkSupported) { return $script:FmTestSymlinkSupported }
 
     $probeDir = Join-Path ([System.IO.Path]::GetTempPath()) ('fm-symlink-probe-' + [Guid]::NewGuid().ToString('N'))
@@ -65,6 +71,7 @@ function Set-FmTestSymlinkSkip {
     [OutputType([void])]
     param()
 
+    Set-StrictMode -Version Latest
     if (Test-FmTestSymlinkSupported) { return }
     Set-ItResult -Skipped -Because ('this session cannot create a symlink (SeCreateSymbolicLinkPrivilege is not held), ' +
         'so the FIXTURE cannot be built - not a defect in the code under test. ' +

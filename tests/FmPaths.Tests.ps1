@@ -9,7 +9,8 @@
 #>
 
 BeforeAll {
-    Import-Module (Join-Path $PSScriptRoot '..' 'module' 'Firstmate' 'Firstmate.psd1') -Force
+    . (Join-Path $PSScriptRoot 'FmModule.TestHelpers.ps1')
+    Import-FmTestModule -TestRoot $PSScriptRoot
 
     $script:EnvNames = @('FM_HOME', 'FM_ROOT_OVERRIDE', 'FM_STATE_OVERRIDE')
     $script:SavedEnv = @{}

@@ -15,7 +15,8 @@
 #>
 
 BeforeAll {
-    Import-Module (Join-Path $PSScriptRoot '..' 'module' 'Firstmate' 'Firstmate.psd1') -Force
+    . (Join-Path $PSScriptRoot 'FmModule.TestHelpers.ps1')
+    Import-FmTestModule -TestRoot $PSScriptRoot
     # A pid far above any plausible live process, used as "definitely not running".
     $script:DeadPid = 2147483600
 }

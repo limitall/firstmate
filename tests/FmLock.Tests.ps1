@@ -17,7 +17,8 @@
 #>
 
 BeforeAll {
-    Import-Module (Join-Path $PSScriptRoot '..' 'module' 'Firstmate' 'Firstmate.psd1') -Force
+    . (Join-Path $PSScriptRoot 'FmModule.TestHelpers.ps1')
+    Import-FmTestModule -TestRoot $PSScriptRoot
     $script:ModulePath = (Join-Path $PSScriptRoot '..' 'module' 'Firstmate' 'Firstmate.psd1')
     $script:TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("fmlock-" + [guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Path $script:TempRoot -Force

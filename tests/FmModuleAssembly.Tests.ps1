@@ -706,3 +706,49 @@ Describe 'cross-area bindings' {
         ($bad -join '; ') | Should -Be ''
     }
 }
+
+Describe 'Only one Firstmate module is ever loaded in a test process' {
+    # WHY. `Import-Module <path> -Force` replaces only a module loaded from the
+    # SAME path, so a second copy of this repo in one process leaves TWO modules
+    # named Firstmate loaded and Pester refuses every `InModuleScope Firstmate`
+    # block after that. Comparing a base commit against a branch commit by
+    # running both suites back to back in one session - which is the correct way
+    # to compare, because privilege context must be held constant - did exactly
+    # that, and failed the 40 InModuleScope tests in whichever suite ran second.
+    # They read as a regression in the second commit and were nothing of the
+    # kind. tests/FmModule.TestHelpers.ps1 owns the fix; this holds it in place.
+
+    It 'imports THIS checkout even when another copy is already loaded' {
+        . (Join-Path $PSScriptRoot 'FmModule.TestHelpers.ps1')
+        $decoyRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('fm-decoy-' + [guid]::NewGuid().ToString('N'))
+        try {
+            $decoyModule = Join-Path $decoyRoot 'Firstmate'
+            $null = New-Item -ItemType Directory -Path $decoyModule -Force
+            Copy-Item -Path (Join-Path $script:ModuleRoot '*') -Destination $decoyModule -Recurse -Force
+            Import-Module (Join-Path $decoyModule 'Firstmate.psd1') -Force -ErrorAction Stop
+
+            Import-FmTestModule -TestRoot $PSScriptRoot
+
+            $loaded = @(Get-Module -Name 'Firstmate')
+            $loaded.Count | Should -Be 1
+            $loaded[0].Path | Should -Be (Join-Path $script:ModuleRoot 'Firstmate.psm1')
+            # The point of all of it: InModuleScope has to be usable afterwards.
+            { InModuleScope Firstmate { 1 } } | Should -Not -Throw
+        } finally {
+            Remove-Item -LiteralPath $decoyRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Import-FmTestModule -TestRoot $PSScriptRoot
+        }
+    }
+
+    It 'routes every InModuleScope suite through the helper, so a new suite cannot regress this' {
+        $bad = [System.Collections.Generic.List[string]]::new()
+        foreach ($file in (Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.Tests.ps1' -File | Sort-Object Name)) {
+            $text = Get-Content -LiteralPath $file.FullName -Raw
+            if ($text -notmatch 'InModuleScope') { continue }
+            if ($text -notmatch 'Import-FmTestModule') {
+                $bad.Add("$($file.Name) uses InModuleScope but does not import through Import-FmTestModule")
+            }
+        }
+        ($bad -join '; ') | Should -Be ''
+    }
+}
