@@ -77,12 +77,18 @@ fm-autolaunch.ps1 <session>:<pane-id>
    byte-identical. A pane that is changing under us is already the captain's.
 3. **Type, and stop.** The command goes in with `pane send-text`, which does not
    submit, so the captain sees exactly what is about to run.
-4. **Hold the window.** Every poll must reproduce the post-typing capture
+4. **Prove the baseline is ours.** The pane must now read as it read before plus
+   *exactly* the command and nothing else. Anything more, less, or different
+   arrived from somewhere while we were typing, and holding the window on it
+   would end in submitting it. See "The gap the window cannot see" below.
+5. **Hold the window.** Every poll must reproduce the post-typing capture
    *exactly* and the pane must still be free.
-5. **Submit once.** One Enter, then up to five seconds watching for either
+6. **Submit once.** One Enter, then up to five seconds watching for either
    signal that it landed: the pane no longer matching the armed capture, or an
    agent registering in it. Seeing neither within that budget is reported as
-   unconfirmed rather than as success.
+   unconfirmed rather than as success. On Windows the second signal is the one
+   that usually fires first - the pane text has often not repainted yet at the
+   moment a harness has already registered.
 
 ### Why "no registered agent" rather than "idle"
 
@@ -112,9 +118,11 @@ step above fails toward standing down:
 
 - a changed capture is the captain typing;
 - an unreadable capture is a pane nothing can be proven about;
-- a newly registered agent is something the captain started.
+- a newly registered agent is something the captain started;
+- a baseline holding anything but the command is something that reached the pane
+  while firstmate was typing into it.
 
-All three end the window, and **standing down never touches the pane again** -
+All four end the window, and **standing down never touches the pane again** -
 no Enter, no Escape, no clear. Whatever the captain typed stays exactly where
 they typed it, following the command firstmate had already placed there. The
 pane is left in the "typed but not submitted" state they asked for, which is a
@@ -139,8 +147,33 @@ it.
 
 The cost is real and accepted: a pane whose prompt repaints on its own (a clock,
 a spinner) never reads as unchanged, so autolaunch refuses it instead of firing.
-There is also an irreducible race in the last fraction of a second before Enter,
-which is why the window polls to the very end rather than checking once.
+The window also polls to the very end rather than checking once, because the
+captain can arrive at any point in it.
+
+### The gap the window cannot see
+
+Typing is not atomic. `pane send-text` returns, a settle passes, and only then is
+the pane read back to establish the baseline the whole window is compared
+against. A keystroke made in *that* gap is already in the pane when the baseline
+is taken - so it becomes part of the baseline. Every later poll then reproduces
+those bytes perfectly, because the pane genuinely does not change again, and the
+window runs to its deadline and presses Enter on a line the captain was halfway
+through writing.
+
+No test inside the window can catch that, because by the time the window starts
+the interference is already inside the thing the window trusts. So the baseline
+is proved rather than trusted: it must equal the previous capture plus exactly
+the command. Whitespace is dropped from both sides first, because herdr
+hard-wraps a capture at the pane width and splits the command mid-token; that
+keeps the comparison immune to where the wrap falls without weakening it. The
+comparison is anchored at the tail, so history may scroll off the *start* of the
+capture - which typing at the bottom of a full pane genuinely causes - while
+nothing may be gained anywhere.
+
+This was not theoretical. It was reproduced against live panes on both Linux and
+the captain's Windows laptop before the check existed, on each of which the
+captain's text was executed and the result was reported as a clean success;
+`docs/windows-e2e-evidence.md` section 18.9 has the before-and-after.
 
 ## What this does not do
 

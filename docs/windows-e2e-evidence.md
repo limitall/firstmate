@@ -2186,20 +2186,21 @@ a separate defect; what is closed is the question of whose they are.
   They belong to the analyzer harness and the foundation area, so they are
   reported here rather than edited by a lane that does not own them.
 
-## 18. Autolaunch, on the captain's Windows 11 laptop - `PROVEN (Windows 11)` in part, `BLOCKED (brief gate)` in part
+## 18. Autolaunch, on the captain's Windows 11 laptop - `PROVEN (Windows 11)`
 
 The opt-in `config/autolaunch` command and its interruptible grace window
 (`docs/autolaunch-windows.md`), on `fm/fmwin-autolaunch` over `2e60e39`.
 
-The captain's own checkout at `C:\Users\ADMIN\firstmate-win` was **not touched**.
-The branch was carried over as a `git bundle`, cloned to
-`C:\Users\ADMIN\fmwin-autolaunch`, and set up there with `-SkipProfile`, so the
-captain's PowerShell profile and their global Claude settings were left alone.
-Everything this run created on the laptop - the clone, the transferred bundle,
-and the runner scripts - was removed afterwards, and the `win-*.ps1` files from
-earlier lanes were left alone.
+The captain's own checkout at `C:\Users\ADMIN\firstmate-win` was **not touched**
+in either of the two runs this section records. The branch was carried over as a
+`git bundle` and cloned elsewhere - `C:\Users\ADMIN\fmwin-autolaunch` for
+18.1-18.4, and `...-live` plus a pre-fix `...-pre` for the live-pane work in 18.5
+and 18.9 - and set up with `-SkipProfile`, so the captain's PowerShell profile
+and their global Claude settings were left alone. Everything either run created
+on the laptop was removed afterwards; `win-*.ps1` files belonging to earlier
+lanes were left alone.
 
-Environment, read on the laptop at the start of the run:
+Environment, read on the laptop at the start of each run:
 
 ```
 pwsh      : 7.6.4
@@ -2207,7 +2208,9 @@ pester    : 6.1.0
 git       : git version 2.49.0.windows.1
 herdr     : herdr 0.7.5-preview.2026-07-21-0f10e1453a7f
 claude    : C:\Users\ADMIN\AppData\Roaming\npm\claude.ps1  (2.1.229)
-os        : Microsoft Windows NT 10.0.26100.0
+os        : Microsoft Windows NT 10.0.26100.0   (18.1-18.4)
+os        : Microsoft Windows NT 10.0.26200.0   (18.5, 18.9 - the laptop moved
+                                                 build between the two runs)
 ```
 
 ### 18.1 Unconfigured: nothing happens at all - `PROVEN (Windows 11)`
@@ -2262,86 +2265,256 @@ usage: fm-autolaunch.ps1 <session>:<pane-id> [-DelaySeconds <n>] [-WhatIf]
 exit: 2
 ```
 
-### 18.5 What was NOT proven on the laptop, and why - `BLOCKED (brief gate)`
+### 18.5 The three live-pane demonstrations - `PROVEN (Windows 11)` and `PROVEN (pwsh/Linux)`
 
-Three of the four demonstrations the brief asks for need a live herdr pane to
-type into: the untouched pane that starts by itself, the pane the captain types
-into during the window, and the pane that is busy. Creating, using and closing a
-pane is driving Herdr lifecycle, and this task's brief was scaffolded **without**
-`--herdr-lab`, whose hard gate says to stop and regenerate rather than add such
-commands by hand. So none of them was run here, and none of the steps above
-created a herdr session, pane or tab - each refused before reaching a backend
-call.
+These three were previously recorded here as `BLOCKED (brief gate)`: they need a
+live herdr pane to type into, creating one is Herdr lifecycle, and the earlier
+brief carried no `--herdr-lab` gate. A re-issued brief carries that gate, so they
+have now been run against a **real herdr server** - no mocks anywhere in the path
+- on both platforms:
 
-What covers those paths meanwhile is `tests/FmAutolaunch.Tests.ps1`, which drives
-the whole state machine through mocked adapter calls: the untouched window that
-submits exactly one Enter after typing exactly once, the captain typing
-mid-window, an agent registering in the pane mid-window, the pane becoming
-unreadable mid-window, the pane that was already occupied or unreadable before
-typing, the pane that repaints on its own, and every kind of pane the pre-flight
-check accepts or refuses - including an idle agent, which is refused. Each stand-down case asserts that **no key at all** was
-sent, not merely that the reported action was a stand-down. That is
-`PROVEN (Windows 11)` as a test run (18.6) and
-`NOT YET VERIFIED ON WINDOWS HARDWARE` as live pane behaviour.
+- **the captain's Windows 11 laptop**, herdr `0.7.5-preview.2026-07-21`, which is
+  the run that matters and the one quoted below;
+- **Linux**, herdr `0.7.5`, run first because the laptop's tunnel was down for
+  the first half of this task (18.10) and used to find the defect in 18.9.
+
+Both platforms give the same answers. Where they differ at all it is noted
+inline.
+
+**Isolation.** On Linux every herdr call went through `bin/fm-herdr-lab.sh` in a
+named `fm-lab-fmwin-autolaunch-*` session under an `EXIT` trap. That helper is
+bash and cannot run on the laptop, so the Windows run used a PowerShell port of
+its guarantees, enforced call by call: an `fm-lab-*` name that can never be
+`default`, a trailing `--session <lab>` on every call, no server-global operation
+at all, a fresh refuse-if-default check immediately before stop and again before
+delete, and the running `default` session recorded as a fleet-state tripwire
+before provisioning and required to be identical afterwards.
+
+```
+TRIPWIRE BEFORE: default|True|True|C:\Users\ADMIN\AppData\Roaming\herdr\herdr.sock
+LAB RUNNING: fm-lab-winauto-20740
+...
+TRIPWIRE AFTER : default|True|True|C:\Users\ADMIN\AppData\Roaming\herdr\herdr.sock
+TEARDOWN CLEAN: lab gone, default identical
+```
+
+The captain's own `default` session on the laptop was live throughout and was
+never a target. The autolaunch code is in any case session-scoped by its own
+target - `Invoke-FmHerdrCli` appends `--session <session-from-the-target>` to
+every call - so arming `fm-lab-...:w1:p2` cannot reach `default` even in
+principle. A throwaway `FM_HOME` held the `config/autolaunch`; the captain's own
+checkout at `C:\Users\ADMIN\firstmate-win` was not read or written, and the
+branch was carried over as a `git bundle` and cloned elsewhere.
+
+#### 1. Enabled, pane untouched: it starts by itself - `PROVEN (Windows 11)`
+
+`config/autolaunch` held the captain's own choice and `delay=10`. A fresh
+PowerShell pane in the lab, then one `Invoke-FmAutolaunch`. A separate observer
+read the pane once a second throughout, which is the "during the window"
+capture:
+
+```
+--- BEFORE ---
+PS C:\Users\ADMIN\fmwin-autolaunch-live-work>
+
+===== observer t=1s, t=2s =====     <- nothing yet
+PS C:\Users\ADMIN\fmwin-autolaunch-live-work>
+
+===== observer t=3s =====           <- typed, and NOT submitted
+PS C:\Users\ADMIN\fmwin-autolaunch-live-work> claude -
+-dangerously-skip-permissions --continue --chrome
+
+===== observer t=4s ... t=13s =====  <- byte-identical, every poll
+PS C:\Users\ADMIN\fmwin-autolaunch-live-work> claude -
+-dangerously-skip-permissions --continue --chrome
+```
+
+```
+--- running autolaunch (delay=10) --- 21:27:40
+<<RESULT>> action=submitted armed=True submitted=True
+<<REASON>> started 'claude --dangerously-skip-permissions --continue --chrome'
+           after 10s untouched - an agent started in the pane
+--- done --- 21:27:54
+```
+
+Claude really started on the laptop: `agent get` on that pane afterwards returns
+a registered agent, and herdr's own title for the pane has become `claude`.
+
+```
+{"result":{"agent":{"agent":"claude","agent_status":"idle","pane_id":"w1:p2",
+ "cwd":"C:\\Users\\ADMIN\\fmwin-autolaunch-live-work","terminal_title":"claude", ...
+```
+
+That is the captain's acceptance criterion end to end, on the laptop - placed
+ready, visible and unsubmitted for the whole ten seconds, submitted by itself,
+and Claude running.
+
+**One platform difference worth keeping.** At the moment of confirmation the
+Windows pane text had not yet repainted - the observer at t=14s still shows the
+command line rather than Claude's UI - so the *pane-changed* signal was not what
+proved the start there; the *agent-registered* signal was. `Wait-FmAutolaunchStarted`
+watches both for exactly this reason, and on Windows the second one is what
+earned its place.
+
+#### 2. Enabled, captain types during the window: firstmate stands down - `PROVEN (Windows 11)`
+
+Same setup, and a simulated captain sending ` && echo CAPTAIN-WAS-HERE` into the
+pane about five seconds in.
+
+```
+--- running autolaunch --- 21:28:01
+<<RESULT>> action=stood-down armed=True submitted=False
+<<REASON>> the pane changed during the wait, so the captain is using it;
+           nothing was submitted
+--- done --- 21:28:07        <- ended when they typed, not at the deadline
+captain typed at 21:28:06
+```
+
+The pane afterwards, holding both texts and unsubmitted:
+
+```
+PS C:\Users\ADMIN\fmwin-autolaunch-live-work> claude -
+-dangerously-skip-permissions --continue --chrome && e
+cho CAPTAIN-WAS-HERE
+```
+
+And nothing was submitted, from herdr rather than from our own report:
+
+```
+{"error":{"code":"agent_not_found","message":"agent target w2:p2 not found"}}
+```
+
+The captain's characters are exactly as they typed them, after the command
+firstmate had already placed for them to see. This is the demonstration the brief
+calls the one that matters most - and running it live is what exposed the defect
+in 18.9, which no mocked version of it could have caught.
+
+#### 3. Pane busy, or unreadable: nothing is submitted and the reason is reported - `PROVEN (Windows 11)`
+
+Busy - an agent registered in the pane with `pane report-agent ... --state
+working`:
+
+```
+<<RESULT>> action=refused armed=False submitted=False
+<<REASON>> nothing was typed: something is already running in the pane
+
+--- AFTER (must be identical) ---
+PS C:\Users\ADMIN\fmwin-autolaunch-live-work>
+PANE UNCHANGED BY REFUSAL: True
+```
+
+The pane after the refusal is byte-identical to the pane before it, compared with
+`-ceq` in the run itself: nothing was typed, not merely nothing submitted.
+
+Unreadable - a pane id that does not exist in the lab session, and a target that
+is not a pane target at all:
+
+```
+<<REASON>> nothing was typed: there is no live pane
+           'fm-lab-winauto-20740:pane-that-does-not-exist'
+<<REASON>> 'not-a-pane' is not a herdr pane target of the form <session>:<pane-id>
+```
+
+#### The two controls, re-confirmed on the laptop
+
+```
+<<RESULT>> action=disabled submitted=False
+<<REASON>> no ...\labhome-empty\config\autolaunch - autolaunch is off
+
+  [ok]  autolaunch - on - types 'claude --dangerously-skip-permissions --continue
+        --chrome' into a named pane and submits it after 10s unless the pane is touched
+  [ok]  autolaunch - off - no config/autolaunch, so nothing is started automatically
+```
+
+The other `[warn]` and `[missing]` lines in that second doctor run belong to a
+deliberately bare throwaway home (no backend file, no profile block) and are not
+this area's.
 
 ### 18.6 The suite, on both platforms - `PROVEN (Windows 11)` and `PROVEN (pwsh/Linux)`
 
+Re-run on both platforms after the 18.9 fix landed, both at the branch tip
+`82732d0`:
+
 ```
-Linux,      PowerShell 7.6.4, Pester 6.1.0        (branch tip)
-RESULT total=1572 passed=1567 failed=0 skipped=5 notrun=0
+Linux,      PowerShell 7.6.4, Pester 6.1.0,  574s
+RESULT total=1584 passed=1579 failed=0 skipped=5 notrun=0
 
-Windows 11, PowerShell 7.6.4, Pester 6.1.0, 1413s (at 37e3b29)
-total 1572  passed 1550  failed 6  skipped 16  notrun 0
+Windows 11, PowerShell 7.6.4, Pester 6.1.0, 1919s
+RESULT total=1584 passed=1564 failed=4 skipped=16 notrun=0
 ```
 
-The laptop run is recorded at the commit it ran at. Nothing executable changed
-between it and the branch tip - one comment in `FmAutolaunch.ps1` and this file
-- and the Linux number above is the tip.
+The earlier run of the same suite, before the fix, was `1572 / 1567 / 0 / 5` on
+Linux and `1572 / 1550 / 6 / 16` on Windows. The 12 extra tests are 18.9's.
 
-This area's own file is green on both: `tests/FmAutolaunch.Tests.ps1`, 47 tests,
-47 passed, 0 failed on the laptop.
+The Windows suite was run twice, at the fix commit and again at the tip after a
+private function was renamed, and returned the identical
+`1584 / 1564 / 4 / 16` both times.
+
+This area's own file is green on both: `tests/FmAutolaunch.Tests.ps1`, 59 tests,
+59 passed, 0 failed.
 
 The skip counts differ by platform because the guards do: Linux skips the 5
 Windows-only cases, and Windows skips 16 - the POSIX-only cases plus the ones
 gated on a tool that machine does not have (`tasks-axi`, the no-mistakes
 pipeline). Neither set was skipped by anything this area added.
 
-The **6 Windows failures are all outside this area**, and 18.8 establishes that
-by measurement rather than by argument.
+The **Windows failures are all outside this area**, and 18.8 establishes that by
+measurement rather than by argument.
 
 - `FmAnalyzer.Tests.ps1` x2 - `Invoke-FmAnalyzerSweep` raises
   `The property 'Analysed' cannot be found on this object` from its own crash
   and recovery cases. The analyzer harness, not the sweep it guards; the
   repo-wide sweep test itself passes.
-- `FmContract.Tests.ps1` x2 - `MirrorState` reads `placeholder` and `CLAUDE.md`
-  contains the literal text `AGENTS.md`: the 9-byte placeholder a
-  `core.symlinks=false` checkout produces. This run produced it itself - the
-  refresh does `git reset --hard`, which rewrote both committed links back to
-  text after setup had repaired them.
 - `FmPaths.Tests.ps1` and `FmState.Tests.ps1` x1 each - `$id cannot be
   retrieved`, and `Count` missing on the result of a read. Both are in the
   foundation area.
 
-18.8 re-runs those four files at the base commit and on this branch, in a bare
-environment with the links repaired, and gets identical results.
+The earlier run had **6**, the two extra being `FmContract.Tests.ps1` reading
+`placeholder` and a `CLAUDE.md` containing the literal text `AGENTS.md` - the
+9-byte placeholder a `core.symlinks=false` checkout produces. 18.8 argued those
+two were an artifact of that run refreshing with `git reset --hard`, which
+rewrites both committed links back to text after setup has repaired them. This
+run runs `fm-setup.ps1` before Pester and they are gone, which is that argument
+confirmed by a second measurement rather than left as a claim.
 
-### 18.7 What only a live pane can still catch
+18.8 re-runs the four remaining files at the base commit and on this branch, in
+a bare environment with the links repaired, and gets identical results.
 
-The mocked suite proves the state machine's decisions. It cannot prove the one
-thing underneath them: that this area reads herdr's real responses correctly.
-Specifically, three assumptions are modelled rather than measured -
+### 18.7 The three modelled assumptions, now measured - and what is still open
 
-- a fresh Windows herdr shell pane answers `agent get` with `agent_not_found`,
-  which is what makes it a legal target here;
-- `pane read --source recent` over a quiet shell pane returns the same bytes
-  twice in a row, which is what "untouched" is built on;
-- `pane send-text` leaves the line visible and unsubmitted, and the following
-  `enter` runs it.
+This section previously listed three assumptions this area took from
+`bin/backends/herdr.sh` rather than measured. 18.5 measured all three against a
+real herdr 0.7.5 server:
 
-Each is taken from `bin/backends/herdr.sh` and from this repo's own herdr notes
-rather than invented, and each is exactly what the blocked demonstrations in
-18.5 would have measured. Until they are, the live behaviour of this feature is
-`NOT YET VERIFIED ON WINDOWS HARDWARE` however green the suite is.
+| Assumption | Now |
+| --- | --- |
+| a fresh shell pane answers `agent get` with `agent_not_found`, which is what makes it a legal target | **measured.** The pre-flight accepted the fresh lab pane and typed into it, which it does only on `no-agent`; the same pane answered with a registered agent once Claude started, and with one after `pane report-agent`, which was refused. |
+| `pane read --source recent` over a quiet shell pane returns the same bytes twice | **measured.** Nine consecutive one-second polls over the armed pane were byte-identical, which is what held the window open to its deadline. |
+| `pane send-text` leaves the line visible and unsubmitted, and a following `enter` runs it | **measured.** Visible and unsubmitted from t=2s to t=10s, and Claude running at t=11s. |
+
+Measuring them also **found a defect none of them describes** - the pane is not
+the only thing that can change between typing and reading back. That is 18.9.
+
+All three were measured on **both** platforms - Windows herdr
+`0.7.5-preview.2026-07-21` on the laptop and Linux herdr `0.7.5` - and gave the
+same answers. `NOT YET VERIFIED ON WINDOWS HARDWARE` no longer applies to this
+area's live pane behaviour.
+
+Measuring on Windows specifically earned two things a Linux-only run would have
+missed:
+
+- **the agent-registered signal is load-bearing there.** At the moment Enter's
+  effect was confirmed, the Windows pane text had not repainted yet, so the
+  pane-changed signal alone would have reported an *unconfirmed* submit for a
+  command that had in fact started (18.5, demo 1).
+- **a herdr CLI round-trip on Windows is slower than the 0.4s settle**, which is
+  why reproducing 18.9's race there needed the settle widened before a simulated
+  captain could get into it at all.
+
+What remains modelled rather than measured is unchanged and is stated in this
+file's header: a shell running a *silent* foreground process is indistinguishable
+from a shell at its prompt, because herdr's live foreground-process reading comes
+back empty on Windows. The grace window is the mitigation, not a check.
 
 ### 18.8 Attributing all six, base against branch - `PROVEN (Windows 11)`
 
@@ -2380,3 +2553,180 @@ One earlier guess is worth correcting rather than quietly dropping: the
 foundation pair looked like `FM_HOME` leaking out of the runner into the whole
 Pester process. It is not - they fail with the environment cleared, at the base
 commit, on their own.
+
+### 18.9 The defect the live pane found - `PROVEN (Windows 11)` and `PROVEN (pwsh/Linux)`
+
+**Firstmate submitted the captain's own line, and reported it as a success.**
+
+The mocked suite was green, and had been green through every stand-down case
+this area has. Driving the same state machine against a real pane found a defect
+none of those cases could express.
+
+**What was wrong.** Typing is not atomic. `pane send-text` returns, a settle
+passes, and only then is the pane read back to establish the armed baseline that
+the whole grace window is compared against. A keystroke made in that gap is
+already in the pane when the baseline is taken - so it becomes *part of the
+baseline*. Every subsequent poll then reproduces those bytes perfectly, because
+the pane genuinely does not change again, and the window runs to its deadline
+and presses Enter. The captain's half-written line is submitted along with
+firstmate's command, and the result is reported as a clean success.
+
+No test in the grace window can catch this, because by the time the window
+starts there is nothing left to detect: the interference is already inside the
+thing the window trusts.
+
+**Reproduced, before fixing.** A lab pane, `delay=6`, a stand-in command so the
+race is about whose text is submitted rather than what starts, and a simulated
+captain typing `; echo CAPTAIN-TEXT` the instant firstmate's characters appear:
+
+```
+<<RESULT>> action=submitted submitted=True
+<<REASON>> started 'echo FIRSTMATE-COMMAND' after 6s untouched - the pane took the command
+captain typed at 21:13:20.754
+
+--- AFTER ---
+...racework$ echo FIRSTMATE-COMMAND; echo CAPTAIN-TEXT
+FIRSTMATE-COMMAND
+CAPTAIN-TEXT
+...racework$
+```
+
+`CAPTAIN-TEXT` **ran**. And the reason line says "after 6s untouched" about a
+pane that was touched. This is precisely the failure the feature must not have,
+reported as success.
+
+**The fix** is to stop trusting the baseline and prove it instead:
+`Test-FmAutolaunchArmedByFirstmate` requires the pane after typing to read as the pane
+before plus exactly the command and nothing else. Whitespace is dropped from
+both sides before comparing, because herdr hard-wraps a capture at the pane
+width and splits the command mid-token - a 53-column pane renders
+`claude --dangerously...` as `cl\naude --dangerously...`. That keeps the
+comparison immune to where the wrap falls without weakening it: no keystroke
+that adds a visible character can survive it. The comparison is anchored at the
+tail, so history may scroll off the *start* of the capture - which typing at the
+bottom of a full pane genuinely causes - while nothing may be gained anywhere.
+
+**The same race after the fix**, same script, same timing:
+
+```
+<<RESULT>> action=stood-down submitted=False
+<<REASON>> the pane does not hold exactly the command that was typed, so
+           something else reached it at the same moment; nothing was submitted
+captain typed at 21:14:41.156
+
+--- AFTER ---
+...racework$ echo FIRSTMATE-COMMAND; echo CAPTAIN-TEXT
+```
+
+Nothing ran. The captain's characters are exactly where they typed them.
+
+#### The same A/B on the laptop - `PROVEN (Windows 11)`
+
+Because the fix is in the state machine rather than in herdr, it was worth
+proving on the platform this port exists for. Two clones on the laptop - one at
+`326f7af` before the fix, one at the fix - one lab, one simulated captain, back
+to back:
+
+```
+================ BEFORE-THE-FIX ================
+commit:   326f7af Name the commit each suite run was measured at
+<<RESULT>> action=submitted submitted=True
+<<REASON>> started 'echo FIRSTMATE-COMMAND' after 6s untouched - the pane took the command
+--- AFTER ---
+PS C:\Users\ADMIN\...> echo FIR
+STMATE-COMMAND; echo CAPTAIN-TEXT
+FIRSTMATE-COMMAND
+CAPTAIN-TEXT
+CAPTAIN'S TEXT WAS EXECUTED: True        <-- the defect, on the laptop
+
+================ AFTER-THE-FIX ================
+<<RESULT>> action=stood-down submitted=False
+<<REASON>> the pane does not hold exactly the command that was typed, so
+           something else reached it at the same moment; nothing was submitted
+--- AFTER ---
+PS C:\Users\ADMIN\...> echo FIR
+STMATE-COMMAND; echo CAPTAIN-TEXT
+CAPTAIN'S TEXT WAS EXECUTED: False       <-- typed, held, never run
+```
+
+**Which commits those two runs are.** The pre-fix side is `326f7af` exactly. The
+post-fix side ran at the fix commit as it stood then; the branch tip renames one
+private function (`Test-FmAutolaunchArmedByUs` to
+`Test-FmAutolaunchArmedByFirstmate`) and edits comments, with no behavioural
+change, and the tip is what 18.6's suite numbers are measured at. The live A/B
+was not re-run for the rename.
+
+**How the race had to be entered there, stated plainly.** A herdr CLI
+round-trip on Windows takes longer than autolaunch's own 0.4s settle, so a
+simulated captain polling the pane cannot get inside that gap - three attempts
+typed only after Enter had already been sent, and are not counted as
+demonstrations of anything. The run above therefore does two things: it widens
+the settle with `-SettleSeconds 8`, and it types on a clock rather than by
+polling. Neither changes the mechanism - the gap between `send-text` and the
+read-back is what it is at any width - but it does mean the *timing* of this
+particular reproduction was arranged rather than natural. What is measured is
+that with a keystroke in that gap, the pre-fix code submits it and the fixed
+code does not.
+
+Two of the intermediate attempts are worth keeping rather than discarding: when
+the simulated captain typed slightly earlier, into the *pre-flight* window
+instead, both checkouts refused with `nothing was typed: the pane is changing,
+so it is already in use`. That is the older guard doing its job, and it is why
+the settle-gap defect needed a keystroke landing in one specific interval to
+show up at all.
+
+**The fixture is why it hid.** `Set-CalmPane` had `Send-FmHerdrLiteral` insert a
+`"> "` of its own before the text. No pane does that - a real one puts the
+characters at the shell's prompt exactly as a keyboard would, which is what
+every capture in 18.5 shows. That invented separator meant the mocked pane never
+looked like a real one, and the check that catches this defect is exactly the
+check that fiction would have defeated. The fixture is corrected in the same
+commit; with it corrected the pre-existing cases still pass, so the correction
+removed a fiction rather than a behaviour.
+
+**Cost of the check.** It is one more way to stand down, and standing down
+wrongly costs the captain a keypress. Two of the twelve new tests exist to keep
+that cost from becoming a feature that never fires: a capture whose command is
+wrapped across lines, and one where older output scrolled off the top while the
+command was typed, both still submit.
+
+### 18.10 The laptop tunnel, and what it cost
+
+The laptop is reached over `ssh -p 2222` on a forwarded port. It was **down for
+the first half of this task** and came up partway through, which is why the same
+demonstrations exist twice.
+
+```
+21:08:35  Connection timed out during banner exchange   <- listener up, laptop end gone
+   ...    21 consecutive attempts over ~11 minutes
+21:19:30  ssh: connect to host 127.0.0.1 port 2222: Connection refused
+21:19:50  ALIVE
+```
+
+The listener on this box stayed up throughout, so the failure was the laptop end
+of the tunnel rather than the forwarder - the same shape section 0 records for an
+earlier lane, where it never recovered.
+
+Two practical notes for the next run rather than for this one:
+
+- The remote default shell is **`cmd.exe`**, not PowerShell. `ssh ... 'echo X;
+  pwsh -Command "..."'` gets echoed literally instead of run, and a long
+  `pwsh -Command` string mangles on the way through. Copy a `.ps1` across and run
+  it with `pwsh -NoProfile -File`; every Windows step here does that.
+- A herdr CLI round-trip on Windows costs longer than autolaunch's own 0.4s
+  settle, which matters for anything trying to *time* against it - see 18.9.
+
+Everything this run created on the laptop was removed afterwards: two clones,
+the transferred bundle, the runner scripts, and the throwaway homes, all
+verified gone. The captain's own checkout at `C:\Users\ADMIN\firstmate-win` was
+never read or written by anything here - no path in any script above refers to
+it - their PowerShell profile was left alone (`-SkipProfile`), and their live
+`default` herdr session was never a target and was verified unchanged after
+every lab teardown.
+
+One thing worth naming so a later reader does not misread it: that checkout
+**does** have recent write timestamps and uncommitted changes
+(`FmBacklogAdmin.ps1`, `FmBacklog.Tests.ps1`, a `testResults.xml`), including
+writes that landed *after* this run had finished and cleaned up. That is another
+lane working in the captain's checkout concurrently, not this one. Timestamps
+there are not evidence about this task either way.
