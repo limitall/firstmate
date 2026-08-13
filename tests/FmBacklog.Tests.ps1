@@ -790,9 +790,43 @@ Describe 'the backlog has ONE location' {
         Test-Path -LiteralPath $legacy | Should -BeTrue
     }
 
+    It 'never starts an empty queue beside a real one: the root file MOVES, it is not left behind' {
+        # The alternative fix considered for this defect - search data/ first but
+        # keep <home>/backlog.md as a second candidate - is deliberately NOT what
+        # this port does, and this pins the difference.
+        #
+        # Keeping the root candidate fixes a FRESH home and leaves an
+        # already-split one split: the resolver would go on reading
+        # <home>/backlog.md while the session-start digest, cleanup and a Linux
+        # firstmate sharing the home read data/backlog.md unconditionally, so the
+        # captain's own home - the one the defect was found on - would still
+        # report the queue ABSENT with their items in it.
+        #
+        # The concern behind that alternative is real and is met here in full: no
+        # empty file is created next to the captain's items. Their file is the one
+        # that ends up at the canonical path, with its items intact.
+        $home_ = New-EmptyHome
+        $legacy = Get-FmBacklogLegacyPath -HomePath $home_
+        [System.IO.File]::WriteAllText($legacy,
+            "# Backlog`n`n## Queued`n- [ ] keep-me - the captain's item (since 2026-08-01)`n")
+
+        $config = Get-FmBacklogConfig -Root $home_ -HomeConfigPath (Join-Path $TestDrive 'absent.toml') `
+            -WarningAction SilentlyContinue
+
+        $config.Path | Should -Be (Get-FmBacklogPath -HomePath $home_)
+        @(Get-FmBacklog -Path $config.Path).Id |
+            Should -Be 'keep-me' -Because 'the existing queue moved; a new empty one was never created'
+        Test-Path -LiteralPath $legacy |
+            Should -BeFalse -Because 'leaving it behind is exactly the split that made the digest report ABSENT'
+        # And the path every other reader computes for itself now agrees.
+        Test-Path -LiteralPath (Get-FmBacklogPath -HomePath $home_) -PathType Leaf | Should -BeTrue
+    }
+
     It 'leaves a home that deliberately pins another path alone' {
         # A pinned backlog is not the pre-fix accident, and moving a file the
-        # home never named would be the surprise.
+        # home never named would be the surprise. It is also the escape hatch for
+        # the one legitimate root-level layout - tasks-axi's own default shape -
+        # so a home that really wants its queue at the root says so and keeps it.
         $home_ = New-EmptyHome
         [System.IO.File]::WriteAllText((Join-Path $home_ '.tasks.toml'),
             "backend = `"markdown`"`n`n[markdown]`npath = `"data/elsewhere.md`"`n")

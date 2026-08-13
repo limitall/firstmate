@@ -26,7 +26,8 @@ Public functions: `Install-FmHome`, `Invoke-FmDoctor`.
 3. **Home pointer** - writes the chosen home to `<checkout>/.fm-home`. See
    "Working without the profile" below; this is the step that makes the entry
    points work in a shell that loads no profile, so `-SkipProfile` does not skip
-   it.
+   it. `-KeepHomePointer` is the one thing that does - see "Provisioning a
+   second home from one checkout" below.
 4. **Home redirect** - when the home is NOT the checkout, writes an
    `AGENTS.md`/`CLAUDE.md` into the home that stops a session started there and
    names the checkout. See "Which directory do I start Claude in" below.
@@ -129,6 +130,29 @@ where it then outranks a pointer written a moment later and is exported to every
 child. The first version did exactly that, and a setup run followed by
 `fm-home.ps1` in the same session printed the checkout as the home - setup's own
 prelude had pinned the fallback before setup wrote the pointer.
+
+### Provisioning a second home from one checkout
+
+A checkout has **exactly one** pointer, and it answers one question: which home
+does this checkout resolve to with no profile and no environment. Setup used to
+rewrite it on every run, which is correct while the captain is moving this
+checkout's own home and wrong the moment the home being built belongs to someone
+else.
+
+Provisioning a secondmate is exactly that moment. Its home is built from the
+primary's checkout, so setup repointed the primary at it. Nothing errored: the
+running firstmate carried on and operated against the secondmate's state.
+
+`-KeepHomePointer` withholds the write. It also withholds the session wiring at
+step 9's predecessor - the `FM_HOME`/`PATH`/`PSModulePath` publication setup
+normally applies to its own process - because those are the same claim at two
+scopes, and a session that provisioned a secondmate by importing the module
+rather than shelling out would otherwise be moved just as silently. The second
+home is still built in full; only the claim on the checkout is withheld.
+
+It is **opt-in**, not the default, because repointing is the correct behaviour
+for the case it was written for. `.agents/skills/secondmate-provisioning`
+requires the switch at the step that creates the home.
 
 `tests/FmEntryPoint.Tests.ps1` runs real `pwsh -NoProfile` children against a
 checkout copied to a temporary path with `FM_*` and `PSModulePath` stripped from

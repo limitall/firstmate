@@ -189,10 +189,29 @@ function Get-FmBacklogConfig {
     # sibling, and the canonical-location comparison below all key off it.
     $resolved = Resolve-FmFullPath -Path $resolved
 
+    # NOT A PROBE, and specifically not "data/backlog.md first, <home>/backlog.md
+    # second". That ordering fixes a FRESH home and leaves an already-split one
+    # split: the resolver would keep reading <home>/backlog.md while the
+    # session-start digest, teardown and a Linux firstmate sharing the home all
+    # read data/backlog.md unconditionally, so the digest would go on reporting
+    # the queue absent with the captain's items in it. The homes that need the
+    # fix most are exactly the ones that already ran the old code, so the
+    # location is single-sourced and the stale file is MOVED to it instead.
+    #
+    # The concern behind that ordering - never silently replace a real queue with
+    # a new empty one - is not dropped, it is met more strongly: the migration
+    # below moves the existing file rather than creating a second one, so the
+    # captain's items arrive at the canonical path instead of being orphaned
+    # beside it.
+    #
     # Reconcile a pre-fix root-level backlog before anyone reads or writes this
     # home's queue. Only when the resolved file IS the canonical location: a
     # home that deliberately pins somewhere else has not lost anything here, and
-    # moving a file it never named would be the surprise, not the fix.
+    # moving a file it never named would be the surprise, not the fix. That pin
+    # is also the escape hatch for the one root-level layout that is legitimate
+    # rather than stale - tasks-axi's own default shape for a plain project -
+    # because -Root here is a FIRSTMATE HOME: every production caller leaves it
+    # to Get-FmHome, and a project's queue is never resolved through this seam.
     if (Test-FmPathEqual -Left $resolved -Right (Get-FmBacklogPath -HomePath $Root)) {
         $repair = Repair-FmBacklogLocation -HomePath $Root
         if ($repair.Action -eq 'conflict') { throw $repair.Message }

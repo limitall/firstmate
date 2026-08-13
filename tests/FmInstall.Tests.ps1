@@ -128,6 +128,102 @@ Describe 'Install-FmHome: the home layout' {
         Read-FmHomePointer -Path $fixture.Pointer | Should -Be $fixture.Home
     }
 
+    It 'leaves an existing home pointer alone under -KeepHomePointer' {
+        # The hazard this guards, measured on the captain's laptop: provisioning
+        # a SECONDMATE home from the primary checkout rewrote that checkout's
+        # .fm-home to the new home. Nothing errored - the running primary simply
+        # began resolving to another home's state. One checkout has exactly one
+        # pointer, so a second home must not claim it.
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+        $primary = Read-FmHomePointer -Path $fixture.Pointer
+
+        $second = Join-Path (Split-Path -Parent $fixture.Home) ('second-' + [System.IO.Path]::GetRandomFileName())
+        $report = Invoke-Setup -Fixture $fixture -Extra @{
+            FirstmateHome   = $second
+            KeepHomePointer = [switch]$true
+        }
+
+        ($report.Steps | Where-Object { $_.Name -eq 'home pointer' }).Action | Should -Be 'skipped'
+        Read-FmHomePointer -Path $fixture.Pointer | Should -Be $primary
+        # The second home is still fully built; only the pointer was withheld.
+        Test-Path -LiteralPath (Join-Path $second 'state') -PathType Container | Should -BeTrue
+    }
+
+    It 'PROOF: after provisioning a second home, the checkout still RESOLVES to the first' {
+        # Asserting the pointer file is not the same as proving the bug is gone.
+        # The defect was never "a file has the wrong bytes" - it was "a session
+        # with no profile and no environment now answers the wrong home", so this
+        # provisions a second home from a checkout and then asks the resolver the
+        # question the running primary asks.
+        #
+        # Deliberately NOT the shared fixture: this uses a scratch checkout so
+        # the pointer sits at its REAL default location, <checkout>/.fm-home,
+        # rather than a redirected test path. That default is the whole subject.
+        $checkout = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Force `
+            -Path (Join-Path -Path $checkout -ChildPath 'module' -AdditionalChildPath 'Firstmate')
+        $primaryHome = Join-Path $checkout 'primary-home'
+        $secondHome = Join-Path $checkout 'secondmate-home'
+        $pointer = Join-Path $checkout '.fm-home'
+
+        $common = @{
+            RepoRoot         = $checkout
+            ProfilePath      = Join-Path $checkout 'profile.ps1'
+            HookSettingsPath = Join-Path $checkout 'settings.json'
+        }
+
+        # FM_HOME outranks the pointer by design, so it must not be the thing
+        # answering here - otherwise this would pass without the pointer at all.
+        $savedFmHome = $env:FM_HOME
+        try {
+            $env:FM_HOME = $null
+
+            $null = Install-FmHome @common -FirstmateHome $primaryHome
+            $expected = Resolve-FmFullPath -Path $primaryHome
+            Read-FmHomePointer -Path $pointer | Should -Be $expected
+            Resolve-FmEntryPointHome -RepoRoot $checkout -PointerPath $pointer | Should -Be $expected
+            # Wiring the session to the home it just built is what the FIRST run
+            # is supposed to do; it is the second run doing it that is the bug.
+            $sessionHome = $env:FM_HOME
+            $sessionHome | Should -Be $primaryHome
+
+            # The provisioning step the secondmate skill now prescribes.
+            $report = Install-FmHome @common -FirstmateHome $secondHome -KeepHomePointer
+
+            # THE PROOF, in the order the bug bit: the durable pointer, then the
+            # answer a fresh entry point gets from it, then the live session.
+            Read-FmHomePointer -Path $pointer |
+                Should -Be $expected -Because 'the second home must not claim the checkout''s only pointer'
+            Resolve-FmEntryPointHome -RepoRoot $checkout -PointerPath $pointer |
+                Should -Be $expected -Because 'this is the question every entry point asks with no profile and no environment'
+            $env:FM_HOME |
+                Should -Be $sessionHome -Because 'the live session must not be moved to the home it was only provisioning'
+
+            # And the second home is genuinely built - the switch withholds the
+            # claim on the checkout, it does not make setup a no-op.
+            ($report.Steps | Where-Object { $_.Name -eq 'home pointer' }).Action | Should -Be 'skipped'
+            foreach ($name in @('config', 'data', 'projects', 'state')) {
+                Test-Path -LiteralPath (Join-Path $secondHome $name) -PathType Container | Should -BeTrue
+            }
+            # Including the stop-and-redirect memory, which is what catches a
+            # session started in the secondmate's home by hand.
+            Test-Path -LiteralPath (Join-Path $secondHome 'AGENTS.md') -PathType Leaf | Should -BeTrue
+        } finally {
+            $env:FM_HOME = $savedFmHome
+        }
+    }
+
+    It 'still repoints the checkout when -KeepHomePointer is NOT passed' {
+        # The switch is opt-in on purpose: moving this checkout's own home is a
+        # real thing the captain does, and it must keep working.
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+        $moved = Join-Path (Split-Path -Parent $fixture.Home) ('moved-' + [System.IO.Path]::GetRandomFileName())
+        $null = Invoke-Setup -Fixture $fixture -Extra @{ FirstmateHome = $moved }
+        Read-FmHomePointer -Path $fixture.Pointer | Should -Be $moved
+    }
+
     It 'is idempotent: the second run changes nothing and reports already' {
         $fixture = New-InstallFixture
         $null = Invoke-Setup -Fixture $fixture

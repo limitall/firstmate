@@ -46,9 +46,13 @@ BeforeAll {
     # command on exactly the machine it has to work on. So they assert the
     # contract instead, by READING both names: a read follows a symlink, a
     # hardlink and a copy alike, which is precisely the property that makes all
-    # three acceptable. (Test-FmAgentsMirror is not the check to reuse here - it
-    # compares FileInfo.Length, and a symlink's own length is its target string,
-    # so it answers a narrower question about two real files.)
+    # three acceptable. The strategy-specific behaviour keeps its own tests in
+    # 'the link strategies' below, so nothing stops checking that a host which
+    # CAN symlink still gets a symlink. (Test-FmAgentsMirror is not the check to
+    # reuse here - it asks whether two REAL files are byte-identical, and it
+    # short-circuits on FileInfo.Length, which for a symlink is the reparse
+    # point's own length rather than the target's. It answers a narrower
+    # question than this one.)
     function Test-FmAgentsPairResolves {
         [OutputType([bool])]
         param([Parameter(Mandatory)][string]$Directory)
