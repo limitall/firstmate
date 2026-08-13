@@ -2816,3 +2816,46 @@ them would have stopped checking the command on exactly the machine it has to
 work on. They now assert that both names resolve to the same content, by reading
 through both - which is true of a symlink, a hardlink and a copy alike. Section
 12's "a non-elevated Windows run is the outstanding confirmation" is now closed.
+
+### 19.5 Suite numbers, both platforms, AFTER the rebase onto `59925eb`
+
+Measured after the rebase, not before, because a clean replay can still break
+code:
+
+```
+Linux    pwsh 7.6.4 / Pester 6.1.0   T=1601  P=1596  F=0  S=5
+Windows  pwsh 7.6.4 / Pester 6.1.0   T=1601  P=1583  F=4  S=14
+```
+
+Before the rebase this branch alone was `T=1540 P=1535 F=0 S=5` on Linux against
+a `2e60e39` baseline of `T=1523 P=1518 F=0 S=5`, so it adds 17 tests and every
+one passes; the other 61 arrived with section 18's branch. The skip counts differ
+by platform, not by branch: the Windows-only and POSIX-only cases are gated by
+their own probes.
+
+The four Windows failures are the four section 16 established as pre-existing,
+and section 18.8 then measured at the base commit on this same laptop and got an
+identical list. They are named here so this run's number is readable on its own:
+
+```
+the sweep runner itself.gives up after the full attempt budget when every sweep crashes
+the sweep runner itself.recovers when a later attempt completes, and keeps that attempt s findings
+Get-FmTaskStatePath.composes state/<id>.<suffix>
+Reading.returns an empty collection of lines for a missing file
+```
+
+**Two more failed on the first Windows run and are NOT that class, so they were
+attributed rather than assumed.** `this checkout's own instruction surface.is
+healthy` and `...keeps the contract reachable under both names it is read by`
+read the REAL checkout, and the scratch clone used for this run had never had
+`bin/fm-setup.ps1` run against it - so `CLAUDE.md` and `.claude\skills` were
+still the placeholders a Windows clone leaves. Running `tests/FmContract.Tests.ps1`
+in that same clone once the two links existed gives `T=37 P=37 F=0` at BOTH
+`2e60e39` and this branch, and the whole-suite re-run above no longer lists them.
+They were the clone's state, not this change.
+
+One regression check that is easy to skip and worth stating: both new backlog
+regression tests were confirmed RED with only the two behaviour hunks reverted
+and the new tests left in place - `THE REGRESSION: an added item is found through
+the path session start reads` and `THE REGRESSION: an added item appears in the
+digest, not ABSENT` - so neither passes for a reason other than the fix.
