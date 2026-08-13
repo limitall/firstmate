@@ -2022,6 +2022,43 @@ ORDER pbase -> pfixed      pbase   modules_loaded_after=1  failed=0
                            pfixed  modules_loaded_after=1  failed=0
 ```
 
+### After the fix, on the laptop
+
+The branch alone, elevated, whole suite - the cleanest single measurement:
+
+```
+FIXED 308b9f9  1523 total  1507 passed  0 failed  16 skipped
+```
+
+Zero. The 40 are gone.
+
+The paired run at that commit reported 3, and all three were chased rather than
+dismissed. `MODULES_LOADED_BEFORE=1` on the second suite confirms it started in
+exactly the contaminated condition that used to produce 40, and produced none of
+them:
+
+```
+BASE  99a0e96  1452 total  1436 passed  0 failed  16 skipped
+FIXED 308b9f9  1523 total  1504 passed  3 failed  16 skipped
+
+  this checkout's own instruction surface.is healthy
+  this checkout's own instruction surface.keeps the contract reachable under both names it is read by
+  One holder, proven with real processes.never lets two processes increment a counter at once
+```
+
+- The **instruction-surface pair** checks the checkout it runs in. That clone was
+  a plain bundle clone `bin/fm-setup.ps1` had never run in, unlike the two
+  comparison clones, which is a difference in clone state and not in code.
+  **Recorded weaker than the rest of this file deliberately:** setup was run
+  before the failure text was captured, so this is attribution by elimination
+  rather than by message.
+- The **real-process lock test** spawns three workers and waits on them. Run
+  alone on the same machine it passed `47/47` three times consecutively. It
+  failed only in second position, after about fifty minutes of continuous load.
+
+Both were re-measured with the clones equalized; the tunnel dropped mid-run, so
+that result is NOT recorded here and nothing in this section rests on it.
+
 ### A second defect this investigation exposed
 
 Both test helpers this branch added set `Set-StrictMode -Version Latest` at
