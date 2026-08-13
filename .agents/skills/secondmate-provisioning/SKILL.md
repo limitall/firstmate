@@ -27,6 +27,7 @@ What EXISTS on this port:
   `-Mode` and `-Yolo` are refused for a secondmate spawn, because a charter is not a delivery contract.
 - The digest reads `data/secondmates.md` and prints it, or `ABSENT`.
 - `bin/fm-project-remove.ps1` refuses to remove a project that `data/secondmates.md` still references.
+- Retiring one: `bin/fm-teardown.ps1 <id>`, which proves the home is finished with before removing it and drops its registry row last (see "Retiring" below).
 
 What does NOT exist here (`AGENTS.md` section 14):
 
@@ -36,7 +37,7 @@ What does NOT exist here (`AGENTS.md` section 14):
 - **Cross-home backlog handoff.** `bin/fm-backlog-handoff` is absent. Work routed to a secondmate is added to that home's backlog by hand, running `bin/fm-backlog.ps1` with that home resolved.
 - **The re-read nudge after an update.** Nothing tells a running secondmate its instructions changed.
 - **Every remote route.** No ssh placement, no remote home provisioning, no remote reply source. A secondmate here is a local home on this machine, full stop.
-- **`data/secondmates.md` maintenance.** The registry is a hand-maintained file. Nothing writes it, and nothing validates it.
+- **`data/secondmates.md` maintenance.** The registry is a hand-maintained file: you add its row and you keep it readable, and nothing validates it. Retirement is the one thing that edits it, and it only ever removes the row of the secondmate it just retired.
 
 ## The consequence, stated plainly
 
@@ -87,6 +88,21 @@ Its home holds its own durable state, so a restart is a non-event for its work a
 ## Retiring
 
 Retire one only on an explicit captain or main-firstmate decision.
-Its home must contain no work under way; check its backlog and its `state/` before agreeing.
-Forced discard still requires explicit captain authority, and nothing here authorizes deleting a home that holds unlanded work.
-Remove its row from `data/secondmates.md` last, once the home is genuinely finished with.
+The decision is yours to get; the proving is not, and you do not do any of it by hand.
+
+Run `bin/fm-teardown.ps1 <id>` against the launching home.
+It removes that secondmate's home and then its `data/secondmates.md` row, and every refusal below leaves the home, the row and every state file exactly as it found them, so a plain rerun is always safe.
+
+It refuses, in this order, and each refusal names what it found:
+
+1. a `home=` that is the launching home, this checkout, the task's own worktree or its project clone - which is what a secondmate spawned without `-LabelHome` records,
+2. a LIVE descendant: a lock in that home whose holder is alive, or its session lock held by a live harness,
+3. work under way in ITS OWN home: a `state/<id>.meta` record, or an item in flight in that home's own backlog,
+4. work that has not landed, by the ordinary landed-work rules, in its worktree and in every project clone in its home.
+
+`--force --approved-by "<who approved it>"` overrides 3 and 4 and nothing else, and it records the authority.
+**It does not override a live descendant**: force is captain authority to discard work, never to remove a home a running agent is using.
+Stop that agent first with `bin/fm-control.ps1 <id> exit`.
+
+A secondmate is not a backlog item, so no backlog reminder is printed.
+`docs/teardown-windows.md` owns the mechanism and the ordering; do not re-derive either here.

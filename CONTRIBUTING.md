@@ -247,7 +247,23 @@ and by nothing else, so nothing load-bearing may depend on it.
   entry point gains a behaviour a bare shell must have.
 - Never name a Pester variable `$script:Home`: `$HOME` is read-only, and the
   failure surfaces as Pester's misleading "a 'break' or 'continue' statement
-  escaped from your code". Same hazard as a `-Home` parameter.
+  escaped from your code". Same hazard as a `-Home` parameter. It bites module
+  code too, where it surfaces plainly as "Cannot overwrite variable HOME".
+- **Never put `<angle brackets>` in a Pester test name.** Pester reads `<name>`
+  in an `It` title as a `-ForEach` data placeholder and resolves it as a
+  variable, so a descriptive `'composes state/<id>.<suffix>'` fails under strict
+  mode with "The variable '$id' cannot be retrieved because it has not been
+  set", pointing at `<ScriptBlock>, <No file>:1` rather than at the title.
+- **The suite dirties this checkout, so restore it before you commit.**
+  `tests/FmInstall.Tests.ps1`'s "the entry points" block runs `fm-setup.ps1
+  -RepoRoot <this checkout>`, and setup repairs the checkout's `CLAUDE.md`
+  mirror and `.claude/skills` link as part of its job. The fixture already sends
+  the home pointer somewhere disposable for exactly this reason; the two repairs
+  were missed. Check `git status` after a full run.
+- **Never `git checkout --` a repaired `.claude/skills`.** Once setup has turned
+  that placeholder into a real link to `.agents/skills`, restoring it deletes
+  the link's TARGET - the whole skills tree goes with it. Restore `.agents/skills`
+  from git afterwards, and prefer leaving the repaired link alone.
 
 ## Which directory a Claude session starts in
 

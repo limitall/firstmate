@@ -242,7 +242,12 @@ Describe 'Get-FmTaskStatePath' {
         $env:FM_HOME = $script:TempRoot
     }
 
-    It 'composes state/<id>.<suffix>' {
+    # No angle brackets in the title, however well they describe it: Pester reads
+    # `<id>` and `<suffix>` as -ForEach data placeholders and resolves them as
+    # variables, so this test failed under strict mode with "the variable $id
+    # cannot be retrieved" whenever it ran after a file that left strict mode on -
+    # and passed when its own file ran alone. CONTRIBUTING.md carries the rule.
+    It 'composes the state path from the task id and the suffix' {
         Get-FmTaskStatePath -TaskId 'task-1' -Suffix 'meta' |
             Should -Be (Join-Path $script:TempRoot 'state' 'task-1.meta')
     }

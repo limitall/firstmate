@@ -135,13 +135,22 @@ function Repair-FmBacklogLocation {
 # left to callers - the split it repairs was caused by more than one place
 # answering this question. It is the one thing here that can write, and it does
 # so only to move a file into the location every reader already uses.
+#
+# -IgnoreEnvironment drops TASKS_AXI_FILE from that precedence, and exists for
+# the one kind of caller that must not honour it: a question about a home OTHER
+# than the one this process is operating. TASKS_AXI_FILE is process-wide, so a
+# secondmate retirement asking "does that home have work in flight?" under an
+# operator's override would read the override's file - most likely this home's -
+# and answer about the wrong home entirely. A verdict that decides whether a home
+# is deleted reads that home's own record or it does not run.
 function Get-FmBacklogConfig {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
         [string]$Root,
         [string]$Path,
-        [string]$HomeConfigPath
+        [string]$HomeConfigPath,
+        [switch]$IgnoreEnvironment
     )
 
     if ([string]::IsNullOrEmpty($Root)) { $Root = Get-FmHome }
@@ -160,7 +169,8 @@ function Get-FmBacklogConfig {
     }
 
     $explicit = $Path
-    if ([string]::IsNullOrEmpty($explicit) -and -not [string]::IsNullOrEmpty($env:TASKS_AXI_FILE)) {
+    if ([string]::IsNullOrEmpty($explicit) -and -not $IgnoreEnvironment -and
+        -not [string]::IsNullOrEmpty($env:TASKS_AXI_FILE)) {
         $explicit = $env:TASKS_AXI_FILE
     }
 

@@ -14,9 +14,14 @@ fact. In order:
 
   0. the control lock  - one lifecycle action per task at a time; a contended
                          lock changes nothing at all,
-  1. the shape gates   - a backend, a remote placement or a task kind whose
-                         destructive machinery is not here is refused BY NAME
-                         rather than half-performed,
+  1. the shape gates   - a backend or a remote placement whose destructive
+                         machinery is not here is refused BY NAME rather than
+                         half-performed,
+  1a.the secondmate    - kind=secondmate retires a whole firstmate home, so
+     gate                FmSecondmate.ps1 proves its identity, that no live
+                         descendant holds a lock there, that no work is under
+                         way in ITS OWN backlog and state records, and that
+                         nothing in it is unlanded - all before any step runs,
   2. the scout gate    - a scout's worktree is scratch; its report IS the work
                          product, so teardown refuses without one,
   3. the landed-work   - dirty / unpushed-and-unlanded / (local-only) unmerged.
@@ -36,7 +41,10 @@ fact. In order:
                          pane is confirmed gone,
   7. the artifact gate - PR-check artifacts are validated as ordinary files in
                          the state directory before removal, so a symlinked one
-                         refuses instead of deleting whatever it points at.
+                         refuses instead of deleting whatever it points at,
+  8. the home, then    - a secondmate's descendant leases are released, its home
+     the routing row     comes off disk while this home's meta still names it,
+                         and its data/secondmates.md row goes LAST of all.
 
 ORDERING NOTE, and it is a deliberate divergence from the bash. The bash closes
 the pane AFTER returning the worktree. Windows locks open files: the return
@@ -46,19 +54,20 @@ terminate-job -> return-with-retries -> name-holders-and-refuse. The cost is
 that a refusal after step 4 leaves the task's pane closed; the benefit is that
 the return is attempted only once the worktree is provably ours.
 
--Force IS NOT THE PATH OF LEAST RESISTANCE. It skips the landed-work test and
-the scout report gate, which is to say it discards work, so it requires
--DiscardApprovedBy naming who authorized that. -Force on its own is a usage
-error, never a slightly-more-forceful retry. (The bash takes a bare --force;
-this is the one place the port is deliberately stricter, because the captain's
-explicit OK is the actual precondition and an unqualified flag does not record
-it.)
+-Force IS NOT THE PATH OF LEAST RESISTANCE. It skips the landed-work test, the
+scout report gate, and a secondmate's discard refusals, which is to say it
+discards work, so it requires -DiscardApprovedBy naming who authorized that.
+-Force on its own is a usage error, never a slightly-more-forceful retry. (The
+bash takes a bare --force; this is the one place the port is deliberately
+stricter, because the captain's explicit OK is the actual precondition and an
+unqualified flag does not record it.) What -Force does NOT reach is a LIVE
+descendant of a secondmate home: force authorizes discarding work, never
+removing a home a running process is using.
 
-NOT PORTED, and refused BY NAME rather than approximated: secondmate home
-retirement (the descendant-home, registry and process-event machinery is its own
-area), remote-placed secondmates, the Orca backend (dropped by directive), the
-myfirstmate public-followup gate, and the Herdr presentation journal. Each
-missing owner is reported as a step that did NOT run.
+NOT PORTED, and refused BY NAME rather than approximated: remote-placed
+secondmates, the Orca backend (dropped by directive), the myfirstmate
+public-followup gate, and the Herdr presentation journal. Each missing owner is
+reported as a step that did NOT run.
 #>
 function Invoke-FmTeardown {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
@@ -139,23 +148,22 @@ function Invoke-FmTeardown {
                 'Retire it from the home that owns its route; every record here is preserved.')
         }
 
+        # Retiring a secondmate is not tearing down a task: a whole firstmate
+        # home comes off disk and the fleet's only routing record is edited.
+        # FmSecondmate.ps1 owns every proof that has to hold first; this runs it
+        # HERE, before any destructive step, so a refusal costs nothing.
+        $secondmateHome = ''
         if ($kind -eq 'secondmate') {
-            $homePath = Get-FmMetaValue -Path $metaPath -Key 'home'
-            if (-not $homePath) { $homePath = $worktree }
-            $subState = Join-Path $homePath 'state'
-            if (-not $Force -and (Test-Path -LiteralPath $subState -PathType Container)) {
-                $child = @(Get-ChildItem -LiteralPath $subState -Filter '*.meta' -File -ErrorAction SilentlyContinue)
-                if ($child.Count -gt 0) {
-                    & $refuse @("REFUSED: secondmate $TaskId still has in-flight work in $subState.",
-                        "Found $($child[0].Name). Let that home finish or explicitly discard with --force.")
-                }
+            $secondmateHome = Get-FmMetaValue -Path $metaPath -Key 'home'
+            $retirement = Test-FmSecondmateRetirementSafety -TaskId $TaskId -HomePath $secondmateHome `
+                -FirstmateHome $FirstmateHome -Worktree $worktree -Project $project -Mode $mode -Force:$Force
+            if ($retirement.Verdict -ne 'allow') { & $refuse $retirement.Message }
+            $gateDetail = if ($Force) {
+                "$secondmateHome (discard approved by $DiscardApprovedBy; liveness still enforced)"
+            } else {
+                $secondmateHome
             }
-            # Retiring a home is descendant-home cleanup, registry surgery and
-            # process-event restoration - a separate area. Refusing by name is
-            # the honest degradation; half a home retirement is worse than none.
-            & $refuse @("REFUSED: secondmate $TaskId cannot be retired by this port yet.",
-                'Its home retirement owner (descendant task locks, the registry entry, and process-event restoration) has not landed;',
-                'no step of it ran, and every record is preserved.')
+            & $note 'secondmate-retirement-gate' 'passed' $gateDetail
         }
 
         # --- the scout gate --------------------------------------------------
@@ -333,6 +341,36 @@ function Invoke-FmTeardown {
             & $note 'endpoint-gone' 'confirmed' $target
         }
 
+        # --- the secondmate's home, before this home's records ---------------
+        #
+        # Ordering is the safety property. The home comes off disk while
+        # state/<id>.meta still names it, so a failure here leaves a record
+        # pointing at what is left rather than an untracked home nothing names -
+        # the same rule that keeps the state files when a pool return fails. Its
+        # descendants' leases are released first, for the same reason: their meta
+        # records are the only things that name them, and those go with the home.
+        if ($kind -eq 'secondmate') {
+            $leases = Remove-FmSecondmateDescendantLease -HomePath $secondmateHome -TaskId $TaskId -Confirm:$false
+            if ($leases.Failed.Count -gt 0) {
+                & $refuse (@("REFUSED: secondmate $TaskId's descendant worktrees could not be returned to their pools, so its home was NOT removed.") +
+                    @($leases.Failed | ForEach-Object { "  $_" }) +
+                    @('Its home, its routing row and every state file are preserved so the leases they still hold are not hidden.'))
+            }
+            # The outcome is reported as it came back, never flattened: 'skipped'
+            # and 'nothing-to-do' mean different things, and a step that did not
+            # run must not read as one that had nothing to do.
+            & $note 'secondmate-descendant-leases' $leases.Outcome ($leases.Returned -join '; ')
+
+            $removedHome = Remove-FmSecondmateHome -TaskId $TaskId -HomePath $secondmateHome `
+                -FirstmateHome $FirstmateHome -Worktree $worktree -Project $project -Confirm:$false
+            if (-not $removedHome.Ok) {
+                & $refuse @("REFUSED: secondmate $TaskId's home could not be removed, so its routing row was NOT touched.",
+                    $removedHome.Detail,
+                    'Every record is preserved: while the row is there, the home is still findable.')
+            }
+            & $note 'secondmate-home' $removedHome.Outcome $removedHome.Detail
+        }
+
         if ($taskTmp -and (Test-Path -LiteralPath $taskTmp -PathType Container)) {
             Remove-Item -LiteralPath $taskTmp -Recurse -Force -ErrorAction SilentlyContinue
             & $note 'tasktmp' 'removed' $taskTmp
@@ -355,6 +393,14 @@ function Invoke-FmTeardown {
         }
         Remove-Item -LiteralPath (Join-Path $stateDir ".$TaskId.open-decisions-cursor") -Force -ErrorAction SilentlyContinue
         & $note 'state-records' 'removed'
+
+        # LAST, and only now. data/secondmates.md is the only routing record the
+        # fleet has, so the row stays until the home it points at is genuinely
+        # finished with. Every refusal above this line leaves it in place.
+        if ($kind -eq 'secondmate') {
+            $row = Remove-FmSecondmateRegistryRow -DataDir $dataDir -TaskId $TaskId -Confirm:$false
+            & $note 'secondmate-registry' $row.Outcome ($row.Removed -join ' / ')
+        }
 
         $reminder = Get-FmTeardownBacklogReminder -TaskId $TaskId -Kind $kind -Mode $mode -PrUrl $prUrl `
             -TasksAxiAvailable:(Test-FmTeardownTasksAxiBacklog -ConfigPath $configDir)

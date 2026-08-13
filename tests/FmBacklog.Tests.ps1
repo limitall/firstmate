@@ -138,6 +138,54 @@ Describe 'reading the backlog' {
     It 'returns nothing for a backlog file that does not exist' {
         @(Get-FmBacklog -Path (Join-Path $TestDrive 'nope.md')).Count | Should -Be 0
     }
+
+    It 'reads an EMPTY backlog, which is nothing but headers and blank lines' {
+        # The shape every fresh home has, and the one the main fixture never
+        # produces: its blank lines all sit inside an item body, so they are
+        # consumed by the body scan and never offered to the bullet matcher. A
+        # blank line in an item-less section IS offered to it, and the matcher
+        # used to refuse to bind one at all - so Get-FmBacklog raised instead of
+        # answering "no tasks" for a home that simply had no work yet.
+        $path = New-BacklogFile -Line @('# Backlog', '', '## In flight', '', '## Queued', '', '## Done', '')
+        @(Get-FmBacklog -Path $path).Count | Should -Be 0
+        @(Get-FmBacklog -Path $path -State 'in_flight').Count | Should -Be 0
+    }
+}
+
+Describe 'the TASKS_AXI_FILE override' {
+    # Saved and restored rather than just cleared: the whole suite shares one
+    # process, so a stray $env:TASKS_AXI_FILE left set here would decide another
+    # file's backlog resolution.
+    BeforeAll { $script:priorAxiFile = $env:TASKS_AXI_FILE }
+    AfterAll {
+        if ($null -eq $script:priorAxiFile) {
+            Remove-Item -LiteralPath 'env:TASKS_AXI_FILE' -ErrorAction SilentlyContinue
+        } else {
+            $env:TASKS_AXI_FILE = $script:priorAxiFile
+        }
+    }
+    AfterEach { Remove-Item -LiteralPath 'env:TASKS_AXI_FILE' -ErrorAction SilentlyContinue }
+
+    It 'lets TASKS_AXI_FILE override which file a home resolves to' {
+        $root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        $env:TASKS_AXI_FILE = Join-Path $TestDrive 'elsewhere.md'
+        (Get-FmBacklogConfig -Root $root -HomeConfigPath (Join-Path $TestDrive 'no-home-config.toml')).Path |
+            Should -Be $env:TASKS_AXI_FILE
+    }
+
+    It 'IGNORES that override when the caller is asking about another home' {
+        # TASKS_AXI_FILE is process-wide, so a question about a DIFFERENT home -
+        # a secondmate retirement asking whether that home has work in flight -
+        # would otherwise be answered from this home's file. The verdict decides
+        # whether a home is deleted, so it reads that home's own record.
+        $root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        New-Item -ItemType Directory -Path (Join-Path $root 'data') -Force | Out-Null
+        $env:TASKS_AXI_FILE = Join-Path $TestDrive 'elsewhere.md'
+        (Get-FmBacklogConfig -Root $root -IgnoreEnvironment `
+                -HomeConfigPath (Join-Path $TestDrive 'no-home-config.toml')).Path |
+            Should -Be (Join-Path $root 'data' 'backlog.md')
+    }
 }
 
 Describe 'derived ready, held and blocked projections' {

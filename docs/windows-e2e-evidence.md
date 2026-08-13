@@ -2174,7 +2174,9 @@ a separate defect; what is closed is the question of whose they are.
   It belongs to the lifecycle area, not this one, so it is reported rather than
   edited here - a second lane rewriting that file would collide.
 - **Four whole-suite Linux failures remain** (section 16). Established as
-  pre-existing at `99a0e96`, unattributed as to which file leaks into them.
+  pre-existing at `99a0e96`, unattributed as to which file leaks into them. One
+  of the four - `Get-FmTaskStatePath.composes state/<id>.<suffix>` - is now
+  diagnosed and fixed (section 21.8); the other three are not.
 - **`gh` is absent on the laptop**, so `direct-PR` cannot complete there. An
   install, not a code defect (section 13).
 - **Four Windows-only test failures are open at `2e60e39`** and are nobody's
@@ -2184,7 +2186,38 @@ a separate defect; what is closed is the question of whose they are.
   object`, and one each in `tests/FmPaths.Tests.ps1` (`$id cannot be
   retrieved`) and `tests/FmState.Tests.ps1` (`Count` missing on a read result).
   They belong to the analyzer harness and the foundation area, so they are
-  reported here rather than edited by a lane that does not own them.
+  reported here rather than edited by a lane that does not own them. **The
+  `FmPaths` one is now closed**: section 21.8 has its cause - Pester reads the
+  angle brackets in that test's own title as a `-ForEach` placeholder - and the
+  test is renamed. The other three stand.
+- **The suite dirties the checkout it runs in.** `tests/FmInstall.Tests.ps1`'s
+  "the entry points" block runs `fm-setup.ps1 -RepoRoot $script:RepoRoot`, i.e.
+  the real checkout, so setup does its repo-side repairs on the live working
+  tree: `CLAUDE.md` becomes a mirror of `AGENTS.md` instead of the tracked
+  9-byte placeholder, and `.claude/skills` becomes a real link. `git status` is
+  dirty after every full run, and the pollution leaks into the NEXT run -
+  `FmContract.Tests.ps1`'s "this checkout's own instruction surface / is healthy"
+  then reports `MirrorState` as `conflict` and fails, having passed in the run
+  that caused it. That fixture already routes the home pointer somewhere
+  disposable for exactly this reason and says so in a comment; the two repairs
+  were missed. The fix is to point `-RepoRoot` at a disposable copy - the helper
+  already exists as `New-TestCheckout` in `tests/FmEntryPoint.Tests.ps1` and
+  would need extracting into a shared `tests/*.TestHelpers.ps1`. It belongs to
+  the install area, so it is reported rather than edited here.
+
+  **Restoring it has a trap of its own**, now recorded in `CONTRIBUTING.md`:
+  once setup has repaired `.claude/skills` into a real link, `git checkout --
+  .claude/skills` deletes the link's TARGET and takes the entire
+  `.agents/skills` tree with it. It is recoverable with `git checkout --
+  .agents/skills`, but only if you notice. Remove the reparse point first
+  (`[System.IO.Directory]::Delete($link, $false)`), then restore.
+- **The two `FmContract` "own instruction surface" tests require a SET-UP
+  checkout**, not merely a cloned one: they assert `MirrorState` is `link` or
+  `mirror` and that `CLAUDE.md` carries the contract's bytes. In a fresh task
+  worktree, where `CLAUDE.md` is still the 9-byte git placeholder, both fail
+  until `bin/fm-setup.ps1` has been run against that checkout once. That is a
+  real precondition of the suite and is worth stating where a new lane will hit
+  it.
 
 ## 18. Autolaunch, on the captain's Windows 11 laptop - `PROVEN (Windows 11)`
 
@@ -3042,3 +3075,192 @@ What is known, and what is not:
 It is recorded rather than fixed because a wrong change to mutual exclusion is
 worse than a known flake, and because the reconciliation this section documents
 touches nothing in the lock area.
+
+---
+
+## 21. Secondmate retirement, on the captain's Windows 11 laptop - `PROVEN (Windows 11)`
+
+Executed 2026-08-14 in the disposable worktree
+`C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\2\firstmate-win`, on Windows 11
+Pro 10.0.26200 with PowerShell 7.6.4, a real `treehouse` pool and a real lease.
+Every run below drove `bin/fm-teardown.ps1` as an operator does; nothing here is
+a unit test's account of itself.
+
+### 21.1 The gap, reproduced first
+
+A provisioned secondmate home, a task record in the launching home, a row in
+`data/secondmates.md`, and an agent already exited cleanly - the exact situation
+the brief describes:
+
+```
+=== bin/fm-teardown.ps1 sm-demo ===
+REFUSED: secondmate sm-demo cannot be retired by this port yet.
+Its home retirement owner (descendant task locks, the registry entry, and process-event restoration) has not landed;
+no step of it ran, and every record is preserved.
+exit=1
+
+=== bin/fm-teardown.ps1 sm-demo --force --approved-by 'captain' ===
+(the identical refusal)
+exit=1
+```
+
+`--force` did not help, which is what left hand-deleting the home as the only
+route.
+
+### 21.2 An idle, clean secondmate retires - `PROVEN (Windows 11)`
+
+Same fixture, with the retirement owner landed. The worktree is a genuine
+`treehouse get --lease` allocation, returned conditionally on its lease id:
+
+```
+leased worktree: C:\Users\ADMIN\.treehouse\project-dbfb02\1\project (lease 033ba4f2a5b94fe3aad3cc7365d2818c)
+
+=== bin/fm-teardown.ps1 sm-demo ===
+teardown: step process-custody did NOT run [did-not-run]: no custody job named Local\firstmate-task-sm-demo (win32 error 2)
+teardown sm-demo complete (window fm:w1:p1, worktree C:\Users\ADMIN\.treehouse\project-dbfb02\1\project)
+exit=0
+
+  registry has sm-demo row : False        # removed
+  registry has sm-demo-2   : True         # the other lane survives
+  secondmate home on disk  : False        # retired
+  launching meta on disk   : False
+  project clone on disk    : True         # untouched
+```
+
+The `did NOT run` line is the honest custody report this port already gives a
+task whose processes have all exited; it is not a retirement defect.
+
+### 21.3 Work under way in its own home refuses, naming it - `PROVEN (Windows 11)`
+
+A descendant task record in the secondmate's own `state/`:
+
+```
+REFUSED: secondmate sm-demo still has work under way in its own home C:\...\sm-demo-home.
+  task record child-1 (C:\...\sm-demo-home\state\child-1.meta)
+Let that home finish its work, or tear those tasks down in that home first.
+A forced discard needs the captain's explicit OK: --force --approved-by "<who approved it>".
+exit=1
+```
+
+And its own backlog, read through that home's own `data/backlog.md` rather than
+the launching home's:
+
+```
+REFUSED: secondmate sm-demo still has work under way in its own home C:\...\sm-demo-home.
+  backlog item in flight: sm-work - Fix the demo lane
+exit=1
+```
+
+Both left the home, the registry row and every state file in place, and both
+completed under `--force --approved-by "captain, e2e"`.
+
+### 21.4 A live descendant refuses, and `--force` does NOT override it - `PROVEN (Windows 11)`
+
+A held lock in the secondmate's home, owner alive:
+
+```
+=== bin/fm-teardown.ps1 sm-demo ===
+REFUSED: secondmate sm-demo still has a live descendant holding a lock in C:\...\sm-demo-home.
+  C:\...\sm-demo-home\state\.control-child-1.lock - held by pid 27852
+exit=1
+
+=== bin/fm-teardown.ps1 sm-demo --force --approved-by 'captain, e2e' ===
+(the identical refusal)
+exit=1
+
+  registry has sm-demo row : True
+  secondmate home on disk  : True
+  launching meta on disk   : True
+```
+
+This is the one refusal captain authority does not reach, and the run shows it
+holding with the flag and the authority both present.
+
+### 21.5 Unlanded work refuses, and `--force` records the authority - `PROVEN (Windows 11)`
+
+An unpushed commit in a project clone inside the secondmate's home:
+
+```
+REFUSED: secondmate sm-demo cannot be retired while project clone project in C:\...\sm-demo-home holds work that has not landed.
+  REFUSED: worktree C:\...\sm-demo-home\projects\project has work not on any remote and not landed.
+  unpushed commits:
+  70a1c70 unlanded
+  Push the branch, land its PR, or get the captain's explicit OK to discard, then --force.
+exit=1
+```
+
+The nested refusal is the ORDINARY landed-work test's own wording: the gate
+calls `Test-FmTeardownWorktreeSafety` back rather than carrying a second copy of
+it. With `--force --approved-by "captain, e2e"` the same fixture retired, exit 0,
+and the authority is recorded on the `secondmate-retirement-gate` step.
+
+### 21.6 A `home=` that is not a home refuses - `PROVEN (Windows 11)`
+
+`home=` defaults to the PROJECT directory when a secondmate is spawned without
+`-LabelHome`, so this is a real record shape, not a contrived one:
+
+```
+REFUSED: secondmate sm-demo records its home as C:\...\project, which is task sm-demo's project clone.
+That is not a retirable secondmate home - a secondmate is provisioned with `fm-setup.ps1 -FirstmateHome <path> -KeepHomePointer`,
+and a home= that landed on one of those paths means no separate home was ever created. Nothing was removed.
+exit=1
+
+  project clone on disk    : True
+```
+
+### 21.7 What is NOT proven here
+
+- **The descendant-lease release against a real pool.** The E2E fixtures had no
+  descendant holding a treehouse lease; that path is covered by
+  `tests/FmSecondmate.Tests.ps1` and `tests/FmTeardown.Tests.ps1` against a
+  mocked `treehouse`, including the refusal when a return fails.
+- **Closing a real herdr pane.** The runs above recorded a pane that herdr had
+  already lost, so `Test-FmHerdrEndpointGone` confirmed it gone rather than
+  `Remove-FmHerdrPane` closing a live one. The close itself is the herdr area's,
+  and unchanged by this work.
+- **A single uninterrupted whole-directory `Invoke-Pester -Path ./tests`.** The
+  laptop was heavily loaded by the captain's own applications throughout and
+  each attempt ran for hours; the last one was stopped deliberately, to rebase
+  onto a `main` that had advanced. What IS measured in this worktree: per-file,
+  `FmSecondmate` 40/40, `FmTeardown` 105 passed + 3 skipped (the
+  symlink-privilege ones), and `FmModuleAssembly` + `FmPaths` + `FmSecondmate`
+  111/111 in one process; and inside a whole-directory run that reached 26 of
+  38 files before being stopped, `FmAnalyzer` - the repo-wide sweep, clean at
+  Error, Warning AND Information - plus `FmBacklog`, `FmContract` and 23 others,
+  zero failures throughout. The whole-directory pass is the one claim this
+  section does not make, and it should be re-run before the merge.
+
+### 21.8 Two defects this work found in landed code - `PROVEN (Windows 11)`
+
+Both were found by running the thing, not by reading it.
+
+1. **`Get-FmBacklog` raised on an EMPTY backlog.** `Get-FmBacklogTaskBullet`
+   declared `-Line` mandatory without `[AllowEmptyString()]`, and
+   `ConvertFrom-FmBacklogEntry` offers it every line in a section. The canonical
+   rendering puts a blank line under each `##` header, so a fresh home's backlog
+   is nothing but blank lines:
+
+   ```
+   FAILED: Cannot bind argument to parameter 'Line' because it is an empty string.
+   at ConvertFrom-FmBacklogEntry, module/Firstmate/Private/FmBacklog.ps1: line 616
+   at Get-FmBacklog, module/Firstmate/Public/Get-FmBacklog.ps1: line 44
+   ```
+
+   The suite never caught it because its fixture's blank lines all sit inside an
+   item BODY, which a different scan consumes. A regression test for the
+   item-less section is now in `tests/FmBacklog.Tests.ps1`.
+
+2. **Pester reads angle brackets in an `It` title as a data placeholder.** A test
+   named `'reports one record per state/<id>.meta'` fails with "The variable
+   '$id' cannot be retrieved because it has not been set" under strict mode, and
+   the error points at `<ScriptBlock>, <No file>:1` rather than at the title.
+
+   That is the cause of `Get-FmTaskStatePath.composes state/<id>.<suffix>`,
+   which sections 16 and 17 both carry as unattributed - on Linux and on Windows
+   alike. It is the only `It` in the whole suite carrying placeholders with no
+   `-ForEach` data to fill them, and it explains the recorded symptom exactly:
+   it passes when its own file runs alone, and fails after a file that leaves
+   strict mode on. It is renamed here, and `CONTRIBUTING.md` carries the rule.
+   The other three of section 16's four were NOT diagnosed by this work.
+
+---

@@ -16,11 +16,21 @@ BeforeAll {
     . (Join-Path $PSScriptRoot 'FmSymlink.TestHelpers.ps1')
 
     $script:ModuleRoot = Join-Path $PSScriptRoot '..' 'module' 'Firstmate'
-    . (Join-Path $script:ModuleRoot 'Private' 'FmBackendHerdr.ps1')
-    . (Join-Path $script:ModuleRoot 'Private' 'FmWorktree.ps1')
-    . (Join-Path $script:ModuleRoot 'Private' 'FmJobCustody.ps1')
-    . (Join-Path $script:ModuleRoot 'Private' 'FmTeardown.ps1')
-    . (Join-Path $script:ModuleRoot 'Public' 'Invoke-FmTeardown.ps1')
+    # THE WHOLE TREE, in the loader's own order, not a hand-picked list.
+    #
+    # This suite used to load five files. That worked while teardown reached only
+    # its immediate neighbours, and stopped working the moment the secondmate
+    # retirement gate read that home's own backlog: pulling the backlog area in
+    # made Test-FmTeardownTasksAxiBacklog stop taking its local fallback and
+    # start calling the compatibility probe, whose own dependency was still not
+    # loaded - so eleven UNRELATED teardown tests failed on a missing command.
+    # A partial tree does not model anything a real session has; it just picks a
+    # different arbitrary set of owners to be absent. Load them all, and stage a
+    # genuine absence at the Resolve-Fm*Command seam where a test wants one.
+    foreach ($subdir in @('Private', 'Public')) {
+        Get-ChildItem -LiteralPath (Join-Path $script:ModuleRoot $subdir) -Filter '*.ps1' |
+            Sort-Object Name | ForEach-Object { . $_.FullName }
+    }
 
     function New-TestOrigin {
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
@@ -786,21 +796,6 @@ Describe 'Invoke-FmTeardown' {
             Should -Throw '*did NOT run*'
     }
 
-    It 'REFUSES a secondmate with in-flight children' {
-        $subHome = Join-Path $script:iRoot 'sub'
-        New-Item -ItemType Directory -Path (Join-Path $subHome 'state') -Force | Out-Null
-        Set-Content -LiteralPath (Join-Path (Join-Path $subHome 'state') 'child.meta') -Value 'kind=ship'
-        & $script:WriteMeta @{ kind = 'secondmate'; home = $subHome }
-        { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
-            Should -Throw '*still has in-flight work*'
-    }
-
-    It 'REFUSES a secondmate retirement by name rather than half-performing it' {
-        & $script:WriteMeta @{ kind = 'secondmate'; home = (Join-Path $script:iRoot 'sub-empty') }
-        { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
-            Should -Throw '*cannot be retired by this port yet*'
-    }
-
     It 'REFUSES a backend this port does not drive' {
         & $script:WriteMeta @{ backend = 'tmux' }
         { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
@@ -934,6 +929,224 @@ Describe 'Invoke-FmTeardown' {
         $null = Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -WhatIf
         Test-Path -LiteralPath $script:metaPath | Should -BeTrue
         Should -Invoke Invoke-FmTeardownWorktreeReturn -Times 0
+    }
+}
+
+# =============================================================================
+# Retiring a secondmate through the whole command
+#
+# FmSecondmate.ps1's own suite covers each proof in isolation. These are about
+# the COMMAND: that the gate runs before anything is touched, that the home comes
+# off disk while this home's meta still names it, and - the ordering that matters
+# most - that data/secondmates.md is edited LAST, after every step that can still
+# refuse. While that row is present the home is findable, so removing it early
+# would be how a failed retirement leaves an untracked home behind.
+# =============================================================================
+
+Describe 'Invoke-FmTeardown: secondmate retirement' {
+    BeforeEach {
+        $script:sRoot = Join-Path $TestDrive ([Guid]::NewGuid().ToString('n'))
+        $script:sfx = New-TestFixture -Root $script:sRoot
+        $script:sHome = Join-Path $script:sRoot 'home'
+        $script:sState = Join-Path $script:sHome 'state'
+        $script:sData = Join-Path $script:sHome 'data'
+        New-Item -ItemType Directory -Path $script:sState -Force | Out-Null
+        New-Item -ItemType Directory -Path $script:sData -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:sHome 'config') -Force | Out-Null
+
+        # The secondmate's own home, in the shape fm-setup.ps1 leaves behind.
+        $script:subHome = Join-Path $script:sRoot 'sm-home'
+        foreach ($leaf in @('state', 'data', 'config', 'projects')) {
+            New-Item -ItemType Directory -Path (Join-Path $script:subHome $leaf) -Force | Out-Null
+        }
+        [System.IO.File]::WriteAllText((Join-Path $script:subHome 'data' 'backlog.md'),
+            "# Backlog`n`n## In flight`n`n## Queued`n`n## Done`n")
+
+        $script:sMeta = Join-Path $script:sState 'sm.meta'
+        $script:WriteSecondmateMeta = {
+            param([hashtable]$Extra = @{})
+            $fields = [ordered]@{
+                window             = 'default:pane-2'
+                endpoint_task_id   = 'sm'
+                worktree           = $script:sfx.Worktree
+                project            = $script:sfx.Project
+                harness            = 'claude'
+                kind               = 'secondmate'
+                backend            = 'herdr'
+                home               = $script:subHome
+                projects           = 'project'
+                treehouse_lease_id = 'lease-sm'
+            }
+            foreach ($key in $Extra.Keys) { $fields[$key] = $Extra[$key] }
+            Write-FmTextFileLf -Path $script:sMeta `
+                -Text ((($fields.Keys | ForEach-Object { "$_=$($fields[$_])" }) -join "`n") + "`n")
+        }
+        & $script:WriteSecondmateMeta
+        Set-Content -LiteralPath (Join-Path $script:sState 'sm.status') -Value "working: charter accepted`n"
+
+        $script:sRegistry = Join-Path $script:sData 'secondmates.md'
+        Write-FmTextFileLf -Path $script:sRegistry -Text (@(
+                '# Secondmates'
+                ''
+                "- sm - home ``$script:subHome`` - scope: the demo lane"
+                '- keeper - home `C:\homes\keeper` - scope: a lane that must survive'
+                ''
+            ) -join "`n")
+
+        Mock Invoke-FmChildProcess {
+            $splat = @{ FilePath = $FilePath }
+            foreach ($name in @('ArgumentList', 'Environment', 'WorkingDirectory', 'TimeoutSeconds', 'StandardInput')) {
+                $value = Get-Variable -Name $name -ValueOnly -ErrorAction SilentlyContinue
+                if ($null -ne $value) { $splat[$name] = $value }
+            }
+            & $script:RealChildProcess @splat
+        }
+        Mock Invoke-FmGit {
+            $splat = @{ Directory = $Directory; Arguments = $Arguments }
+            if ($null -ne $TimeoutSeconds) { $splat['TimeoutSeconds'] = $TimeoutSeconds }
+            & $script:RealInvokeGit @splat
+        }
+        Mock Test-FmTeardownTreehouseAvailable { $true }
+        Mock Remove-FmHerdrPane { $true }
+        Mock Test-FmHerdrEndpointGone { $true }
+        Mock Stop-FmTaskJob { [pscustomobject]@{ Outcome = 'terminated'; Survivors = @(); Detail = 'clean' } }
+        Mock Invoke-FmTeardownWorktreeReturn { [pscustomobject]@{ Outcome = 'returned'; Detail = '' } }
+        Mock Invoke-FmChildProcess { New-ChildProcessResult -Ok $false -ExitCode 1 } -ParameterFilter { $FilePath -in @('gh', 'gh-axi') }
+
+        # Every refusal test asserts this: a refusal changes NOTHING.
+        $script:AssertNothingChanged = {
+            Test-Path -LiteralPath $script:subHome | Should -BeTrue -Because 'the home is preserved'
+            Test-Path -LiteralPath $script:sMeta | Should -BeTrue -Because 'the task record is preserved'
+            [System.IO.File]::ReadAllText($script:sRegistry) |
+                Should -BeLike '*- sm - home*' -Because 'the routing row is preserved'
+        }
+    }
+
+    It 'retires an idle, clean secondmate: home gone, endpoint closed, routing row removed' {
+        $result = Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -Confirm:$false
+        $result.Outcome | Should -Be 'complete'
+        Test-Path -LiteralPath $script:subHome | Should -BeFalse
+        Test-Path -LiteralPath $script:sMeta | Should -BeFalse
+        Should -Invoke Remove-FmHerdrPane -Times 1
+
+        $registry = [System.IO.File]::ReadAllText($script:sRegistry)
+        $registry | Should -Not -BeLike '*- sm - home*'
+        $registry | Should -BeLike '*- keeper - home*'
+        ($result.Steps | Where-Object { $_.Step -eq 'secondmate-registry' }).Outcome | Should -Be 'removed'
+    }
+
+    It 'REFUSES work under way in the secondmate''s own home, naming it, and changes nothing' {
+        Write-FmTextFileLf -Path (Join-Path $script:subHome 'state' 'child-1.meta') -Text "kind=ship`n"
+        { Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -Confirm:$false } |
+            Should -Throw '*task record child-1*'
+        & $script:AssertNothingChanged
+        Should -Invoke Remove-FmHerdrPane -Times 0
+    }
+
+    It 'REFUSES a live descendant lock even with -Force and an authority' {
+        # The one refusal captain authority does not reach: force authorizes
+        # discarding work, never removing a home a live process is using.
+        $lock = Join-Path $script:subHome 'state' '.control-child.lock'
+        New-Item -ItemType Directory -Path $lock -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $lock 'pid') -Value "$PID"
+        { Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -Force `
+                -DiscardApprovedBy 'captain' -Confirm:$false } | Should -Throw '*live descendant*'
+        & $script:AssertNothingChanged
+    }
+
+    It 'REFUSES unlanded work in the home''s project clone without -Force' {
+        $clone = Join-Path $script:subHome 'projects' 'proj'
+        $null = New-TestClone -Origin $script:sfx.Origin -Path $clone
+        Set-Content -LiteralPath (Join-Path $clone 'work.txt') -Value 'unlanded' -NoNewline
+        { Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -Confirm:$false } |
+            Should -Throw '*has not landed*'
+        & $script:AssertNothingChanged
+    }
+
+    It 'discards it with -Force AND an authority, and records who approved' {
+        $clone = Join-Path $script:subHome 'projects' 'proj'
+        $null = New-TestClone -Origin $script:sfx.Origin -Path $clone
+        Set-Content -LiteralPath (Join-Path $clone 'work.txt') -Value 'unlanded' -NoNewline
+        $result = Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -Force `
+            -DiscardApprovedBy 'captain, 2026-08-14' -Confirm:$false
+        $result.Outcome | Should -Be 'complete'
+        $result.Forced | Should -BeTrue
+        ($result.Steps | Where-Object { $_.Step -eq 'secondmate-retirement-gate' }).Detail |
+            Should -Match 'captain, 2026-08-14'
+        Test-Path -LiteralPath $script:subHome | Should -BeFalse
+    }
+
+    It 'REFUSES a home= that is the launching home, the checkout, or a project clone' {
+        foreach ($bad in @($script:sHome, (Get-FmRoot), $script:sfx.Project)) {
+            & $script:WriteSecondmateMeta @{ home = $bad }
+            { Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -Force `
+                    -DiscardApprovedBy 'captain' -Confirm:$false } |
+                Should -Throw '*is not a retirable secondmate home*'
+            Test-Path -LiteralPath $bad | Should -BeTrue
+        }
+    }
+
+    It 'KEEPS the routing row when the home cannot be removed' -Skip:(-not $IsWindows) {
+        # THE ORDERING PROPERTY. Windows refuses a delete while a handle is open,
+        # so this is the real failure an operator hits - and the row has to be
+        # there afterwards, because it is the only thing that still names the home
+        # that is still on disk.
+        $held = Join-Path $script:subHome 'data' 'open.txt'
+        [System.IO.File]::WriteAllText($held, 'x')
+        $stream = [System.IO.File]::Open($held, 'Open', 'Read', [System.IO.FileShare]::None)
+        try {
+            { Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -Confirm:$false } |
+                Should -Throw '*home could not be removed*'
+            & $script:AssertNothingChanged
+        } finally {
+            $stream.Dispose()
+        }
+    }
+
+    It 'KEEPS the routing row when a descendant''s worktree cannot be returned' {
+        # Same rule one step earlier: the descendant's meta is the only record
+        # that names its lease, and it goes with the home. A return that did not
+        # happen therefore stops the removal rather than being noted and passed.
+        $childWt = Join-Path $script:sRoot 'child-wt'
+        New-Item -ItemType Directory -Path $childWt -Force | Out-Null
+        Write-FmTextFileLf -Path (Join-Path $script:subHome 'state' 'child-1.meta') `
+            -Text "kind=ship`nworktree=$childWt`nproject=$($script:sfx.Project)`ntreehouse_lease_id=lease-child`n"
+        Mock Invoke-FmTeardownWorktreeReturn { [pscustomobject]@{ Outcome = 'lock-refused'; Detail = 'lock persisted' } } `
+            -ParameterFilter { $Worktree -eq $childWt }
+        { Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -Force `
+                -DiscardApprovedBy 'captain' -Confirm:$false } |
+            Should -Throw '*could not be returned to their pools*'
+        & $script:AssertNothingChanged
+    }
+
+    It 'still retires a secondmate whose home is already gone, so a rerun finishes the job' {
+        Remove-Item -LiteralPath $script:subHome -Recurse -Force
+        $result = Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -Confirm:$false
+        ($result.Steps | Where-Object { $_.Step -eq 'secondmate-home' }).Outcome | Should -Be 'already-gone'
+        [System.IO.File]::ReadAllText($script:sRegistry) | Should -Not -BeLike '*- sm - home*'
+    }
+
+    It 'completes without a registry when the home never had one' {
+        Remove-Item -LiteralPath $script:sRegistry -Force
+        $result = Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -Confirm:$false
+        $result.Outcome | Should -Be 'complete'
+        ($result.Steps | Where-Object { $_.Step -eq 'secondmate-registry' }).Outcome | Should -Be 'no-registry'
+    }
+
+    It 'prints no backlog reminder: a secondmate is not a backlog item' {
+        (Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -Confirm:$false).Reminder | Should -Be ''
+    }
+
+    It 'REFUSES a remote-placed secondmate before the retirement gate is even reached' {
+        & $script:WriteSecondmateMeta @{ remote_host = 'builder.example.invalid' }
+        { Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -Confirm:$false } |
+            Should -Throw '*remote-placed secondmate*'
+        & $script:AssertNothingChanged
+    }
+
+    It 'changes nothing under -WhatIf' {
+        $null = Invoke-FmTeardown -TaskId 'sm' -FirstmateHome $script:sHome -WhatIf
+        & $script:AssertNothingChanged
     }
 }
 

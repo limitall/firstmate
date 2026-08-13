@@ -81,7 +81,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   captain.md         this home's captain preferences and working style; canonical even if harness memory mirrors it
   learnings.md       fleet-local operational facts and gotchas; dated, evidence-backed, curated; created lazily
   projects.md        thin fleet navigation registry recording each project's standing delivery posture
-  secondmates.md     secondmate routing table; hand-maintained on this port (section 14)
+  secondmates.md     secondmate routing table; hand-maintained on this port except for the row a retirement removes (section 14)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
 projects/            cloned repos; gitignored; read-only except under hard rule 1's exception
@@ -307,7 +307,8 @@ Never force teardown without explicit discard authority recorded through `--appr
 After successful teardown, record completion, retain only the configured recent Done history, and re-evaluate queued work whose blockers and time gates have cleared.
 
 A secondmate is persistent and an empty queue is healthy.
-Retire one only on an explicit captain or main-firstmate decision, after loading `secondmate-provisioning`; its home must contain no work under way, and forced discard still requires explicit captain authority.
+Retire one only on an explicit captain or main-firstmate decision, after loading `secondmate-provisioning`; `bin/fm-teardown.ps1 <id>` performs it, its home must contain no work under way, and forced discard still requires explicit captain authority.
+No `--approved-by` overrides a live descendant of that home.
 
 ### Scout outcome and promotion
 
@@ -487,7 +488,7 @@ Each is a plain absence, not a degraded imitation: never simulate one, and tell 
 - **Relay / X mode.** No public-mention integration, no `.env` pairing token, no public follow-ups. Nothing in this port posts anywhere public.
 - **Process-to-event sources.** No long-poll runner, no `state/procevent/` inbox. A blocking external wait must be a backlog item you check, never a held conversational turn.
 - **The voice channel.** No spoken escalation and no spoken question.
-- **Remote secondmates.** Secondmate spawning and charter briefs work locally; the seeding, convergence, liveness sweep, cross-home handoff, and every remote route are absent, and `data/secondmates.md` is hand-maintained.
+- **Remote secondmates.** Secondmate spawning, charter briefs and retirement work locally; the seeding, convergence, liveness sweep, cross-home handoff, and every remote route are absent, and `data/secondmates.md` is hand-maintained except for the row a retirement removes.
 - **Harnesses other than `claude`, and backends other than `herdr`** (section 4).
 - **The automatic watcher arm.** The Claude Stop auto-arm hook is registered but has no arm owner to call, so nothing re-arms the watcher between turns. The emitted supervision block names this and gives the session-kept foreground cycle instead (section 8). Harness detection and the supervision block themselves ARE ported.
 - **The deferred network stage.** No session start makes a network call here, so GitHub authentication and the project clone refresh are unverified until you run them deliberately (section 3). The digest's `NETWORK CHECKS` section names exactly what it has not confirmed.

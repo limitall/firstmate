@@ -496,11 +496,17 @@ function Get-FmBacklogSectionState {
     ''
 }
 
+# -Line takes an empty string, and must: ConvertFrom-FmBacklogEntry asks this of
+# EVERY line in a section, and the canonical rendering puts a blank line under
+# each `##` header - so an empty backlog is nothing but blank lines. Without
+# AllowEmptyString the binder threw before the match could answer, which made
+# Get-FmBacklog raise on the one file shape every fresh home has. An empty line
+# is not a bullet; saying so is the whole answer.
 function Get-FmBacklogTaskBullet {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
-        [Parameter(Mandatory)][string]$Line,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Line,
         [Parameter(Mandatory)][string]$State
     )
 

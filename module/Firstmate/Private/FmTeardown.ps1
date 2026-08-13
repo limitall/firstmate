@@ -430,13 +430,20 @@ function Test-FmTeardownWorkLanded {
 # New-FmTeardownVerdict: verdicts are RETURNED, never thrown - a refusal is a
 # normal outcome of this function, and `throw` under $ErrorActionPreference =
 # 'Stop' would make callers unable to tell a refusal from a bug.
+#
+# The set is every verdict a teardown GATE can reach, not what any one gate
+# emits: Test-FmTeardownWorktreeSafety produces three of them, and the secondmate
+# retirement gate in FmSecondmate.ps1 adds 'gone' for a home that is already off
+# disk - the state an interrupted retirement leaves behind, which a rerun has to
+# be able to finish rather than treat as an error. One constructor, so a gate
+# added later cannot invent a second shape for the same answer.
 function New-FmTeardownVerdict {
     # Constructs an in-memory record and changes nothing.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Constructs an in-memory record and changes nothing.')]
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][ValidateSet('allow', 'refuse', 'lock-blocked')][string]$Verdict,
+        [Parameter(Mandatory)][ValidateSet('allow', 'refuse', 'lock-blocked', 'gone')][string]$Verdict,
         [string[]]$Message = @()
     )
     [pscustomobject]@{ Verdict = $Verdict; Message = @($Message) }
@@ -464,6 +471,12 @@ function Test-FmTeardownIgnorableStatusLine {
 #   - unpushed commits refuse unless the landed-work test proves otherwise.
 # scout and secondmate kinds carve out (their gates are elsewhere), and -Force
 # skips the whole thing - which is why -Force needs explicit authority.
+#
+# THE SECONDMATE CARVE-OUT IS A DEFERRAL, NOT AN EXEMPTION. FmSecondmate.ps1's
+# retirement gate calls straight back into this function with -Kind 'ship' for
+# that secondmate's own worktree AND for every project clone in its home, so the
+# ordinary rules do run over a secondmate - they run there, once, rather than
+# twice with two different answers.
 function Test-FmTeardownWorktreeSafety {
     [CmdletBinding()]
     param(

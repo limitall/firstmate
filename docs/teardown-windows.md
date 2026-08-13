@@ -10,6 +10,9 @@ map, section 4.3), not from this port.
 | `bin/fm-teardown.ps1 <task-id>` | `bin/fm-teardown.sh <task-id>` |
 | `bin/fm-teardown.ps1 <task-id> --force --approved-by "<authority>"` | `bin/fm-teardown.sh <task-id> --force` |
 
+The same command retires a secondmate: `kind=secondmate` selects the retirement
+gate and the two extra removal steps rather than a second entry point.
+
 Exit codes are the repo convention: 0 success, 1 refusal or failure, 2 usage.
 
 ## What teardown proves, in order
@@ -26,9 +29,11 @@ record intact so a plain rerun is always safe.
    An ownerless lock is reclaimed; a lock whose `pid` file cannot be READ is
    treated as live, because stealing it costs two teardowns in one worktree
    while refusing costs an operator one `rm`.
-1. **Shape gates** - the meta must record `herdr`; a `remote_host` (the work
-   lives on another machine) and `kind=secondmate` (home retirement is its own
-   area) are refused by name rather than half-performed.
+1. **Shape gates** - the meta must record `herdr`, and a `remote_host` (the work
+   lives on another machine) is refused by name rather than half-performed.
+1a. **The secondmate retirement gate** - `kind=secondmate` retires a whole
+   firstmate home, so `Private/FmSecondmate.ps1` proves that home is finished
+   with before any step runs. See "Retiring a secondmate" below.
 2. **Scout gate** - `kind=scout` declares the worktree scratch, so the report at
    `data/<id>/report.md` IS the work product. No report, no teardown. The
    unresolved-decision completion gate then runs through its owner
@@ -47,6 +52,9 @@ record intact so a plain rerun is always safe.
    non-symlinked files in an ordinary state directory before removal. A
    symlinked one refuses and preserves task state instead of following the link
    out of the home.
+8. **The home, then the routing row** (`kind=secondmate` only) - the home comes
+   off disk while this home's meta still names it, and `data/secondmates.md` is
+   edited last of all.
 
 Before the destructive steps, teardown also concludes a no-mistakes run that
 THIS worktree provably owns and that is parked at a gate no worker will ever
@@ -76,6 +84,11 @@ from a bug.
 | a `gh` lookup errors and the content check is inconclusive | REFUSE |
 | `kind` is `scout` or `secondmate` | allow - their gates are elsewhere |
 | `-Force` | allow - which is why `-Force` needs authority |
+
+The `secondmate` row is a DEFERRAL, not an exemption. The retirement gate below
+calls this same function back with `-Kind ship`, for that secondmate's own
+worktree and for every project clone in its home, so the ordinary rules do run
+over a secondmate - once, here, rather than twice with two different answers.
 
 A `lock-blocked` verdict never becomes a pass by itself: the lock is cleared
 only if it is provably stale, and then the whole test runs again. The same
@@ -192,6 +205,67 @@ return-with-retries -> name-holders-and-refuse. The cost is that a refusal after
 the custody step leaves the pane closed; the benefit is that the return is only
 attempted once the worktree is provably ours.
 
+## Retiring a secondmate
+
+`Private/FmSecondmate.ps1`. A `kind=secondmate` teardown does not tear down a
+task: it removes a whole firstmate installation - its own state records, its own
+backlog, its own descendant tasks - and edits the fleet's only routing record.
+Before this landed, teardown refused it by name and operators deleted the home
+by hand, which is the unguarded discard this area exists to prevent.
+
+### The gate, before anything is touched
+
+| Proof | Refuses when | `--force` |
+| --- | --- | --- |
+| identity | `home=` is the launching home, the checkout, the task's worktree, or its project clone; contains either of the first two; is not shaped like a firstmate home | never |
+| liveness | a lock in that home has a live holder, or its session lock is held by a live harness | **never** |
+| work under way | that home has a `state/<id>.meta`, or an item in flight in ITS OWN backlog | overrides |
+| unlanded work | the ordinary landed-work test refuses for its worktree or for any project clone in its home | overrides |
+
+The identity proof exists because `home=` **defaults to the project directory**
+when a secondmate is spawned without `-LabelHome` (`ConvertTo-FmTaskRecordField`),
+so "the recorded home is a project clone" is a real record shape rather than a
+hypothetical one. A home that is already absent is a verdict of its own (`gone`),
+not an error - that is the state an interrupted retirement leaves behind, and a
+rerun has to be able to finish the job, which at that point is the routing row.
+
+**`--force` never reaches the liveness proof.** Force is captain authority to
+discard WORK; it is not authority to remove a home a running agent is using, and
+no approval makes that a defined operation. The two forced proofs are skipped
+whole; the two unforced ones run either way, which is what makes that rule true
+rather than merely documented.
+
+The in-flight backlog read goes through `Get-FmBacklogConfig -IgnoreEnvironment`.
+`TASKS_AXI_FILE` is process-wide, so honouring it would answer a question about
+the secondmate's home from whichever file the operator pointed at - most likely
+the launching home's, the one file this check must not consult.
+
+### The order of removal, which is the safety property
+
+1. the descendant leases, returned conditionally on each descendant's own
+   recorded lease id. Their meta records are the only things that name those
+   leases and they go with the home, so a return that fails REFUSES rather than
+   being noted and walked past - the same rule that keeps the state files when
+   the task's own pool return fails.
+2. the home, while `state/<id>.meta` in the launching home still names it. A
+   partial removal (Windows refuses a delete while a handle is open) is reported
+   as a failure and names what is left.
+3. this home's own volatile records, as for any task.
+4. **`data/secondmates.md`, last of all.** While the row is there the home is
+   findable, so it may never be removed at or before a step that can still
+   refuse. Untouched lines are re-emitted byte for byte, a wrapped row's
+   indented continuation goes with it, the file keeps its LF/no-BOM contract, and
+   the removed lines are returned so a hand-maintained file gets an auditable
+   edit rather than a silent one.
+
+### Deliberately not acquired
+
+Retirement does not quietly bring in the rest of the Linux provisioning
+contract. Home seeding, startup convergence, the liveness sweep, cross-home
+backlog handoff, the re-read nudge and every remote route remain absent
+(`.agents/skills/secondmate-provisioning`), and there is no process-event state
+to restore because there are no process-to-event sources here at all.
+
 ## Cross-area binding
 
 Resolved by name at call time through `Resolve-FmTeardownOwner`; a missing owner
@@ -206,22 +280,26 @@ is reported as a step that did NOT run, never as one that passed.
 | `Remove-FmHerdrPane`, `Test-FmHerdrEndpointGone` (landed) | the herdr adapter | pane close is unconfirmed -> the endpoint gate refuses |
 
 Consumed from other landed areas: `Invoke-FmGit`, `Get-FmGitOutput`,
-`Get-FmGitDefaultBranch` (FmWorktree), `Invoke-FmChildProcess`,
-`Get-FmMetaValue`, `Get-FmMetaBackend`, `Get-FmMetaTarget`, `Test-FmTaskIdShape`,
-`Write-FmTextFileLf`, `ConvertFrom-FmJsonSafe`, `Get-FmJsonValue`
-(FmBackendHerdr).
+`Get-FmGitDefaultBranch`, `Resolve-FmPhysicalPathOrRaw`, `Test-FmPathEqual`
+(FmWorktree), `Invoke-FmChildProcess`, `Get-FmMetaValue`, `Get-FmMetaBackend`,
+`Get-FmMetaTarget`, `Test-FmTaskIdShape`, `Write-FmTextFileLf`,
+`ConvertFrom-FmJsonSafe`, `Get-FmJsonValue` (FmBackendHerdr). The retirement gate
+adds `Get-FmRoot` (FmPaths), `Get-FmLockInfo` and `Get-FmSessionLockStatus`
+(FmLock), and `Get-FmBacklogConfig` / `Get-FmBacklog` (backlog area). These are
+called DIRECTLY, not through `Resolve-FmTeardownOwner`: each is landed, and a
+safety gate that silently degraded to "no locks found" would be worse than one
+that fails.
 
 `Invoke-FmChildProcess` gained an optional `-StandardInput`, which is how
 `git show | git patch-id --stable` is composed without a shell pipe.
+`Get-FmBacklogConfig` gained `-IgnoreEnvironment`, so a question about ANOTHER
+home's backlog cannot be redirected by a process-wide `TASKS_AXI_FILE`.
 
 ## Not ported, and refused by name
 
 Each of these refuses loudly rather than being approximated, because half of any
 of them is worse than none:
 
-- **secondmate home retirement** - descendant task locks, the registry entry,
-  process-event snapshot/restore, and child-work discard are their own area. The
-  in-flight-children refusal IS ported and fires first.
 - **the Orca backend** - dropped by directive.
 - **the myfirstmate public-followup gate** and **remote secondmates** - deferred
   in the port scope (report section 2).
