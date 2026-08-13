@@ -86,11 +86,23 @@ function Get-FmBacklogConfig {
     if (-not [string]::IsNullOrEmpty($chosen)) {
         $resolved = if ([System.IO.Path]::IsPathRooted($chosen)) { $chosen } else { Join-Path $Root $chosen }
     } else {
-        foreach ($candidate in @('backlog.md', (Join-Path 'data' 'backlog.md'))) {
+        # data/ FIRST, and as the default. AGENTS.md section 10 makes
+        # data/backlog.md this home's durable queue, and it is the exact path the
+        # session-start digest reads, teardown names, and a Linux firstmate
+        # sharing the home writes. Resolving the bare root copy first meant a
+        # home with no backlog yet created one at the root that NOTHING ever read
+        # back - the digest reported the queue absent while items accumulated
+        # beside it, and because the root candidate then won every later lookup,
+        # the split was permanent rather than self-correcting.
+        #
+        # The root candidate stays, second, so a home that already carries one -
+        # tasks-axi's own default shape for a plain project - keeps resolving to
+        # the file it has instead of being silently replaced by a new empty one.
+        foreach ($candidate in @((Join-Path 'data' 'backlog.md'), 'backlog.md')) {
             $full = Join-Path $Root $candidate
             if (Test-Path -LiteralPath $full -PathType Leaf) { $resolved = $full; break }
         }
-        if ([string]::IsNullOrEmpty($resolved)) { $resolved = Join-Path $Root 'backlog.md' }
+        if ([string]::IsNullOrEmpty($resolved)) { $resolved = Join-Path $Root 'data' 'backlog.md' }
     }
 
     $archive = if (-not [string]::IsNullOrEmpty($projectToml.Archive)) { $projectToml.Archive } else { $homeToml.Archive }

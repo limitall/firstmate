@@ -652,6 +652,40 @@ Describe '.tasks.toml' {
         New-Item -ItemType Directory -Path $root -Force | Out-Null
         $config = Get-FmBacklogConfig -Root $root -HomeConfigPath (Join-Path $TestDrive 'absent.toml')
         $config.DoneKeep | Should -Be 10
+        $config.ArchivePath | Should -Be (Join-Path $root 'data' 'done-archive.md')
+    }
+
+    It 'defaults a home with no backlog yet to data/backlog.md, the file the rest of firstmate reads' {
+        # The regression this pins: the default used to be <root>/backlog.md, so
+        # the very first `fm-backlog add` in a fresh home wrote a queue that the
+        # session-start digest, teardown and a Linux firstmate never look at.
+        # Nothing errored - the items simply went somewhere unread.
+        $root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        $config = Get-FmBacklogConfig -Root $root -HomeConfigPath (Join-Path $TestDrive 'absent.toml')
+        $config.Path | Should -Be (Join-Path $root 'data' 'backlog.md')
+    }
+
+    It 'prefers data/backlog.md over a root copy when both exist' {
+        # Order matters as much as the default: once a root copy existed it used
+        # to win every later lookup, which is what made the split permanent.
+        $root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        New-Item -ItemType Directory -Path (Join-Path $root 'data') -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $root 'backlog.md'), "# Backlog`n")
+        [System.IO.File]::WriteAllText((Join-Path $root 'data' 'backlog.md'), "# Backlog`n")
+        $config = Get-FmBacklogConfig -Root $root -HomeConfigPath (Join-Path $TestDrive 'absent.toml')
+        $config.Path | Should -Be (Join-Path $root 'data' 'backlog.md')
+    }
+
+    It 'still finds an existing root backlog.md rather than starting an empty one beside it' {
+        # A home that already carries the tasks-axi default shape keeps working:
+        # the fix changes where a NEW queue is created, never which existing file
+        # is read.
+        $root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $root 'backlog.md'), "# Backlog`n")
+        $config = Get-FmBacklogConfig -Root $root -HomeConfigPath (Join-Path $TestDrive 'absent.toml')
+        $config.Path | Should -Be (Join-Path $root 'backlog.md')
         $config.ArchivePath | Should -Be (Join-Path $root 'done-archive.md')
     }
 

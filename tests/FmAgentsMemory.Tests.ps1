@@ -33,6 +33,22 @@ BeforeAll {
         Resolve-FmPhysicalPath -Path $dir
     }
 
+    # Is CLAUDE.md the second name for AGENTS.md by WHICHEVER strategy this host
+    # allowed? Asserting a symlink specifically asserts the Linux shape: where
+    # Windows refuses symlinks, Private/FmAgentsMemory.ps1 deliberately falls
+    # back to a hardlink and then a copy, and each is a correct outcome of "link
+    # CLAUDE.md to AGENTS.md" on the host that produced it. The strategy-specific
+    # behaviour keeps its own tests in 'the link strategies' below.
+    function Test-AgentsPairLinked {
+        [OutputType([bool])]
+        [CmdletBinding()]
+        param([Parameter(Mandatory)][string]$Directory)
+        $claude = Join-Path $Directory 'CLAUDE.md'
+        $agents = Join-Path $Directory 'AGENTS.md'
+        (Test-FmAgentsClaudeLink -ClaudePath $claude -AgentsPath $agents) -or
+        (Test-FmAgentsMirror -AgentsPath $agents -ClaudePath $claude)
+    }
+
     # The exact bytes bin/fm-ensure-agents-md.sh writes for a fresh skeleton.
     $script:ExpectedSkeleton = @(
         '# Project agent memory',
@@ -57,8 +73,7 @@ Describe 'Set-FmAgentsMemory in an empty worktree' {
         $result = Set-FmAgentsMemory -Path $dir
         $result.Message | Should -BeLike "created: AGENTS.md and*CLAUDE.md -> AGENTS.md in $dir"
         [System.IO.File]::ReadAllText((Join-Path $dir 'AGENTS.md')) | Should -Be $script:ExpectedSkeleton
-        Test-FmAgentsClaudeLink -ClaudePath (Join-Path $dir 'CLAUDE.md') -AgentsPath (Join-Path $dir 'AGENTS.md') |
-            Should -BeTrue
+        Test-AgentsPairLinked -Directory $dir | Should -BeTrue
     }
 
     It 'writes the skeleton LF-only with no BOM' {
@@ -182,8 +197,7 @@ Describe 'Set-FmAgentsMemory promoting a lone CLAUDE.md' {
         $text = [System.IO.File]::ReadAllText((Join-Path $dir 'AGENTS.md'))
         $text | Should -BeLike '*# Existing project knowledge*'
         $text | Should -BeLike '*## Maintaining this file*'
-        Test-FmAgentsClaudeLink -ClaudePath (Join-Path $dir 'CLAUDE.md') -AgentsPath (Join-Path $dir 'AGENTS.md') |
-            Should -BeTrue
+        Test-AgentsPairLinked -Directory $dir | Should -BeTrue
     }
 
     It 'creates AGENTS.md and keeps an already-correct dangling link' {

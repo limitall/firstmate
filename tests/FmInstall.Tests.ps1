@@ -128,6 +128,38 @@ Describe 'Install-FmHome: the home layout' {
         Read-FmHomePointer -Path $fixture.Pointer | Should -Be $fixture.Home
     }
 
+    It 'leaves an existing home pointer alone under -KeepHomePointer' {
+        # The hazard this guards, measured on the captain's laptop: provisioning
+        # a SECONDMATE home from the primary checkout rewrote that checkout's
+        # .fm-home to the new home. Nothing errored - the running primary simply
+        # began resolving to another home's state. One checkout has exactly one
+        # pointer, so a second home must not claim it.
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+        $primary = Read-FmHomePointer -Path $fixture.Pointer
+
+        $second = Join-Path (Split-Path -Parent $fixture.Home) ('second-' + [System.IO.Path]::GetRandomFileName())
+        $report = Invoke-Setup -Fixture $fixture -Extra @{
+            FirstmateHome   = $second
+            KeepHomePointer = [switch]$true
+        }
+
+        ($report.Steps | Where-Object { $_.Name -eq 'home pointer' }).Action | Should -Be 'skipped'
+        Read-FmHomePointer -Path $fixture.Pointer | Should -Be $primary
+        # The second home is still fully built; only the pointer was withheld.
+        Test-Path -LiteralPath (Join-Path $second 'state') -PathType Container | Should -BeTrue
+    }
+
+    It 'still repoints the checkout when -KeepHomePointer is NOT passed' {
+        # The switch is opt-in on purpose: moving this checkout's own home is a
+        # real thing the captain does, and it must keep working.
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+        $moved = Join-Path (Split-Path -Parent $fixture.Home) ('moved-' + [System.IO.Path]::GetRandomFileName())
+        $null = Invoke-Setup -Fixture $fixture -Extra @{ FirstmateHome = $moved }
+        Read-FmHomePointer -Path $fixture.Pointer | Should -Be $moved
+    }
+
     It 'is idempotent: the second run changes nothing and reports already' {
         $fixture = New-InstallFixture
         $null = Invoke-Setup -Fixture $fixture

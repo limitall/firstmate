@@ -34,6 +34,11 @@
 
 .PARAMETER SkipHooks
     Leave the Claude hooks alone.
+
+.PARAMETER KeepHomePointer
+    Leave <RepoRoot>/.fm-home naming the home it already names. Required when
+    provisioning a secondmate's home from this checkout, which already serves the
+    primary one - otherwise the primary silently resolves to the new home.
 #>
 [CmdletBinding()]
 param(
@@ -43,7 +48,8 @@ param(
     [string]$HookSettingsPath,
     [string]$HomePointerPath,
     [switch]$SkipProfile,
-    [switch]$SkipHooks
+    [switch]$SkipHooks,
+    [switch]$KeepHomePointer
 )
 
 Set-StrictMode -Version Latest
@@ -52,8 +58,9 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Install-FmHome'
 
 $setupArgs = @{
-    SkipProfile = $SkipProfile
-    SkipHooks   = $SkipHooks
+    SkipProfile     = $SkipProfile
+    SkipHooks       = $SkipHooks
+    KeepHomePointer = $KeepHomePointer
 }
 foreach ($name in @('FirstmateHome', 'RepoRoot', 'ProfilePath', 'HookSettingsPath', 'HomePointerPath')) {
     if ($PSBoundParameters.ContainsKey($name)) { $setupArgs[$name] = $PSBoundParameters[$name] }

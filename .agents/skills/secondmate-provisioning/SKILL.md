@@ -55,11 +55,15 @@ If the captain says go ahead, that is their decision and you build it.
 
 1. Agree the scope in one natural-language sentence, the project list, and where the home lives.
    The scope drives routing; the project list is non-exclusive provisioning data, not ownership.
-2. Create and wire the home: `bin/fm-setup.ps1 -FirstmateHome <path>`.
+2. Create and wire the home: `bin/fm-setup.ps1 -FirstmateHome <path> -KeepHomePointer`.
    Because that home is not the checkout, setup writes a stop-and-redirect `AGENTS.md`/`CLAUDE.md` into it naming this checkout - leave that in place, it is what stops a session started in the wrong directory.
+   **`-KeepHomePointer` is not optional here.** A checkout has exactly one `.fm-home`, and without that switch the secondmate's home becomes the home this checkout resolves to: the running primary keeps going and silently operates against the secondmate's state. Nothing errors, which is what makes it dangerous.
 3. Clone the secondmate's projects into that home with `bin/fm-project-add.ps1`, run with that home resolved.
 4. Write the charter with `bin/fm-brief.ps1 <id> --secondmate <project>...`, filling `{TASK}` with the scope, the standing expectations, and the return channel.
-5. Launch it with `bin/fm-spawn.ps1 -TaskId <id> -Kind secondmate`.
+5. Launch it with `bin/fm-spawn.ps1 <id> <project-dir> -Kind secondmate -LabelHome <that secondmate's home>`.
+   Both extra arguments are required and neither is optional on this port.
+   **A project directory is required even for a `--no-projects` charter.** Every spawn here, secondmate included, runs its agent in a leased isolated worktree, so it needs a git repository with a reachable `origin` and a resolvable default branch to lease from. `--no-projects` describes what the secondmate OWNS for routing; it does not mean the launch needs no repository. Give a no-projects secondmate whichever repository its work will mostly concern.
+   **`-LabelHome` must name the secondmate's OWN home**, or its herdr labels land in the launching home and that secondmate's own workers are attributed to the primary.
 6. Add its row to `data/secondmates.md` by hand: its id, its home path, and its one-sentence scope.
    Keep the file readable, because it is the only routing record and no parser will forgive you.
 7. Record it as a registered secondmate, never as a backlog work item.

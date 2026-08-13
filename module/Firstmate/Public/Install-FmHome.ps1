@@ -79,6 +79,13 @@ Set-StrictMode -Version Latest
 .PARAMETER SkipHooks
     Do not register the Claude hooks.
 
+.PARAMETER KeepHomePointer
+    Leave <RepoRoot>/.fm-home naming the home it already names. Use this when
+    provisioning a SECOND home - a secondmate's - from a checkout that already
+    serves a primary one: without it, the new home becomes the home this
+    checkout resolves to, and the running primary silently starts operating
+    against another home's state.
+
 .EXAMPLE
     bin/fm-setup.ps1
 
@@ -94,7 +101,8 @@ function Install-FmHome {
         [string]$HookSettingsPath = '',
         [string]$HomePointerPath = '',
         [switch]$SkipProfile,
-        [switch]$SkipHooks
+        [switch]$SkipHooks,
+        [switch]$KeepHomePointer
     )
 
     if (-not $RepoRoot) { $RepoRoot = Get-FmInstallRepoRoot }
@@ -135,12 +143,27 @@ function Install-FmHome {
     $backend = Set-FmInstallDefaultBackend -FirstmateHome $FirstmateHome
     $steps += New-FmInstallStep -Name 'backend' -Action $backend.Action -Detail $backend.Detail
 
-    # NOT SKIPPABLE, unlike the profile block. This is what makes the entry
-    # points work in a shell that loads no profile - a herdr pane, a Claude
-    # hook, a dispatched worker - so -SkipProfile must not take it away.
-    $pointerAction = Write-FmHomePointer -HomePath $FirstmateHome -Path $HomePointerPath
-    $steps += New-FmInstallStep -Name 'home pointer' -Action $pointerAction `
-        -Detail "$HomePointerPath -> $FirstmateHome"
+    # NOT SKIPPABLE by -SkipProfile, unlike the profile block. This is what makes
+    # the entry points work in a shell that loads no profile - a herdr pane, a
+    # Claude hook, a dispatched worker - so -SkipProfile must not take it away.
+    #
+    # -KeepHomePointer is the ONE exception, and it exists for provisioning a
+    # SECOND home from a checkout that already serves a first one. The pointer
+    # answers "which home does this checkout resolve to with no profile and no
+    # environment", and there is exactly one of it per checkout. Rewriting it
+    # while provisioning a secondmate silently repointed the PRIMARY session at
+    # the new home - the running firstmate kept operating, but against another
+    # home's state. That is the failure this switch prevents; it is opt-in
+    # because repointing is still the correct behaviour when the captain really
+    # is moving this checkout's own home.
+    if ($KeepHomePointer) {
+        $steps += New-FmInstallStep -Name 'home pointer' -Action 'skipped' `
+            -Detail "-KeepHomePointer: left $HomePointerPath naming this checkout's existing home, not $FirstmateHome"
+    } else {
+        $pointerAction = Write-FmHomePointer -HomePath $FirstmateHome -Path $HomePointerPath
+        $steps += New-FmInstallStep -Name 'home pointer' -Action $pointerAction `
+            -Detail "$HomePointerPath -> $FirstmateHome"
+    }
 
     # ALSO NOT SKIPPABLE. When the home is not the checkout, `cd <home>; claude` -
     # the workflow every firstmate doc describes - starts an agent with no
