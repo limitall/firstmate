@@ -30,6 +30,15 @@
 #   - before typing, the pane must be free by the rule above AND byte-identical
 #     across two captures a settle apart. A pane that is changing under us is
 #     already in use and is never typed into.
+#   - the baseline itself must be PROVED to be firstmate's own work: the pane
+#     after typing must read as what it read before plus exactly the command,
+#     and nothing else. Without that proof there is a gap - between send-text
+#     and the read-back - in which the captain's keystrokes land in the pane
+#     and are adopted as part of the baseline, after which the window sits
+#     perfectly still and Enter submits THEIR line. That is not theoretical; it
+#     was reproduced against a live pane (docs/windows-e2e-evidence.md 18.9)
+#     before this check existed, and it is the exact failure this feature must
+#     not have.
 #   - after typing, the exact capture bytes become the armed baseline. Every
 #     poll of the window must reproduce them EXACTLY and the pane must still be
 #     free. A changed capture is the captain typing; an unreadable one is a pane
@@ -67,8 +76,14 @@
 # still the mitigation - the command is visible and unsubmitted for the whole of
 # it - but this is a real residual risk rather than one the checks cover.
 #
-# WINDOWS-UNVERIFIED: every function here that talks to a live herdr server. The
-# tests drive the whole state machine through mocked adapter calls.
+# WINDOWS-VERIFIED against a live pane: the untouched window that starts the
+# command by itself, the captain typing mid-window, a busy or unreadable pane,
+# and the settle-gap race below - all on the captain's Windows 11 laptop and
+# again on Linux, in an isolated herdr lab (docs/windows-e2e-evidence.md 18.5,
+# 18.9). The tests here still drive the state machine through mocked adapter
+# calls, because that is the only way to reach these paths on a machine with no
+# herdr session and the only way to drive the stand-down cases deterministically
+# - but they are no longer the only evidence that this works.
 
 Set-StrictMode -Version Latest
 
@@ -291,6 +306,53 @@ function New-FmAutolaunchResult {
     }
 }
 
+# Test-FmAutolaunchArmedByFirstmate: is the armed capture EXACTLY the capture from
+# plus exactly the command firstmate typed, and nothing else?
+#
+# This closes the one gap the grace window cannot see. Typing is not atomic: a
+# keystroke the captain makes between `pane send-text` returning and the
+# read-back lands in the pane first, so it is already present in the bytes that
+# become the armed baseline. Every later poll then reproduces those bytes
+# perfectly - the pane really is unchanged from then on - and firstmate submits
+# a line the captain was halfway through writing. Comparing the baseline against
+# what firstmate MEANT to type is the only thing that catches it.
+#
+# Whitespace is removed from both sides before comparing rather than compared
+# literally, because herdr hard-wraps a capture at the pane's width and inserts
+# a newline mid-token: a 53-column pane renders `claude --dangerously...` as
+# `cl\naude --dangerously...`. Dropping whitespace makes the comparison immune
+# to the wrap point without weakening it - no keystroke that adds a visible
+# character can survive it, and a captain who types only whitespace has changed
+# nothing that Enter would run differently.
+#
+# The tail rather than whole-string test is for scrollback: typing a line at the
+# bottom of a full pane can push the top line out of the captured window, so the
+# before capture is allowed to be LONGER at its start. It is never allowed to be
+# shorter or different, which is what would happen if anything was printed or
+# typed.
+function Test-FmAutolaunchArmedByFirstmate {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Before,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Armed,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Command
+    )
+    $strip = { param($text) [regex]::Replace($text, '\s', '') }
+    $wanted = & $strip $Command
+    # A command with no visible characters would make this test vacuous, so it
+    # is a refusal rather than a pass. Read-FmAutolaunchConfig already rejects
+    # an empty command; this is the belt for anything that reaches here another
+    # way.
+    if (-not $wanted) { return $false }
+
+    $armedText = & $strip $Armed
+    if (-not $armedText.EndsWith($wanted, [System.StringComparison]::Ordinal)) { return $false }
+
+    $tail = $armedText.Substring(0, $armedText.Length - $wanted.Length)
+    (& $strip $Before).EndsWith($tail, [System.StringComparison]::Ordinal)
+}
+
 # --- the arm / grace / submit state machine ----------------------------------
 
 # Test-FmAutolaunchPaneFree: is this pane a plain shell nothing is registered in?
@@ -426,6 +488,14 @@ function Invoke-FmAutolaunchArm {
     }
     if ($armed -ceq $before) {
         return (& $result 'stood-down' 'the typed command never appeared in the pane; nothing was submitted' -armed)
+    }
+    # The pane changed - but it must have changed by EXACTLY what firstmate
+    # typed. Anything else in it arrived from the captain while we were typing,
+    # and holding the window on that baseline would end in submitting their
+    # line.
+    if (-not (Test-FmAutolaunchArmedByFirstmate -Before $before -Armed $armed -Command $Command)) {
+        return (& $result 'stood-down' ('the pane does not hold exactly the command that was typed, so something ' +
+                'else reached it at the same moment; nothing was submitted') -armed)
     }
 
     # The grace window. Every poll must reproduce the armed capture EXACTLY and

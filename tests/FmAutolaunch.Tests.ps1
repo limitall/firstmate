@@ -6,6 +6,12 @@
 # is the only way these paths can run on a machine with no herdr session, and the
 # only way the stand-down paths can be driven deterministically at all.
 #
+# What that costs, and where it is paid: a mock is only as good as its fidelity
+# to the real pane, and this file once shipped one that was not - see
+# Set-CalmPane below, and docs/windows-e2e-evidence.md 18.9 for the defect that
+# hid behind it. The live counterpart to these cases is 18.5, run against real
+# herdr panes on Windows and Linux. Keep both; neither replaces the other.
+#
 # THE TESTS THAT MATTER MOST ARE THE ONES THAT DO NOT SUBMIT. The failure this
 # feature must never have is firstmate typing over the captain, so every way the
 # window can be interrupted has its own case, and each one asserts that no Enter
@@ -46,6 +52,15 @@ BeforeAll {
 
     # The pane every happy-path test drives: readable, live, nothing registered
     # in it, showing one stable screen until a test changes $script:Screen.
+    #
+    # Send-FmHerdrLiteral appends the text DIRECTLY to the screen, with no
+    # separator of its own, because that is what a real pane was measured doing:
+    # `pane send-text` puts the characters at the shell's prompt exactly as a
+    # keyboard would, so the capture afterwards is the capture before plus the
+    # command and nothing else (docs/windows-e2e-evidence.md 18.9). An earlier
+    # version of this fixture inserted a "> " of its own, which no pane does, and
+    # that fiction is what let the settle-gap defect sit undetected in a green
+    # suite - Test-FmAutolaunchArmedByFirstmate is precisely the check it defeated.
     function Set-CalmPane {
         Mock Test-FmHerdrTargetReady { $true }
         # no-agent, not idle: a fresh shell pane has NO registered agent, which
@@ -53,7 +68,7 @@ BeforeAll {
         Mock Get-FmHerdrPaneAgentState { 'no-agent' }
         Mock Get-FmHerdrComposerState { 'unknown' }
         Mock Get-FmHerdrCapture { $script:Screen }
-        Mock Send-FmHerdrLiteral { $script:Screen = "$($script:Screen)`n> $Text"; $true }
+        Mock Send-FmHerdrLiteral { $script:Screen = "$($script:Screen)$Text"; $true }
         Mock Send-FmHerdrKey { $script:Enters++; $script:Screen = "$($script:Screen)`nrunning"; $true }
         $script:Screen = 'PS C:\Users\ADMIN>'
         $script:Enters = 0
@@ -374,6 +389,104 @@ Describe 'Invoke-FmAutolaunchArm - the captain wins' {
             -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0
         $result.Action | Should -Be 'stood-down'
         $result.Reason | Should -Match 'still unsubmitted'
+    }
+
+    # The settle-gap race, reproduced against a live pane before it was fixed
+    # (docs/windows-e2e-evidence.md 18.9). The captain's keystroke lands between
+    # send-text and the read-back, so it is already in the bytes that become the
+    # armed baseline. Every later poll then matches that baseline perfectly - the
+    # pane genuinely does not change again - and the old code submitted the
+    # captain's line. Nothing in the grace window can catch this; only comparing
+    # the baseline against what firstmate meant to type can.
+    It 'stands down when the captain types in the gap between typing and the baseline read' {
+        Mock Send-FmHerdrLiteral { $script:Screen = "$($script:Screen)$Text; rm -rf ~/important"; $true }
+        $result = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude' `
+            -DelaySeconds 5 -PollSeconds 0.01 -SettleSeconds 0
+        $result.Action | Should -Be 'stood-down'
+        $result.Armed | Should -BeTrue
+        $result.Reason | Should -Match 'does not hold exactly the command that was typed'
+        $script:Enters | Should -Be 0
+        Should -Invoke Send-FmHerdrKey -Times 0 -Exactly
+    }
+
+    It 'stands down when the captain had already typed before the command landed' {
+        # The other order: their characters sit in front of firstmate's, so the
+        # pane still ends with the command and only the head comparison catches
+        # it.
+        Mock Send-FmHerdrLiteral { $script:Screen = "$($script:Screen)sudo $Text"; $true }
+        $result = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude' `
+            -DelaySeconds 5 -PollSeconds 0.01 -SettleSeconds 0
+        $result.Action | Should -Be 'stood-down'
+        $result.Reason | Should -Match 'does not hold exactly the command that was typed'
+        $script:Enters | Should -Be 0
+    }
+
+    It 'still submits when the pane merely wrapped the command across lines' {
+        # The cost of the check above must not be a feature that never fires:
+        # herdr hard-wraps a capture at the pane width, so the command comes back
+        # with newlines inside it. That is the normal case, not interference.
+        Mock Send-FmHerdrLiteral {
+            $wrapped = ($Text -split '(.{1,7})' | Where-Object { $_ }) -join "`n"
+            $script:Screen = "$($script:Screen)$wrapped"
+            $true
+        }
+        $result = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude --continue' `
+            -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0
+        $result.Action | Should -Be 'submitted'
+        $script:Enters | Should -Be 1
+    }
+
+    It 'still submits when older output scrolled off the top while the command was typed' {
+        # The capture window is bounded, so typing at the bottom of a full pane
+        # can push the oldest line out of it. The baseline is allowed to lose
+        # history off its start; it is never allowed to gain anything.
+        Mock Send-FmHerdrLiteral {
+            $script:Screen = "$($script:Screen -replace '^PS ', '')$Text"
+            $true
+        }
+        $result = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude' `
+            -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0
+        $result.Action | Should -Be 'submitted'
+        $script:Enters | Should -Be 1
+    }
+}
+
+Describe 'Test-FmAutolaunchArmedByFirstmate' {
+    It 'accepts a pane that gained exactly the command and nothing else' {
+        Test-FmAutolaunchArmedByFirstmate -Before 'PS>' -Armed 'PS>claude' -Command 'claude' | Should -BeTrue
+    }
+
+    It 'accepts the command however herdr wrapped it across the pane width' {
+        Test-FmAutolaunchArmedByFirstmate -Before 'PS>' -Armed "PS> cl`naude --conti`nnue" `
+            -Command 'claude --continue' | Should -BeTrue
+    }
+
+    It 'rejects anything appended after the command' {
+        Test-FmAutolaunchArmedByFirstmate -Before 'PS>' -Armed 'PS>claude; rm -rf /' -Command 'claude' |
+            Should -BeFalse
+    }
+
+    It 'rejects anything inserted before the command' {
+        Test-FmAutolaunchArmedByFirstmate -Before 'PS>' -Armed 'PS>sudo claude' -Command 'claude' |
+            Should -BeFalse
+    }
+
+    It 'rejects a pane that printed something of its own while the command was typed' {
+        Test-FmAutolaunchArmedByFirstmate -Before 'PS>' -Armed "PS>`nbuild failed`nclaude" -Command 'claude' |
+            Should -BeFalse
+    }
+
+    It 'rejects an unchanged pane' {
+        Test-FmAutolaunchArmedByFirstmate -Before 'PS>' -Armed 'PS>' -Command 'claude' | Should -BeFalse
+    }
+
+    It 'allows the head of the capture to scroll away but not to change' {
+        Test-FmAutolaunchArmedByFirstmate -Before "old`nPS>" -Armed 'PS>claude' -Command 'claude' | Should -BeTrue
+        Test-FmAutolaunchArmedByFirstmate -Before "old`nPS>" -Armed 'newPS>claude' -Command 'claude' | Should -BeFalse
+    }
+
+    It 'refuses a command with no visible characters rather than passing vacuously' {
+        Test-FmAutolaunchArmedByFirstmate -Before 'PS>' -Armed 'PS>' -Command '   ' | Should -BeFalse
     }
 }
 
