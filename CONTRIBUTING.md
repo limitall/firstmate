@@ -160,8 +160,10 @@ module any other way.
   from has to be proved to be firstmate's own rather than trusted.
 - `docs/windows-install.md` - `fm-setup.ps1` and `fm-doctor.ps1`: why the wiring
   is a managed PowerShell-profile block rather than a User environment variable,
-  and why setup writes `config/backend=herdr` (without it a fresh home resolves
-  to `tmux` and the captain's first digest asks Windows to install it).
+  why setup writes `config/backend=herdr` (without it a fresh home resolves
+  to `tmux` and the captain's first digest asks Windows to install it), and why
+  `-KeepHomePointer` exists - a checkout has exactly one `.fm-home`, so
+  provisioning a second home from it must not claim that pointer.
 - `docs/instruction-surface.md` - the operating contract and the skills: what
   `AGENTS.md` is for, how each Linux skill was ported or recorded as absent, how
   the two committed links survive a Windows clone, and what the doctor checks.

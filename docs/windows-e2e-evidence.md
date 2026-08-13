@@ -2859,3 +2859,186 @@ regression tests were confirmed RED with only the two behaviour hunks reverted
 and the new tests left in place - `THE REGRESSION: an added item is found through
 the path session start reads` and `THE REGRESSION: an added item appears in the
 digest, not ABSENT` - so neither passes for a reason other than the fix.
+
+## 20. Reconciling the two independent fixes for the same defect - `PROVEN (Windows 11)`
+
+The captain's own laptop session fixed the backlog split (commit `9464471`) while
+a worker fixed it here (`59925eb..da5ce55`). Both were real work. This section
+records what each side contributed and what was executed to settle the two places
+they disagreed.
+
+| Area | Side taken | Why |
+| --- | --- | --- |
+| backlog location | this side's migration | the laptop's second candidate fixes a fresh home and leaves an already-split one split; see 20.1 |
+| `-KeepHomePointer` | the laptop's, whole | this side never found it; see 20.2 |
+| the same switch for the live session | new here | the same hijack one scope up, which the laptop fix did not cover |
+| agent-memory tests | this side's | reads both names and compares bytes rather than ORing a narrower length-first check |
+| secondmate launch findings | the laptop's, unchanged | a project directory and `-LabelHome` are needed even for a `--no-projects` charter |
+
+### 20.1 Why the root candidate was dropped, executed rather than argued
+
+Both sides agree `data/backlog.md` is the one location. They differ on the home
+that already ran the old code. Case B below is the whole disagreement: the
+laptop's version keeps `<home>\backlog.md` resolving, so the resolver reads it
+while the digest, cleanup and a Linux firstmate keep reading `data\backlog.md` -
+the captain's own home would still report the queue absent with their items in
+it. Migrating is what actually closes it, and it is also the stronger answer to
+the concern behind the laptop's version, because the captain's file is the one
+that arrives at the canonical path rather than an empty one appearing beside it.
+
+Scratch homes under `C:\Users\ADMIN`, `config\backlog-backend = manual`, real
+`bin\fm-backlog.ps1` runs:
+
+```
+=== A. FRESH home: the first add must land where the digest reads ===
+  add fmwin-demo -> queued
+  files under the home:
+    config\backlog-backend
+    data\backlog.md
+
+=== B. ALREADY-SPLIT home: a real root backlog.md with the captain's item ===
+  before:
+    backlog.md
+    done-archive.md
+    config\backlog-backend
+  list (this is the command that triggers the reconciliation):
+    WARNING: backlog: moved the backlog from ...\split\backlog.md to ...\split\data\backlog.md,
+             and its done-archive.md with it (it was created in the pre-fix location, where
+             nothing else reads it).
+    queued	keep-me	the captain's real item
+  after:
+    config\backlog-backend
+    data\backlog.md
+    data\done-archive.md
+  the item, read through the path session start computes for itself:
+    - [ ] keep-me - the captain's real item (since 2026-08-01)
+
+=== C. TWO real queues: must refuse, and merge neither ===
+  two backlogs in this home: ...\twoqueues\backlog.md is the pre-fix location and
+  ...\twoqueues\data\backlog.md is the one firstmate reads. Both hold work items, so
+  nothing here decides which is current: move the items you still want into
+  ...\twoqueues\data\backlog.md, then delete ...\twoqueues\backlog.md.
+  both files still intact: root='True' data='True'
+
+=== D. the captain's REAL home, inspected only ===
+  root backlog.md present : False
+  data\backlog.md present : True
+```
+
+A home that deliberately pins another path through `.tasks.toml` is left alone,
+which is also the escape hatch for the one legitimate root-level layout the
+laptop's version was protecting.
+
+### 20.2 The second-home defect, proven fixed and proven real
+
+Asserting the switch exists is not proof. This provisions a second home from a
+scratch checkout with real `bin\fm-setup.ps1`, then asks `bin\fm-home.ps1` in a
+bare `-NoProfile` shell the question every entry point asks - and the negative
+control puts the defect back:
+
+```
+=== 1. Provision the PRIMARY home from this checkout ===
+    [created] home pointer - ...\checkout\.fm-home -> ...\primary-home
+  after primary setup:
+    .fm-home              = C:\Users\ADMIN\fmwin-proof\primary-home
+    fm-home.ps1 (bare)    = C:\Users\ADMIN\fmwin-proof\primary-home
+
+=== 2. Provision a SECONDMATE home from the SAME checkout, WITH -KeepHomePointer ===
+    [skipped] home pointer - -KeepHomePointer: left ...\checkout\.fm-home naming this
+              checkout's existing home, not ...\secondmate-home
+  after secondmate setup:
+    .fm-home              = C:\Users\ADMIN\fmwin-proof\primary-home
+    fm-home.ps1 (bare)    = C:\Users\ADMIN\fmwin-proof\primary-home
+
+  RESULT: PASS - the checkout still resolves to the primary home.
+  second home built: True
+
+=== 3. NEGATIVE CONTROL: the same run WITHOUT the switch (this is the bug) ===
+    [updated] home pointer - ...\checkout\.fm-home -> ...\secondmate-home
+  after secondmate setup with NO switch:
+    .fm-home              = C:\Users\ADMIN\fmwin-proof\secondmate-home
+    fm-home.ps1 (bare)    = C:\Users\ADMIN\fmwin-proof\secondmate-home
+  RESULT: the primary was repointed at the secondmate's home - the defect, reproduced.
+```
+
+The second home is still built in full, `AGENTS.md` stop-and-redirect included;
+only the claim on the checkout is withheld.
+
+The same call also publishes `FM_HOME`/`PATH`/`PSModulePath` into its own
+process. Through `bin\fm-setup.ps1` that dies with the subprocess, so it was not
+the live defect - but a session that provisions a secondmate by importing the
+module rather than shelling out would be moved just as silently, so
+`-KeepHomePointer` now withholds that too. `tests/FmInstall.Tests.ps1` pins all
+three surfaces: the pointer file, `Resolve-FmEntryPointHome`, and the session.
+
+### 20.3 Suite numbers, both platforms, at the reconciled tree
+
+Measured after `git fetch origin`, with `origin/main` at `da5ce55` and this
+branch a clean fast-forward onto it:
+
+```
+Linux    pwsh 7.6.4 / Pester 6.1.0   T=1605  P=1600  F=0  S=5
+Windows  pwsh 7.6.4 / Pester 6.1.0   T=1605  P=1588  F=3  S=14   (first run, fresh clone)
+Windows  pwsh 7.6.4 / Pester 6.1.0   T=1605  P=1591  F=0  S=14   (re-run, same clone)
+```
+
+**The Windows re-run is fully green**, and it is the number to read: the only
+difference between the two runs is that `bin\fm-setup.ps1` had by then run in
+that clone. All three first-run failures cleared without a code change, which is
+what the attributions below predicted.
+
+`main` alone is `T=1601 P=1596 F=0 S=5` on Linux, so the reconciliation adds
+exactly 4 tests - the laptop's two `-KeepHomePointer` tests, the end-to-end
+resolution proof in 20.2, and the backlog decision test in 20.1 - and every one
+passes. The laptop branch's own reported `1503 passed / 0 failed / 25 skipped`
+was measured against an older base and a different skip gating; it is not
+comparable row-for-row, and no attempt is made to reconcile the two totals.
+The skip counts differ by platform, not by branch.
+
+The three first-run Windows failures were attributed rather than assumed, and
+none is this change:
+
+**Two are the clone's state, not the code.** `this checkout's own instruction
+surface.is healthy` and `...keeps the contract reachable under both names it is
+read by` read the REAL checkout. The whole suite ran in a fresh `git bundle`
+clone that `bin\fm-setup.ps1` had never run against, so `CLAUDE.md` and
+`.claude\skills` were still the placeholders a Windows clone leaves, and
+`FmContract` runs before `FmInstall` - whose own setup runs then repair them.
+Running that file on its own in the same clone gives `T=37 P=37 F=0`. This is the
+same pair, with the same cause, that section 19.5 attributed.
+
+**One is a load-dependent flake in the lock area, and it is NOT ours.** `One
+holder, proven with real processes.never lets two processes increment a counter
+at once` reported `Expected 36, but got 35` in the first whole-suite run, passed
+`T=47 P=47 F=0` on three consecutive standalone runs, and passed again in the
+whole-suite re-run - 4 passes to 1 failure, with no code change between them. It
+is left open for the lock area rather than patched blind from here, and 20.4
+records what is known.
+
+### 20.4 Left open for the lock area: one lost increment under whole-suite load
+
+The test is already guarded against the two innocent explanations - it asserts
+every worker reached `Completed` and that no worker threw, BEFORE it judges the
+counter - and those guards passed. So the run really did lose one increment
+across 3 processes x 12 increments while all three finished cleanly.
+
+What is known, and what is not:
+
+- It did not reproduce: 3 consecutive standalone runs of `tests\FmLock.Tests.ps1`
+  in the same clone on the same machine were `47/47`, and the whole-suite re-run
+  passed it too. One failure in five attempts, none of them a code change.
+- The one window in the design that is width-limited rather than atomic is the
+  mid-claim grace: a claimer creates its `pid` file and writes it as two steps,
+  and a competitor treats an unreadable claim as held only while it is younger
+  than `FM_LOCK_STALE_AFTER`, floored at 2s. A claimer starved for longer than
+  that between the two steps would be judged stale and its lock taken.
+- That floor is **not** a port invention - it is `fm_lock_mid_acquire_is_fresh`
+  from the bash original, preserved deliberately. So if this is the mechanism, it
+  is inherited from the reference implementation and not introduced here.
+- **This is a hypothesis, not a diagnosis.** Nothing here observed the window
+  being exceeded; it is the candidate that fits, named so the owner starts
+  somewhere rather than from nothing.
+
+It is recorded rather than fixed because a wrong change to mutual exclusion is
+worse than a known flake, and because the reconciliation this section documents
+touches nothing in the lock area.
