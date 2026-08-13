@@ -15,17 +15,26 @@
 # in that file rather than in this code. bin/fm-doctor.ps1 prints the resolved
 # command whenever it is on, so an enabled autolaunch is never invisible.
 #
+# WHAT COUNTS AS A PANE THIS MAY TYPE INTO: a live pane with NO registered
+# agent, i.e. a plain shell sitting at its prompt. That is deliberately narrow.
+# A pane where herdr has registered an agent is a harness with a composer, and
+# typing a shell command into a harness's composer sends it as chat rather than
+# running it - so a registered agent is a refusal whatever its status says, not
+# a busy/idle question. It is also why an autolaunch target is an explicit pane
+# and never a worker endpoint this home recorded.
+#
 # THE ONE THING THAT MATTERS: THE CAPTAIN'S INPUT WINS.
 # A grace period that types over the captain is worse than no grace period, so
 # every step of the window fails toward STANDING DOWN:
 #
-#   - before typing, the pane must be legibly idle by herdr's own agent state
-#     AND byte-identical across two captures a settle apart. A pane that is
-#     running something, or that is changing under us, is never typed into.
+#   - before typing, the pane must be free by the rule above AND byte-identical
+#     across two captures a settle apart. A pane that is changing under us is
+#     already in use and is never typed into.
 #   - after typing, the exact capture bytes become the armed baseline. Every
-#     poll of the window must reproduce them EXACTLY and must still read idle.
-#     A changed capture is the captain typing; an unreadable one is a pane we
-#     cannot prove anything about. Both stand down.
+#     poll of the window must reproduce them EXACTLY and the pane must still be
+#     free. A changed capture is the captain typing; an unreadable one is a pane
+#     we cannot prove anything about; a newly registered agent is something they
+#     started. All three stand down.
 #   - standing down NEVER touches the pane again: no Enter, no clear, no keys.
 #     Whatever the captain typed stays exactly where they typed it, after the
 #     command firstmate had already placed there for them to see.
@@ -49,6 +58,14 @@
 # The cost of that strictness is real and accepted: a pane whose prompt repaints
 # on its own (a clock, a spinner) never reads as unchanged, so autolaunch will
 # refuse it rather than fire. That is the safe direction.
+#
+# THE ONE THING NEITHER TEST CAN SEE. A shell running a SILENT foreground
+# process looks exactly like a shell at its prompt: it has no registered agent
+# and it paints nothing. Herdr's live foreground-process reading comes back
+# empty on Windows (data/fmwin-design/report.md section 3.2), so nothing here can
+# tell those apart, and typing would reach that process's stdin. The window is
+# still the mitigation - the command is visible and unsubmitted for the whole of
+# it - but this is a real residual risk rather than one the checks cover.
 #
 # WINDOWS-UNVERIFIED: every function here that talks to a live herdr server. The
 # tests drive the whole state machine through mocked adapter calls.
@@ -271,18 +288,60 @@ function New-FmAutolaunchResult {
 
 # --- the arm / grace / submit state machine ----------------------------------
 
-# Test-FmAutolaunchPaneIdle: herdr's own agent state for the pane, reduced to the
-# one answer this area accepts. Only a legible 'idle' is a yes; 'busy' means
-# something is running there and 'unknown' means we could not read it, and both
-# of those are reasons not to type.
-function Test-FmAutolaunchPaneIdle {
+# Test-FmAutolaunchPaneFree: is this pane a plain shell nothing is registered in?
+# Returns '' for yes, or the reason it is not - so a caller can put the reason
+# straight into what it reports.
+#
+# NOT a busy/idle question. Get-FmHerdrBusyState answers "what is this agent
+# doing", and a shell pane has no agent at all, so it answers 'unknown' for
+# exactly the pane this feature exists to type into. The right primitive is the
+# pane/agent presence classifier: 'no-agent' IS the target state.
+function Test-FmAutolaunchPaneFree {
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Target)
-    $state = Get-FmHerdrBusyState -Target $Target
-    if ($state -eq 'idle') { return '' }
-    if ($state -eq 'busy') { return 'the pane is running something' }
-    "the pane's state could not be read (herdr reported '$state')"
+    $parsed = Split-FmHerdrTarget -Target $Target
+    if (-not $parsed) { return "'$Target' is not a herdr pane target of the form <session>:<pane-id>" }
+    switch (Get-FmHerdrPaneAgentState -Session $parsed.Session -PaneId $parsed.PaneId) {
+        'no-agent' { return '' }
+        'live' { return 'something is already running in the pane' }
+        'dead' { return "there is no live pane '$Target'" }
+        default { return "the pane's state could not be read" }
+    }
+}
+
+# Wait-FmAutolaunchStarted: after Enter, did anything actually happen?
+#
+# Two independent signals, either of which is proof, because the command being
+# started is a SHELL command rather than a message to an agent:
+#   - the pane no longer matches the armed capture: the shell took the line.
+#   - an agent registers in the pane: the command it started was a harness.
+# The budget is seconds rather than the sub-second one a steer uses, because a
+# harness takes its time to appear and reporting a real start as unconfirmed is
+# its own kind of wrong.
+function Wait-FmAutolaunchStarted {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Target,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ArmedCapture,
+        [double]$BudgetSeconds = 5,
+        [double]$PollSeconds = 0.25
+    )
+    $parsed = Split-FmHerdrTarget -Target $Target
+    if (-not $parsed) { return '' }
+    $deadline = [datetime]::UtcNow.AddSeconds($BudgetSeconds)
+    while ([datetime]::UtcNow -lt $deadline) {
+        $remaining = ($deadline - [datetime]::UtcNow).TotalSeconds
+        $sleep = [math]::Min([math]::Max($PollSeconds, 0), [math]::Max($remaining, 0))
+        if ($sleep -gt 0) { Start-Sleep -Seconds $sleep }
+        if ((Get-FmHerdrPaneAgentState -Session $parsed.Session -PaneId $parsed.PaneId) -eq 'live') {
+            return 'an agent started in the pane'
+        }
+        $now = Get-FmHerdrCapture -Target $Target -Lines $script:FmAutolaunchCaptureLines
+        if ($null -ne $now -and $now -cne $ArmedCapture) { return 'the pane took the command' }
+    }
+    ''
 }
 
 # Invoke-FmAutolaunchArm: type <Command> into <Target>, hold the grace window,
@@ -299,7 +358,8 @@ function Invoke-FmAutolaunchArm {
         [Parameter(Mandatory)][string]$Command,
         [Parameter(Mandatory)][int]$DelaySeconds,
         [double]$PollSeconds = 1,
-        [double]$SettleSeconds = 0.4
+        [double]$SettleSeconds = 0.4,
+        [double]$ConfirmSeconds = 5
     )
 
     $result = {
@@ -314,12 +374,9 @@ function Invoke-FmAutolaunchArm {
     if (-not (Test-FmHerdrTargetReady -Target $Target)) {
         return (& $result 'refused' "the herdr session for '$Target' could not be reached")
     }
-    if (-not (Test-FmHerdrTargetExists -Target $Target)) {
-        return (& $result 'refused' "there is no live pane '$Target'")
-    }
 
-    $notIdle = Test-FmAutolaunchPaneIdle -Target $Target
-    if ($notIdle) { return (& $result 'refused' "nothing was typed: $notIdle") }
+    $notFree = Test-FmAutolaunchPaneFree -Target $Target
+    if ($notFree) { return (& $result 'refused' "nothing was typed: $notFree") }
 
     # The shape verdict, when a classifier is loaded. 'unknown' is this port's
     # normal answer and is carried by the unchanged-bytes test below; anything
@@ -362,8 +419,8 @@ function Invoke-FmAutolaunchArm {
     }
 
     # The grace window. Every poll must reproduce the armed capture EXACTLY and
-    # must still read idle; the first that does not ends the window in the
-    # captain's favour.
+    # the pane must still be free; the first that does not ends the window in
+    # the captain's favour.
     $deadline = [datetime]::UtcNow.AddSeconds($DelaySeconds)
     while ([datetime]::UtcNow -lt $deadline) {
         $remaining = ($deadline - [datetime]::UtcNow).TotalSeconds
@@ -377,20 +434,19 @@ function Invoke-FmAutolaunchArm {
         if ($now -cne $armed) {
             return (& $result 'stood-down' 'the pane changed during the wait, so the captain is using it; nothing was submitted' -armed)
         }
-        $notIdle = Test-FmAutolaunchPaneIdle -Target $Target
-        if ($notIdle) {
-            return (& $result 'stood-down' "$notIdle during the wait; nothing was submitted" -armed)
+        $notFree = Test-FmAutolaunchPaneFree -Target $Target
+        if ($notFree) {
+            return (& $result 'stood-down' "$notFree during the wait; nothing was submitted" -armed)
         }
     }
 
-    $parsed = Split-FmHerdrTarget -Target $Target
     if (-not (Send-FmHerdrKey -Target $Target -Key 'Enter')) {
         return (& $result 'stood-down' 'the wait completed but Enter could not be sent; the command is still unsubmitted' -armed)
     }
-    $verdict = Wait-FmHerdrWorking -Session $parsed.Session -PaneId $parsed.PaneId
-    if ($verdict -eq 'busy') {
-        return (& $result 'submitted' "started '$Command' after ${DelaySeconds}s untouched" -armed)
+    $started = Wait-FmAutolaunchStarted -Target $Target -ArmedCapture $armed -BudgetSeconds $ConfirmSeconds
+    if ($started) {
+        return (& $result 'submitted' "started '$Command' after ${DelaySeconds}s untouched - $started" -armed)
     }
-    (& $result 'unconfirmed' ("Enter was sent after ${DelaySeconds}s untouched, but the pane did not confirm the " +
-            "command started (herdr reported '$verdict')") -armed)
+    (& $result 'unconfirmed' ("Enter was sent after ${DelaySeconds}s untouched, but nothing in the pane changed " +
+            "within ${ConfirmSeconds}s, so the command may not have started") -armed)
 }

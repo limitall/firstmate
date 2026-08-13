@@ -44,17 +44,17 @@ BeforeAll {
         Join-Path (New-AutolaunchHome -Content $Content) 'config'
     }
 
-    # The pane every happy-path test drives: readable, live, idle, and showing
-    # one stable screen until a test changes $script:Screen.
+    # The pane every happy-path test drives: readable, live, nothing registered
+    # in it, showing one stable screen until a test changes $script:Screen.
     function Set-CalmPane {
         Mock Test-FmHerdrTargetReady { $true }
-        Mock Test-FmHerdrTargetExists { $true }
-        Mock Get-FmHerdrBusyState { 'idle' }
+        # no-agent, not idle: a fresh shell pane has NO registered agent, which
+        # is exactly the pane this feature exists to type into.
+        Mock Get-FmHerdrPaneAgentState { 'no-agent' }
         Mock Get-FmHerdrComposerState { 'unknown' }
         Mock Get-FmHerdrCapture { $script:Screen }
         Mock Send-FmHerdrLiteral { $script:Screen = "$($script:Screen)`n> $Text"; $true }
-        Mock Send-FmHerdrKey { $script:Enters++; $true }
-        Mock Wait-FmHerdrWorking { 'busy' }
+        Mock Send-FmHerdrKey { $script:Enters++; $script:Screen = "$($script:Screen)`nrunning"; $true }
         $script:Screen = 'PS C:\Users\ADMIN>'
         $script:Enters = 0
     }
@@ -187,12 +187,80 @@ Describe 'Test-FmAutolaunchWorkerPane' {
     }
 }
 
+Describe 'Test-FmAutolaunchPaneFree' {
+    # Driven through the herdr CLI layer rather than through the classifier, so
+    # these assert what herdr actually answers for each kind of pane.
+    BeforeAll {
+        function New-HerdrJson {
+            param([Parameter(Mandatory)][hashtable]$Body)
+            $Body | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        }
+    }
+
+    # A mock body only carries what .GetNewClosure() captured from ITS OWN
+    # scope, so each case builds the pane response it needs as a local rather
+    # than reaching for a shared one that resolves to nothing inside the mock.
+
+    # -Session is declared because the owner publishes it, and asserted rather
+    # than ignored: a mock that quietly drops a parameter is how a caller ends
+    # up believing there is no owner at all.
+    It 'accepts a live pane with no registered agent - the plain shell this exists for' {
+        $present = New-HerdrJson @{ result = @{ pane = @{ pane_id = 'w1:p2' } } }
+        $agent = New-HerdrJson @{ error = @{ code = 'agent_not_found' } }
+        Mock Invoke-FmHerdrCliJson {
+            param($Session, $Arguments)
+            if (-not $Session) { throw 'the herdr CLI was called with no session' }
+            if ($Arguments[0] -eq 'pane') { return $present }
+            $agent
+        }.GetNewClosure()
+        Test-FmAutolaunchPaneFree -Target 'default:w1:p2' | Should -Be ''
+    }
+
+    It 'refuses a pane holding an agent, EVEN AN IDLE ONE' {
+        # An idle harness has a composer, and a shell command typed into a
+        # composer is chat, not a command. So this is not a busy/idle question.
+        $present = New-HerdrJson @{ result = @{ pane = @{ pane_id = 'w1:p2' } } }
+        foreach ($status in @('idle', 'working', 'done', 'blocked')) {
+            $agent = New-HerdrJson @{ result = @{ agent = @{ agent_status = $status } } }
+            Mock Invoke-FmHerdrCliJson {
+                param($Session, $Arguments)
+                if (-not $Session) { throw 'the herdr CLI was called with no session' }
+                if ($Arguments[0] -eq 'pane') { return $present }
+                $agent
+            }.GetNewClosure()
+            Test-FmAutolaunchPaneFree -Target 'default:w1:p2' | Should -Match 'already running in the pane'
+        }
+    }
+
+    It 'refuses a pane that is gone' {
+        $gone = New-HerdrJson @{ error = @{ code = 'pane_not_found' } }
+        Mock Invoke-FmHerdrCliJson { $gone }.GetNewClosure()
+        Test-FmAutolaunchPaneFree -Target 'default:w1:p2' | Should -Match 'no live pane'
+    }
+
+    It 'refuses a pane whose agent reports a status this port does not know' {
+        $present = New-HerdrJson @{ result = @{ pane = @{ pane_id = 'w1:p2' } } }
+        $agent = New-HerdrJson @{ result = @{ agent = @{ agent_status = 'something-new' } } }
+        Mock Invoke-FmHerdrCliJson {
+            param($Session, $Arguments)
+            if (-not $Session) { throw 'the herdr CLI was called with no session' }
+            if ($Arguments[0] -eq 'pane') { return $present }
+            $agent
+        }.GetNewClosure()
+        Test-FmAutolaunchPaneFree -Target 'default:w1:p2' | Should -Match 'could not be read'
+    }
+
+    It 'refuses a malformed target' {
+        Test-FmAutolaunchPaneFree -Target 'nope' | Should -Match '<session>:<pane-id>'
+    }
+}
+
 Describe 'Invoke-FmAutolaunchArm - the untouched path' {
     BeforeEach { Set-CalmPane }
 
     It 'types the command, waits, and submits it once' {
         $result = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude --continue' `
-            -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0
+            -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0 -ConfirmSeconds 1
         $result.Action | Should -Be 'submitted'
         $result.Armed | Should -BeTrue
         $result.Submitted | Should -BeTrue
@@ -202,7 +270,7 @@ Describe 'Invoke-FmAutolaunchArm - the untouched path' {
 
     It 'types the command exactly once, and never retypes it' {
         $null = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude --continue' `
-            -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0
+            -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0 -ConfirmSeconds 1
         Should -Invoke Send-FmHerdrLiteral -Times 1 -Exactly
     }
 
@@ -211,19 +279,20 @@ Describe 'Invoke-FmAutolaunchArm - the untouched path' {
         # grace period the captain never actually gets.
         $clock = [System.Diagnostics.Stopwatch]::StartNew()
         $result = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude' `
-            -DelaySeconds 1 -PollSeconds 0.05 -SettleSeconds 0
+            -DelaySeconds 1 -PollSeconds 0.05 -SettleSeconds 0 -ConfirmSeconds 1
         $clock.Stop()
         $result.Action | Should -Be 'submitted'
         $clock.Elapsed.TotalSeconds | Should -BeGreaterThan 0.95
     }
 
     It 'reports an unconfirmed submit rather than claiming the command started' {
-        Mock Wait-FmHerdrWorking { 'unknown' }
+        # Enter lands, and then nothing in the pane moves and no agent appears.
+        Mock Send-FmHerdrKey { $script:Enters++; $true }
         $result = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude' `
-            -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0
+            -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0 -ConfirmSeconds 0.2
         $result.Action | Should -Be 'unconfirmed'
         $result.Submitted | Should -BeFalse
-        $result.Reason | Should -Match 'did not confirm'
+        $result.Reason | Should -Match 'may not have started'
     }
 
     It 'types nothing under -WhatIf' {
@@ -267,13 +336,13 @@ Describe 'Invoke-FmAutolaunchArm - the captain wins' {
         Should -Invoke Send-FmHerdrKey -Times 0 -Exactly
     }
 
-    It 'stands down when the pane starts running something during the window' {
+    It 'stands down when something starts running in the pane during the window' {
         $script:Reads = 0
-        Mock Get-FmHerdrBusyState { $script:Reads++; if ($script:Reads -ge 3) { 'busy' } else { 'idle' } }
+        Mock Get-FmHerdrPaneAgentState { $script:Reads++; if ($script:Reads -ge 3) { 'live' } else { 'no-agent' } }
         $result = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude' `
             -DelaySeconds 5 -PollSeconds 0.01 -SettleSeconds 0
         $result.Action | Should -Be 'stood-down'
-        $result.Reason | Should -Match 'running something'
+        $result.Reason | Should -Match 'already running in the pane'
         $script:Enters | Should -Be 0
     }
 
@@ -308,18 +377,18 @@ Describe 'Invoke-FmAutolaunchArm - the captain wins' {
 Describe 'Invoke-FmAutolaunchArm - panes it will not type into' {
     BeforeEach { Set-CalmPane }
 
-    It 'refuses a pane that is already running something' {
-        Mock Get-FmHerdrBusyState { 'busy' }
+    It 'refuses a pane that already has something running in it' {
+        Mock Get-FmHerdrPaneAgentState { 'live' }
         $result = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude' `
             -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0
         $result.Action | Should -Be 'refused'
         $result.Armed | Should -BeFalse
-        $result.Reason | Should -Match 'running something'
+        $result.Reason | Should -Match 'already running in the pane'
         Should -Invoke Send-FmHerdrLiteral -Times 0 -Exactly
     }
 
     It 'refuses a pane whose state cannot be read, rather than assuming it is free' {
-        Mock Get-FmHerdrBusyState { 'unknown' }
+        Mock Get-FmHerdrPaneAgentState { 'unknown' }
         $result = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude' `
             -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0
         $result.Action | Should -Be 'refused'
@@ -365,7 +434,7 @@ Describe 'Invoke-FmAutolaunchArm - panes it will not type into' {
     }
 
     It 'refuses a pane that does not exist' {
-        Mock Test-FmHerdrTargetExists { $false }
+        Mock Get-FmHerdrPaneAgentState { 'dead' }
         $result = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude' `
             -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0
         $result.Action | Should -Be 'refused'
@@ -405,7 +474,7 @@ Describe 'Invoke-FmAutolaunch' {
     It 'runs the configured command, with the configured window' {
         $root = New-AutolaunchHome -Content "command=claude --continue`ndelay=1`n"
         $result = Invoke-FmAutolaunch -Target 'default:w1:p2' -FirstmateHome $root `
-            -PollSeconds 0.01 -SettleSeconds 0
+            -PollSeconds 0.01 -SettleSeconds 0 -ConfirmSeconds 1
         $result.Action | Should -Be 'submitted'
         $result.Command | Should -Be 'claude --continue'
         $result.DelaySeconds | Should -Be 1
@@ -433,7 +502,7 @@ Describe 'Invoke-FmAutolaunch' {
     It 'lets an explicit window override the configured one' {
         $root = New-AutolaunchHome -Content "command=claude`ndelay=600`n"
         $result = Invoke-FmAutolaunch -Target 'default:w1:p2' -FirstmateHome $root -DelaySeconds 1 `
-            -PollSeconds 0.01 -SettleSeconds 0
+            -PollSeconds 0.01 -SettleSeconds 0 -ConfirmSeconds 1
         $result.Action | Should -Be 'submitted'
         $result.DelaySeconds | Should -Be 1
     }

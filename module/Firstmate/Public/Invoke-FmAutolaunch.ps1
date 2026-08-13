@@ -41,6 +41,9 @@ How often the window re-checks the pane. The default is one second.
 .PARAMETER SettleSeconds
 How long the pane is given to repaint before and after typing.
 
+.PARAMETER ConfirmSeconds
+How long to watch for the command actually starting after Enter.
+
 .EXAMPLE
 Invoke-FmAutolaunch -Target 'default:w1:p2'
 
@@ -57,7 +60,8 @@ function Invoke-FmAutolaunch {
         [string]$FirstmateHome = '',
         [int]$DelaySeconds = 0,
         [double]$PollSeconds = 1,
-        [double]$SettleSeconds = 0.4
+        [double]$SettleSeconds = 0.4,
+        [double]$ConfirmSeconds = 5
     )
 
     $homeArgs = @{}
@@ -84,5 +88,5 @@ function Invoke-FmAutolaunch {
     $delay = if ($DelaySeconds -gt 0) { $DelaySeconds } else { $config.DelaySeconds }
 
     Invoke-FmAutolaunchArm -Target $Target -Command $config.Command -DelaySeconds $delay `
-        -PollSeconds $PollSeconds -SettleSeconds $SettleSeconds
+        -PollSeconds $PollSeconds -SettleSeconds $SettleSeconds -ConfirmSeconds $ConfirmSeconds
 }

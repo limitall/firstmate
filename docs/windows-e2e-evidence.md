@@ -2177,3 +2177,99 @@ a separate defect; what is closed is the question of whose they are.
   pre-existing at `99a0e96`, unattributed as to which file leaks into them.
 - **`gh` is absent on the laptop**, so `direct-PR` cannot complete there. An
   install, not a code defect (section 13).
+
+## 18. Autolaunch, on the captain's Windows 11 laptop - `PROVEN (Windows 11)` in part, `BLOCKED (brief gate)` in part
+
+The opt-in `config/autolaunch` command and its interruptible grace window
+(`docs/autolaunch-windows.md`), on `fm/fmwin-autolaunch` over `2e60e39`.
+
+The captain's own checkout at `C:\Users\ADMIN\firstmate-win` was **not touched**.
+The branch was carried over as a `git bundle`, cloned to
+`C:\Users\ADMIN\fmwin-autolaunch`, and set up there with `-SkipProfile`, so the
+captain's PowerShell profile and their global Claude settings were left alone.
+The one file this run wrote into that clone's `config/` was removed afterwards.
+
+Environment, read on the laptop at the start of the run:
+
+```
+pwsh      : 7.6.4
+pester    : 6.1.0
+git       : git version 2.49.0.windows.1
+herdr     : herdr 0.7.5-preview.2026-07-21-0f10e1453a7f
+claude    : C:\Users\ADMIN\AppData\Roaming\npm\claude.ps1  (2.1.229)
+os        : Microsoft Windows NT 10.0.26100.0
+```
+
+### 18.1 Unconfigured: nothing happens at all - `PROVEN (Windows 11)`
+
+```
+> pwsh -NoProfile -File bin\fm-autolaunch.ps1 default:w1:p2
+autolaunch disabled: no C:\Users\ADMIN\fmwin-autolaunch\config\autolaunch - autolaunch is off
+exit: 0  (0 = deliberately nothing to do)
+```
+
+Nothing was typed and no backend call was made: with no config the command
+returns before it looks at the target at all.
+
+### 18.2 The doctor says which state it is in, and prints the command - `PROVEN (Windows 11)`
+
+Unconfigured:
+
+```
+  [ok]      autolaunch - off - no config/autolaunch, so nothing is started automatically
+```
+
+With the captain's own choice written into `config/autolaunch`:
+
+```
+  [ok]      autolaunch - on - types 'claude --dangerously-skip-permissions --continue --chrome' into a named pane and submits it after 10s unless the pane is touched
+```
+
+That line is the whole point of making the feature opt-in: the flag that
+disables Claude's permission checks is printed where the captain already looks,
+not left in a file someone has to remember to open.
+
+### 18.3 A typo is a refusal, not a silent off - `PROVEN (Windows 11)`
+
+```
+> pwsh -NoProfile -File bin\fm-autolaunch.ps1 default:w1:p2      # config has delayy=10
+autolaunch refused: C:\Users\ADMIN\fmwin-autolaunch\config\autolaunch line 2: unknown key 'delayy' (expected command or delay)
+exit: 1  (1 = refused)
+
+  [warn]    autolaunch - off - C:\Users\ADMIN\fmwin-autolaunch\config\autolaunch line 2: unknown key 'delayy' (expected command or delay)
+              fix: correct C:\Users\ADMIN\fmwin-autolaunch\config\autolaunch (command=<command>, optional delay=<seconds>) or delete it
+```
+
+### 18.4 A target that is not a pane submits nothing, and says why - `PROVEN (Windows 11)`
+
+```
+> pwsh -NoProfile -File bin\fm-autolaunch.ps1 not-a-pane
+autolaunch refused: 'not-a-pane' is not a herdr pane target of the form <session>:<pane-id>
+exit: 1
+
+> pwsh -NoProfile -File bin\fm-autolaunch.ps1
+usage: fm-autolaunch.ps1 <session>:<pane-id> [-DelaySeconds <n>] [-WhatIf]
+exit: 2
+```
+
+### 18.5 What was NOT proven on the laptop, and why - `BLOCKED (brief gate)`
+
+Three of the four demonstrations the brief asks for need a live herdr pane to
+type into: the untouched pane that starts by itself, the pane the captain types
+into during the window, and the pane that is busy. Creating, using and closing a
+pane is driving Herdr lifecycle, and this task's brief was scaffolded **without**
+`--herdr-lab`, whose hard gate says to stop and regenerate rather than add such
+commands by hand. So none of them was run here, and none of the steps above
+created a herdr session, pane or tab - each refused before reaching a backend
+call.
+
+What covers those paths meanwhile is `tests/FmAutolaunch.Tests.ps1`, which drives
+the whole state machine through mocked adapter calls: the untouched window that
+submits exactly one Enter after typing exactly once, the captain typing
+mid-window, an agent registering in the pane mid-window, the pane becoming
+unreadable mid-window, the pane that was already occupied or unreadable before
+typing, the pane that repaints on its own, and every kind of pane the pre-flight
+check accepts or refuses - including an idle agent, which is refused. Each stand-down case asserts that **no key at all** was
+sent, not merely that the reported action was a stand-down. That is
+`PROVEN (Windows 11)` as a test run (18.6) and
+`NOT YET VERIFIED ON WINDOWS HARDWARE` as live pane behaviour.

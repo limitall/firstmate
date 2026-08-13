@@ -66,19 +66,41 @@ fm-autolaunch.ps1 <session>:<pane-id>
 ```
 
 1. **Refuse anything that is not a free pane.** The target must parse as a herdr
-   pane, its session must be reachable, the pane must exist, herdr's own agent
-   state must read a legible `idle`, and the pane must not be one this home
-   recorded as a worker's endpoint in `state/<id>.meta`. A pane whose state
-   cannot be read is refused exactly like a busy one.
+   pane, its session must be reachable, the pane must be live with **no
+   registered agent**, and it must not be one this home recorded as a worker's
+   endpoint in `state/<id>.meta`. A pane whose state cannot be read is refused
+   exactly like an occupied one.
 2. **Prove the pane is not in use.** Two bounded captures a settle apart must be
    byte-identical. A pane that is changing under us is already the captain's.
 3. **Type, and stop.** The command goes in with `pane send-text`, which does not
    submit, so the captain sees exactly what is about to run.
 4. **Hold the window.** Every poll must reproduce the post-typing capture
-   *exactly* and must still read idle.
-5. **Submit once.** One Enter, then herdr's native agent state confirms whether
-   a turn really started. An unconfirmed submit is reported as unconfirmed, not
-   as success.
+   *exactly* and the pane must still be free.
+5. **Submit once.** One Enter, then up to five seconds watching for either
+   signal that it landed: the pane no longer matching the armed capture, or an
+   agent registering in it. Seeing neither within that budget is reported as
+   unconfirmed rather than as success.
+
+### Why "no registered agent" rather than "idle"
+
+The pane this feature exists for is a plain shell at its prompt, and a shell has
+no agent registered in it - so `Get-FmHerdrBusyState`, which answers "what is
+this agent doing", answers `unknown` for exactly the right target. The pane and
+agent presence classifier answers the real question, and `no-agent` **is** the
+target state.
+
+A pane that does hold an agent is refused whatever its status says, including
+`idle`. An idle harness has a composer, and a shell command typed into a
+composer is chat rather than a command. That is also why the target is an
+explicit pane and never a task id: a worker endpoint recorded in this home is
+refused by name before anything else happens.
+
+There is one thing neither check can see. A shell running a **silent**
+foreground process looks exactly like a shell at its prompt - no agent, no
+repaint - and herdr's live foreground-process reading comes back empty on
+Windows, so typing would reach that process's stdin. The visible unsubmitted
+command and the window are the mitigation; this is a residual risk rather than
+one the checks cover.
 
 ## Standing down is the whole point
 
@@ -87,7 +109,7 @@ step above fails toward standing down:
 
 - a changed capture is the captain typing;
 - an unreadable capture is a pane nothing can be proven about;
-- a non-idle state is something running.
+- a newly registered agent is something the captain started.
 
 All three end the window, and **standing down never touches the pane again** -
 no Enter, no Escape, no clear. Whatever the captain typed stays exactly where
@@ -109,8 +131,8 @@ autolaunch asks the question it can answer exactly - *did one single byte of thi
 pane change while we waited* - which is a strictly stronger test of "untouched"
 than a shape verdict. The shape verdict is still consulted, and any verdict other
 than a confirmed-empty composer stands down; `unknown` alone never licenses
-typing, because the idle agent state and the two matching captures are what
-license it.
+typing, because the free pane and the two matching captures are what license
+it.
 
 The cost is real and accepted: a pane whose prompt repaints on its own (a clock,
 a spinner) never reads as unchanged, so autolaunch refuses it instead of firing.
