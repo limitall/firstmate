@@ -75,6 +75,7 @@ config/crew-dispatch.json  optional crewmate dispatch profiles; LOCAL, gitignore
 config/secondmate-harness  harness the primary uses to launch secondmate agents, optionally followed by model and effort tokens
 config/backlog-backend  backlog backend override; LOCAL, gitignored; "manual" forces the hand-edited backlog (section 10)
 config/startup-memory-budget  per-home startup-memory budget; LOCAL, gitignored, materialized by locked bootstrap
+config/autolaunch      opt-in startup command and grace window for `bin/fm-autolaunch.ps1`; LOCAL, gitignored; absent = off
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
   captain.md         this home's captain preferences and working style; canonical even if harness memory mirrors it

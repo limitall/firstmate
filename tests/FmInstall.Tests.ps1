@@ -743,6 +743,35 @@ Describe 'Invoke-FmDoctor' {
         $doctor.Healthy | Should -BeTrue
     }
 
+    It 'reports autolaunch as off in a home that has not opted in' {
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+
+        $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
+        $check = $doctor.Checks | Where-Object { $_.Name -eq 'autolaunch' }
+        $check.Status | Should -Be 'ok'
+        $check.Detail | Should -BeLike 'off*'
+        $doctor.Healthy | Should -BeTrue
+    }
+
+    It 'prints the exact command an enabled autolaunch will run' {
+        # The point of making it opt-in is defeated if the captain cannot see
+        # what they opted into without opening a file - especially this command,
+        # which turns off Claude's permission checks for every session it starts.
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+        [System.IO.File]::WriteAllText((Join-Path $fixture.Home 'config' 'autolaunch'),
+            "command=claude --dangerously-skip-permissions --continue --chrome`ndelay=10`n")
+
+        $doctor = Invoke-FmDoctor -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer
+        $check = $doctor.Checks | Where-Object { $_.Name -eq 'autolaunch' }
+        $check.Status | Should -Be 'ok'
+        $check.Detail | Should -BeLike '*claude --dangerously-skip-permissions --continue --chrome*'
+        ($doctor.Lines -join "`n") | Should -BeLike '*--dangerously-skip-permissions*'
+    }
+
     It 'reports the home as resolving without the environment, and names the pointer' {
         $fixture = New-InstallFixture
         $null = Invoke-Setup -Fixture $fixture

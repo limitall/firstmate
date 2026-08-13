@@ -80,7 +80,12 @@ function Invoke-FmDoctor {
     $groups = [ordered]@{
         'prerequisites' = @(Get-FmInstallPrerequisiteCheck)
         'home'          = @(Get-FmInstallHomeCheck -FirstmateHome $FirstmateHome -HomePointerPath $HomePointerPath `
-                -RepoRoot $RepoRoot)
+                -RepoRoot $RepoRoot) +
+            # Printed with the home rather than with wiring because it is a
+            # choice recorded IN the home. It always prints the exact command an
+            # enabled autolaunch will run: opt-in is only meaningful if the
+            # captain can see what they opted into without opening a file.
+            @(Get-FmAutolaunchCheck -ConfigDir (Get-FmInstallConfigDirectory -FirstmateHome $FirstmateHome))
         'wiring'        = @(Get-FmInstallWiringCheck -RepoRoot $RepoRoot -FirstmateHome $FirstmateHome `
                 -ProfilePath $ProfilePath -HookSettingsPath $HookSettingsPath)
         # The identity. Last because it is the one group whose failure a captain

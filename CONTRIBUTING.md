@@ -153,6 +153,10 @@ module any other way.
 - `docs/backlog-manual-windows.md` - the manual backlog backend: tasks-axi's
   markdown grammar as the format contract, byte-exact round trip, and every
   refusal.
+- `docs/autolaunch-windows.md` - the opt-in `config/autolaunch` startup command
+  and its interruptible grace window: why it is off until a file says otherwise,
+  and why "untouched" is proved by unchanged capture bytes rather than by a
+  composer shape verdict this port does not own.
 - `docs/windows-install.md` - `fm-setup.ps1` and `fm-doctor.ps1`: why the wiring
   is a managed PowerShell-profile block rather than a User environment variable,
   and why setup writes `config/backend=herdr` (without it a fresh home resolves

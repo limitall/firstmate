@@ -5,8 +5,9 @@
 
 .DESCRIPTION
     Checks the PowerShell version, Pester, git, herdr, treehouse, the Claude
-    CLI, the home layout, the module and PATH wiring, and the Claude hook
-    registration. Every check is printed, whether it passed or not.
+    CLI, the home layout, the autolaunch setting and the command it would run,
+    the module and PATH wiring, and the Claude hook registration. Every check is
+    printed, whether it passed or not.
 
     Exit codes: 0 healthy (no missing check), 1 unhealthy, 2 usage.
     A warning alone does not make the environment unhealthy; the line says what
