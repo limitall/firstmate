@@ -89,6 +89,20 @@ Describe 'the grammar round-trips byte for byte' {
         (Get-Text -Path $path) | Should -Match '- \[ \] task-a - legacy bullet \(hold: captain decision pending\)'
     }
 
+    It 'reads a hand-edited file whose sections carry their own blank lines' {
+        # The regression this pins: a blank line BEFORE a section's first bullet
+        # belongs to no item block, so it reached the bullet matcher as an empty
+        # string and threw out of the READER. `## Done` followed by a blank line
+        # - what a hand-edited backlog looks like, and hand editing is the whole
+        # point of the manual backend - could not be read at all, and every
+        # caller saw a parse failure rather than a backlog.
+        $line = @('## In flight', '', '- [ ] task-a - doing things', '', '## Queued', '', '## Done', '')
+        $path = New-BacklogFile -Line $line
+        (Get-Ids (Get-FmBacklog -Path $path)) | Should -Be 'task-a'
+        ConvertTo-FmBacklogMarkdown -Document (ConvertFrom-FmBacklogMarkdown -Text (Get-Text -Path $path)) |
+            Should -Be (Get-Text -Path $path)
+    }
+
     It 'keeps a mid-sentence parenthetical in the prose and never relocates it' {
         $path = New-BacklogFile -Line @('## Queued', '- [ ] a - see report.md (reported 2026-06-22): the note (repo: x) (since 2026-08-01)', '## Done')
         $task = Get-FmBacklogTask -Id 'a' -Path $path
