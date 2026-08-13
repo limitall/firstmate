@@ -316,3 +316,96 @@ Describe 'Invoke-FmSessionStartNudge' {
         { Invoke-FmSessionStartNudge } | Should -Not -Throw
     }
 }
+
+Describe 'bin/fm-lock.ps1' {
+    # WHY THIS DESCRIBE EXISTS. The entry point had no test at all, and it
+    # shipped with `$null = Invoke-FmLock -Status`, which discarded the ONLY
+    # thing a status read produces. `fm-lock.ps1 status` printed nothing and
+    # exited 0 - a status command that reports no status, and exactly the
+    # "satisfies the name, not the behaviour" failure that giving an absent
+    # by-name owner a body is supposed to avoid. The wording is compared against
+    # bin/fm-lock.sh, which is the specification.
+
+    BeforeAll {
+        $script:LockRepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).ProviderPath
+        $script:LockEntry = Join-Path $script:LockRepoRoot 'bin' 'fm-lock.ps1'
+
+        function Invoke-LockEntry {
+            param([string[]]$CliArgs = @(), [Parameter(Mandatory)][string]$FmHome)
+            $psi = [System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+            foreach ($a in (@('-NoProfile', '-NonInteractive', '-File', $script:LockEntry) + $CliArgs)) {
+                $psi.ArgumentList.Add([string]$a)
+            }
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            foreach ($key in @($psi.Environment.Keys)) { if ($key -like 'FM_*') { $null = $psi.Environment.Remove($key) } }
+            $psi.Environment['FM_ROOT_OVERRIDE'] = $FmHome
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $out = $proc.StandardOutput.ReadToEnd()
+            $err = $proc.StandardError.ReadToEnd()
+            $proc.WaitForExit()
+            [pscustomobject]@{ ExitCode = $proc.ExitCode; StdOut = $out; StdErr = $err }
+        }
+    }
+
+    BeforeEach {
+        $script:LockHome = New-FmTestHome
+    }
+    AfterEach { Remove-FmTestHome -TestHome $script:LockHome }
+
+    It 'PRINTS the free status rather than swallowing it' {
+        $r = Invoke-LockEntry -CliArgs @('status') -FmHome $script:LockHome.Path
+        $r.ExitCode | Should -Be 0
+        $r.StdOut.Trim() | Should -Be 'lock: free'
+    }
+
+    It 'names a stale holder in the wording bin/fm-lock.sh uses' {
+        $dead = 2147483600
+        Set-Content -LiteralPath (Join-Path $script:LockHome.State '.lock') -Value $dead
+        $r = Invoke-LockEntry -CliArgs @('status') -FmHome $script:LockHome.Path
+        $r.ExitCode | Should -Be 0
+        $r.StdOut.Trim() | Should -Be "lock: stale (pid $dead dead or not a harness)"
+    }
+
+    It 'always exits 0 for a status read, whatever the lock says' {
+        (Invoke-LockEntry -CliArgs @('status') -FmHome $script:LockHome.Path).ExitCode | Should -Be 0
+        Set-Content -LiteralPath (Join-Path $script:LockHome.State '.lock') -Value 2147483600
+        (Invoke-LockEntry -CliArgs @('status') -FmHome $script:LockHome.Path).ExitCode | Should -Be 0
+    }
+
+    It 'refuses with exit 2 and a usage line for an unknown verb' {
+        $r = Invoke-LockEntry -CliArgs @('acquire-please') -FmHome $script:LockHome.Path
+        $r.ExitCode | Should -Be 2
+        $r.StdErr | Should -BeLike '*usage: fm-lock.ps1*'
+    }
+
+    It 'makes its EXIT CODE agree with the lock it actually wrote' {
+        # The bug this pins down: -PassThru used to return the human line AND
+        # the result object, so `$result.Acquired` ran against a two-element
+        # array and threw under strict mode. bin/fm-lock.ps1 then exited 1 -
+        # "operate read-only" - on the very path that had just written the lock
+        # and acquired it. A session would have believed it held nothing while
+        # holding everything, which is worse than either honest outcome.
+        #
+        # Whether THIS host has a harness in its ancestry is not the point and
+        # is not asserted; the agreement between the exit code, the printed
+        # line and the file on disk is, and it holds either way.
+        $r = Invoke-LockEntry -FmHome $script:LockHome.Path
+        $lockFile = Join-Path $script:LockHome.State '.lock'
+
+        $r.StdErr | Should -Not -BeLike '*ParentContainsErrorRecordException*'
+        $r.StdErr | Should -Not -BeLike '*cannot be found on this object*'
+
+        if ($r.ExitCode -eq 0) {
+            $r.StdOut.Trim() | Should -Match '^lock acquired: harness pid \d+$'
+            Test-Path -LiteralPath $lockFile | Should -BeTrue
+            (Get-Content -Raw -LiteralPath $lockFile).Trim() |
+                Should -Be ([regex]::Match($r.StdOut, '\d+').Value)
+        } else {
+            $r.ExitCode | Should -Be 1
+            $r.StdErr | Should -Match 'read-only|harness'
+        }
+    }
+}

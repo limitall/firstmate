@@ -27,7 +27,12 @@ if ($mode -eq '-h' -or $mode -eq '--help') {
     exit 0
 }
 if ($mode -eq 'status') {
-    $null = Invoke-FmLock -Status
+    # NOT `$null = ...`: without -PassThru the command's only output IS the
+    # "lock: free" / "lock: held by live harness pid N" / "lock: stale ..." line
+    # bin/fm-lock.sh prints, and swallowing it left `fm-lock.ps1 status`
+    # printing nothing at all while still exiting 0 - a status read that
+    # reports no status.
+    Invoke-FmLock -Status
     exit 0
 }
 if ($mode -ne '') {
@@ -39,5 +44,8 @@ if ($mode -ne '') {
 # is deliberately NOT suppressed here: "operate read-only until resolved" is the
 # whole point of the nonzero exit.
 $result = Invoke-FmLock -PassThru
-if ($result -and $result.Acquired) { exit 0 }
+if ($result -and $result.Acquired) {
+    Write-Output $result.Message
+    exit 0
+}
 exit 1

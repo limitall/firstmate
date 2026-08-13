@@ -1906,77 +1906,120 @@ non-elevated Windows run is the outstanding confirmation.
 
 ---
 
-## 14. Suite numbers for this task, and one comparison left open
+## 14. The 40 "regressions" that belonged to the RUNNER, not to either commit - `PROVEN`
 
-### Linux, definitive, at `fm/fmwin-dispatchable` HEAD
+This section replaces an earlier one that left the base-vs-branch comparison
+open. It is closed now, and the answer was not the one the shape of the evidence
+suggested.
 
-```
-$ pwsh -NoProfile -Command 'Invoke-Pester -Path ./tests/'
-Tests Passed: 1511, Failed: 0, Skipped: 5, Inconclusive: 0, NotRun: 0
+### What was measured
 
-$ pwsh -NoProfile -Command 'Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1'
-(no findings)
-```
-
-### Windows 11, whole suite, one commit behind HEAD
-
-Run in `C:\Users\ADMIN\fmwin-suite`, a plain `git clone` of the branch:
+Both suites were run back to back in ONE elevated session, from fresh clones at
+the exact commits - which is the correct way to compare, because privilege
+context changes the result and has to be held constant:
 
 ```
-RESULT total=1515 passed=1493 failed=6 skipped=16 notrun=0
-can create a symlink: True
+BASE   99a0e96  1452 total  1434 passed   2 failed  16 skipped
+BRANCH 59d0f8e  1516 total  1458 passed  42 failed  16 skipped
 ```
 
-Six failures, and **the question of whether any of them is caused by this branch
-is UNRESOLVED**. What is established:
-
-- **Every one of them passes when its own file runs alone on the same machine.**
-  `FmAnalyzer`, `FmPaths`, `FmState`, `FmIdentity` and `FmInstall` together:
-  `RESULT total=221 passed=221 failed=0 skipped=0`. So they are whole-suite
-  cross-file interference, not defects in those files. This repo already carries
-  one documented case of exactly that shape - the `FM_BACKEND` leak recorded
-  further up this file - which makes "pre-existing" plausible. Plausible is not
-  evidence, and it is not claimed here.
-- **Two of the six are this run's own fixture, not code.**
-  `FmContract.Tests.ps1`'s `this checkout's own instruction surface` pair checks
-  the checkout it is executing in. `fmwin-suite` was cloned with plain
-  `git clone` and `bin/fm-setup.ps1` was never run in it, so `CLAUDE.md` is the
-  9-byte placeholder and `.claude/skills` is text - precisely the state section 7
-  documents and setup repairs. The other clone used for section 10, where setup
-  DID run, reported `CLAUDE.md is a link to AGENTS.md` and 19 reachable skills.
-
-The four still open:
+The 2 were shared. The other 40 were absent from the baseline and present in the
+branch, and they grouped in exactly the areas this branch's by-name binding
+sweep had touched:
 
 ```
-  the sweep runner itself.gives up after the full attempt budget when every sweep crashes
-  the sweep runner itself.recovers when a later attempt completes, and keeps that attempt s findings
-  Get-FmTaskStatePath.composes state/<id>.<suffix>
-  Reading.returns an empty collection of lines for a missing file
+  12  Retry discipline
+  12  Harness name matching
+   6  Session lock
+   5  Stale-holder recovery
+   4  Get-FmHarnessAncestry
+   1  Test-FmProcessAlive
 ```
 
-### How to finish the comparison
+That is a persuasive shape. It is also a coincidence, and worth recording as one:
+the areas a sweep touches are the areas with the most module-scope tests, so
+"the failures cluster where you worked" was always going to be true here
+regardless of cause.
 
-A baseline whole-suite run at `origin/main` (`99a0e96`) on the same machine was
-launched detached and **completed**; the tunnel went down before its result could
-be read. It is on the laptop, not lost:
+### The actual cause
+
+`Import-Module <path> -Force` replaces only a module already loaded from the
+**same path**. Two clones of this repo in one process therefore leave **two**
+modules named `Firstmate` loaded:
 
 ```powershell
-Get-Content C:\Users\ADMIN\baseline-result.txt
+Import-Module C:\Users\ADMIN\pbase\module\Firstmate\Firstmate.psd1   -Force  # 1
+Import-Module C:\Users\ADMIN\pbranch\module\Firstmate\Firstmate.psd1 -Force  # 2
 ```
 
-The file ends with `BASELINE_COMPLETE` and lists `BASELINE total=...` followed by
-every failing test path. Compare that failure list with the four above:
+and Pester then refuses every `InModuleScope Firstmate` block:
 
-- the same four failing at `99a0e96` means they are pre-existing whole-suite
-  interference on Windows and this branch did not introduce them;
-- any of the four absent from the baseline means this branch did, and the
-  interference has to be traced to the file that leaks into it.
+```
+Multiple script or manifest modules named 'Firstmate' are currently loaded.
+Make sure to remove any extra copies of the module from your session before testing.
+```
 
-The clone is at `C:\Users\ADMIN\fmwin-base` (checked out at `99a0e96`) and
-`C:\Users\ADMIN\fmwin-suite` (the branch), so the comparison can be re-run in
-place without re-cloning.
+The 40 are **exactly** the suite's 40 `InModuleScope` tests. Counted from the
+source before any run: Retry discipline 10 `It`s of which one is a 3-case
+`-ForEach` = 12, Harness name matching 2 `It`s that are 6-case `-ForEach`es = 12,
+Session lock 6, Stale-holder recovery 5, `Get-FmHarnessAncestry` 4,
+`Test-FmProcessAlive` 1. Total 40, and the three files that own them -
+`FmIdentity`, `FmLock`, `FmState` - are three of the only four test files that
+import the module in-process at all.
 
-Also outstanding on Windows, and unrelated: the whole suite has not been run at
-branch HEAD - the Windows run above is one commit behind it, missing only the
-launch-wrapper double-quote refusal, which is covered on Linux.
+### The experiment that settles it
 
+Reverse the order. Same two clones, same one process, nothing else changed:
+
+```
+ORDER pbase -> pbranch     pbase   modules_loaded_after=1  failed=0
+                           pbranch modules_loaded_after=2  failed=40
+
+ORDER pbranch -> pbase     pbranch modules_loaded_after=1  failed=0
+                           pbase   modules_loaded_after=2  failed=40
+```
+
+Identical six groups, identical counts, on the **base** commit. The 40 belong to
+whichever suite runs **second**. Neither commit causes them.
+
+A control that explains why this was never seen before: base against **itself**
+- the same path twice - is `failed=0` both times, because `-Force` does replace
+a module loaded from the same path. Comparing a commit against itself, or
+running one suite alone, cannot expose this. Only a genuine two-clone comparison
+can, which is why the first real comparison this port ever ran found it.
+
+### The fix
+
+`tests/FmModule.TestHelpers.ps1` owns a single supported way to load the module:
+unload every copy, import this checkout's, assert exactly one is left. The four
+suites that reach into module scope use it, and a parsed check in
+`FmModuleAssembly.Tests.ps1` keeps any future `InModuleScope` suite on it, so
+this cannot come back silently. A second test loads a decoy copy from a temp
+directory, imports through the helper, and asserts both that one module is left
+and that `InModuleScope` still runs - the failure mode itself, held down.
+
+After the fix, in one process:
+
+```
+ORDER pbase -> pfixed      pbase   modules_loaded_after=1  failed=0
+                           pfixed  modules_loaded_after=1  failed=0
+```
+
+### A second defect this investigation exposed
+
+Both test helpers this branch added set `Set-StrictMode -Version Latest` at
+**file** scope. A dot-source applies that to the scope that dot-sourced it, so
+each helper silently turned strict mode ON for whole suites that never asked -
+three of the four module-importing suites, and three of the four symlink ones,
+set none themselves. It immediately broke an untouched `FmState` assertion,
+`(Read-FmStateLines ...).Count`, which is legal without strict mode and throws
+with it. That is the same action-at-a-distance class as the by-name bindings
+this branch exists to fix. Strict mode now sits inside each helper function.
+
+### What this costs the next person
+
+Nothing, if they use the helper. The rule is one line: **a test that uses
+`InModuleScope` imports through `Import-FmTestModule`**, and the suite enforces
+it. The deeper rule is the one worth carrying: a green suite proves nothing
+about a comparison harness, and a failure that clusters in the area you just
+edited is a hypothesis, not a finding.

@@ -74,10 +74,18 @@ function Invoke-FmLock {
         [ValidateRange(0, 3600)][int]$TimeoutSeconds = 30
     )
 
+    # -PassThru returns the RESULT OBJECT INSTEAD OF the human line, never both.
+    # Emitting a string and an object from one call put two items in the
+    # caller's variable, and `$result.Acquired` on that two-element array throws
+    # under strict mode - which is how bin/fm-lock.ps1 came to fail on the very
+    # path that had just succeeded, reporting read-only while holding the lock
+    # it had written. The entry point prints the line; this returns the object.
     if ($Status) {
         $report = Get-FmSessionLockStatus -StatePath $StatePath
-        Write-Output $report.Text
-        if (-not $PassThru) { return }
+        if (-not $PassThru) {
+            Write-Output $report.Text
+            return
+        }
         return [pscustomobject]@{
             PSTypeName = 'Firstmate.LockResult'
             Acquired   = ($report.State -eq 'held')
@@ -90,10 +98,12 @@ function Invoke-FmLock {
 
     $result = Request-FmSessionLock -StatePath $StatePath -ProcessId $ProcessId -TimeoutSeconds $TimeoutSeconds
 
-    if ($result.Acquired) {
-        Write-Output $result.Message
-    } else {
+    # The refusal always goes to the error stream, PassThru or not: "operate
+    # read-only until resolved" is a diagnostic every caller needs to see.
+    if (-not $result.Acquired) {
         Write-Error -Message $result.Message -Category PermissionDenied -ErrorAction Continue
+    } elseif (-not $PassThru) {
+        Write-Output $result.Message
     }
 
     if (-not $PassThru) { return }
