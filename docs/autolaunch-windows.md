@@ -66,10 +66,13 @@ fm-autolaunch.ps1 <session>:<pane-id>
 ```
 
 1. **Refuse anything that is not a free pane.** The target must parse as a herdr
-   pane, its session must be reachable, the pane must be live with **no
-   registered agent**, and it must not be one this home recorded as a worker's
-   endpoint in `state/<id>.meta`. A pane whose state cannot be read is refused
-   exactly like an occupied one.
+   pane, the pane must be live with **no registered agent**, its session must be
+   reachable, and it must not be one this home recorded as a worker's endpoint
+   in `state/<id>.meta`. A pane whose state cannot be read is refused exactly
+   like an occupied one. The pane is read before the session is readied, on
+   purpose: the read never starts anything, while readying a session does, so a
+   target in a session nobody is running refuses rather than quietly bringing
+   that session back.
 2. **Prove the pane is not in use.** Two bounded captures a settle apart must be
    byte-identical. A pane that is changing under us is already the captain's.
 3. **Type, and stop.** The command goes in with `pane send-text`, which does not

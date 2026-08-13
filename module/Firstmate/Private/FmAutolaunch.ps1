@@ -176,12 +176,16 @@ function Read-FmAutolaunchConfig {
         if ($raw -notmatch '^[0-9]+$') {
             return (& $invalid "$path has delay='$raw', which is not a whole number of seconds")
         }
-        $parsed = [int]$raw
-        if ($parsed -lt 1 -or $parsed -gt $script:FmAutolaunchMaxDelaySeconds) {
-            return (& $invalid ("$path has delay=$parsed, outside 1-$($script:FmAutolaunchMaxDelaySeconds) seconds " +
+        # [long], not [int]: enough digits and an [int] cast THROWS, which under
+        # the module's Stop preference would crash the reader instead of
+        # reporting the refusal this function exists to report.
+        $parsed = 0L
+        if (-not [long]::TryParse($raw, [ref]$parsed) -or
+            $parsed -lt 1 -or $parsed -gt $script:FmAutolaunchMaxDelaySeconds) {
+            return (& $invalid ("$path has delay=$raw, outside 1-$($script:FmAutolaunchMaxDelaySeconds) seconds " +
                     '(a zero-second window would leave the captain nothing to interrupt)'))
         }
-        $delay = $parsed
+        $delay = [int]$parsed
     }
 
     [pscustomobject]@{
@@ -371,12 +375,17 @@ function Invoke-FmAutolaunchArm {
     if (-not (Split-FmHerdrTarget -Target $Target)) {
         return (& $result 'refused' "'$Target' is not a herdr pane target of the form <session>:<pane-id>")
     }
+    # The pane check FIRST, deliberately. It is read-only and never starts a
+    # server, while the readiness preamble every send and capture goes through
+    # does. So a target in a session that is not running refuses here as "no
+    # live pane" instead of quietly resurrecting a herdr session on the way to
+    # discovering there was nothing to type into.
+    $notFree = Test-FmAutolaunchPaneFree -Target $Target
+    if ($notFree) { return (& $result 'refused' "nothing was typed: $notFree") }
+
     if (-not (Test-FmHerdrTargetReady -Target $Target)) {
         return (& $result 'refused' "the herdr session for '$Target' could not be reached")
     }
-
-    $notFree = Test-FmAutolaunchPaneFree -Target $Target
-    if ($notFree) { return (& $result 'refused' "nothing was typed: $notFree") }
 
     # The shape verdict, when a classifier is loaded. 'unknown' is this port's
     # normal answer and is carried by the unchanged-bytes test below; anything

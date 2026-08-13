@@ -126,7 +126,10 @@ Describe 'Read-FmAutolaunchConfig' {
     }
 
     It 'refuses a non-numeric, zero, or out-of-range window' {
-        foreach ($delay in @('soon', '0', '99999')) {
+        # 99999999999999999999 is the one that used to CRASH the reader: enough
+        # digits and an [int] cast throws under the module's Stop preference,
+        # turning a refusal into an unhandled error.
+        foreach ($delay in @('soon', '0', '99999', '99999999999999999999')) {
             $config = Read-FmAutolaunchConfig -ConfigDir (New-AutolaunchConfigDir -Content "command=claude`ndelay=$delay`n")
             $config.Status | Should -Be 'invalid'
         }
@@ -433,12 +436,16 @@ Describe 'Invoke-FmAutolaunchArm - panes it will not type into' {
         Should -Invoke Test-FmHerdrTargetReady -Times 0 -Exactly
     }
 
-    It 'refuses a pane that does not exist' {
+    It 'refuses a pane that does not exist, WITHOUT starting a herdr server' {
+        # The readiness preamble starts a server; the pane read does not. Asking
+        # in that order means a target in a session nobody is running refuses
+        # instead of resurrecting that session on the way to finding nothing.
         Mock Get-FmHerdrPaneAgentState { 'dead' }
         $result = Invoke-FmAutolaunchArm -Target 'default:w1:p2' -Command 'claude' `
             -DelaySeconds 1 -PollSeconds 0.01 -SettleSeconds 0
         $result.Action | Should -Be 'refused'
         $result.Reason | Should -Match 'no live pane'
+        Should -Invoke Test-FmHerdrTargetReady -Times 0 -Exactly
     }
 
     It 'refuses when the session cannot be reached' {
