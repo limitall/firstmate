@@ -3267,7 +3267,7 @@ Both were found by running the thing, not by reading it.
    The other three of section 16's four were NOT diagnosed by this work.
 
 ---
-## 21. The unresolved-decision completion gate, on the captain's Windows 11 machine - `PROVEN (Windows 11)`
+## 22. The unresolved-decision completion gate, on the captain's Windows 11 machine - `PROVEN (Windows 11)`
 
 Run on 2026-08-14, PowerShell 7.6.4 on Windows 11 Pro 10.0.26200, in a
 disposable treehouse worktree of this repo on branch `fm/hold-gate`. Every
@@ -3279,7 +3279,7 @@ first at the branch point, then again after rebasing onto `2f24ea0` - where the
 backlog area this gate reads through had itself changed. Both demonstrations
 agree, and the second is the one that describes the tree being merged.
 
-### 21.1 The refusal, reproduced first - at the branch point, before the change
+### 22.1 The refusal, reproduced first - at the branch point, before the change
 
 A home carrying a finished scout: `data/demo-1/report.md`, a `state/demo-1.meta`
 recording `kind=scout` and `backend=herdr`, and a status stream ending `done:`.
@@ -3295,7 +3295,7 @@ EXIT=1
 That is every completed investigation on this port, and the only way past it was
 the flag that discards work.
 
-### 21.2 The same task, after the owner landed
+### 22.2 The same task, after the owner landed
 
 ```
 $ ./bin/fm-teardown.ps1 demo-1
@@ -3310,9 +3310,9 @@ No `--force`, and the two steps that could not run still say so. Re-run
 unchanged after the rebase onto `2f24ea0`, which matters here rather than being
 box-ticking: `main` had reconciled the backlog resolver this gate reads through,
 including a migration that moves a pre-fix root-level backlog. Same pass, and
-the hold refusal in 21.3 re-runs identically too.
+the hold refusal in 22.3 re-runs identically too.
 
-### 21.3 The three refusals, each through the same entry point
+### 22.3 The three refusals, each through the same entry point
 
 An unresolved decision hold in the backlog, attributed by `discovered-from`:
 
@@ -3341,7 +3341,7 @@ The report is the work product. Have the crewmate write it, or use --force after
 EXIT=1
 ```
 
-### 21.4 `--force` is unchanged
+### 22.4 `--force` is unchanged
 
 ```
 $ ./bin/fm-teardown.ps1 demo-1 --force
@@ -3356,7 +3356,7 @@ EXIT=0
 The held item is still in the backlog afterwards, unclosed: teardown discards
 the task, never the captain's decision.
 
-### 21.5 Suite and analyzer
+### 22.5 Suite and analyzer
 
 `Invoke-Pester -Path ./tests` on this branch, in that worktree. Twice at the
 branch point, and twice more after the rebase onto `2f24ea0`, where the tree is
@@ -3400,7 +3400,7 @@ files were byte-identical to the base commit (`git diff 9464471 -- CLAUDE.md
 junction, and the second run passed both without any change to the tree except
 the one 18.6 describes.
 
-### 21.6 A finding for the install area's owner
+### 22.6 A finding for the install area's owner
 
 `tests/FmInstall.Tests.ps1` runs the real `bin/fm-setup.ps1` as a child process
 with `-RepoRoot $script:RepoRoot`, which is **the checkout the suite is running
@@ -3413,7 +3413,7 @@ placeholder with a symlink, mid-suite, and `git status` went from clean to two
 modified tracked files.
 
 Observed here at 01:21 and 01:30 while `FmInstall.Tests.ps1` was the file under
-way. That is also the whole explanation of 21.5: `FmContract.Tests.ps1` sorts
+way. That is also the whole explanation of 22.5: `FmContract.Tests.ps1` sorts
 before `FmInstall.Tests.ps1`, so the first run read the placeholders and failed,
 the install suite then repaired them mid-run, and the second run found a healthy
 surface and passed. The suite fixed its own two failures by mutating the

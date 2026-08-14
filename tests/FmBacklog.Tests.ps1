@@ -90,12 +90,11 @@ Describe 'the grammar round-trips byte for byte' {
     }
 
     It 'reads a hand-edited file whose sections carry their own blank lines' {
-        # The regression this pins: a blank line BEFORE a section's first bullet
-        # belongs to no item block, so it reached the bullet matcher as an empty
-        # string and threw out of the READER. `## Done` followed by a blank line
-        # - what a hand-edited backlog looks like, and hand editing is the whole
-        # point of the manual backend - could not be read at all, and every
-        # caller saw a parse failure rather than a backlog.
+        # The same binder defect the empty-backlog test in 'reading the backlog'
+        # pins, in the shape a hand-edited file has rather than a fresh home's:
+        # blank lines around an item that IS there. Kept separate for the round
+        # trip - the fix must leave those blank lines exactly where the hand
+        # that typed them put them, which "no tasks" cannot check.
         $line = @('## In flight', '', '- [ ] task-a - doing things', '', '## Queued', '', '## Done', '')
         $path = New-BacklogFile -Line $line
         (Get-Ids (Get-FmBacklog -Path $path)) | Should -Be 'task-a'
