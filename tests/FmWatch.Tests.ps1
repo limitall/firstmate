@@ -41,9 +41,13 @@ BeforeAll {
 
     function Remove-TestHome {
         param($Path)
+        # Every key any test in this file sets is cleared here, not at the end of
+        # the test that set it: Pester containers share one process, so a key left
+        # behind decides another FILE's behaviour (CONTRIBUTING.md).
         foreach ($name in @('FM_ROOT_OVERRIDE', 'FM_HOME', 'FM_STATE_OVERRIDE', 'FM_SIGNAL_GRACE',
                 'FM_POLL', 'FM_CHECK_INTERVAL', 'FM_HEARTBEAT', 'FM_STALE_ESCALATE_SECS',
-                'FM_WEDGE_DEMAND_INSPECT_COUNT', 'FM_WATCH_DISABLE_FSNOTIFY')) {
+                'FM_WEDGE_DEMAND_INSPECT_COUNT', 'FM_WATCH_DISABLE_FSNOTIFY',
+                'FM_BUSY_TURN_MAX_SECS', 'FM_PAUSE_RESURFACE_SECS')) {
             Remove-Item -Path "env:$name" -ErrorAction SilentlyContinue
         }
         if ($Path -and (Test-Path -LiteralPath $Path)) {
@@ -498,11 +502,33 @@ Describe 'Pane staleness with the backend present' {
         function Test-FmStatusPaused { param($Line) return $script:StubPaused }
         function Test-FmStatusPausedOrCaptainHeld { param($Line) return $script:StubPaused }
         function Get-FmBackendAgentAlive { param($Window, $State) return $script:StubAgentAlive }
+
+        function New-StaleTaskMeta {
+            <# Give sess:1 a real task record, so Convert-FmWindowToTask resolves
+               it to alpha and the busy bound reads alpha's own evidence. #>
+            Set-FmFileTextLf -Path (Join-Path $script:Ctx.State 'alpha.meta') -Text "window=sess:1`n"
+        }
+
+        function Set-EvidenceAge {
+            <# Age every progress anchor the busy bound consults. -SkipPaneHash
+               leaves the watcher's own pane-hash marker alone, which is how a
+               worker that is silent but still producing pane output looks. #>
+            param([Parameter(Mandatory)][int]$Seconds, [switch]$SkipPaneHash)
+            $names = @('alpha.meta', 'alpha.status', 'alpha.turn-ended')
+            if (-not $SkipPaneHash) { $names += '.hash-sess_1' }
+            foreach ($name in $names) {
+                $p = Join-Path $script:Ctx.State $name
+                if ([System.IO.File]::Exists($p)) {
+                    [System.IO.File]::SetLastWriteTimeUtc($p, [DateTime]::UtcNow.AddSeconds(-$Seconds))
+                }
+            }
+        }
     }
     AfterAll {
         foreach ($n in @('Get-FmRecordedWindows', 'Get-FmBackendCapture', 'Get-FmWindowKind', 'Get-FmWindowTask',
                 'Test-FmWindowBusy', 'Test-FmStaleIsTerminal', 'Test-FmCrewProvablyWorking', 'Get-FmCrewAbsorbClass',
-                'Get-FmLastStatusLine', 'Test-FmStatusPaused', 'Test-FmStatusPausedOrCaptainHeld', 'Get-FmBackendAgentAlive')) {
+                'Get-FmLastStatusLine', 'Test-FmStatusPaused', 'Test-FmStatusPausedOrCaptainHeld', 'Get-FmBackendAgentAlive',
+                'New-StaleTaskMeta', 'Set-EvidenceAge')) {
             Remove-Item -Path "function:$n" -ErrorAction SilentlyContinue
         }
     }
@@ -601,7 +627,6 @@ Describe 'Pane staleness with the backend present' {
         # Throttled: the next poll inside the same window stays quiet.
         Invoke-FmPausedStale -Window 'sess:1' -Task 'alpha' -Hash 'abc' -Context $script:Ctx -Settings $settings
         @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 1
-        Remove-Item -Path 'env:FM_PAUSE_RESURFACE_SECS' -ErrorAction SilentlyContinue
     }
 
     It 'queues one wake per distinct stale hash while away mode owns triage' {
@@ -614,17 +639,133 @@ Describe 'Pane staleness with the backend present' {
         @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 1
     }
 
-    It 'bounds a busy pane that has gone too long with no completed turn' {
+    It 'bounds a busy pane that has gone too long with no observed progress' {
         $script:StubBusy = $true
-        $env:FM_BUSY_TURN_MAX_SECS = '1'
-        $env:FM_STALE_ESCALATE_SECS = '1'
+        $env:FM_BUSY_TURN_MAX_SECS = '600'
+        $env:FM_STALE_ESCALATE_SECS = '240'
         $settings = Get-FmWatchSettings
-        Set-FmFileTextLf -Path (Join-Path $script:Ctx.State 'alpha.meta') -Text "window=sess:1`n"
-        [System.IO.File]::SetLastWriteTimeUtc((Join-Path $script:Ctx.State 'alpha.meta'), [DateTime]::UtcNow.AddSeconds(-600))
+        New-StaleTaskMeta
+        # Settle a hash first: the bound governs a pane that is BUSY AND UNCHANGED.
+        1..2 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings }
+        Set-EvidenceAge -Seconds 7200
         Set-FmFileTextLf -Path (Join-Path $script:Ctx.State '.stale-since-sess_1') -Text (((Get-FmUnixTime) - 300).ToString() + "`n")
 
         { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings } | Should -Throw
         @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -BeLike '*possible wedge, escalation 1)'
-        Remove-Item -Path 'env:FM_BUSY_TURN_MAX_SECS', 'env:FM_STALE_ESCALATE_SECS' -ErrorAction SilentlyContinue
+    }
+
+    It 'keeps escalating a busy pane whose evidence stays stale' {
+        # Escalation must still climb for a genuinely stuck worker: a busy footer
+        # that redraws nothing buys one absorption, not permanent silence.
+        $script:StubBusy = $true
+        $env:FM_BUSY_TURN_MAX_SECS = '600'
+        $env:FM_STALE_ESCALATE_SECS = '240'
+        $settings = Get-FmWatchSettings
+        New-StaleTaskMeta
+        1..2 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings }
+        $since = Join-Path $script:Ctx.State '.stale-since-sess_1'
+
+        foreach ($expected in 1..3) {
+            Set-EvidenceAge -Seconds 7200
+            Set-FmFileTextLf -Path $since -Text (((Get-FmUnixTime) - 300).ToString() + "`n")
+            { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings } | Should -Throw
+            (Get-FmFirstLine -Path (Join-Path $script:Ctx.State '.wedge-escalations-sess_1')) | Should -Be "$expected"
+        }
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[2] | Should -BeLike '*demand-deep-inspection*'
+    }
+
+    It 'does not wedge-alarm a pane that is silent while its agent is demonstrably working' {
+        # The 2026-08-14 false alarm, in the shape it was measured: a crewmate
+        # blocking on a 23-minute test suite. herdr reads the agent busy, the pane
+        # emits nothing, and the spawn record is hours past the bound - the only
+        # thing saying work is happening is that the pane changed recently.
+        # Escalation is set to 0 so a crossed bound alarms on the very next cycle
+        # rather than depending on wall-clock inside the test.
+        $script:StubBusy = $true
+        $env:FM_BUSY_TURN_MAX_SECS = '3600'
+        $env:FM_STALE_ESCALATE_SECS = '0'
+        $settings = Get-FmWatchSettings
+        New-StaleTaskMeta
+        Set-EvidenceAge -Seconds 7200 -SkipPaneHash
+
+        { 1..6 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings } } |
+            Should -Not -Throw
+        Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+        [System.IO.File]::Exists((Join-Path $script:Ctx.State '.wedge-escalations-sess_1')) | Should -BeFalse
+    }
+
+    It 'still wedge-alarms a pane that is silent while its agent is NOT working' {
+        # The case the alarm exists for, and the one that must not get slower: an
+        # idle agent behind a frozen pane surfaces once, then escalates on the
+        # unchanged 240s cadence. Recent pane-change evidence is no defence here -
+        # only a positive busy reading is.
+        $script:StubBusy = $false
+        $env:FM_BUSY_TURN_MAX_SECS = '3600'
+        $env:FM_STALE_ESCALATE_SECS = '240'
+        $settings = Get-FmWatchSettings
+        New-StaleTaskMeta
+
+        1..2 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings }
+        { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings } | Should -Throw
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -Match "\tstale\tsess:1\tstale: sess:1$"
+
+        # Already classified: the wedge timer arms, then escalates one threshold
+        # later. Nothing about the pane has changed since the surface above.
+        Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings
+        $since = Join-Path $script:Ctx.State '.stale-since-sess_1'
+        (Get-FmFirstLine -Path $since) | Should -Match '^\d+$'
+
+        Set-FmFileTextLf -Path $since -Text (((Get-FmUnixTime) - 240).ToString() + "`n")
+        { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings } | Should -Throw
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[1] | Should -BeLike '*possible wedge, escalation 1)'
+    }
+}
+
+Describe 'The busy bound reads observed progress, not time since spawn' {
+    BeforeEach {
+        $script:TestHome = New-TestHome
+        $script:Ctx = Get-FmWakeContext
+        $env:FM_BUSY_TURN_MAX_SECS = '600'
+        $script:Settings = Get-FmWatchSettings
+        foreach ($name in @('alpha.meta', 'alpha.status', 'alpha.turn-ended', '.hash-sess_1')) {
+            $p = Join-Path $script:Ctx.State $name
+            Set-FmFileTextLf -Path $p -Text "x`n"
+            [System.IO.File]::SetLastWriteTimeUtc($p, [DateTime]::UtcNow.AddSeconds(-7200))
+        }
+    }
+    AfterEach { Remove-TestHome -Path $script:TestHome }
+
+    It 'crosses the bound when every anchor is stale' {
+        Test-FmBusyTurnOverAge -Task 'alpha' -Window 'sess:1' -Context $script:Ctx -Settings $script:Settings |
+            Should -BeTrue
+    }
+
+    It 'crosses the bound when the endpoint has no evidence at all' {
+        # Get-FmPathAge reads an unreadable path as 999999, so absence of evidence
+        # stays LOUD rather than reading as brand new.
+        Test-FmBusyTurnOverAge -Task 'ghost' -Window 'sess:9' -Context $script:Ctx -Settings $script:Settings |
+            Should -BeTrue
+    }
+
+    It 'is reset by any one fresh anchor' {
+        foreach ($name in @('alpha.turn-ended', 'alpha.status', '.hash-sess_1', 'alpha.meta')) {
+            $p = Join-Path $script:Ctx.State $name
+            [System.IO.File]::SetLastWriteTimeUtc($p, [DateTime]::UtcNow)
+            Test-FmBusyTurnOverAge -Task 'alpha' -Window 'sess:1' -Context $script:Ctx -Settings $script:Settings |
+                Should -BeFalse -Because "$name is fresh evidence of progress"
+            [System.IO.File]::SetLastWriteTimeUtc($p, [DateTime]::UtcNow.AddSeconds(-7200))
+        }
+    }
+
+    It 'reads the pane-hash marker of the window it was asked about, not another' {
+        [System.IO.File]::SetLastWriteTimeUtc((Join-Path $script:Ctx.State '.hash-sess_1'), [DateTime]::UtcNow)
+
+        Test-FmBusyTurnOverAge -Task 'alpha' -Window 'sess:2' -Context $script:Ctx -Settings $script:Settings |
+            Should -BeTrue
+    }
+
+    It 'bounds nothing for a window whose task could not be resolved' {
+        Test-FmBusyTurnOverAge -Task '' -Window 'sess:1' -Context $script:Ctx -Settings $script:Settings |
+            Should -BeFalse
     }
 }

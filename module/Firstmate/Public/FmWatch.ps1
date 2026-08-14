@@ -406,6 +406,17 @@ function Invoke-FmWatchStaleCycle {
         escalation exactly once - .stale-<key> remembers the hash already
         classified, so the costly crew-state reads happen on first sight only.
 
+        SILENT WHILE WORKING IS NOT SILENT WHILE IDLE, and this is where the two
+        part company. Test-FmWindowBusy is a POSITIVE-ONLY reading of the
+        endpoint's native agent state: only `busy` asserts work. A busy silent
+        pane never reaches the stale triage at all - it is a worker in the middle
+        of something long - and is bounded instead by Test-FmBusyTurnOverAge, so
+        a hung foreground call behind a redrawing busy footer still escalates.
+        Everything that is not a positive `busy` - idle, dead, and the `unknown`
+        of a read that could not be made - DEFERS: it asserts nothing, suppresses
+        nothing, and leaves the pane on exactly the stale path it took before.
+        docs/supervision.md states the signal's honest limits on Windows.
+
         The pane layer (backend capture, busy-state contract, crew state) is
         owned elsewhere in the module. When those seams are absent this cycle is
         skipped and says so once per watcher: signal, check and heartbeat
@@ -469,10 +480,10 @@ function Invoke-FmWatchStaleCycle {
             else {
                 # Busy or not yet stably stale: clear pending escalation
                 # bookkeeping, UNLESS a genuinely busy pane has gone too long with
-                # no completed turn - then route it through the same wedge timer
-                # rather than erasing the evidence.
-                if ($busyNow -and (Test-FmBusyTurnOverAge -Task $task -Context $Context -Settings $Settings)) {
-                    Invoke-FmWedgeTimerCheck -Window $window -SinceFile $sinceFile -Label 'busy (no completed turn)' `
+                # no observed progress - then route it through the same wedge
+                # timer rather than erasing the evidence.
+                if ($busyNow -and (Test-FmBusyTurnOverAge -Task $task -Window $window -Context $Context -Settings $Settings)) {
+                    Invoke-FmWedgeTimerCheck -Window $window -SinceFile $sinceFile -Label 'busy (no observed progress)' `
                         -EscalationFile $escalationFile -Context $Context -Settings $Settings
                 }
                 else {
@@ -487,16 +498,14 @@ function Invoke-FmWatchStaleCycle {
             }
         }
         else {
+            # The pane just produced output, which IS the progress the busy bound
+            # measures, so there is nothing here to bound: clear the pending
+            # escalation bookkeeping. Consulting Test-FmBusyTurnOverAge here would
+            # ask whether a pane that changed a line ago has gone quiet.
             Set-FmFileTextLf -Path $hashFile -Text $hash
             Set-FmFileTextLf -Path $countFile -Text "0`n"
-            if ($busyNow -and (Test-FmBusyTurnOverAge -Task $task -Context $Context -Settings $Settings)) {
-                Invoke-FmWedgeTimerCheck -Window $window -SinceFile $sinceFile -Label 'busy (no completed turn)' `
-                    -EscalationFile $escalationFile -Context $Context -Settings $Settings
-            }
-            else {
-                Remove-FmStateFile -Path $sinceFile
-                Remove-FmStateFile -Path $escalationFile
-            }
+            Remove-FmStateFile -Path $sinceFile
+            Remove-FmStateFile -Path $escalationFile
             $lastNow = Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @((Join-Path $Context.State "$task.status")) -Default ''
             $heldNow = [bool](Invoke-FmSeam -Name 'Test-FmStatusIsPausedOrCaptainHeld' -Arguments @($lastNow) -Default $false)
             if (-not (Test-FmAfk -Context $Context) -and $heldNow -and -not $busyNow) {
@@ -703,22 +712,57 @@ function Test-FmBusyTurnOverAge {
     <#
         busy_turn_over_age. A busy pane is unconditional proof of liveness with
         no built-in duration bound, so a hung foreground call can hide behind a
-        busy footer that redraws every poll. This bounds how long any busy pane
-        may go with no COMPLETED TURN: age the harness-neutral
-        state/<id>.turn-ended marker, or - before any turn has completed - the
-        task's spawn record. The caller routes a crossed bound through the same
-        wedge timer, for human inspection only: never an interrupt, signal, or
-        restart of the worker.
+        busy footer that redraws every poll. This bounds how long a busy pane may
+        go WITH NO OBSERVED PROGRESS. The caller routes a crossed bound through
+        the same wedge timer, for human inspection only: never an interrupt,
+        signal, or restart of the worker.
+
+        Progress is the FRESHEST of the evidence the watcher already holds, not a
+        single file:
+
+          state/<id>.turn-ended  a completed harness turn - bash's only anchor;
+          state/<id>.status      the worker's own status append;
+          state/.hash-<key>      the watcher's own pane-hash marker. It is
+                                 rewritten only when the captured tail CHANGES,
+                                 so its mtime is the last time this pane produced
+                                 output;
+          state/<id>.meta        the spawn record, and only as a last resort.
+
+        WHY MORE THAN ONE ANCHOR. This port installs no crewmate turn-end hook,
+        so state/<id>.turn-ended is never written (AGENTS.md section 14) and this
+        bound silently degraded to "time since spawn" - a quantity that only ever
+        grows and that no healthy worker can reset. Every busy crewmate therefore
+        crossed it one hour after dispatch and wedge-escalated for the rest of its
+        life, whatever its pane was doing. Measured, with the numbers:
+        docs/windows-e2e-evidence.md section 23.
+
+        Get-FmPathAge reports 999999 for a path it cannot read, so an endpoint
+        with no evidence at all still crosses the bound: absence of evidence
+        stays LOUD. The one deliberately quiet case is an unresolvable task,
+        which has no evidence namespace to read at all.
     #>
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Task,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Window,
         [Parameter(Mandatory)][hashtable]$Context,
         [Parameter(Mandatory)][hashtable]$Settings
     )
     if (-not $Task) { return $false }
-    $f = Join-Path $Context.State "$Task.turn-ended"
-    if (-not [System.IO.File]::Exists($f)) { $f = Join-Path $Context.State "$Task.meta" }
-    return ((Get-FmPathAge -Path $f) -ge $Settings.BusyTurnMaxSecs)
+
+    $evidence = [System.Collections.Generic.List[string]]::new()
+    foreach ($suffix in @('turn-ended', 'status', 'meta')) {
+        $evidence.Add((Join-Path $Context.State "$Task.$suffix"))
+    }
+    if ($Window) {
+        $evidence.Add((Join-Path $Context.State ('.hash-' + (Get-FmWindowKey -Window $Window))))
+    }
+
+    $age = 999999
+    foreach ($path in $evidence) {
+        $observed = Get-FmPathAge -Path $path
+        if ($observed -lt $age) { $age = $observed }
+    }
+    return ($age -ge $Settings.BusyTurnMaxSecs)
 }
 
 function Get-FmPauseStateClass {

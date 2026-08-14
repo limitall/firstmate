@@ -91,6 +91,63 @@ polling. On Windows the notifier sits on `ReadDirectoryChangesW`, whose kernel
 buffer silently drops events under a burst - which is exactly why the scan, not
 the notifier, decides what happened.
 
+## Telling a working silence from a wedge
+
+A crewmate that blocks for twenty minutes on one long command is silent in
+exactly the way a wedged one is. The watcher separates them on two signals it
+already holds, and on nothing else.
+
+**The signal is the endpoint's native agent state, read positive-only.**
+`Test-FmWindowBusy` asks herdr, which reports agent state natively rather than
+from a pane-tail regex. Only a positive `busy` asserts that work is happening: a
+busy pane never enters the stale triage at all. Everything else - `idle`, `dead`,
+and the `unknown` of a read that could not be made - **defers**. It asserts
+nothing, suppresses nothing, and leaves the pane on precisely the stale path it
+took before, so a genuinely idle silent pane is surfaced and escalated at the
+same cadence as ever. That asymmetry is the whole design: only positive evidence
+may quiet an alarm.
+
+**Its honest limits, stated rather than assumed.** The reading is herdr's
+`agent_status`, not a pane-tail regex and not a composer shape - which matters
+here, because herdr strips styling from its Windows capture. Any reading derived
+from the composer's appearance is weaker on this platform for that reason:
+`Get-FmHerdrComposerState` reports its capture's `styled` capability honestly and
+falls back to `unknown` whenever it cannot prove a shape - and this port loads no
+composer classifier at all, so that path answers `unknown` unconditionally
+(`docs/herdr-backend-windows.md`). The wedge judgement never consults it. Where
+`unknown` does arrive - a native read that failed - it defers, so it can cost a
+suppression the worker deserved but can never grant one it did not.
+`Get-FmPane` returns the same native state beside the capture, which is what a
+supervisor should read before acting on a stale wake. `agent_status` reporting
+`busy` for a mid-turn claude on Windows is measured, not assumed:
+`docs/windows-e2e-evidence.md` section 10.4.
+
+**A busy pane is still bounded.** Positive liveness has no duration of its own,
+so a hung foreground call can hide behind a busy footer that redraws every poll.
+`Test-FmBusyTurnOverAge` bounds how long a busy pane may go with **no observed
+progress**, and a crossed bound routes through the ordinary wedge timer -
+escalation counter, demand-deep-inspection marker and all. Progress is the
+freshest of `state/<id>.turn-ended`, `state/<id>.status`, the watcher's own
+`state/.hash-<key>` marker (rewritten only when the captured tail changes, so its
+mtime is when the pane last produced output), and `state/<id>.meta` last.
+`Get-FmPathAge` reads an unreadable path as 999999, so an endpoint with no
+evidence at all still crosses the bound.
+
+Its own limit, stated plainly: a pane that redraws a clock or a token counter
+while its agent is truly stuck keeps resetting that bound. The stale path is
+unaffected - this bound governs only panes herdr positively calls busy.
+
+**Why more than one anchor.** bash ages `state/<id>.turn-ended` alone, which is
+sound there because a crewmate Stop hook touches it every turn. This port
+installs no such hook (`AGENTS.md` section 14), so that file never exists and the
+bound degraded to the age of the spawn record - a quantity that only grows and
+that no healthy worker can reset. Every busy crewmate crossed it one hour after
+dispatch and then wedge-escalated every `FM_STALE_ESCALATE_SECS` for the rest of
+its life, whatever its pane was doing. `docs/windows-e2e-evidence.md` section 23
+has the measurement. A wedge alarm that fires while nothing is wrong trains the
+supervisor to acknowledge without looking, which is the one thing a real wedge
+needs nobody to do.
+
 ## Two guards, two different questions
 
 `Invoke-FmGuard` is **pull**-based: it fires when some other supervision command
@@ -136,7 +193,7 @@ staleness but can never swallow a wake.
 | `Test-FmSignalCrewProvablyWorking` | crew treated as not working - surfaced |
 | `Invoke-FmValidatedCheck` (owned since the bounded-execution area landed - `docs/bounded-execution.md`) | check refused **without execution**, reported as `check: rejected unauthenticated state checks` |
 | `Get-FmRecordedWindows`, `Get-FmBackendCapture` | pane staleness skipped, noted once in the triage log |
-| `Get-FmWindowKind`, `Get-FmWindowTask`, `Test-FmWindowBusy`, `Get-FmBackendAgentAlive` | not busy / not a secondmate / agent state unknown |
+| `Get-FmWindowKind`, `Get-FmWindowTask`, `Test-FmWindowBusy`, `Get-FmBackendAgentAlive` | not proven working / not a secondmate / agent state unknown |
 | `Test-FmStaleIsTerminal`, `Test-FmCrewProvablyWorking`, `Get-FmCrewAbsorbClass` | non-terminal, not working, class `none` - surfaced |
 | `Get-FmLastStatusLine`, `Test-FmStatusPaused`, `Test-FmStatusPausedOrCaptainHeld` | no declared pause |
 | `Get-FmCaptainRelevantStatuses`, `Set-FmStatusSurfaced` | heartbeat backstop finds nothing |

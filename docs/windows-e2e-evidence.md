@@ -3439,3 +3439,75 @@ loading zero skills in a tree `git status` called clean.
 
 Reported rather than fixed here, because it belongs to the install area and
 rewriting another area's suite from this lane would collide with it.
+
+---
+
+## 23. A wedge alarm that fired on two healthy workers - `MEASURED (Windows 11)`
+
+Observed on 2026-08-14, on the captain's Windows 11 laptop, by firstmate while
+supervising two crewmates that were each running the whole Pester suite - about
+23 minutes of work that produces no pane output while it blocks. For each of
+them, roughly every four minutes and for over an hour:
+
+```
+stale: default:w9:p4 (idle 240s, possible wedge, escalation 1)
+```
+
+Every one was a false alarm. Both workers were healthy - token counts climbing,
+commits landing - and both finished normally.
+
+**What it was.** `Test-FmBusyTurnOverAge` bounds how long a pane herdr reports
+`busy` may go without a completed turn, and ported bash's anchor unchanged:
+`state/<id>.turn-ended`, falling back to `state/<id>.meta`. This port installs no
+crewmate turn-end hook (section 14 of `AGENTS.md`), so `turn-ended` never exists
+and the bound was really the age of the spawn record - which only grows, and
+which no healthy worker can reset. Every busy crewmate crossed the 3600s bound
+one hour after dispatch and then wedge-escalated on the stale cadence for the
+rest of its life. The alarm was not tied to the silent stretch at all, which is
+why it outlasted the 23-minute test run by a factor of three.
+
+**What proves the pieces.** That herdr reports `busy` for a mid-turn claude here
+is section 10.4 above, measured. That the bound now reads observed progress
+instead of time since spawn is `tests/FmWatch.Tests.ps1`, whose
+"does not wedge-alarm a pane that is silent while its agent is demonstrably
+working" fails against the unfixed watcher and whose
+"still wedge-alarms a pane that is silent while its agent is NOT working" passes
+against both, so the alarm's own cadence is pinned rather than merely believed.
+
+**What is NOT claimed.** The fix has not been re-observed against a live fleet on
+Windows; the evidence for it is the suite, and the measurement above is the
+defect, not the repair. `docs/supervision.md` owns the resulting contract.
+
+### 23.1 Suite state this landed against, and what the 8 reds belong to
+
+Whole directory, on the captain's Windows 11 laptop, at the commit this section
+lands on:
+
+```
+Tests Passed: 1716, Failed: 8, Skipped: 25
+tests/FmWatch.Tests.ps1   55 tests, all green
+Invoke-ScriptAnalyzer -Path . -Recurse   FINDINGS=0
+```
+
+The 8 are **not this lane's**, and that is measured rather than asserted: every
+one of them reproduces at `main` with this commit absent, run in the same
+worktree.
+
+```
+tests/FmContract.Tests.ps1 at main   Passed 35, Failed 2
+tests/FmInstall.Tests.ps1  at main   Passed 65, Failed 6
+```
+
+Both families come from the same thing this worktree started in: a
+`core.symlinks=false` clone, where `CLAUDE.md` is 9 bytes of the text `AGENTS.md`
+and `.claude/skills` is 17 bytes of the text `.agents/skills`, and setup has
+never run to repair them. `FmContract` reads that placeholder directly;
+`Invoke-FmDoctor` calls it `[missing]` and so reports the checkout unhealthy.
+
+One operational note for the next lane, because it costs a tree: the install
+suite still repairs the checkout it runs in, so a whole-directory run leaves
+`CLAUDE.md` modified and `.claude/skills` deleted. Undoing it needs BOTH steps
+and in this order - `git checkout -- CLAUDE.md .claude/skills` follows the
+restored junction and deletes all 19 `SKILL.md` files, and
+`git checkout -- .agents/skills` puts them back. Section 21.6 recorded the
+side effect; this run confirms it survives the fix in `a798faa`.
