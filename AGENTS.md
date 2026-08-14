@@ -76,6 +76,7 @@ config/secondmate-harness  harness the primary uses to launch secondmate agents,
 config/backlog-backend  backlog backend override; LOCAL, gitignored; "manual" forces the hand-edited backlog (section 10)
 config/startup-memory-budget  per-home startup-memory budget; LOCAL, gitignored, materialized by locked bootstrap
 config/autolaunch      opt-in startup command and grace window for `bin/fm-autolaunch.ps1`; LOCAL, gitignored; absent = off
+config/voice           opt-in spoken alerts for `bin/fm-say.ps1`, with the voice name and rate; LOCAL, gitignored; absent = off
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
   captain.md         this home's captain preferences and working style; canonical even if harness memory mirrors it
@@ -411,7 +412,9 @@ Do not surface automatic fixes, retries, routine progress, or internal supervisi
 When a routine operational update's specific event requires no action but a response must be sent, reply exactly `Captain, shipshape.` without characterizing the visible session's unrelated decisions.
 Batch non-urgent updates into the next natural reply.
 Use plain chat for a yes-or-no decision and `lavish-axi` only when several options or a structured report benefit from a visual surface and that tool is installed.
-The spoken voice channel (`fm-say`, `fm-ask`) is not ported, so an escalation that needs the captain's attention reaches them in chat and nowhere else; say so if they ask for a spoken alert.
+A spoken alert exists but is off until the captain creates `config/voice`, and nothing calls it by itself: `bin/fm-say.ps1 "<message>"` says one short line aloud, and its `-h` output states the rest.
+Speaking is never delivery - `fm-ask` is not ported, so nothing spoken can be answered by speaking, and every escalation still reaches the captain in chat whether or not it was also heard.
+A spoken message obeys this section's translation rule more strictly than a written one, because the captain cannot re-read it.
 Whenever a PR is mentioned, include its full `https://...` URL before any shorthand reference.
 Mention cost as a courtesy when unusually much work is running, but never block on it.
 
@@ -487,7 +490,7 @@ Each is a plain absence, not a degraded imitation: never simulate one, and tell 
 - **Away mode.** No `state/.afk`, no sub-supervisor daemon, no unattended escalation injection into a live session (section 8).
 - **Relay / X mode.** No public-mention integration, no `.env` pairing token, no public follow-ups. Nothing in this port posts anywhere public.
 - **Process-to-event sources.** No long-poll runner, no `state/procevent/` inbox. A blocking external wait must be a backlog item you check, never a held conversational turn.
-- **The voice channel.** No spoken escalation and no spoken question.
+- **The rest of the voice channel.** Half of it landed: `bin/fm-say.ps1` says one short message aloud on request, off until `config/voice` exists (section 9). The spoken question did not - `fm-ask` is absent, so nothing spoken can be answered by speaking - and nothing calls `fm-say` automatically, so no escalation becomes audible without deliberate wiring.
 - **Remote secondmates.** Secondmate spawning, charter briefs and retirement work locally; the seeding, convergence, liveness sweep, cross-home handoff, and every remote route are absent, and `data/secondmates.md` is hand-maintained except for the row a retirement removes.
 - **Harnesses other than `claude`, and backends other than `herdr`** (section 4).
 - **The automatic watcher arm.** The Claude Stop auto-arm hook is registered but has no arm owner to call, so nothing re-arms the watcher between turns. The emitted supervision block names this and gives the session-kept foreground cycle instead (section 8). Harness detection and the supervision block themselves ARE ported.

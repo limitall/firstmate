@@ -2225,6 +2225,13 @@ a separate defect; what is closed is the question of whose they are.
   until `bin/fm-setup.ps1` has been run against that checkout once. That is a
   real precondition of the suite and is worth stating where a new lane will hit
   it.
+- **Three entry points have a `-h` flag that prints nothing.** `fm-brief.ps1`,
+  `fm-lock.ps1` and `fm-crew-state.ps1` each answer `-h` with `Get-Help -Full`,
+  and each prints only the script name: their header block carries no
+  `.SYNOPSIS`/`.DESCRIPTION` keyword AND sits flush against `#requires`, and
+  PowerShell attaches script help only when both are right (section 25.5 has the
+  measurement). Fixing it means rewriting three other areas' help blocks, so it
+  is reported rather than done here.
 
 ## 18. Autolaunch, on the captain's Windows 11 laptop - `PROVEN (Windows 11)`
 
@@ -3593,3 +3600,117 @@ This branch touches no locking code. It is the same whole-suite-only class as
 section 16, and an intermittent lost increment is a real mutual-exclusion defect
 until something proves otherwise - one green run does not. Left open for the
 lock area's owner.
+
+---
+
+## 25. The spoken alert, on the captain's Windows 11 laptop - `PROVEN (Windows 11)`
+
+`bin/fm-say.ps1` and `config/voice` (`docs/voice-windows.md`), on
+`fm/voice-say` over `fb1931d`. Run in a disposable worktree against a temporary
+home on 2026-08-14. Everything below was heard as well as printed.
+
+### 25.1 The engine, and the five voices that are actually installed
+
+```
+installed: Microsoft Hazel Desktop, Microsoft Zira Desktop, Microsoft George,
+           Microsoft Hazel, Microsoft Susan
+```
+
+No install, no service, no network: `Add-Type -AssemblyName System.Speech` and a
+`SpeechSynthesizer` are enough. Note the names - two pairs share a prefix
+(`Microsoft Hazel` and `Microsoft Hazel Desktop`), which is why the matcher is
+exact rather than a prefix match.
+
+### 25.2 The entry point, off and on
+
+```
+=== 1. voice off (no config/voice) ===
+fm-say: not spoken - the voice is off (create config/voice to turn it on)
+exit=0
+=== 2. voice on ===
+exit=0 elapsed=7.4s
+=== 3. usage ===
+usage: fm-say.ps1 <message...>
+exit=2
+```
+
+With no `config/voice` the machine is silent and the caller is not failed: one
+line on stderr and exit 0. With `config/voice` present the sentence was spoken
+aloud, in the configured voice. The 7.4 seconds is the whole child process -
+PowerShell startup, module import, then the utterance.
+
+### 25.3 The four config paths, measured
+
+A 217-character message, spoken through `Invoke-FmSay`:
+
+```
+[voice=Microsoft Zira Desktop / rate=1]  spoken=True  voice='Microsoft Zira Desktop' rate=1  truncated=True  12.8s
+[voice=Nobody At All]                    spoken=True  voice=''                       rate=0  truncated=True  15.2s
+[rate=99]                                spoken=True  voice=''                       rate=10 truncated=True   5.6s
+[off / voice=Microsoft Susan]            spoken=False reason=off                              truncated=False 0.0s
+```
+
+Each row is one of the requirements, heard: the configured voice is used, an
+unknown voice name falls back to the default and still speaks, an out-of-range
+rate is clamped to 10 rather than refused (audibly faster - 5.6s against 12.8s
+for the same text), and `off` says nothing at all.
+
+The full-length utterances took 13 to 15 seconds, which is what sets the
+30-second default deadline: it clears a full-length message with room for a
+slower rate.
+
+### 25.4 The truncation, heard
+
+The same 217-character message was spoken as:
+
+```
+the payments fix is ready for your review, and the second change to the checkout
+flow is waiting behind it, and there is a decision about the refund window that
+nobody has made yet, and the release, message truncated
+```
+
+Cut at a word boundary, and it says that it was cut. The captain cannot re-read
+a spoken sentence, so a silent truncation would be indistinguishable from the
+news simply ending there.
+
+### 25.5 The whole suite, on Windows, at this branch
+
+```
+Tests completed in 1395.85s
+Tests Passed: 1764, Failed: 0, Skipped: 25, Inconclusive: 0, NotRun: 0
+```
+
+42 files, zero failures, including the repo-wide analyzer sweep
+`tests/FmAnalyzer.Tests.ps1` runs. `tests/FmVoice.Tests.ps1` contributes 34 of
+those and makes no sound while doing it.
+
+Two things that run holds honest. **The run before it failed one test**, and it
+was this area's fault: `FmContract`'s "lists every not-ported capability"
+asserts section 14 still names the `voice channel`, and the first rewrite of
+that bullet dropped the phrase. The test was right and the wording was fixed -
+worth recording because it is exactly the class of thing a green suite is
+supposed to catch, and did. **And the two `FmContract` instruction-surface
+tests need a set-up checkout**, as section 17 already notes: this run was made
+with `CLAUDE.md` mirroring `AGENTS.md`, and re-materializing that mirror after
+editing `AGENTS.md` is part of running the suite in a task worktree.
+
+### 25.6 The `-h` measurement, and what it found
+
+PowerShell attaches comment-based help to a SCRIPT only when the block carries a
+`.SYNOPSIS`/`.DESCRIPTION` keyword AND is separated by a blank line from
+`#requires` and from `param()`. Probed both ways on this machine: without the
+blank lines `Get-Help` prints the syntax line alone, and with a keyword-less
+block it prints the syntax line whatever the spacing. `bin/fm-say.ps1` carries a
+comment saying so, because the failure is silent - the script still runs, and
+`-h` just stops being worth typing. Three existing entry points are in that
+state, recorded in section 17.
+
+### 25.7 What was NOT proven here
+
+- **Nothing calls `fm-say` automatically**, so there is no evidence of an
+  escalation being spoken - by design. The capability shipped alone.
+- **`fm-ask` does not exist**, so nothing was answered by voice.
+- **The timeout path was not provoked on real hardware.** It is covered by a
+  test at the seam, and no engine on this machine wedged long enough to see it.
+- **A machine with no audio device at all was not tested**, only a machine with
+  no speech assembly (simulated at `Add-Type`, in the suite).

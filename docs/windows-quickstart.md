@@ -175,6 +175,33 @@ anything at all - and it stands down and leaves your text alone.
 session it starts. That is your call to make, and the doctor line is so it is
 never a surprise. [`autolaunch-windows.md`](autolaunch-windows.md) has the rest.
 
+## Optional: hear it instead of watching for it
+
+Also off unless you ask for it. Write `config/voice` in the home - the file
+existing is the switch, and both keys are optional:
+
+```
+voice=Microsoft Hazel Desktop
+rate=1
+```
+
+Then `fm-say.ps1 "the payments fix is ready for your review"` says it out loud.
+`fm-say.ps1 -h` has the rest, and this lists the voice names your machine has:
+
+```powershell
+Add-Type -AssemblyName System.Speech
+(New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices().VoiceInfo.Name
+```
+
+A name it does not recognise falls back to the default voice and says so on
+stderr, rather than going quiet.
+
+Two things to know. Nothing speaks on its own: firstmate does not call this, so
+turning it on cannot leave your machine talking about work you did not ask to
+hear about. And speaking is never delivery - there is no spoken question in this
+port, so anything needing your answer still reaches you in chat.
+[`voice-windows.md`](voice-windows.md) has the rest.
+
 ## When something is wrong
 
 ```powershell
