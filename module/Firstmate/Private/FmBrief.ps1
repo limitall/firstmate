@@ -96,8 +96,15 @@ __FM_RULE1__
 2. Stay inside this worktree; modify nothing outside it.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
-   `echo "{state}: {one short line}" >> __FM_STATUS_FILE__`
+   `echo "{state}: [{pct}%] {one short line}" >> __FM_STATUS_FILE__`
    States: working, needs-decision, blocked, __FM_PAUSED__, done, failed.
+   Lead the note with your own rough completion percentage in brackets, as in
+   `working: [40%] retirement owner implemented, writing coverage`. It is YOUR estimate of how
+   much of THIS task is finished, not a measurement and not a confidence score; nobody expects
+   it to be accurate, and a rough figure that is usually roughly right is the whole point.
+   Judge it against the stages this brief defines: setup, the work itself, validation, and the
+   definition of done. Never go backwards, and never reach 100 before you append `done:`.
+   Omit the bracket entirely rather than inventing a number you do not believe.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
    needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;
@@ -146,8 +153,15 @@ The report is the only thing that survives, so anything worth keeping must be in
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
-   `echo "{state}: {one short line}" >> __FM_STATUS_FILE__`
+   `echo "{state}: [{pct}%] {one short line}" >> __FM_STATUS_FILE__`
    States: working, needs-decision, blocked, __FM_PAUSED__, done, failed.
+   Lead the note with your own rough completion percentage in brackets, as in
+   `working: [40%] retirement owner implemented, writing coverage`. It is YOUR estimate of how
+   much of THIS task is finished, not a measurement and not a confidence score; nobody expects
+   it to be accurate, and a rough figure that is usually roughly right is the whole point.
+   Judge it against the stages this brief defines: setup, the work itself, validation, and the
+   definition of done. Never go backwards, and never reach 100 before you append `done:`.
+   Omit the bracket entirely rather than inventing a number you do not believe.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on and the needs-decision/blocked/paused/done/failed states. No step-by-step
    FYI progress lines; firstmate reads your pane for that.
