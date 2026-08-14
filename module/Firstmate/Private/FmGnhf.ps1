@@ -95,7 +95,17 @@ function Invoke-FmGnhfProcess {
         # gnhf resolves the repo from the working directory, so this runs IN the
         # repo rather than passing a path it does not accept.
         Set-Location -LiteralPath $RepoPath
-        & gnhf @arguments
+        # Out-Host, NOT a bare call. `& gnhf` writes to PowerShell's SUCCESS
+        # stream, so a caller assigning this function's result captured gnhf's
+        # entire stdout and got it back as the "exit code" - an Object[] with the
+        # real code as its last element. `-ne 0` against an array filters rather
+        # than compares, so a clean exit 0 run read as a FAILURE to every ordinary
+        # caller, and `[int]` on it threw. Measured by the gnhf-diag scout with
+        # `--version` as the whole argument list: ExitCode came back as
+        # `0.1.43 | 0`. Out-Host sends the output where the comment above always
+        # claimed it went - the pane, as it happens - and leaves this function
+        # returning only the code.
+        & gnhf @arguments | Out-Host
         return [int]$LASTEXITCODE
     } finally {
         Set-Location -LiteralPath $previous

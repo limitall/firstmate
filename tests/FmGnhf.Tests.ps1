@@ -183,6 +183,45 @@ Describe 'what is always passed to gnhf' {
     }
 }
 
+Describe 'the returned ExitCode' {
+    It 'is a plain integer even when the run printed output' {
+        # THE DEFECT THIS PINS, and why every other test in this file missed it:
+        # they all mock Invoke-FmGnhfProcess to a bare `0`, which has no stdout to
+        # leak, so the bug could not appear. In real use `& gnhf` writes to the
+        # SUCCESS stream, the caller captured it, and ExitCode came back as an
+        # Object[] carrying gnhf's whole output with the real code appended.
+        # `-ne 0` against an array filters instead of comparing, so a clean exit 0
+        # read as a FAILURE to any ordinary caller. Found by running the wrapper
+        # for real, not by reading it.
+        $repo = New-GnhfRepo
+        InModuleScope Firstmate -Parameters @{ Repo = $repo } {
+            # Emits a line AND returns 0 - the shape a real run has.
+            Mock Invoke-FmGnhfProcess {
+                Write-Output 'gnhf: some output a real run would print'
+                0
+            }
+            $result = Invoke-FmGnhf -RepoPath $Repo -MaxIterations '1' -Objective 'x' -Confirm:$false
+            $result.ExitCode | Should -BeOfType [int]
+            $result.ExitCode | Should -Be 0
+            # The assertion an ordinary caller actually writes.
+            ($result.ExitCode -ne 0) | Should -BeFalse
+        }
+    }
+
+    It 'passes a real non-zero code through as an integer' {
+        $repo = New-GnhfRepo
+        InModuleScope Firstmate -Parameters @{ Repo = $repo } {
+            Mock Invoke-FmGnhfProcess {
+                Write-Output 'gnhf: noisy failure'
+                7
+            }
+            $result = Invoke-FmGnhf -RepoPath $Repo -MaxIterations '1' -Objective 'x' -Confirm:$false
+            $result.ExitCode | Should -BeOfType [int]
+            $result.ExitCode | Should -Be 7
+        }
+    }
+}
+
 Describe 'the after-run guard, which is the reason this wrapper exists' {
     It 'FIRES when the run moved the primary checkout, and names the restore command' {
         # This is the defect that was actually observed: gnhf checked its own

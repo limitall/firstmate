@@ -134,7 +134,27 @@ function Invoke-FmGnhf {
         }
     }
 
-    $rc = Invoke-FmGnhfProcess -RepoPath $repo -Objective $Objective -MaxIterations $maxIt -ExtraArgument $ExtraArgument
+    # Defended on BOTH sides, because either alone is not enough. The callee sends
+    # gnhf's output to the host rather than down the success stream; this takes
+    # only the LAST object regardless, so anything that does reach the stream
+    # cannot be mistaken for the exit code. Without it, ExitCode came back as an
+    # Object[] carrying gnhf's whole stdout, `-ne 0` filtered instead of comparing,
+    # and a clean exit 0 read as a failure to every ordinary caller.
+    $raw = @(Invoke-FmGnhfProcess -RepoPath $repo -Objective $Objective -MaxIterations $maxIt `
+            -ExtraArgument $ExtraArgument)
+    $rc = 0
+    if ($raw.Count -gt 0) {
+        $last = $raw[-1]
+        $parsed = 0
+        if ([int]::TryParse([string]$last, [ref]$parsed)) {
+            $rc = $parsed
+        } else {
+            # A non-numeric tail means the process owner returned something this
+            # function cannot read as a code. Reporting 0 there would call an
+            # unknown outcome success, so it is surfaced as a failure instead.
+            $rc = 1
+        }
+    }
 
     # The check that matters. It runs whatever gnhf exited with, because a
     # failing run that moved the checkout is exactly the case that must be seen.
