@@ -1,0 +1,60 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"$env:CLAUDE_PROJECT_DIR/bin/fm-claude-hook.ps1\" -Event SessionStart; exit $LASTEXITCODE"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"$env:CLAUDE_PROJECT_DIR/bin/fm-claude-hook.ps1\" -Event PreToolUse -Check arm; exit $LASTEXITCODE"
+          },
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"$env:CLAUDE_PROJECT_DIR/bin/fm-claude-hook.ps1\" -Event PreToolUse -Check cd; exit $LASTEXITCODE"
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"$env:CLAUDE_PROJECT_DIR/bin/fm-claude-hook.ps1\" -Event PreToolUse -Check subagent; exit $LASTEXITCODE"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"$env:CLAUDE_PROJECT_DIR/bin/fm-claude-hook.ps1\" -Event Stop -Check turnend-guard; exit $LASTEXITCODE"
+          },
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"$env:CLAUDE_PROJECT_DIR/bin/fm-claude-hook.ps1\" -Event Stop -Check autoarm; exit $LASTEXITCODE",
+            "asyncRewake": true,
+            "timeout": 28800
+          }
+        ]
+      }
+    ]
+  }
+}
