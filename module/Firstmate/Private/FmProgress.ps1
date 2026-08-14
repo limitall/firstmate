@@ -30,7 +30,11 @@ Set-StrictMode -Version Latest
 # form at the start of the note and nothing else: a bare "40%" inside prose is
 # far more likely to be the subject matter than a progress claim.
 function Get-FmProgressPercent {
-    [OutputType([object])]
+    # Both are declared because both are real answers: an int when the line
+    # carries a percentage, and $null when it does not. Declaring only [object]
+    # hides the int from the analyzer; declaring only [int] would misreport the
+    # absent case, which is the one this whole file exists to keep honest.
+    [OutputType([int], [object])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Line)
 

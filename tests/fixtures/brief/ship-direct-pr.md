@@ -22,8 +22,15 @@ If the top-level path is the primary checkout or not the worktree you were launc
 2. Stay inside this worktree; modify nothing outside it.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
-   `echo "{state}: {one short line}" >> '/tmp/fm-brief-fixture-home/state/t1.status'`
+   `echo "{state}: [{pct}%] {one short line}" >> '/tmp/fm-brief-fixture-home/state/t1.status'`
    States: working, needs-decision, blocked, paused, done, failed.
+   Lead the note with your own rough completion percentage in brackets, as in
+   `working: [40%] retirement owner implemented, writing coverage`. It is YOUR estimate of how
+   much of THIS task is finished, not a measurement and not a confidence score; nobody expects
+   it to be accurate, and a rough figure that is usually roughly right is the whole point.
+   Judge it against the stages this brief defines: setup, the work itself, validation, and the
+   definition of done. Never go backwards, and never reach 100 before you append `done:`.
+   Omit the bracket entirely rather than inventing a number you do not believe.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
    needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;

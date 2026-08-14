@@ -29,7 +29,10 @@ Set-StrictMode -Version Latest
 # scratch directory is ignored: it is gnhf's, not the project's, and its presence
 # is not a reason to refuse a run.
 function Get-FmGnhfDirtyLine {
-    [OutputType([string[]])]
+    # [System.Array], not [string[]]: the array subexpression that forces the
+    # clean-tree case to an empty collection - see the header - produces Object[],
+    # and declaring the element type instead is what the analyzer objects to.
+    [OutputType([System.Array])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$RepoPath)
 

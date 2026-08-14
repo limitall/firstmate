@@ -86,6 +86,13 @@ Set-StrictMode -Version Latest
     the new home becomes the home this checkout resolves to, and the running
     primary silently starts operating against another home's state.
 
+.PARAMETER SkipCheckoutRepair
+    Do not repair the CHECKOUT's own AGENTS.md/CLAUDE.md pair or its
+    .claude/skills link. Use it when installing a home from a checkout you must
+    leave byte-identical - the test suite does exactly that. Without it, a host
+    that cannot create symlinks re-materializes both as a junction and a
+    hardlink, which leaves the working tree looking dirty.
+
 .EXAMPLE
     bin/fm-setup.ps1
 
@@ -102,7 +109,8 @@ function Install-FmHome {
         [string]$HomePointerPath = '',
         [switch]$SkipProfile,
         [switch]$SkipHooks,
-        [switch]$KeepHomePointer
+        [switch]$KeepHomePointer,
+        [switch]$SkipCheckoutRepair
     )
 
     if (-not $RepoRoot) { $RepoRoot = Get-FmInstallRepoRoot }
@@ -171,16 +179,38 @@ function Install-FmHome {
     $redirect = Set-FmInstallHomeRedirect -FirstmateHome $FirstmateHome -RepoRoot $RepoRoot
     $steps += New-FmInstallStep -Name 'home redirect' -Action $redirect.Action -Detail $redirect.Detail
 
-    # The other half of the same question. `cd <checkout>; claude` is only useful
-    # if the checkout's CLAUDE.md holds the instructions rather than the text git
-    # leaves behind for a symlink it could not create.
-    $memory = Set-FmInstallCheckoutMemory -RepoRoot $RepoRoot
-    $steps += New-FmInstallStep -Name 'checkout memory' -Action $memory.Action -Detail $memory.Detail
+    # The next two steps are the only ones that write into the CHECKOUT rather
+    # than into the home being installed, and that asymmetry has a cost worth
+    # naming: on a host without symlink privilege they re-materialize the two
+    # committed symlinks as a junction and a hardlink, which git reports as a
+    # deleted and a modified file. The instruction surface still WORKS - the
+    # doctor reports it healthy - but the working tree now looks dirty, and the
+    # obvious cleanup is a trap: `git checkout -- .claude/skills` follows the
+    # link and deletes every skill behind it.
+    #
+    # -SkipCheckoutRepair exists for the caller that is installing a home and has
+    # no business touching the checkout at all: the suite, which runs setup
+    # against the REAL checkout because the profile block it writes has to name
+    # the real module/ and bin/. Every other write that suite makes is already
+    # redirected somewhere disposable; these two were the ones that were not.
+    if ($SkipCheckoutRepair) {
+        $steps += New-FmInstallStep -Name 'checkout memory' -Action 'skipped' `
+            -Detail '-SkipCheckoutRepair: left the checkout''s AGENTS.md/CLAUDE.md pair untouched'
+        $steps += New-FmInstallStep -Name 'skills link' -Action 'skipped' `
+            -Detail '-SkipCheckoutRepair: left the checkout''s .claude/skills untouched'
+    } else {
+        # `cd <checkout>; claude` is only useful if the checkout's CLAUDE.md holds
+        # the instructions rather than the text git leaves behind for a symlink it
+        # could not create.
+        $memory = Set-FmInstallCheckoutMemory -RepoRoot $RepoRoot
+        $steps += New-FmInstallStep -Name 'checkout memory' -Action $memory.Action -Detail $memory.Detail
 
-    # And the second committed symlink. Same failure mode as the one above, one
-    # step worse in effect: the contract loads and the session has no skills.
-    $skills = Set-FmInstallSkillsLink -RepoRoot $RepoRoot
-    $steps += New-FmInstallStep -Name 'skills link' -Action $skills.Action -Detail $skills.Detail
+        # And the second committed symlink. Same failure mode as the one above,
+        # one step worse in effect: the contract loads and the session has no
+        # skills.
+        $skills = Set-FmInstallSkillsLink -RepoRoot $RepoRoot
+        $steps += New-FmInstallStep -Name 'skills link' -Action $skills.Action -Detail $skills.Detail
+    }
 
     if ($SkipProfile) {
         $steps += New-FmInstallStep -Name 'profile wiring' -Action 'skipped' -Detail '-SkipProfile'

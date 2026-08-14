@@ -1,7 +1,21 @@
 #requires -Version 7.0
 # Brief tests. The generated text is a safety contract, so the whole body is
-# compared byte for byte against fixtures captured from bin/fm-brief.sh - the
-# same brief must come out of a Linux firstmate and this one.
+# compared byte for byte against fixtures captured from bin/fm-brief.sh.
+#
+# THE FIXTURES NO LONGER TRACK bin/fm-brief.sh, AND THAT IS DELIBERATE.
+# 2026-08-14: the captain retired the Linux firstmate permanently - "we just
+# close the Linux session, and we never start this again" - which makes this port
+# the sole owner of the brief's text rather than one of two implementations that
+# had to agree. The status protocol now asks a worker for a rough completion
+# percentage alongside its milestone, which bin/fm-brief.sh does not, so these
+# fixtures were updated to the port's own output.
+#
+# What the byte comparison still defends is unchanged and is the reason it exists:
+# the brief's GRAMMAR - its headings, its `FIRSTMATE_OP:` marker, the
+# `Delivery contract: mode=` line Get-FmDispatchBriefMode parses back, and the
+# worktree-isolation assertion. A fixture is still never re-baselined to make a
+# failing test pass; it is updated only when the contract itself was decided to
+# change, as here.
 
 BeforeAll {
     . (Join-Path $PSScriptRoot 'FmLifecycle.TestHelpers.ps1')

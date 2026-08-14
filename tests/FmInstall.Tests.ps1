@@ -79,6 +79,17 @@ BeforeAll {
             ProfilePath      = $Fixture.Profile
             HookSettingsPath = $Fixture.Settings
             HomePointerPath  = $Fixture.Pointer
+            # The profile, the settings and the pointer are all redirected
+            # somewhere disposable above; these last two writes could not be,
+            # because they target the checkout itself. On a host that cannot
+            # create symlinks they re-materialized this repo's two committed
+            # symlinks as a junction and a hardlink, so running the suite left
+            # the developer's tree reporting a deleted .claude/skills and a
+            # modified CLAUDE.md - and the obvious cleanup follows the link and
+            # deletes every skill behind it. The suite must not edit the tree it
+            # is testing. Set-FmInstallCheckoutMemory and Set-FmInstallSkillsLink
+            # keep their own tests, against temp roots, further down this file.
+            SkipCheckoutRepair = [switch]$true
         }
         foreach ($key in $Extra.Keys) { $splat[$key] = $Extra[$key] }
         Install-FmHome @splat
@@ -214,6 +225,42 @@ Describe 'Install-FmHome: the home layout' {
         }
     }
 
+    It 'leaves the checkout it is installing FROM byte-identical' {
+        # The regression this pins: running the suite used to edit the developer's
+        # own working tree. Setup repaired the CHECKOUT's committed symlinks as a
+        # side effect of installing an unrelated home, and on a host without
+        # symlink privilege it rebuilt them as a junction and a hardlink - which
+        # git reports as a deleted and a modified file. Nothing was destroyed,
+        # but the tree looked dirty and the natural cleanup deletes every skill.
+        $fixture = New-InstallFixture
+        $report = Invoke-Setup -Fixture $fixture
+
+        foreach ($name in @('checkout memory', 'skills link')) {
+            ($report.Steps | Where-Object { $_.Name -eq $name }).Action |
+                Should -Be 'skipped' -Because "$name writes into the checkout, not the home being installed"
+        }
+        # And the home itself is still fully built - the skip is narrow.
+        Test-Path -LiteralPath (Join-Path $fixture.Home 'state') -PathType Container | Should -BeTrue
+    }
+
+    It 'still repairs the checkout when -SkipCheckoutRepair is NOT passed' {
+        # Opt-in, because repairing the checkout is the whole point of setup for
+        # a real user: a Windows clone arrives with both links as placeholder text.
+        $fixture = New-InstallFixture
+        $checkout = Join-Path $fixture.Root 'checkout'
+        $null = New-Item -ItemType Directory -Path (Join-Path $checkout 'module' 'Firstmate') -Force
+        $null = New-Item -ItemType Directory -Path (Join-Path $checkout '.agents' 'skills' 'sample') -Force
+        [System.IO.File]::WriteAllText((Join-Path $checkout '.agents' 'skills' 'sample' 'SKILL.md'), "# s`n")
+        [System.IO.File]::WriteAllText((Join-Path $checkout 'AGENTS.md'), "# real contract`n")
+
+        $report = Install-FmHome -FirstmateHome $fixture.Home -RepoRoot $checkout `
+            -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings `
+            -HomePointerPath $fixture.Pointer -SkipProfile -SkipHooks
+
+        ($report.Steps | Where-Object { $_.Name -eq 'skills link' }).Action | Should -Not -Be 'skipped'
+        Test-Path -LiteralPath (Join-Path $checkout '.claude' 'skills') | Should -BeTrue
+    }
+
     It 'still repoints the checkout when -KeepHomePointer is NOT passed' {
         # The switch is opt-in on purpose: moving this checkout's own home is a
         # real thing the captain does, and it must keep working.
@@ -232,7 +279,13 @@ Describe 'Install-FmHome: the home layout' {
 
         $second = Invoke-Setup -Fixture $fixture
 
-        @($second.Steps | Where-Object { $_.Action -ne 'already' }) | Should -BeNullOrEmpty
+        # The two checkout-side steps are exempt because this fixture withholds
+        # them deliberately - the suite must not edit the tree it is testing - so
+        # they report 'skipped' on every run, first and second alike. Every step
+        # that actually ran must still converge to 'already'.
+        @($second.Steps |
+                Where-Object { $_.Name -notin @('checkout memory', 'skills link') } |
+                Where-Object { $_.Action -ne 'already' }) | Should -BeNullOrEmpty
         [System.IO.File]::ReadAllBytes($fixture.Profile) | Should -Be $profileBefore
         [System.IO.File]::ReadAllBytes($fixture.Settings) | Should -Be $settingsBefore
     }

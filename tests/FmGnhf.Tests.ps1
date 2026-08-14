@@ -25,7 +25,8 @@ BeforeAll {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
 
-    Import-Module (Join-Path $PSScriptRoot '..' 'module' 'Firstmate' 'Firstmate.psd1') -Force
+    . (Join-Path $PSScriptRoot 'FmModule.TestHelpers.ps1')
+    Import-FmTestModule -TestRoot $PSScriptRoot
 
     # A throwaway git repo with one commit. Real git, not a fixture double: the
     # guards read branch and HEAD through git, so a double would test nothing.

@@ -20,7 +20,8 @@
 BeforeAll {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
-    Import-Module (Join-Path $PSScriptRoot '..' 'module' 'Firstmate' 'Firstmate.psd1') -Force
+    . (Join-Path $PSScriptRoot 'FmModule.TestHelpers.ps1')
+    Import-FmTestModule -TestRoot $PSScriptRoot
 
     function New-ProgressHome {
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
