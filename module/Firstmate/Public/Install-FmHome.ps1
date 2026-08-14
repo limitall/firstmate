@@ -53,6 +53,11 @@ Set-StrictMode -Version Latest
     where the repo root is the home. Naming a different directory is supported
     and gets the home redirect described above.
 
+    Naming a directory that is ITSELF a firstmate-win checkout is REFUSED, and
+    nothing is written: the redirect would land on top of that checkout's own
+    AGENTS.md and CLAUDE.md, which is the first thing every session there reads.
+    To set that checkout up, name it with -RepoRoot instead.
+
 .PARAMETER RepoRoot
     The checkout to wire in. Defaults to the checkout this module was loaded
     from, which is almost always what you want.
@@ -123,6 +128,11 @@ function Install-FmHome {
     }
     if (-not $ProfilePath) { $ProfilePath = Get-FmInstallProfilePath }
     if (-not $HookSettingsPath) { $HookSettingsPath = Get-FmInstallHookSettingsPath -RepoRoot $RepoRoot }
+    # The counterpart of the -RepoRoot check above, and a refusal for the same
+    # reason: a home that is itself a checkout would have the redirect written
+    # over its own operating contract. Asserted HERE, before the prerequisite
+    # gate, so a refused run has created no home layout and written no pointer.
+    Assert-FmInstallHomeIsNotCheckout -FirstmateHome $FirstmateHome -RepoRoot $RepoRoot
 
     # --- gate ------------------------------------------------------------------
     # Everything below this point writes. Nothing above it does.

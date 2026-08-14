@@ -13,7 +13,13 @@
     Exit codes: 0 installed and healthy, 1 refused or unhealthy, 2 usage.
 
 .PARAMETER FirstmateHome
-    Where the home lives. Defaults to $env:FM_HOME, then <userprofile>/firstmate.
+    Where the home lives. Defaults to $env:FM_HOME, then the home a previous
+    setup persisted in <RepoRoot>/.fm-home, then the checkout itself - the Linux
+    layout, where the repo root IS the home.
+
+    Refused when it names a directory that is itself a firstmate-win checkout:
+    setup would write its home redirect over that checkout's own AGENTS.md and
+    CLAUDE.md. Use -RepoRoot to set that checkout up.
 
 .PARAMETER RepoRoot
     The checkout to wire in. Defaults to the one holding this script.

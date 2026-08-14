@@ -2179,6 +2179,10 @@ a separate defect; what is closed is the question of whose they are.
   diagnosed and fixed (section 21.8); the other three are not.
 - **`gh` is absent on the laptop**, so `direct-PR` cannot complete there. An
   install, not a code defect (section 13).
+- **One intermittent lost increment in the lock area** (section 24.4). Seen once
+  in a whole-suite run, with both of that test's false-attribution guards
+  passing; does not reproduce alone, at idle or under load. It belongs to the
+  lock area, so an install-area lane reports it rather than editing it.
 - **`tests/FmInstall.Tests.ps1` repairs the checkout it runs in** (section 21.6),
   which dirties a fresh Windows worktree mid-suite and leaves it needing
   `--force` to tear down. The install area's file, so it is reported here.
@@ -3511,3 +3515,81 @@ and in this order - `git checkout -- CLAUDE.md .claude/skills` follows the
 restored junction and deletes all 19 `SKILL.md` files, and
 `git checkout -- .agents/skills` puts them back. Section 21.6 recorded the
 side effect; this run confirms it survives the fix in `a798faa`.
+
+---
+
+## 24. The home redirect written over a checkout's own contract - `PROVEN (Windows 11)`
+
+2026-08-14, Windows 11 Pro 10.0.26200, PowerShell 7.6.4, in the disposable
+worktree `.treehouse/firstmate-win-e0ed2e/1/firstmate-win`, at `6d13d7f`.
+
+### 24.1 The defect, reproduced end to end BEFORE the fix
+
+`bin/fm-setup.ps1` was run exactly as the incident ran it - `-RepoRoot` naming
+one tree and `-FirstmateHome` naming ANOTHER that is itself a full checkout,
+with a synthetic 36,691-byte contract standing in for the primary's:
+
+```
+bin/fm-setup.ps1 -RepoRoot <worktree> -FirstmateHome <a checkout with its own AGENTS.md> `
+    -SkipProfile -SkipHooks -KeepHomePointer -HomePointerPath <scratch>
+```
+
+```
+before: AGENTS.md = 36691 bytes
+  [updated] home redirect - <home>\AGENTS.md (and CLAUDE.md) redirect to <worktree>
+after:  AGENTS.md = 37941 bytes
+--- first 6 lines of what was that checkout's operating contract ---
+  <!-- >>> firstmate-win home >>> -->
+  # STOP - this is a firstmate HOME, not the firstmate checkout
+```
+
+**One detail of the incident report is corrected by this run.** The contract's
+bytes are NOT truncated - `Set-FmInstallHomeRedirect` prepends and preserves
+everything outside the markers, and the mirror to `CLAUDE.md` writes the same
+text, so even a hardlinked pair stays consistent. What is destroyed is the
+contract's FIRST instruction, which becomes "do no firstmate work from this
+directory" and names a disposable worktree. Every session in that checkout then
+opens on a stop order. It was reported as one `[updated] home redirect` line
+among a dozen, and git is what recovered it.
+
+### 24.2 The refusal, same invocation, AFTER the fix
+
+```
+fm-setup: error: the firstmate home '<primary>' is itself a firstmate-win checkout, with its own '<primary>\AGENTS.md'.
+       Setup writes a stop-and-redirect block at the TOP of a home's AGENTS.md and mirrors it to CLAUDE.md,
+       so this run would have overwritten the first thing every session in that checkout reads. Refusing;
+       nothing was written.
+       To set THAT checkout up, name it as the checkout: bin/fm-setup.ps1 -RepoRoot '<primary>'
+       To give '<worktree>' a separate home, name a directory that is not a checkout.
+exit code: 1
+after:  AGENTS.md = 36691 bytes (unchanged: True)
+home layout written: False
+```
+
+Byte-identical, and `config/backend` was never created: the assertion sits at
+`Install-FmHome`'s gate, ahead of the prerequisite check, so a refused run
+writes nothing at all. It is asserted a second time inside
+`Set-FmInstallHomeRedirect`, so the guard belongs to the destructive act rather
+than to one caller.
+
+### 24.3 The suite
+
+`Invoke-Pester -Path ./tests` on this branch, with the checkout set up (see
+section 17's precondition - `Set-FmAgentsMemory` and `Set-FmClaudeSkillsLink`
+were run against it once first): **1730 passed, 0 failed, 25 skipped**, in
+1375s, and the repo-wide analyzer sweep inside the suite reports nothing at
+Error, Warning or Information. All 6 new install tests pass.
+
+### 24.4 One finding this run leaves open
+
+**An intermittent lost increment in the lock area.** In a whole-suite run at the
+pre-rebase base, `One holder, proven with real processes / never lets two
+processes increment a counter at once` read 35 where 36 increments were made.
+That test's two false-attribution guards - a worker that threw, and a worker
+still running at the deadline - both passed, so it is a genuine lost increment
+and not a timeout. It did NOT reproduce in 3 idle runs of that test alone, nor
+in 6 runs under 6 parallel CPU-burn jobs, nor in the two later whole-suite runs.
+This branch touches no locking code. It is the same whole-suite-only class as
+section 16, and an intermittent lost increment is a real mutual-exclusion defect
+until something proves otherwise - one green run does not. Left open for the
+lock area's owner.

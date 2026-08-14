@@ -53,7 +53,7 @@ Never add an agent name as a commit co-author.
 `FM_HOME` selects an instance's private `data/`, `state/`, `config/`, and `projects/`, while scripts continue to come from their tracked code root.
 **On this port the home defaults to the checkout**, exactly as the Linux firstmate repo root is its own home, so `cd <checkout>; pwsh; claude` is the whole startup path.
 `Resolve-FmEntryPointHome` owns that resolution and reads `<checkout>/.fm-home` so it works in a shell that loaded no PowerShell profile.
-A home deliberately kept separate from the checkout is supported and made to fail loudly: setup writes a stop-and-redirect `AGENTS.md`/`CLAUDE.md` into that home naming the checkout.
+A home deliberately kept separate from the checkout is supported and made to fail loudly: setup writes a stop-and-redirect `AGENTS.md`/`CLAUDE.md` into that home naming the checkout, and refuses outright when the named home is itself a checkout rather than writing that block over its operating contract.
 `bin/fm-send.ps1` fails closed unless the home is explicit, so a steer cannot silently resolve against another home.
 
 Tracked files hold shared instructions and tooling; `data/` holds durable private fleet records; `state/` holds volatile runtime records and append-only status events; `config/` holds local operating choices; and `projects/` contains clones that are read-only to firstmate except under hard rule 1's concrete captain-approved project operation exception.

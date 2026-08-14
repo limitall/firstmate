@@ -30,7 +30,8 @@ Public functions: `Install-FmHome`, `Invoke-FmDoctor`.
    second home from one checkout" below.
 4. **Home redirect** - when the home is NOT the checkout, writes an
    `AGENTS.md`/`CLAUDE.md` into the home that stops a session started there and
-   names the checkout. See "Which directory do I start Claude in" below.
+   names the checkout. Refused, with nothing written, when the named home is
+   itself a checkout. See "Which directory do I start Claude in" below.
 5. **Checkout memory** - repairs the checkout's own `CLAUDE.md` when git left it
    as the text of a symlink it could not create.
 6. **Skills link** - repairs `.claude/skills` the same way, for the same reason.
@@ -177,7 +178,7 @@ the agent came up with **no instructions at all and no indication anything was
 wrong**. Same class as the profile defect: the install is correct, the user does
 the obvious thing, and it silently does not work.
 
-Three things now make that impossible to hit silently.
+Four things now make that impossible to hit silently.
 
 **The default is the checkout.** `Resolve-FmEntryPointHome`'s tail is the
 checkout, which is also `Get-FmHome`'s own documented tail - so the installer
@@ -193,6 +194,32 @@ managed block into `<home>/AGENTS.md` and mirrors it to `<home>/CLAUDE.md`
 agent-memory area already treats a byte-identical real `CLAUDE.md` on Windows as
 a materialized link). The block goes FIRST in the file, so an agent that reads
 only the top still hits the stop, and text outside the markers is preserved.
+
+**A home that is itself a checkout is REFUSED.** MEASURED, 2026-08-14. A run
+meaning only to repair a worker copy's skills link named one tree with
+`-RepoRoot` and the primary checkout with `-FirstmateHome`. The home was
+correctly judged "not the checkout", so the stop-and-redirect was spliced over
+the top of the primary's own 51,675-byte `AGENTS.md`, and over `CLAUDE.md`,
+which on a repaired checkout is the same file. The bytes below the block
+survived; what did not is the contract's FIRST instruction, which became "do no
+firstmate work from this directory" and named a disposable worktree. It was
+reported as one `[updated] home redirect` line among a dozen, and was recovered
+only because `AGENTS.md` is tracked in git.
+
+`Assert-FmInstallHomeIsNotCheckout` now refuses that invocation, from
+`Install-FmHome`'s gate so nothing at all is written, and from
+`Set-FmInstallHomeRedirect` itself so the guard belongs to the destructive act
+rather than to one caller. "Is a checkout" is the two things setup already
+demands of a `-RepoRoot` plus the contract itself: `module/Firstmate`, and an
+`AGENTS.md` that is not already a redirect - an `AGENTS.md` that *is* one is
+generated material, so converging it destroys nothing and a re-install of a
+separate home still works. Refusal rather than a prompt, because there is no
+invocation this could be the right answer to: a caller who means to set that
+checkout up says so with `-RepoRoot`, which is shorter AND leaves the contract
+alone. The refusal names the file it would have overwritten and that
+invocation. What did NOT change is the redirect for a home that is a plain
+state directory: it stays unconditional, because without it `cd <home>; claude`
+starts an agent with no instructions at all.
 
 **The checkout's own `CLAUDE.md` is repaired.** This repo tracks `CLAUDE.md` as a
 symlink to `AGENTS.md`. Git with `core.symlinks=false` - the default for a

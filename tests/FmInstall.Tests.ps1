@@ -71,6 +71,23 @@ BeforeAll {
         }
     }
 
+    # A directory shaped like a firstmate-win checkout somebody operates from:
+    # module/Firstmate, and a real AGENTS.md/CLAUDE.md pair that is its own
+    # operating contract rather than a redirect. Synthetic on purpose - the
+    # refusal tests need a checkout they are allowed to try to damage.
+    function New-CheckoutFixture {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'Test helper: creates a directory under TestDrive.')]
+        param([string]$Contract = "# the operating contract`n`nSection 1. Do the work.`n")
+
+        $dir = Join-Path $TestDrive ('checkout-' + [System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path (Join-Path -Path $dir -ChildPath 'module' -AdditionalChildPath 'Firstmate') -Force
+        foreach ($name in @('AGENTS.md', 'CLAUDE.md')) {
+            [System.IO.File]::WriteAllText((Join-Path $dir $name), $Contract)
+        }
+        $dir
+    }
+
     function Invoke-Setup {
         param($Fixture, [hashtable]$Extra = @{})
         $splat = @{
@@ -826,6 +843,111 @@ Describe 'the home and the checkout: where do I start Claude' {
         $check.Detail | Should -BeLike '*no instructions and no hooks*'
         $check.Fix | Should -BeLike '*fm-setup.ps1*'
         $doctor.Healthy | Should -BeFalse
+    }
+}
+
+Describe 'the redirect refuses a home that is itself a checkout' {
+    # MEASURED, 2026-08-14. A run meaning only to repair a worker copy's skills
+    # link passed -RepoRoot <worktree> and -FirstmateHome <the PRIMARY CHECKOUT>.
+    # The home was correctly judged "not the checkout", so the stop-and-redirect
+    # was spliced over the top of the primary's own 51,675-byte AGENTS.md - and
+    # over CLAUDE.md, which on a repaired checkout is the same file. The first
+    # instruction every session there loaded became "do no firstmate work from
+    # this directory", naming a disposable worktree. One '[updated] home
+    # redirect' line among a dozen said so; git is what recovered it.
+
+    It 'refuses, and names both the file and the invocation the caller meant' {
+        $fixture = New-InstallFixture
+        $checkout = New-CheckoutFixture
+
+        { Invoke-Setup -Fixture $fixture -Extra @{ FirstmateHome = $checkout } } |
+            Should -Throw -ExpectedMessage ('*' + (Join-Path $checkout 'AGENTS.md') + '*')
+        { Invoke-Setup -Fixture $fixture -Extra @{ FirstmateHome = $checkout } } |
+            Should -Throw -ExpectedMessage ("*-RepoRoot '$checkout'*")
+    }
+
+    It 'writes nothing at all - the refusal is at the gate, not mid-install' {
+        $fixture = New-InstallFixture
+        $checkout = New-CheckoutFixture
+        $before = @{}
+        foreach ($name in @('AGENTS.md', 'CLAUDE.md')) {
+            $before[$name] = [System.IO.File]::ReadAllBytes((Join-Path $checkout $name))
+        }
+
+        { Invoke-Setup -Fixture $fixture -Extra @{ FirstmateHome = $checkout } } | Should -Throw
+
+        foreach ($name in @('AGENTS.md', 'CLAUDE.md')) {
+            [System.IO.File]::ReadAllBytes((Join-Path $checkout $name)) |
+                Should -Be $before[$name] -Because "the checkout's $name is what the refusal exists to protect"
+        }
+        # None of the steps that run BEFORE the redirect may have run either.
+        Test-Path -LiteralPath (Join-Path $checkout 'state') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $checkout 'config') | Should -BeFalse
+        Test-Path -LiteralPath $fixture.Pointer | Should -BeFalse
+        Test-Path -LiteralPath $fixture.Profile | Should -BeFalse
+    }
+
+    It 'refuses a direct call too, so the guard belongs to the redirect and not to one caller' {
+        $checkout = New-CheckoutFixture
+        { Set-FmInstallHomeRedirect -FirstmateHome $checkout -RepoRoot $script:RepoRoot -Confirm:$false } |
+            Should -Throw '*is itself a firstmate-win checkout*'
+    }
+
+    It 'still redirects a plain state directory - that is the failure the redirect exists for' {
+        # The near miss: a home with its own AGENTS.md but no module/Firstmate is
+        # a state directory the captain keeps notes in, not a checkout. Without
+        # the redirect, `cd <home>; claude` starts an agent with no instructions.
+        $fixture = New-InstallFixture
+        $null = New-Item -ItemType Directory -Path $fixture.Home -Force
+        [System.IO.File]::WriteAllText((Join-Path $fixture.Home 'AGENTS.md'), "# the captain's own notes`n")
+
+        $report = Invoke-Setup -Fixture $fixture
+        ($report.Steps | Where-Object { $_.Name -eq 'home redirect' }).Action | Should -Be 'updated'
+        $text = [System.IO.File]::ReadAllText((Join-Path $fixture.Home 'AGENTS.md'))
+        $text.StartsWith('<!-- >>> firstmate-win home >>> -->') | Should -BeTrue
+        $text | Should -BeLike "*the captain's own notes*"
+    }
+
+    It 'does not refuse the normal layout on this port: the home IS the checkout' {
+        # Setup is re-run on a checkout that is its own home constantly. That home
+        # has module/Firstmate and a real AGENTS.md - every ingredient of the
+        # refusal - and must still install.
+        $checkout = New-CheckoutFixture
+        $fixture = New-InstallFixture
+        # -SkipProfile so this run does not prepend the synthetic checkout's
+        # empty module/ to the session's PSModulePath: TestDrive is gone by the
+        # next file, and a dangling module root is exactly the cross-file leak
+        # CONTRIBUTING.md warns about.
+        $report = Invoke-Setup -Fixture $fixture -Extra @{
+            FirstmateHome = $checkout
+            RepoRoot      = $checkout
+            SkipProfile   = [switch]$true
+        }
+
+        $report.Installed | Should -BeTrue
+        ($report.Steps | Where-Object { $_.Name -eq 'home redirect' }).Detail |
+            Should -BeLike '*the home IS the checkout*'
+        [System.IO.File]::ReadAllText((Join-Path $checkout 'AGENTS.md')) |
+            Should -Not -BeLike '*firstmate-win home*' -Because 'nothing is redirected when the two coincide'
+    }
+
+    It 'still converges a redirect it wrote itself, even into a checkout-shaped home' {
+        # The escape from the guard: an AGENTS.md that already carries the block
+        # is generated material, so rewriting it destroys nothing. Without this,
+        # the second run of an install would refuse the first run's own work.
+        $fixture = New-InstallFixture
+        $null = Invoke-Setup -Fixture $fixture
+        $null = New-Item -ItemType Directory `
+            -Path (Join-Path -Path $fixture.Home -ChildPath 'module' -AdditionalChildPath 'Firstmate') -Force
+
+        $moved = Join-Path $fixture.Root 'moved-checkout'
+        $null = New-Item -ItemType Directory -Path (Join-Path -Path $moved -ChildPath 'module' -AdditionalChildPath 'Firstmate') -Force
+
+        $result = Set-FmInstallHomeRedirect -FirstmateHome $fixture.Home -RepoRoot $moved -Confirm:$false
+        $result.Action | Should -Be 'updated'
+        $text = [System.IO.File]::ReadAllText((Join-Path $fixture.Home 'AGENTS.md'))
+        @([regex]::Matches($text, [regex]::Escape('<!-- >>> firstmate-win home >>> -->'))).Count | Should -Be 1
+        $text | Should -BeLike "*$moved*"
     }
 }
 

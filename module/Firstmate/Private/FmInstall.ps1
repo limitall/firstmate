@@ -162,6 +162,82 @@ function Test-FmInstallHomeIsCheckout {
     Test-FmPathEqual -Left $FirstmateHome -Right $RepoRoot
 }
 
+# Does this directory hold a firstmate checkout's OWN operating contract?
+#
+# The same two things Install-FmHome already demands of a -RepoRoot, plus the
+# contract itself: module/Firstmate, and an AGENTS.md that is not already a
+# redirect. A directory answering yes is a checkout somebody operates from, not
+# a state directory - see Assert-FmInstallHomeIsNotCheckout for why that matters.
+#
+# AN EXISTING REDIRECT ANSWERS NO ON PURPOSE. A home setup has already redirected
+# is a home setup may redirect again: converging the block it wrote itself
+# rewrites nothing that was not already generated. Answering yes there would make
+# the second run of an install refuse the first run's own work.
+function Test-FmInstallPathHasOwnContract {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][string]$Path)
+
+    $module = Join-Path -Path $Path -ChildPath 'module' -AdditionalChildPath 'Firstmate'
+    if (-not (Test-Path -LiteralPath $module -PathType Container)) { return $false }
+
+    $agents = Join-Path -Path $Path -ChildPath 'AGENTS.md'
+    if (-not (Test-Path -LiteralPath $agents -PathType Leaf)) { return $false }
+    $text = [System.IO.File]::ReadAllText($agents)
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    return (-not $text.Contains($script:FmInstallRedirectBeginMarker))
+}
+
+# REFUSE TO WRITE THE REDIRECT INTO A CHECKOUT. The one shape the redirect must
+# never meet, and the one it cannot tell apart from its own use case without
+# being told to look.
+#
+# MEASURED, 2026-08-14. A run meaning only to repair a worker copy's skills link
+# named one tree with -RepoRoot and the PRIMARY CHECKOUT with -FirstmateHome:
+#
+#   bin/fm-setup.ps1 -RepoRoot <worktree> -FirstmateHome <primary checkout> ...
+#
+# Set-FmInstallHomeRedirect concluded, correctly, that the home was not the
+# checkout, and spliced its stop-and-redirect into the top of the primary's own
+# 51,675-byte AGENTS.md - and into CLAUDE.md, which on a repaired checkout is the
+# same file. The bytes below the block survived; what did not is the contract's
+# FIRST instruction, which became "do no firstmate work from this directory" and
+# named a disposable worktree. It was reported as one '[updated] home redirect'
+# line among a dozen, and was recovered only because AGENTS.md is tracked in git.
+#
+# WHY REFUSAL AND NOT A CONFIRMATION. The redirect is correct for a home that
+# holds only state, and it stays unconditional there - without it `cd <home>;
+# claude` starts an agent with no instructions at all, which is the failure the
+# redirect exists to prevent. But for a home that is itself a checkout there is
+# no invocation this could be the right answer to: the caller who really means to
+# set that checkout up says so with -RepoRoot, which is a shorter command AND
+# leaves the contract alone. A prompt would only ask the captain to re-derive
+# that at the moment they are least likely to - mid-install, one line among
+# twelve. So the refusal names both the file and the invocation instead.
+function Assert-FmInstallHomeIsNotCheckout {
+    [CmdletBinding()]
+    [OutputType([void])]
+    param(
+        [Parameter(Mandatory)][string]$FirstmateHome,
+        [Parameter(Mandatory)][string]$RepoRoot
+    )
+
+    # The normal layout on this port: the home IS the checkout, as on Linux.
+    # Nothing is redirected there, so there is nothing to refuse.
+    if (Test-FmInstallHomeIsCheckout -FirstmateHome $FirstmateHome -RepoRoot $RepoRoot) { return }
+    if (-not (Test-FmInstallPathHasOwnContract -Path $FirstmateHome)) { return }
+
+    $agents = Join-Path -Path $FirstmateHome -ChildPath 'AGENTS.md'
+    throw (@(
+            "error: the firstmate home '$FirstmateHome' is itself a firstmate-win checkout, with its own '$agents'."
+            "       Setup writes a stop-and-redirect block at the TOP of a home's AGENTS.md and mirrors it to CLAUDE.md,"
+            '       so this run would have overwritten the first thing every session in that checkout reads. Refusing;'
+            '       nothing was written.'
+            "       To set THAT checkout up, name it as the checkout: bin/fm-setup.ps1 -RepoRoot '$FirstmateHome'"
+            "       To give '$RepoRoot' a separate home, name a directory that is not a checkout."
+        ) -join "`n")
+}
+
 # The redirect's text. A pure function of the two paths, so two runs produce
 # identical bytes and the second reports 'already' by comparing rather than
 # guessing - the same converge-not-append rule as the profile block.
@@ -230,6 +306,12 @@ function Set-FmInstallHomeRedirect {
             Detail = 'the home IS the checkout, as on Linux; nothing to redirect'
         }
     }
+
+    # The guard belongs to the destructive act, not only to its caller.
+    # Install-FmHome asserts this at its own gate so that a refused run has
+    # written nothing at all; repeating it here is what keeps a second caller
+    # from reintroducing the overwrite in silence.
+    Assert-FmInstallHomeIsNotCheckout -FirstmateHome $FirstmateHome -RepoRoot $RepoRoot
 
     $block = Get-FmInstallHomeRedirect -FirstmateHome $FirstmateHome -RepoRoot $RepoRoot
     $agents = Join-Path $FirstmateHome 'AGENTS.md'
