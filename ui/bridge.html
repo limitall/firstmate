@@ -73,7 +73,10 @@ body::before{
 .dot.amber{background:var(--amber);box-shadow:0 0 8px var(--amber)}
 .who{display:flex;align-items:center;gap:9px;padding:5px 6px 5px 15px;
      border:1px solid var(--edge);border-radius:999px;font-size:10.5px;
-     letter-spacing:.18em;color:var(--txt)}
+     letter-spacing:.18em;color:var(--txt);background:transparent;
+     font-family:inherit;cursor:pointer}
+.who:hover{border-color:var(--cy);color:var(--cy)}
+.who:focus-visible{outline:2px solid var(--cy);outline-offset:2px}
 .who i{width:22px;height:22px;border-radius:50%;background:linear-gradient(140deg,var(--cy),var(--cy-dim));
      display:block;flex:none}
 
@@ -218,7 +221,9 @@ canvas#wave{display:block;height:34px}
       <div class="ro"><div class="k">Waiting on you</div><div class="v" id="roDec">4</div></div>
       <div class="ro"><div class="k">Local time</div><div class="v" id="clock">--:--:--</div></div>
     </div>
-    <div class="who"><span>CAPTAIN</span><i></i></div>
+    <button class="who" id="whoBtn" type="button" title="Click to change what firstmate calls you">
+      <span id="whoName">&mdash;</span><i></i>
+    </button>
   </header>
 
   <!-- ==================== GRID ==================== -->
@@ -227,7 +232,7 @@ canvas#wave{display:block;height:34px}
     <!-- ---------- LEFT ---------- -->
     <div class="col left">
       <section class="pnl" style="flex:none">
-        <div class="ph"><h2>System <b>//</b></h2><span class="tag">Capacity</span></div>
+        <div class="ph"><h2>Capacity</h2><span class="tag">This week</span></div>
         <div class="stats">
           <div class="stat"><div class="k">Week left</div><div class="v">79<small>%</small></div></div>
           <div class="stat"><div class="k">Session</div><div class="v">82<small>%</small></div></div>
@@ -240,7 +245,7 @@ canvas#wave{display:block;height:34px}
       </section>
 
       <section class="pnl">
-        <div class="ph"><h2>System <b>//</b></h2><span class="tag">Work under way</span></div>
+        <div class="ph"><h2>Work under way</h2><span class="tag" id="taskTag">Live</span></div>
         <div class="scroll" id="tasks"></div>
       </section>
     </div>
@@ -273,12 +278,12 @@ canvas#wave{display:block;height:34px}
     <!-- ---------- RIGHT ---------- -->
     <div class="col right">
       <section class="pnl" style="flex:none">
-        <div class="ph"><h2>System <b>//</b></h2><span class="tag hot" id="decTag">Waiting on you</span></div>
+        <div class="ph"><h2>Waiting on you</h2><span class="tag hot" id="decTag">Needs a decision</span></div>
         <div class="scroll" id="decisions" style="max-height:300px"></div>
       </section>
 
       <section class="pnl">
-        <div class="ph"><h2>System <b>//</b></h2><span class="tag">Activity</span></div>
+        <div class="ph"><h2>Activity</h2><span class="tag" id="clockTag">--:--:--</span></div>
         <div class="scroll" id="log"></div>
       </section>
     </div>
@@ -504,13 +509,49 @@ function speak(txt){
   if(v) u.voice=v;
   speechSynthesis.speak(u);
 }
-function respond(said){
-  const line='Aye captain. '+said.replace(/[.?!]+$/,'')+' — understood.';
-  setTimeout(()=>{
-    coreState.textContent='Speaking'; heard.textContent=line;
-    logAdd(said,'hi'); speak(line);
-    setTimeout(()=>{coreState.textContent='Core active'},2600);
-  },300);
+/* ------------------------------------------------------------------
+   REAL. This posts the captain's words to the bridge, which hands them
+   to the hosted firstmate session and returns its actual reply. There
+   is no canned answer anywhere in this path - if the engine is down the
+   page SAYS so rather than echoing something friendly, because a mockup
+   that pretends to listen is worse than one that admits it cannot.
+   ------------------------------------------------------------------ */
+const TOKEN = new URLSearchParams(location.hash.slice(1)).get('t') || '';
+
+async function api(path, opts){
+  const o = Object.assign({headers:{}}, opts||{});
+  o.headers['X-Fm-Token'] = TOKEN;
+  if (o.body) o.headers['Content-Type'] = 'application/json';
+  const r = await fetch(path, o);
+  return r.json();
+}
+
+async function respond(said){
+  logAdd(said,'hi');
+  coreState.textContent='Thinking';
+  coreSub.textContent='Working';
+  heard.textContent='…';
+  try{
+    const res = await api('/api/say',{method:'POST',body:JSON.stringify({text:said})});
+    if(res.ok && res.reply){
+      coreState.textContent='Speaking';
+      heard.textContent=res.reply;
+      logAdd(res.reply,'');
+      speak(res.reply);
+      setTimeout(()=>{coreState.textContent='Core active';coreSub.textContent='Standing by';},2200);
+    } else {
+      coreState.textContent='Core active';
+      coreSub.textContent='Not connected';
+      heard.textContent = res.error || 'No answer came back.';
+      logAdd(res.error||'no answer','warn');
+    }
+  }catch(e){
+    coreState.textContent='Core active';
+    coreSub.textContent='Bridge unreachable';
+    heard.textContent='The bridge is not reachable. Is fm-bridge.ps1 still running?';
+    logAdd('bridge unreachable','warn');
+  }
+  refreshFleet();
 }
 
 talk.addEventListener('mousedown',micOn);
@@ -529,87 +570,127 @@ document.getElementById('typed').addEventListener('keydown',e=>{
    FLEET STATE - same shape bin/fm-progress.ps1 emits, so the live
    bridge drops real records in unchanged.
    ================================================================== */
-const TASKS=[
-  {n:'Voice channel',     p:100,  s:'Landed on main.'},
-  {n:'Browser front end', p:100,  s:'Design settled.'},
-  {n:'Telegram bridge',   p:100,  s:'Design settled.'},
-  {n:'Suite rebuild',     p:null, s:'Running. Has not reported how far along.'}
-];
-const DECISIONS=[
-  {src:'Telegram',q:'Create a Telegram bot?',
-   o:[{t:'Create it'},{t:'Not now'}]},
-  {src:'Telegram',q:'What may a message from your phone do?',
-   o:[{t:'Dispatch, not merge',r:1},{t:'Ask for a code'},{t:'Anything'}]},
-  {src:'Browser',q:'How far should this reach?',
-   o:[{t:'This laptop'},{t:'Your Wi-Fi',r:1},{t:'Anywhere'}]},
-  {src:'Voice',q:'May speech approve a merge?',
-   o:[{t:'Type those',r:1},{t:'Speech is enough'}]}
-];
-const LOG=[
-  ['12:45:01','Voice channel landed on main','hi'],
-  ['12:44:12','Suite green — 1730 passing, 0 failed','hi'],
-  ['12:43:22','Browser design finished','' ],
-  ['12:41:07','Telegram design finished',''],
-  ['12:38:55','Four decisions raised for the captain','warn'],
-  ['12:30:14','Three workers dispatched','']
-];
-
+/* ------------------------------------------------------------------
+   LIVE FLEET. Every row here comes from the bridge, which reads the
+   same durable records that survive with no session at all. Nothing on
+   this screen is a literal.
+   ------------------------------------------------------------------ */
 const tasksEl=document.getElementById('tasks');
-TASKS.forEach(k=>{
-  const known=k.p!==null;
-  const d=document.createElement('div'); d.className='met';
-  d.innerHTML='<div class="lbl"><span>'+k.n+'</span><b class="'+(known?'':'none')+'">'+
-    (known?k.p+'%':'not said')+'</b></div>'+
-    '<div class="track'+(known?(k.p===100?' done':''):' none')+'">'+
-    (known?'<i style="width:'+k.p+'%"></i>':'')+'</div>'+
-    '<p class="sub">'+k.s+'</p>';
-  tasksEl.appendChild(d);
-});
-document.getElementById('roTasks').textContent=TASKS.length;
-
 const decEl=document.getElementById('decisions');
-function renderDec(){
-  decEl.innerHTML='';
-  DECISIONS.forEach((d,i)=>{
-    const el=document.createElement('div'); el.className='dec';
-    el.innerHTML='<div class="src">'+d.src+'</div><p class="q">'+d.q+'</p><div class="opts">'+
-      d.o.map(o=>'<button type="button" class="'+(o.r?'rec':'')+'">'+o.t+'</button>').join('')+'</div>';
-    el.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
-      const line='Noted, captain. '+b.textContent+'.';
-      logAdd(d.q+' → '+b.textContent,'hi');
-      DECISIONS.splice(i,1); renderDec();
-      document.getElementById('roDec').textContent=DECISIONS.length;
-      if(!DECISIONS.length){
-        document.getElementById('decTag').classList.remove('hot');
-        decEl.innerHTML='<p class="sub">Nothing waiting on you.</p>';
-      }
-      heard.textContent=line; speak(line);
-    }));
-    decEl.appendChild(el);
-  });
-}
-renderDec();
-document.getElementById('roDec').textContent=DECISIONS.length;
-
 const logEl=document.getElementById('log');
+const LOG=[];
+
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function paintTasks(tasks){
+  tasksEl.innerHTML='';
+  if(!tasks.length){ tasksEl.innerHTML='<p class="sub">Nothing under way.</p>'; }
+  tasks.forEach(k=>{
+    const known = k.Percent !== null && k.Percent !== undefined;
+    const done = k.State === 'done';
+    const d=document.createElement('div'); d.className='met';
+    d.innerHTML='<div class="lbl"><span>'+esc(k.Id)+'</span><b class="'+(known?'':'none')+'">'+
+      (known?k.Percent+'%':'not said')+'</b></div>'+
+      '<div class="track'+(known?(done?' done':''):' none')+'">'+
+      (known?'<i style="width:'+k.Percent+'%"></i>':'')+'</div>'+
+      '<p class="sub">'+esc(k.Note||k.State||'')+'</p>';
+    tasksEl.appendChild(d);
+  });
+  document.getElementById('roTasks').textContent=tasks.length;
+}
+
+function paintDecisions(ds){
+  decEl.innerHTML='';
+  const tag=document.getElementById('decTag');
+  if(!ds.length){
+    decEl.innerHTML='<p class="sub">Nothing waiting on you.</p>';
+    tag.classList.remove('hot');
+  } else {
+    tag.classList.add('hot');
+    ds.forEach(d=>{
+      const el=document.createElement('div'); el.className='dec';
+      el.innerHTML='<div class="src">'+esc(d.Task)+'</div><p class="q">'+esc(d.Question)+'</p>'+
+        '<div class="opts"><button type="button">Answer by voice</button></div>';
+      // Answering routes back through the SAME turn path as speech, so the
+      // decision's lifecycle stays owned by firstmate rather than by this page.
+      el.querySelector('button').addEventListener('click',()=>{
+        const q='Answer the open decision '+d.Key+' on task '+d.Task+': ';
+        document.getElementById('typed').value=q;
+        document.getElementById('typed').focus();
+      });
+      decEl.appendChild(el);
+    });
+  }
+  document.getElementById('roDec').textContent=ds.length;
+}
+
 function paintLog(){
   logEl.innerHTML='';
   LOG.forEach(([tm,msg,cls])=>{
     const l=document.createElement('div'); l.className='logline '+(cls||'');
-    l.innerHTML='<time>['+tm+']</time><span>'+msg+'</span>';
+    l.innerHTML='<time>['+esc(tm)+']</time><span>'+esc(msg)+'</span>';
     logEl.appendChild(l);
   });
 }
 function logAdd(msg,cls){
-  const d=new Date();
-  LOG.unshift([d.toTimeString().slice(0,8),msg,cls||'']);
+  LOG.unshift([new Date().toTimeString().slice(0,8),msg,cls||'']);
   if(LOG.length>40) LOG.pop();
   paintLog();
 }
-paintLog();
+
+async function refreshFleet(){
+  try{
+    const f = await api('/api/fleet');
+    if(!f.ok) return;
+    // The address is whatever this home is configured to use - bin/fm-name.ps1
+    // owns it - so the page shows the captain's own word rather than a literal.
+    if(f.captain){ document.getElementById('whoName').textContent = f.captain.toUpperCase(); }
+    paintTasks(f.tasks||[]);
+    paintDecisions(f.decisions||[]);
+    const dot=document.getElementById('dot');
+    const bs=document.getElementById('bridgeState');
+    if(f.engine){ dot.classList.remove('amber'); bs.textContent='Listening'; }
+    else { dot.classList.add('amber'); bs.textContent='No engine'; }
+  }catch(e){
+    document.getElementById('dot').classList.add('amber');
+    document.getElementById('bridgeState').textContent='Unreachable';
+  }
+}
+refreshFleet();
+setInterval(refreshFleet, 4000);
+
+/* Changing the address happens HERE, not in a terminal. The captain should
+   never have to go back to a shell to change something about their own
+   session. Blank resets it to "captain". */
+document.getElementById('whoBtn').addEventListener('click', async ()=>{
+  const now = document.getElementById('whoName').textContent.trim();
+  const want = prompt('What should firstmate call you?\n\nLeave blank for "captain".',
+                      now === 'CAPTAIN' ? '' : now);
+  if (want === null) return;
+  try{
+    const r = await api('/api/name',{method:'POST',body:JSON.stringify({name:want.trim()})});
+    if(r.ok){
+      document.getElementById('whoName').textContent = r.captain.toUpperCase();
+      const line = 'From now on I will call you ' + r.captain + '.';
+      heard.textContent = line;
+      logAdd(line,'hi');
+      speak(line);
+    } else {
+      heard.textContent = r.error || 'That name will not work.';
+    }
+  }catch(e){ heard.textContent='Could not reach the bridge to change the name.'; }
+});
+
+if(!TOKEN){
+  heard.textContent='Opened without a key. Start it with bin/fm-bridge.ps1 so the page can reach firstmate.';
+  logAdd('no token in the URL — the page cannot reach the engine','warn');
+}
 
 setInterval(()=>{
-  document.getElementById('clock').textContent=new Date().toTimeString().slice(0,8);
+  const now=new Date().toTimeString().slice(0,8);
+  document.getElementById('clock').textContent=now;
+  const ct=document.getElementById('clockTag');
+  if(ct) ct.textContent=now;
 },1000);
 </script>
 </body>

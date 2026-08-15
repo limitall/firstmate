@@ -1,42 +1,50 @@
 #requires -Version 7.0
 <#
 .SYNOPSIS
-fm-bridge.ps1 - serve the bridge HUD over loopback so the browser will actually
-give it a microphone.
+fm-bridge.ps1 - run firstmate from the browser. Starts the engine, opens the UI,
+and everything happens there.
 
 .DESCRIPTION
-WHY THIS EXISTS, MEASURED. Opening ui/bridge.html straight off disk renders
-correctly and then fails at the one thing it is for:
+This is the thing the HUD was a picture of. It hosts a real firstmate session and
+couriers between it and the browser, so speaking into the page reaches firstmate
+and the answer comes back.
 
-    navigator.mediaDevices.getUserMedia({audio:true})
-    -> NotAllowedError - Permission denied
+WHY IT IS A SERVER AND NOT A FILE. Measured, same page, twice:
 
-A `file://` page has an opaque origin. Chrome has nowhere to attach a microphone
-grant, so it refuses rather than prompting, and no amount of clicking allow will
-change it. `window.isSecureContext` reports true on file://, which is exactly
-what makes this trap easy to miss - the page looks like it should work.
+    file:///.../ui/bridge.html   getUserMedia -> NotAllowedError: Permission denied
+    http://127.0.0.1:7433/       getUserMedia -> OK, 1 audio track
 
-`http://127.0.0.1` is a real origin AND is treated as a secure context without a
-certificate, so the grant sticks. That is the whole reason this script exists.
+A file:// page has an opaque origin, so Chrome has nowhere to attach a microphone
+grant and refuses outright. window.isSecureContext reports TRUE on file://, which
+is what makes that trap easy to miss.
 
-WHAT THIS IS NOT. This is the smallest possible static server: it serves the
-files under ui/ to the loopback interface and nothing else. It does not host a
-firstmate session, does not supervise, does not accept commands, and has no
-write path at all. The full bridge described in data/web-ui/report.md is a
-separate, larger piece of work; this is the read-only first slice that report
-recommends, and deliberately nothing more.
+WHY IT HOSTS A SESSION RATHER THAN BEING ONE. data/web-ui/report.md measured that
+a headless `claude` can hold this home's session lock and a plain PowerShell
+process cannot. So firstmate stays a Claude session running the same AGENTS.md,
+the same skills and the same spawn path; this is a courier, not a second
+implementation of the operating contract.
 
-SECURITY, STATED PLAINLY. It binds 127.0.0.1 only, so nothing off this machine
-can reach it. Every process running as the captain can, which is the same
-exposure any local dev server has. Because there is no write path, a page in
-another tab that POSTs at it can achieve nothing. Do not add a write path here
-without revisiting that.
+ROUTES
+    GET  /              the UI
+    GET  /api/fleet     work under way, open decisions, recent activity
+    POST /api/say       one captain turn -> firstmate's reply
+    GET  /api/health    is the engine up
+
+SECURITY. Binds 127.0.0.1 only, so nothing off this machine can reach it. There
+IS a write path now - /api/say drives a session that can change code - so it is
+guarded: a per-run token every request must carry, and an Origin check, because
+data/web-ui/report.md MEASURED that any page open in the captain's browser can
+otherwise POST at a loopback listener even though it cannot read the replies. The
+token is handed to the page through the launch URL and never written to disk.
 
 .PARAMETER Port
 Loopback port. Default 7433.
 
 .PARAMETER NoLaunch
-Do not open a browser; just serve.
+Serve without opening a browser.
+
+.PARAMETER NoEngine
+Serve the UI and fleet state but start no session. The page runs read-only.
 
 .EXAMPLE
 bin/fm-bridge.ps1
@@ -44,101 +52,253 @@ bin/fm-bridge.ps1
 [CmdletBinding()]
 param(
     [ValidateRange(1024, 65535)][int]$Port = 7433,
-    [switch]$NoLaunch
+    [switch]$NoLaunch,
+    [switch]$NoEngine,
+    [string]$Model = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$uiRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'ui'
-if (-not (Test-Path -LiteralPath $uiRoot -PathType Container)) {
-    [Console]::Error.WriteLine("error: no ui directory at $uiRoot")
-    exit 1
+. (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Get-FmCaptainName'
+
+$root  = Split-Path -Parent $PSScriptRoot
+$uiDir = Join-Path $root 'ui'
+$home_ = Get-FmHome
+# Read once, at startup. The address is a standing property of the home, not a
+# per-message setting, so every surface this bridge feeds uses the same word.
+$captainName = Get-FmCaptainName
+# Set when the address changes mid-run, cleared when it has been passed on.
+$script:pendingAddress = $null
+if (-not (Test-Path -LiteralPath $uiDir -PathType Container)) {
+    [Console]::Error.WriteLine("error: no ui directory at $uiDir"); exit 1
 }
+
+# A fresh secret per run. It never touches disk, so nothing can leak it later,
+# and a restart invalidates every page that held the old one.
+$token = [Convert]::ToBase64String([guid]::NewGuid().ToByteArray()).TrimEnd('=').Replace('+','-').Replace('/','_')
 
 $prefix = "http://127.0.0.1:$Port/"
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add($prefix)
-
-try {
-    $listener.Start()
-} catch {
+try { $listener.Start() }
+catch {
     [Console]::Error.WriteLine("error: cannot listen on $prefix - $($_.Exception.Message)")
-    [Console]::Error.WriteLine('       another process may already hold that port; try -Port <n>')
+    [Console]::Error.WriteLine('       another process may hold that port; try -Port <n>')
     exit 1
 }
 
-[Console]::Out.WriteLine("fm-bridge: serving $uiRoot at $prefix")
-[Console]::Out.WriteLine('fm-bridge: loopback only - nothing off this machine can reach it')
-[Console]::Out.WriteLine('fm-bridge: read-only - there is no write path')
-[Console]::Out.WriteLine('fm-bridge: Ctrl+C to stop')
+# ---- the engine -------------------------------------------------------------
+$session = $null
+if (-not $NoEngine) {
+    [Console]::Out.WriteLine('fm-bridge: starting the firstmate session...')
+    $session = New-FmBridgeSession -HomePath $home_ -Model $Model
+    if ($null -eq $session) {
+        [Console]::Error.WriteLine('fm-bridge: could not start a firstmate session (is the Claude CLI installed?)')
+        [Console]::Error.WriteLine('           serving read-only; the page will say so rather than pretend')
+    } else {
+        [Console]::Out.WriteLine("fm-bridge: session up (id $($session.SessionId))")
+    }
+}
 
-if (-not $NoLaunch) { Start-Process "$prefix" }
+[Console]::Out.WriteLine("fm-bridge: $prefix")
+[Console]::Out.WriteLine('fm-bridge: loopback only, token-guarded. Ctrl+C to stop.')
 
-$types = @{
-    '.html' = 'text/html; charset=utf-8'
-    '.css'  = 'text/css; charset=utf-8'
-    '.js'   = 'text/javascript; charset=utf-8'
-    '.json' = 'application/json; charset=utf-8'
-    '.svg'  = 'image/svg+xml'
-    '.png'  = 'image/png'
-    '.ico'  = 'image/x-icon'
-    '.woff2' = 'font/woff2'
+$launchUrl = "$prefix#t=$token"
+# Printed so the captain can reopen the page after closing the tab, and so a
+# test can drive the API. It is a per-run secret that never touches disk, so it
+# dies with this process.
+[Console]::Out.WriteLine("fm-bridge: open $launchUrl")
+if (-not $NoLaunch) { Start-Process $launchUrl }
+
+$types = @{ '.html'='text/html; charset=utf-8'; '.css'='text/css; charset=utf-8'
+            '.js'='text/javascript; charset=utf-8'; '.svg'='image/svg+xml'
+            '.png'='image/png'; '.ico'='image/x-icon' }
+
+function Write-Json {
+    param($Response, $Object, [int]$Status = 200)
+    $Response.StatusCode = $Status
+    $Response.ContentType = 'application/json; charset=utf-8'
+    $Response.Headers.Add('Cache-Control', 'no-store')
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($Object | ConvertTo-Json -Depth 8 -Compress))
+    $Response.ContentLength64 = $bytes.Length
+    $Response.OutputStream.Write($bytes, 0, $bytes.Length)
+    $Response.Close()
 }
 
 try {
     while ($listener.IsListening) {
-        $context = $listener.GetContext()
-        $request = $context.Request
-        $response = $context.Response
+        $ctx = $listener.GetContext()
+        $req = $ctx.Request
+        $res = $ctx.Response
 
         try {
-            # Read-only by contract, so anything that is not a plain read is
-            # refused rather than ignored - a silent 200 on a POST would invite a
-            # caller to believe it did something.
-            if ($request.HttpMethod -notin @('GET', 'HEAD')) {
-                $response.StatusCode = 405
-                $response.Close()
+            $path = $req.Url.AbsolutePath.TrimEnd('/')
+            if ([string]::IsNullOrEmpty($path)) { $path = '/' }
+
+            # --- API: guarded ------------------------------------------------
+            if ($path.StartsWith('/api')) {
+                # An Origin from anywhere but this listener is another page in
+                # the captain's browser reaching in. Refuse before doing work.
+                $origin = [string]$req.Headers['Origin']
+                if ($origin -and $origin -ne "http://127.0.0.1:$Port") {
+                    Write-Json -Response $res -Object @{ error = 'origin refused' } -Status 403
+                    continue
+                }
+                $supplied = [string]$req.Headers['X-Fm-Token']
+                if ($supplied -ne $token) {
+                    Write-Json -Response $res -Object @{ error = 'token refused' } -Status 401
+                    continue
+                }
+
+                if ($path -eq '/api/health') {
+                    Write-Json -Response $res -Object @{
+                        ok      = $true
+                        engine  = ($null -ne $session -and -not $session.Process.HasExited)
+                        home    = $home_
+                        captain = $captainName
+                        session = $(if ($session) { $session.SessionId } else { '' })
+                    }
+                    continue
+                }
+
+                if ($path -eq '/api/fleet') {
+                    $fleet = Get-FmBridgeFleet -HomePath $home_
+                    Write-Json -Response $res -Object @{
+                        ok        = $true
+                        engine    = ($null -ne $session -and -not $session.Process.HasExited)
+                        captain   = $captainName
+                        tasks     = @($fleet.Tasks)
+                        decisions = @($fleet.Decisions)
+                        activity  = @($fleet.Activity)
+                        at        = $fleet.At
+                    }
+                    continue
+                }
+
+                if ($path -eq '/api/name') {
+                    # Settable from the browser, because the captain should never
+                    # have to go back to a terminal to change something about
+                    # their own session. Same validation as bin/fm-name.ps1 - a
+                    # line break here would break every address that follows.
+                    if ($req.HttpMethod -ne 'POST') {
+                        Write-Json -Response $res -Object @{ error = 'POST only' } -Status 405
+                        continue
+                    }
+                    $nameBody = ''
+                    $nr = [System.IO.StreamReader]::new($req.InputStream, [System.Text.Encoding]::UTF8)
+                    try { $nameBody = $nr.ReadToEnd() } finally { $nr.Dispose() }
+                    $wanted = ''
+                    try { $wanted = ([string]($nameBody | ConvertFrom-Json).name).Trim() } catch { $wanted = '' }
+
+                    if ($wanted.Length -gt 48 -or $wanted -match '[\r\n\t]') {
+                        Write-Json -Response $res -Object @{ ok = $false; error = 'that name will not work' } -Status 400
+                        continue
+                    }
+
+                    $nameFile = Join-Path (Get-FmConfigRoot) 'captain-name'
+                    if ($wanted) {
+                        [System.IO.File]::WriteAllText($nameFile, "$wanted`n", [System.Text.UTF8Encoding]::new($false))
+                        $captainName = $wanted
+                    } else {
+                        Remove-Item -LiteralPath $nameFile -Force -ErrorAction SilentlyContinue
+                        $captainName = 'captain'
+                    }
+
+                    # NOT sent to the session here. Doing that blocked this
+                    # request on a whole agent turn - measured, it hung past 180s
+                    # because the session's first turn also pays its startup - and
+                    # saving a name must never wait on the model. Instead the
+                    # change rides along with the NEXT thing the captain says,
+                    # which costs nothing and arrives in time to matter.
+                    $script:pendingAddress = $captainName
+                    [Console]::Out.WriteLine("fm-bridge: address set to '$captainName'")
+                    Write-Json -Response $res -Object @{ ok = $true; captain = $captainName }
+                    continue
+                }
+
+                if ($path -eq '/api/say') {
+                    if ($req.HttpMethod -ne 'POST') {
+                        Write-Json -Response $res -Object @{ error = 'POST only' } -Status 405
+                        continue
+                    }
+                    $body = ''
+                    $sr = [System.IO.StreamReader]::new($req.InputStream, [System.Text.Encoding]::UTF8)
+                    try { $body = $sr.ReadToEnd() } finally { $sr.Dispose() }
+
+                    $text = ''
+                    try { $text = [string]($body | ConvertFrom-Json).text } catch { $text = '' }
+                    if ([string]::IsNullOrWhiteSpace($text)) {
+                        Write-Json -Response $res -Object @{ ok = $false; error = 'nothing to say' } -Status 400
+                        continue
+                    }
+
+                    if ($null -eq $session -or $session.Process.HasExited) {
+                        Write-Json -Response $res -Object @{
+                            ok = $false
+                            error = 'the firstmate session is not running, so nothing is listening'
+                        } -Status 503
+                        continue
+                    }
+
+                    [Console]::Out.WriteLine("$captainName`: $text")
+                    # A name change set since the last turn rides along with this
+                    # one, so it takes effect in THIS conversation rather than at
+                    # the next restart - and without its own blocking round trip.
+                    $send = $text
+                    if ($script:pendingAddress) {
+                        $send = "[Address me as '$($script:pendingAddress)' from now on, in every reply.]`n`n$text"
+                        $script:pendingAddress = $null
+                    }
+                    $turn = Send-FmBridgeTurn -Session $session -Text $send
+                    if ($turn.Reply) { [Console]::Out.WriteLine("firstmate: $($turn.Reply)") }
+                    Write-Json -Response $res -Object @{
+                        ok    = $turn.Ok
+                        reply = $turn.Reply
+                        error = $turn.Error
+                    }
+                    continue
+                }
+
+                Write-Json -Response $res -Object @{ error = 'no such route' } -Status 404
                 continue
             }
 
-            $rel = [System.Uri]::UnescapeDataString($request.Url.AbsolutePath).TrimStart('/')
+            # --- static ------------------------------------------------------
+            if ($req.HttpMethod -notin @('GET','HEAD')) { $res.StatusCode = 405; $res.Close(); continue }
+
+            $rel = [System.Uri]::UnescapeDataString($req.Url.AbsolutePath).TrimStart('/')
             if ([string]::IsNullOrWhiteSpace($rel)) { $rel = 'bridge.html' }
 
-            # Path containment, checked on the RESOLVED path rather than by
-            # inspecting the request string: '..', an absolute path and a symlink
-            # that points outside all fail the same single test.
-            $full = [System.IO.Path]::GetFullPath((Join-Path $uiRoot $rel))
-            $rootFull = [System.IO.Path]::GetFullPath($uiRoot)
+            # Containment checked on the RESOLVED path, so '..', an absolute
+            # path and a symlink pointing out all fail one test.
+            $full = [System.IO.Path]::GetFullPath((Join-Path $uiDir $rel))
+            $rootFull = [System.IO.Path]::GetFullPath($uiDir)
             if (-not $full.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
-                $response.StatusCode = 403
-                $response.Close()
-                continue
+                $res.StatusCode = 403; $res.Close(); continue
             }
-            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
-                $response.StatusCode = 404
-                $response.Close()
-                continue
-            }
+            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { $res.StatusCode = 404; $res.Close(); continue }
 
             $ext = [System.IO.Path]::GetExtension($full).ToLowerInvariant()
-            $response.ContentType = if ($types.ContainsKey($ext)) { $types[$ext] } else { 'application/octet-stream' }
-            # A mockup is edited and reloaded constantly; a cached copy of the
-            # previous version reads as "the change did nothing".
-            $response.Headers.Add('Cache-Control', 'no-store')
-
+            $res.ContentType = if ($types.ContainsKey($ext)) { $types[$ext] } else { 'application/octet-stream' }
+            $res.Headers.Add('Cache-Control', 'no-store')
             $bytes = [System.IO.File]::ReadAllBytes($full)
-            $response.ContentLength64 = $bytes.Length
-            if ($request.HttpMethod -eq 'GET') {
-                $response.OutputStream.Write($bytes, 0, $bytes.Length)
-            }
-            $response.Close()
+            $res.ContentLength64 = $bytes.Length
+            if ($req.HttpMethod -eq 'GET') { $res.OutputStream.Write($bytes, 0, $bytes.Length) }
+            $res.Close()
         } catch {
-            try { $response.StatusCode = 500; $response.Close() } catch { }
+            # Printed, not swallowed. A 500 with no reason on the console is a
+            # bug you cannot chase; the browser only ever sees the status.
+            [Console]::Error.WriteLine("fm-bridge: $($req.Url.AbsolutePath) failed - $($_.Exception.Message)")
+            # Best-effort: the client may already be gone, which is exactly when
+            # writing a status throws. The real error is on the console above, so
+            # failing to deliver a 500 must not take the whole server down.
+            try { $res.StatusCode = 500; $res.Close() }
+            catch { [Console]::Error.WriteLine('fm-bridge: client gone before the error could be sent') }
         }
     }
 } finally {
-    $listener.Stop()
-    $listener.Close()
+    $listener.Stop(); $listener.Close()
+    if ($session) { Stop-FmBridgeSession -Session $session -Confirm:$false }
     [Console]::Out.WriteLine('fm-bridge: stopped')
 }
