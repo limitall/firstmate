@@ -363,7 +363,7 @@ canvas#wave{display:block;height:26px;opacity:.9}
 
       <div class="voice">
         <canvas id="wave" width="620" height="26"></canvas>
-        <div class="heard" id="heard">Ask me anything, or hold the microphone to speak</div>
+        <div class="heard" id="heard">Ask me anything &mdash; hold right Alt to dictate</div>
 
         <div class="dock-line" id="dockLine">
           <button class="mic" id="talk" type="button" aria-pressed="false"
@@ -381,7 +381,7 @@ canvas#wave{display:block;height:26px;opacity:.9}
           </button>
         </div>
 
-        <div class="dock-hint" id="dockHint">Hold the microphone, or hold Space</div>
+        <div class="dock-hint" id="dockHint">Hold right Alt and speak, or hold the microphone</div>
       </div>
     </main>
 
@@ -409,7 +409,11 @@ const rc = document.getElementById('radar'), rx = rc.getContext('2d');
 let RS = 420, DPR = 1;
 function sizeRadar(){
   const b = rc.parentElement.getBoundingClientRect();
-  RS = Math.max(280, Math.min(Math.min(b.width, b.height) * .94, 520));
+  // The cap was a flat 520px, which left a large void under the radar on a tall
+  // panel - the eye reads that gap as something missing rather than as space.
+  // Growing with the panel keeps the composition filled at any window size,
+  // while the floor keeps it legible on a short one.
+  RS = Math.max(280, Math.min(Math.min(b.width, b.height) * .94, 620));
   DPR = window.devicePixelRatio || 1;
   rc.style.width = RS + 'px'; rc.style.height = RS + 'px';
   rc.width = RS * DPR; rc.height = RS * DPR;
@@ -542,7 +546,77 @@ drawWave();
    the captain asks and closes when they let go; an always-open mic is
    still an open decision, so the conservative posture is the one shown.
    ================================================================== */
+/* ------------------------------------------------------------------
+   RECORDING, for the local model.
+
+   The page captures raw PCM and builds a 16 kHz mono WAV itself, rather
+   than using MediaRecorder - which produces webm/opus and would need a
+   conversion step on the way in. Writing the WAV here means the bytes
+   that arrive are exactly what the engine reads.
+
+   Nothing about the engine appears on screen. The captain holds the
+   button, speaks, and their words show up; where the transcription
+   happened is not their problem.
+   ------------------------------------------------------------------ */
 let actx=null, ana=null, data=null;
+let pcmNode=null, pcmChunks=[], pcmRate=48000;
+
+function collectPcm(src){
+  // ScriptProcessor rather than AudioWorklet: a worklet needs a separate module
+  // file, and this page is deliberately one self-contained file served from a
+  // tiny static server. Deprecated but universally present, and the buffer size
+  // is large enough that the callback cost is negligible.
+  pcmChunks = [];
+  pcmRate = actx.sampleRate;
+  pcmNode = actx.createScriptProcessor(4096, 1, 1);
+  pcmNode.onaudioprocess = e => {
+    if (!listening) return;
+    pcmChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  };
+  src.connect(pcmNode);
+  // Connected to a silent sink because a ScriptProcessor does not run unless it
+  // is routed somewhere; the zero gain keeps the captain from hearing themselves.
+  const sink = actx.createGain();
+  sink.gain.value = 0;
+  pcmNode.connect(sink);
+  sink.connect(actx.destination);
+}
+
+function buildWav(chunks, fromRate, toRate){
+  let total = 0;
+  chunks.forEach(c => total += c.length);
+  if (!total) return null;
+  const joined = new Float32Array(total);
+  let at = 0;
+  chunks.forEach(c => { joined.set(c, at); at += c.length; });
+
+  // Linear decimation to 16 kHz, which is the rate the model expects.
+  const ratio = fromRate / toRate;
+  const outLen = Math.floor(joined.length / ratio);
+  const pcm = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const s = Math.max(-1, Math.min(1, joined[Math.floor(i * ratio)]));
+    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const view = new DataView(buf);
+  const ascii = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+  ascii(0, 'RIFF');
+  view.setUint32(4, 36 + pcm.length * 2, true);
+  ascii(8, 'WAVE'); ascii(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);          // PCM
+  view.setUint16(22, 1, true);          // mono
+  view.setUint32(24, toRate, true);
+  view.setUint32(28, toRate * 2, true); // byte rate
+  view.setUint16(32, 2, true);          // block align
+  view.setUint16(34, 16, true);         // bits
+  ascii(36, 'data');
+  view.setUint32(40, pcm.length * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return new Blob([buf], { type: 'audio/wav' });
+}
 const talk=document.getElementById('talk'), heard=document.getElementById('heard'),
       cmdLabel=document.getElementById('cmdLabel'), coreSub=document.getElementById('coreSub'),
       coreState=document.getElementById('coreState'),
@@ -559,32 +633,69 @@ async function micOn(){
     if(!actx){
       actx=new (window.AudioContext||window.webkitAudioContext)();
       const st=await navigator.mediaDevices.getUserMedia({audio:true});
-      const src=actx.createMediaStreamSource(st);
+      window.__fmSrc=actx.createMediaStreamSource(st);
       ana=actx.createAnalyser(); ana.fftSize=256; ana.smoothingTimeConstant=.75;
-      src.connect(ana); data=new Uint8Array(ana.frequencyBinCount);
+      window.__fmSrc.connect(ana); data=new Uint8Array(ana.frequencyBinCount);
     }
     if(actx.state==='suspended') await actx.resume();
+    collectPcm(window.__fmSrc);
     listening=true;
     talk.classList.add('live'); talk.setAttribute('aria-pressed','true');
     dockLine.classList.add('live');
     coreSub.textContent='Receiving'; coreState.textContent='Listening';
     dockHint.textContent='Release to send';
     heard.textContent=''; heard.classList.add('interim');
-    pump(); recOn();
+    // No browser recognizer. The local model does the transcription now, so the
+    // audio never leaves this machine and the accuracy is the model's rather
+    // than the browser's.
+    pump();
   }catch(e){
     heard.classList.remove('interim');
     heard.textContent='No microphone, or permission refused. Typing still works.';
     coreSub.textContent='Mic unavailable';
   }
 }
-function micOff(){
+async function micOff(){
   if(!listening) return;
   listening=false; target=0; bins.fill(0);
   talk.classList.remove('live'); talk.setAttribute('aria-pressed','false');
   dockLine.classList.remove('live');
   dockHint.textContent='Hold the microphone, or hold Space';
-  coreState.textContent='Core active'; coreSub.textContent='Standing by';
-  recOff();
+
+  // Detached before the buffer is read, so a late callback cannot append to a
+  // clip that has already been sent.
+  const chunks = pcmChunks, rate = pcmRate;
+  if (pcmNode) { try { pcmNode.disconnect(); } catch(_){} pcmNode.onaudioprocess = null; pcmNode = null; }
+  pcmChunks = [];
+
+  const wav = buildWav(chunks, rate, 16000);
+  if (!wav || wav.size < 2000) {
+    coreState.textContent='Core active'; coreSub.textContent='Standing by';
+    heard.textContent='That was too short to hear.';
+    focusMessage(); return;
+  }
+
+  coreState.textContent='Transcribing'; coreSub.textContent='Working';
+  heard.textContent='…';
+  try{
+    const r = await fetch('/api/transcribe', {
+      method:'POST',
+      headers:{'X-Fm-Token':TOKEN,'Content-Type':'audio/wav'},
+      body: wav
+    });
+    if (r.status === 401) { staleToken(); return; }
+    const j = await r.json();
+    if (j.ok && j.text) { heard.textContent = j.text; respond(j.text); }
+    else {
+      coreState.textContent='Core active'; coreSub.textContent='Standing by';
+      heard.textContent = j.error || 'Nothing was heard.';
+      focusMessage();
+    }
+  }catch(e){
+    coreState.textContent='Core active'; coreSub.textContent='Standing by';
+    heard.textContent='Could not reach the bridge to transcribe that.';
+    focusMessage();
+  }
 }
 function pump(){
   if(!listening) return;
@@ -660,7 +771,12 @@ function staleToken(){
   heard.textContent = 'This tab is from an earlier run. Reopen the page from the terminal link, or start it again.';
 }
 
+let awaitingReply = false;
 async function respond(said){
+  // Guards the dictation pickup: the fleet poll runs every four seconds and a
+  // turn takes longer, so without this the same line would be asked repeatedly
+  // while the first answer was still coming.
+  awaitingReply = true;
   logAdd(said,'hi');
   coreState.textContent='Thinking';
   coreSub.textContent='Working';
@@ -679,12 +795,15 @@ async function respond(said){
       heard.textContent = res.error || 'No answer came back.';
       logAdd(res.error||'no answer','warn');
     }
+    // Focus returns so the next dictation lands here without a click.
+    focusMessage();
   }catch(e){
     coreState.textContent='Core active';
     coreSub.textContent='Bridge unreachable';
     heard.textContent='The bridge is not reachable. Is fm-bridge.ps1 still running?';
     logAdd('bridge unreachable','warn');
   }
+  awaitingReply = false;
   refreshFleet();
 }
 
@@ -788,8 +907,22 @@ async function refreshFleet(){
     // The address is whatever this home is configured to use - bin/fm-name.ps1
     // owns it - so the page shows the captain's own word rather than a literal.
     if(f.captain){ document.getElementById('whoName').textContent = f.captain.toUpperCase(); }
+    // A line dictated straight into the speech engine, transcribed by its warm
+    // model and handed over here. Asked exactly as if it had been typed, so the
+    // captain can dictate from anywhere and watch the answer appear.
+    if(f.dictated && !awaitingReply){
+      heard.textContent = f.dictated;
+      respond(f.dictated);
+    }
     paintTasks(f.tasks||[]);
     paintDecisions(f.decisions||[]);
+    // The bridge has been sending this all along and the page threw it away, so
+    // Activity sat empty while there was plenty to show. Seeded once from the
+    // durable records; everything after arrives through logAdd as it happens.
+    if(!LOG.length && f.activity && f.activity.length){
+      f.activity.forEach(a=>LOG.push([a.At, a.Task.replace(/[-_]+/g,' ')+': '+a.Text, '']));
+      paintLog();
+    }
     const dot=document.getElementById('dot');
     const bs=document.getElementById('bridgeState');
     if(f.engine){ dot.classList.remove('amber'); bs.textContent='Listening'; }
@@ -861,6 +994,36 @@ async function doSetup(){
 setupGo.addEventListener('click', doSetup);
 setupPath.addEventListener('keydown', e=>{ if(e.key==='Enter') doSetup(); });
 
+/* ------------------------------------------------------------------
+   DICTATION LANDS IN THE MESSAGE BOX.
+
+   The captain already runs Handy, a system-wide dictation tool holding
+   Qwen3-ASR-1.7B locally, bound to right Alt. It transcribes and PASTES
+   into whatever field has focus - so the whole integration is to make
+   sure that field is this one, and to stay out of its way.
+
+   That is strictly better than the browser's own recognizer, which is
+   why the microphone button below is now the fallback rather than the
+   headline: Handy's model is stronger, it is already tuned to this
+   captain's vocabulary, and it transcribes ON THIS MACHINE rather than
+   shipping audio to a third party - which is the exact privacy question
+   decision `web-ui-voice-listening` was raised to settle.
+
+   Focus is asserted on load and returned after every exchange, because
+   dictation that lands in the wrong place is worse than no dictation:
+   the words go somewhere the captain is not looking.
+   ------------------------------------------------------------------ */
+function focusMessage(){
+  if (document.getElementById('firstRun').style.display === 'grid') return;
+  const active = document.activeElement;
+  // Never steal focus from something the captain is deliberately using.
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'BUTTON') && active !== typedEl) return;
+  typedEl.focus();
+}
+window.addEventListener('load', focusMessage);
+window.addEventListener('focus', focusMessage);
+setTimeout(focusMessage, 300);
+
 bootCheck();
 
 /* Changing the address happens HERE, not in a terminal. The captain should
@@ -899,3 +1062,4 @@ setInterval(()=>{
 </script>
 </body>
 </html>
+

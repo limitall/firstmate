@@ -19,6 +19,32 @@
 # is a property of the bytes on disk, and a test that needed a
 # core.symlinks=false clone could not run on the development platform at all.
 
+# ---------------------------------------------------------------------------
+# THE CHECKOUT'S SURFACE IS SAMPLED AT DISCOVERY, BEFORE ANY TEST RUNS.
+#
+# Pester discovers every file before it runs anything, so this executes while the
+# tree is still exactly as the developer left it.
+#
+# MEASURED, and the reason it exists: a full `Invoke-Pester -Path ./tests` run
+# leaves CLAUDE.md and .claude/skills changed in the checkout it ran in, while
+# every one of the 42 files run INDIVIDUALLY leaves them untouched. The fault is
+# therefore an interaction across files, it is silent when it happens, and it
+# surfaced as eight failures that all looked like the doctor being broken.
+#
+# Sampling here lets the drift test below report that mutation as its own
+# finding, which separates "this checkout is broken" from "the suite broke this
+# checkout" - two very different bugs that until now produced identical output.
+# ---------------------------------------------------------------------------
+$script:SurfaceAtStart = $(
+    $surfaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+    [pscustomobject]@{
+        ContractChars = $(try { ([System.IO.File]::ReadAllText((Join-Path $surfaceRoot 'CLAUDE.md'))).Length } catch { 0 })
+        SkillsLinked  = Test-Path -LiteralPath (Join-Path $surfaceRoot '.claude/skills')
+        SkillCount    = @(Get-ChildItem -LiteralPath (Join-Path $surfaceRoot '.agents/skills') `
+                -Directory -ErrorAction SilentlyContinue).Count
+    }
+)
+
 BeforeAll {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
@@ -374,6 +400,37 @@ Describe "this checkout's own instruction surface" {
         $surface.MirrorState | Should -BeIn @('link', 'mirror')
         $surface.ClaudeSkillsState | Should -BeIn @('symlink', 'materialized')
         $surface.Healthy | Should -BeTrue
+    }
+
+    # -ForEach carries the discovery-time sample into the run phase. Pester's two
+    # phases do NOT share script scope, so a plain $script: variable set at
+    # discovery is simply absent inside an It - measured, as "cannot be retrieved
+    # because it has not been set".
+    It 'was healthy when this run started' -ForEach @($script:SurfaceAtStart) {
+        $_.ContractChars | Should -BeGreaterThan 200 `
+            -Because 'the contract must be the real file, not the placeholder a Windows clone leaves'
+        $_.SkillsLinked | Should -BeTrue `
+            -Because 'a session with no skills cannot do its job'
+        $_.SkillCount | Should -BeGreaterThan 0 `
+            -Because 'the skills tree must have skills in it'
+    }
+
+    It 'is not damaged by running the suite' -ForEach @($script:SurfaceAtStart) {
+        # The other half of the canary. When this fails, the run mutated the tree
+        # it was testing - which is a fault in the SUITE, not in the checkout, and
+        # saying so here stops it being read as a doctor defect.
+        $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+        $nowChars = try { ([System.IO.File]::ReadAllText((Join-Path $root 'CLAUDE.md'))).Length } catch { 0 }
+        $nowLinked = Test-Path -LiteralPath (Join-Path $root '.claude/skills')
+        $nowSkills = @(Get-ChildItem -LiteralPath (Join-Path $root '.agents/skills') `
+                -Directory -ErrorAction SilentlyContinue).Count
+
+        $nowChars | Should -Be $_.ContractChars `
+            -Because 'the suite must not rewrite the contract of the checkout it runs in'
+        $nowLinked | Should -Be $_.SkillsLinked `
+            -Because 'the suite must not remove the skills link of the checkout it runs in'
+        $nowSkills | Should -Be $_.SkillCount `
+            -Because 'the suite must not delete skills from the checkout it runs in'
     }
 
     It 'carries every skill AGENTS.md section 13 names, so no trigger points at nothing' {

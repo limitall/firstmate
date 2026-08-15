@@ -357,6 +357,120 @@ function Initialize-FmBridgeWorkspace {
     [pscustomobject]@{ Ok = $true; Path = $wanted; Error = '' }
 }
 
+function Get-FmBridgeTokenPath {
+    <#
+        .SYNOPSIS
+        Where the bridge leaves its key for the dictation hook.
+
+        .DESCRIPTION
+        Two processes need this path and neither can be handed it: the bridge
+        writes the key on start, and bin/fm-dictate.ps1 - which the speech engine
+        runs as a separate process - reads it. Owning it here keeps them from
+        drifting apart, which a duplicated literal in two files eventually does.
+
+        The key itself is minted per run and never written anywhere else, so it
+        dies with the bridge that made it.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+    Join-Path ([System.IO.Path]::GetTempPath()) 'fm-bridge-token'
+}
+
+function Get-FmSpeechEngine {
+    <#
+        .SYNOPSIS
+        The local speech-to-text engine, or $null when none is installed.
+
+        .DESCRIPTION
+        Handy (handy.exe) holds a local ASR model and will transcribe a WAV
+        headlessly with `--transcribe-file`. That is the whole integration: no
+        service to run, no port, no hotkey, and no audio leaving this machine.
+
+        Measured on the captain's laptop with Qwen3-ASR-1.7B on Vulkan: a 5.28s
+        clip transcribed in 2.48s, after a 12.9s one-time model load. The model
+        stays resident for five minutes, so only the first request after a lull
+        pays that load.
+
+        Preferred over the browser's own recognizer for three reasons that are
+        facts rather than taste: the model is stronger, it is already tuned to
+        this captain's vocabulary, and it runs HERE - the browser's recognizer
+        has historically shipped audio to a third party, which is the exact
+        question decision `web-ui-voice-listening` exists to settle.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Handy\handy.exe')
+        (Join-Path $env:ProgramFiles 'Handy\handy.exe')
+    )
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) { return $c }
+    }
+    $onPath = Get-Command handy -ErrorAction SilentlyContinue
+    if ($onPath) { return $onPath.Source }
+    ''
+}
+
+function Convert-FmSpeechToText {
+    <#
+        .SYNOPSIS
+        Turn a WAV on disk into text using the local engine.
+
+        .DESCRIPTION
+        Returns the transcript, or an empty string with a reason. It never
+        throws: this sits on the path between the captain speaking and firstmate
+        answering, and a thrown error there would lose what they said.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$WavPath,
+        [int]$TimeoutSeconds = 120
+    )
+
+    $engine = Get-FmSpeechEngine
+    if (-not $engine) {
+        return [pscustomobject]@{ Ok = $false; Text = ''; Error = 'no local speech engine is installed' }
+    }
+    if (-not (Test-Path -LiteralPath $WavPath -PathType Leaf)) {
+        return [pscustomobject]@{ Ok = $false; Text = ''; Error = 'the recording did not arrive' }
+    }
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $engine
+    $psi.ArgumentList.Add('--transcribe-file')
+    $psi.ArgumentList.Add($WavPath)
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+
+    try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $out = $proc.StandardOutput.ReadToEnd()
+        $null = $proc.StandardError.ReadToEnd()
+        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $proc.Kill($true) } catch { Write-Debug 'engine already gone' }
+            return [pscustomobject]@{ Ok = $false; Text = ''; Error = 'the speech engine did not finish in time' }
+        }
+    } catch {
+        return [pscustomobject]@{ Ok = $false; Text = ''; Error = "could not run the speech engine: $($_.Exception.Message)" }
+    }
+
+    # The engine prints a diagnostics line and then `text: <transcript>`. Only
+    # the transcript is wanted; the rest is machinery the captain must not see.
+    foreach ($line in ($out -split "`n")) {
+        if ($line -match '^\s*text:\s*(.*)$') {
+            $said = $Matches[1].Trim()
+            if ($said) { return [pscustomobject]@{ Ok = $true; Text = $said; Error = '' } }
+        }
+    }
+    [pscustomobject]@{ Ok = $false; Text = ''; Error = 'nothing was heard in that recording' }
+}
+
 function ConvertTo-FmBridgePlainText {
     <#
         .SYNOPSIS
@@ -465,9 +579,11 @@ function Get-FmBridgeFleet {
                     }
 
                     foreach ($l in ($lines | Select-Object -Last 4)) {
+                        $plain = ConvertTo-FmBridgePlainText -Text ([string]$l)
+                        if (-not $plain) { continue }
                         $activity += [pscustomobject]@{
                             Task = $id
-                            Text = [string]$l
+                            Text = $plain
                             At   = (Get-Item -LiteralPath $statusPath).LastWriteTime.ToString('HH:mm:ss')
                         }
                     }

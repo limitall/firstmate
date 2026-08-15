@@ -77,6 +77,8 @@ $home_ = if ($configured) { Get-FmBridgeWorkspace -RepoRoot $root } else { '' }
 $captainName = Get-FmCaptainName
 # Set when the address changes mid-run, cleared when it has been passed on.
 $script:pendingAddress = $null
+# A line dictated through the engine's own hook, waiting for the page to ask it.
+$script:pendingDictation = ''
 if (-not (Test-Path -LiteralPath $uiDir -PathType Container)) {
     [Console]::Error.WriteLine("error: no ui directory at $uiDir"); exit 1
 }
@@ -138,6 +140,13 @@ $launchUrl = "$prefix#t=$token"
 # test can drive the API. It is a per-run secret that never touches disk, so it
 # dies with this process.
 [Console]::Out.WriteLine("fm-bridge: open $launchUrl")
+
+# The dictation hook runs as a separate process with no way to be handed the
+# key, so it is left where only this user can read it. Written on start and
+# removed on exit, so a stale key never outlives the bridge that minted it.
+$tokenFile = Get-FmBridgeTokenPath
+try { [System.IO.File]::WriteAllText($tokenFile, $token, [System.Text.UTF8Encoding]::new($false)) }
+catch { [Console]::Error.WriteLine('fm-bridge: could not leave a key for the dictation hook') }
 if (-not $NoLaunch) { Start-Process $launchUrl }
 
 $types = @{ '.html'='text/html; charset=utf-8'; '.css'='text/css; charset=utf-8'
@@ -229,10 +238,17 @@ try {
 
                 if ($path -eq '/api/fleet') {
                     $fleet = Get-FmBridgeFleet -HomePath $home_
+                    $handOver = $script:pendingDictation
+                    # Cleared as it is handed over, so one utterance is asked
+                    # once however many tabs are polling.
+                    $script:pendingDictation = ''
                     Write-Json -Response $res -Object @{
                         ok        = $true
                         engine    = ($null -ne $session -and -not $session.Process.HasExited)
                         captain   = $captainName
+                        # A line dictated straight into the engine, waiting for
+                        # the page to pick it up and ask it. Handed over once.
+                        dictated  = $handOver
                         tasks     = @($fleet.Tasks)
                         decisions = @($fleet.Decisions)
                         activity  = @($fleet.Activity)
@@ -279,6 +295,64 @@ try {
                     $script:pendingAddress = $captainName
                     [Console]::Out.WriteLine("fm-bridge: address set to '$captainName'")
                     Write-Json -Response $res -Object @{ ok = $true; captain = $captainName }
+                    continue
+                }
+
+                if ($path -eq '/api/dictate') {
+                    # Dictation arriving from the speech engine's own hook, which
+                    # transcribed it with a model that was ALREADY resident -
+                    # about four seconds against the fifteen a fresh load costs.
+                    # bin/fm-dictate.ps1 carries the measurements.
+                    #
+                    # It returns immediately and answers in the background,
+                    # because the engine is blocked on this script until it does:
+                    # holding it for a whole agent turn would freeze the
+                    # captain's dictation key.
+                    if ($req.HttpMethod -ne 'POST') {
+                        Write-Json -Response $res -Object @{ error = 'POST only' } -Status 405
+                        continue
+                    }
+                    $dictBody = ''
+                    $dr = [System.IO.StreamReader]::new($req.InputStream, [System.Text.Encoding]::UTF8)
+                    try { $dictBody = $dr.ReadToEnd() } finally { $dr.Dispose() }
+                    $dictated = ''
+                    try { $dictated = ([string]($dictBody | ConvertFrom-Json).text).Trim() } catch { $dictated = '' }
+
+                    if ($dictated) {
+                        [Console]::Out.WriteLine("heard: $dictated")
+                        $script:pendingDictation = $dictated
+                    }
+                    Write-Json -Response $res -Object @{ ok = [bool]$dictated }
+                    continue
+                }
+
+                if ($path -eq '/api/transcribe') {
+                    # The browser records, this transcribes, and the audio never
+                    # leaves the machine. The page sends a 16 kHz mono WAV it
+                    # built itself, which is exactly what the local engine wants -
+                    # no conversion step and no ffmpeg dependency.
+                    if ($req.HttpMethod -ne 'POST') {
+                        Write-Json -Response $res -Object @{ error = 'POST only' } -Status 405
+                        continue
+                    }
+
+                    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("fm-speech-$([guid]::NewGuid().ToString('N')).wav")
+                    try {
+                        $fs = [System.IO.File]::Create($tmp)
+                        try { $req.InputStream.CopyTo($fs) } finally { $fs.Dispose() }
+
+                        $said = Convert-FmSpeechToText -WavPath $tmp
+                        if ($said.Ok) {
+                            [Console]::Out.WriteLine("heard: $($said.Text)")
+                            Write-Json -Response $res -Object @{ ok = $true; text = $said.Text }
+                        } else {
+                            Write-Json -Response $res -Object @{ ok = $false; error = $said.Error }
+                        }
+                    } finally {
+                        # The captain's voice is not kept. Deleted whatever
+                        # happened above, including on the failure paths.
+                        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+                    }
                     continue
                 }
 
@@ -364,6 +438,7 @@ try {
     }
 } finally {
     $listener.Stop(); $listener.Close()
+    Remove-Item -LiteralPath $tokenFile -Force -ErrorAction SilentlyContinue
     if ($session) { Stop-FmBridgeSession -Session $session -Confirm:$false }
     [Console]::Out.WriteLine('fm-bridge: stopped')
 }
