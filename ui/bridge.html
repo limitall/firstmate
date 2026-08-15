@@ -1,598 +1,617 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="hud">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FIRSTMATE // BRIDGE</title>
 <style>
-  /* ================================================================
-     FIRSTMATE BRIDGE - voice-reactive HUD
-     Single deliberate visual world: dark ground, cyan instrument light,
-     amber for "needs the captain", red for critical. No theme switch -
-     a HUD is a HUD.
-     ================================================================ */
-  :root {
-    --void:      #04090C;
-    --deep:      #071319;
-    --cyan:      #4FD8FF;
-    --cyan-dim:  #1C6E8C;
-    --cyan-ghost:rgba(79,216,255,.10);
-    --amber:     #FFB24A;
-    --red:       #FF5A4E;
-    --green:     #55E6A5;
-    --text:      #BFE9F7;
-    --text-dim:  #5C8persistent;
-    --text-dim:  #5C8797;
-  }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; }
-  body {
-    margin: 0;
-    background: var(--void);
-    color: var(--text);
-    font-family: "Bahnschrift", "DIN Condensed", "Segoe UI Variable Display",
-                 "Segoe UI", system-ui, sans-serif;
-    font-variant-numeric: tabular-nums;
-    overflow: hidden;
-    letter-spacing: .04em;
-  }
+/* ==================================================================
+   FIRSTMATE BRIDGE
+   Three columns: instrument panels left, radar + voice centre, live
+   log and decisions right. One committed visual world - a HUD is a
+   HUD, so there is no light theme and every colour is painted.
+   ================================================================== */
+:root{
+  --void:#050A0E;
+  --panel:#070E14;
+  --panel-2:#091218;
+  --edge:#12333F;
+  --edge-soft:#0D2029;
+  --cy:#00D9FF;
+  --cy-dim:#1B6076;
+  --cy-ghost:rgba(0,217,255,.07);
+  --amber:#FFB busy;
+  --amber:#FFA92E;
+  --red:#FF4D3D;
+  --green:#25D6A0;
+  --txt:#8FC7DA;
+  --txt-dim:#3E6C7E;
+  --txt-faint:#2A4E5C;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--void);color:var(--txt);
+  font-family:"Cascadia Mono","Cascadia Code",Consolas,ui-monospace,monospace;
+  font-size:12px;letter-spacing:.06em;overflow:hidden;
+  font-variant-numeric:tabular-nums;
+}
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    linear-gradient(var(--cy-ghost) 1px,transparent 1px) 0 0/100% 52px,
+    linear-gradient(90deg,var(--cy-ghost) 1px,transparent 1px) 0 0/52px 100%;
+  opacity:.5;
+  mask-image:radial-gradient(ellipse at center,#000 25%,transparent 80%);
+}
+::-webkit-scrollbar{width:3px;height:3px}
+::-webkit-scrollbar-thumb{background:var(--cy-dim)}
+::-webkit-scrollbar-track{background:transparent}
 
-  /* ambient grid + vignette, painted behind everything */
-  body::before {
-    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
-    background:
-      linear-gradient(var(--cyan-ghost) 1px, transparent 1px) 0 0 / 100% 46px,
-      linear-gradient(90deg, var(--cyan-ghost) 1px, transparent 1px) 0 0 / 46px 100%;
-    opacity: .35;
-    mask-image: radial-gradient(ellipse at center, #000 20%, transparent 78%);
-  }
-  body::after {
-    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 40;
-    background: radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,.72) 100%);
-  }
+.app{position:relative;z-index:1;height:100%;display:flex;flex-direction:column}
 
-  .stage { position: relative; z-index: 10; height: 100%; display: grid;
-           grid-template-rows: auto 1fr auto; }
+/* ---------------- header ---------------- */
+.top{
+  display:flex;align-items:center;gap:34px;
+  padding:13px 22px;border-bottom:1px solid var(--edge-soft);flex:none;
+}
+.brand{display:flex;align-items:center;gap:13px;min-width:250px}
+.dia{width:17px;height:17px;transform:rotate(45deg);border:1px solid var(--cy);
+     position:relative;flex:none}
+.dia::after{content:"";position:absolute;inset:4px;background:var(--cy);
+     box-shadow:0 0 10px var(--cy)}
+.brand h1{margin:0;font-size:15px;font-weight:700;letter-spacing:.4em;color:#DFF6FF}
+.brand p{margin:1px 0 0;font-size:8.5px;letter-spacing:.22em;color:var(--txt-faint);
+     text-transform:uppercase}
+.readouts{display:flex;gap:34px;margin:0 auto}
+.ro{text-align:center}
+.ro .k{font-size:8.5px;letter-spacing:.24em;color:var(--txt-faint);
+     text-transform:uppercase;margin-bottom:3px}
+.ro .v{font-size:12.5px;letter-spacing:.14em;color:var(--cy);
+     display:flex;align-items:center;gap:6px;justify-content:center}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--green);
+     box-shadow:0 0 8px var(--green)}
+.dot.amber{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+.who{display:flex;align-items:center;gap:9px;padding:5px 6px 5px 15px;
+     border:1px solid var(--edge);border-radius:999px;font-size:10.5px;
+     letter-spacing:.18em;color:var(--txt)}
+.who i{width:22px;height:22px;border-radius:50%;background:linear-gradient(140deg,var(--cy),var(--cy-dim));
+     display:block;flex:none}
 
-  /* ---------------- top rail ---------------- */
-  .rail {
-    display: flex; align-items: center; gap: 20px;
-    padding: 14px 26px;
-    border-bottom: 1px solid rgba(79,216,255,.16);
-  }
-  .mark { display: flex; align-items: baseline; gap: 10px; margin-right: auto; }
-  .mark b {
-    font-size: 15px; font-weight: 700; letter-spacing: .32em;
-    color: var(--cyan); text-transform: uppercase;
-  }
-  .mark i {
-    font-style: normal; font-size: 10px; letter-spacing: .28em;
-    color: var(--text-dim); text-transform: uppercase;
-  }
-  .stat { display: flex; align-items: center; gap: 8px; font-size: 10.5px;
-          letter-spacing: .18em; text-transform: uppercase; color: var(--text-dim); }
-  .stat b { color: var(--cyan); font-weight: 600; letter-spacing: .1em; }
-  .led { width: 6px; height: 6px; border-radius: 50%; background: var(--green);
-         box-shadow: 0 0 8px var(--green); }
-  .led.amber { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+/* ---------------- body grid ---------------- */
+.grid{
+  flex:1;min-height:0;display:grid;
+  grid-template-columns:320px minmax(0,1fr) 320px;
+  gap:16px;padding:16px 22px 18px;
+}
 
-  /* ---------------- centre: the reactor ---------------- */
-  .core { position: relative; display: grid; place-items: center; min-height: 0; }
-  canvas#reactor { display: block; }
+/* ---------------- panel chrome, with corner ticks ---------------- */
+.pnl{
+  position:relative;background:var(--panel);
+  border:1px solid var(--edge-soft);padding:13px 15px;min-height:0;
+  display:flex;flex-direction:column;
+}
+.pnl::before,.pnl::after{
+  content:"";position:absolute;width:9px;height:9px;border:1px solid var(--cy);
+  opacity:.85;
+}
+.pnl::before{top:-1px;left:-1px;border-right:0;border-bottom:0}
+.pnl::after{bottom:-1px;right:-1px;border-left:0;border-top:0}
+.ph{display:flex;align-items:baseline;gap:8px;padding-bottom:9px;
+    border-bottom:1px solid var(--edge-soft);margin-bottom:12px;flex:none}
+.ph h2{margin:0;font-size:9px;font-weight:700;letter-spacing:.26em;
+    color:var(--txt-dim);text-transform:uppercase}
+.ph h2 b{color:var(--cy);font-weight:700}
+.ph .tag{margin-left:auto;font-size:8.5px;letter-spacing:.2em;
+    color:var(--txt-faint);text-transform:uppercase}
+.ph .tag.hot{color:var(--amber)}
+.scroll{overflow-y:auto;min-height:0;flex:1}
 
-  /* readout that sits inside the rings */
-  .readout {
-    position: absolute; inset: 0; display: grid; place-content: center;
-    text-align: center; pointer-events: none;
-  }
-  .readout .state {
-    font-size: 10px; letter-spacing: .42em; text-transform: uppercase;
-    color: var(--cyan-dim); margin-bottom: 10px;
-  }
-  .readout .heard {
-    font-size: 19px; letter-spacing: .02em; color: var(--text);
-    max-width: 30ch; margin: 0 auto; min-height: 1.5em; line-height: 1.4;
-  }
-  .readout .heard.interim { color: var(--cyan-dim); font-style: italic; }
-  .readout .level {
-    margin-top: 14px; font-size: 10px; letter-spacing: .3em;
-    color: var(--cyan-dim); text-transform: uppercase;
-  }
+.col{display:flex;flex-direction:column;gap:16px;min-height:0}
 
-  /* corner brackets, the HUD frame */
-  .bracket { position: absolute; width: 46px; height: 46px; border: 1px solid var(--cyan-dim);
-             opacity: .5; pointer-events: none; }
-  .bracket.tl { top: 22px; left: 22px; border-right: 0; border-bottom: 0; }
-  .bracket.tr { top: 22px; right: 22px; border-left: 0; border-bottom: 0; }
-  .bracket.bl { bottom: 22px; left: 22px; border-right: 0; border-top: 0; }
-  .bracket.br { bottom: 22px; right: 22px; border-left: 0; border-top: 0; }
+/* ---------------- metric rows ---------------- */
+.met{margin-bottom:13px}
+.met:last-child{margin-bottom:0}
+.met .lbl{display:flex;align-items:baseline;gap:8px;margin-bottom:5px}
+.met .lbl span{font-size:10px;letter-spacing:.14em;color:var(--txt-dim);
+    text-transform:uppercase}
+.met .lbl b{margin-left:auto;font-size:12px;color:var(--cy);font-weight:600}
+.met .lbl b.none{color:var(--txt-faint);font-size:8.5px;letter-spacing:.18em}
+.track{height:3px;background:rgba(0,217,255,.10);position:relative;overflow:hidden}
+.track i{position:absolute;inset:0 auto 0 0;background:var(--cy);
+    box-shadow:0 0 8px var(--cy);display:block}
+.track.done i{background:var(--cy-dim);box-shadow:none}
+/* an unreported percentage renders as an ABSENCE - an empty bar and a real 0%
+   look identical on screen and one of them is a lie */
+.track.none{background:repeating-linear-gradient(-45deg,transparent 0 4px,
+    rgba(62,108,126,.55) 4px 8px)}
+.met .sub{margin:6px 0 0;font-size:10px;color:var(--txt-faint);line-height:1.5;
+    letter-spacing:.02em}
 
-  /* ---------------- side panels ---------------- */
-  .panel {
-    position: absolute; top: 50%; transform: translateY(-50%);
-    width: 292px; max-height: 74%; overflow-y: auto;
-    padding: 15px 17px;
-    border: 1px solid rgba(79,216,255,.2);
-    background: linear-gradient(180deg, rgba(7,19,25,.94), rgba(4,9,12,.9));
-    backdrop-filter: blur(2px);
-  }
-  .panel.left  { left: 26px; }
-  .panel.right { right: 26px; }
-  .panel::-webkit-scrollbar { width: 3px; }
-  .panel::-webkit-scrollbar-thumb { background: var(--cyan-dim); }
-  .panel h3 {
-    margin: 0 0 13px; font-size: 9.5px; font-weight: 700;
-    letter-spacing: .3em; text-transform: uppercase; color: var(--cyan);
-    padding-bottom: 8px; border-bottom: 1px solid rgba(79,216,255,.18);
-    display: flex; align-items: center; gap: 8px;
-  }
-  .panel h3 .n {
-    margin-left: auto; font-size: 9.5px; color: var(--void);
-    background: var(--cyan); padding: 1px 6px; letter-spacing: .1em;
-  }
-  .panel h3 .n.hot { background: var(--amber); }
+/* ---------------- big stat pair ---------------- */
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:13px}
+.stat{border:1px solid var(--edge-soft);background:var(--panel-2);padding:9px 11px}
+.stat .k{font-size:8.5px;letter-spacing:.2em;color:var(--txt-faint);
+    text-transform:uppercase;margin-bottom:3px}
+.stat .v{font-size:16px;color:#DFF6FF;letter-spacing:.06em}
+.stat .v small{font-size:9px;color:var(--txt-dim);margin-left:3px;letter-spacing:.14em}
 
-  /* task rows */
-  .task { margin-bottom: 15px; }
-  .task:last-child { margin-bottom: 0; }
-  .task .row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
-  .task .nm { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
-  .task .pc { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--cyan); }
-  .task .pc.none { color: var(--text-dim); font-size: 9.5px; letter-spacing: .16em; }
-  .bar { height: 3px; background: rgba(79,216,255,.13); position: relative; overflow: hidden; }
-  .bar i { position: absolute; inset: 0 auto 0 0; background: var(--cyan);
-           box-shadow: 0 0 9px var(--cyan); }
-  .bar.done i { background: var(--cyan-dim); box-shadow: none; }
-  /* an unreported percentage is an ABSENCE, never a zero-length bar - the two
-     look identical and one of them is a lie */
-  .bar.none {
-    background: repeating-linear-gradient(-45deg,
-      transparent 0 4px, rgba(92,135,151,.5) 4px 8px);
-  }
-  .task .st { margin: 5px 0 0; font-size: 10.5px; color: var(--text-dim);
-              letter-spacing: .02em; line-height: 1.45; }
+/* ---------------- log ---------------- */
+.logline{display:flex;gap:10px;padding:3px 0;font-size:10px;line-height:1.6}
+.logline time{color:var(--txt-faint);flex:none;letter-spacing:.04em}
+.logline span{color:var(--txt-dim);letter-spacing:.03em}
+.logline.hi span{color:var(--cy)}
+.logline.warn span{color:var(--amber)}
 
-  /* decisions */
-  .dec { padding-bottom: 13px; margin-bottom: 13px;
-         border-bottom: 1px solid rgba(79,216,255,.12); }
-  .dec:last-child { border: 0; margin-bottom: 0; padding-bottom: 0; }
-  .dec .src { font-size: 9px; letter-spacing: .24em; text-transform: uppercase;
-              color: var(--amber); }
-  .dec .q { margin: 5px 0 9px; font-size: 12.5px; color: var(--text); line-height: 1.45; }
-  .dec .opts { display: flex; flex-wrap: wrap; gap: 5px; }
-  .dec button {
-    font: inherit; font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
-    padding: 5px 9px; cursor: pointer; color: var(--text);
-    background: transparent; border: 1px solid var(--cyan-dim);
-  }
-  .dec button:hover { border-color: var(--cyan); color: var(--cyan); }
-  .dec button.rec { border-color: var(--amber); color: var(--amber); }
-  .dec button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+/* ---------------- decisions ---------------- */
+.dec{padding-bottom:12px;margin-bottom:12px;border-bottom:1px solid var(--edge-soft)}
+.dec:last-child{border:0;margin-bottom:0;padding-bottom:0}
+.dec .src{font-size:8.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--amber)}
+.dec .q{margin:5px 0 9px;font-size:11px;color:var(--txt);line-height:1.5;letter-spacing:.02em}
+.dec .opts{display:flex;flex-wrap:wrap;gap:5px}
+.dec button{font:inherit;font-size:9px;letter-spacing:.16em;text-transform:uppercase;
+    padding:5px 9px;cursor:pointer;color:var(--txt);background:transparent;
+    border:1px solid var(--edge)}
+.dec button:hover{border-color:var(--cy);color:var(--cy)}
+.dec button.rec{border-color:var(--amber);color:var(--amber)}
+.dec button:focus-visible{outline:2px solid var(--cy);outline-offset:2px}
 
-  /* ---------------- bottom bar ---------------- */
-  .dock {
-    display: flex; align-items: center; gap: 16px;
-    padding: 15px 26px;
-    border-top: 1px solid rgba(79,216,255,.16);
-  }
-  .talk {
-    flex: none; width: 46px; height: 46px; border-radius: 50%;
-    display: grid; place-items: center; cursor: pointer;
-    background: transparent; color: var(--cyan);
-    border: 1px solid var(--cyan-dim);
-    transition: box-shadow .12s linear, border-color .12s linear;
-  }
-  .talk svg { width: 19px; height: 19px; }
-  .talk.live { border-color: var(--red); color: var(--red);
-               box-shadow: 0 0 18px rgba(255,90,78,.5); }
-  .talk:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
-  .dock input {
-    flex: 1; min-width: 0; font: inherit; font-size: 13px; letter-spacing: .06em;
-    padding: 11px 14px; color: var(--text);
-    background: rgba(79,216,255,.05);
-    border: 1px solid rgba(79,216,255,.2);
-  }
-  .dock input::placeholder { color: var(--text-dim); letter-spacing: .14em;
-                             text-transform: uppercase; font-size: 11px; }
-  .dock input:focus-visible { outline: none; border-color: var(--cyan); }
-  .hint { font-size: 9.5px; letter-spacing: .2em; text-transform: uppercase;
-          color: var(--text-dim); white-space: nowrap; }
+/* ---------------- centre stage ---------------- */
+.stage{position:relative;border:1px solid var(--edge-soft);background:
+    radial-gradient(ellipse at center,rgba(0,217,255,.035),transparent 62%),var(--panel);
+    display:grid;grid-template-rows:1fr auto;min-height:0}
+.stage::before,.stage::after{content:"";position:absolute;width:11px;height:11px;
+    border:1px solid var(--cy);opacity:.85}
+.stage::before{top:-1px;left:-1px;border-right:0;border-bottom:0}
+.stage::after{bottom:-1px;right:-1px;border-left:0;border-top:0}
+.radarWrap{position:relative;display:grid;place-items:center;min-height:0;padding:14px}
+canvas#radar{display:block}
+.coreLabel{position:absolute;inset:0;display:grid;place-content:center;
+    text-align:center;pointer-events:none}
+.coreLabel .st{font-size:9px;letter-spacing:.3em;text-transform:uppercase;
+    color:var(--cy);margin-bottom:4px}
+.coreLabel .sub{font-size:8.5px;letter-spacing:.24em;color:var(--txt-faint);
+    text-transform:uppercase}
 
-  @media (max-width: 1180px) { .panel { display: none; } }
-  @media (prefers-reduced-motion: reduce) { .led { box-shadow: none; } }
+/* voice dock */
+.voice{padding:0 20px 22px;display:flex;flex-direction:column;align-items:center;gap:13px}
+canvas#wave{display:block;height:34px}
+.heard{font-size:11.5px;letter-spacing:.03em;color:var(--txt);text-align:center;
+    min-height:1.4em;max-width:60ch;line-height:1.5}
+.heard.interim{color:var(--txt-dim);font-style:italic}
+.cmd{display:flex;align-items:center;gap:10px;padding:9px 20px;cursor:pointer;
+    background:transparent;border:1px solid var(--edge);border-radius:999px;
+    color:var(--cy);font:inherit;font-size:10.5px;letter-spacing:.22em;
+    text-transform:uppercase;transition:border-color .12s,box-shadow .12s,color .12s}
+.cmd:hover{border-color:var(--cy)}
+.cmd.live{border-color:var(--red);color:var(--red);box-shadow:0 0 20px rgba(255,77,61,.35)}
+.cmd:focus-visible{outline:2px solid var(--cy);outline-offset:3px}
+.cmd svg{width:14px;height:14px}
+.typed{width:min(560px,100%);font:inherit;font-size:11px;letter-spacing:.06em;
+    padding:9px 13px;color:var(--txt);background:rgba(0,217,255,.04);
+    border:1px solid var(--edge-soft);text-align:center}
+.typed::placeholder{color:var(--txt-faint);letter-spacing:.18em;text-transform:uppercase;font-size:9.5px}
+.typed:focus-visible{outline:none;border-color:var(--cy-dim)}
+
+@media(max-width:1280px){.grid{grid-template-columns:280px minmax(0,1fr)}
+  .col.right{display:none}}
+@media(max-width:980px){.grid{grid-template-columns:minmax(0,1fr)}
+  .col{display:none}}
+@media(prefers-reduced-motion:reduce){.dot{box-shadow:none}}
 </style>
 </head>
 <body>
+<div class="app">
 
-<div class="stage">
+  <!-- ==================== HEADER ==================== -->
+  <header class="top">
+    <div class="brand">
+      <span class="dia"></span>
+      <div>
+        <h1>FIRSTMATE</h1>
+        <p>Fleet supervision &amp; delivery</p>
+      </div>
+    </div>
+    <div class="readouts">
+      <div class="ro"><div class="k">Bridge</div>
+        <div class="v"><span class="dot" id="dot"></span><span id="bridgeState">Online</span></div></div>
+      <div class="ro"><div class="k">Under way</div><div class="v" id="roTasks">4</div></div>
+      <div class="ro"><div class="k">Waiting on you</div><div class="v" id="roDec">4</div></div>
+      <div class="ro"><div class="k">Local time</div><div class="v" id="clock">--:--:--</div></div>
+    </div>
+    <div class="who"><span>CAPTAIN</span><i></i></div>
+  </header>
 
-  <!-- ============ TOP RAIL ============ -->
-  <div class="rail">
-    <div class="mark"><b>Firstmate</b><i>Bridge</i></div>
-    <div class="stat"><span class="led" id="led"></span><span>Bridge <b id="bridgeState">Online</b></span></div>
-    <div class="stat">Supervising <b id="supCount">1</b></div>
-    <div class="stat">Capacity <b id="cap">79%</b></div>
-  </div>
+  <!-- ==================== GRID ==================== -->
+  <div class="grid">
 
-  <!-- ============ THE REACTOR ============ -->
-  <div class="core">
-    <span class="bracket tl"></span><span class="bracket tr"></span>
-    <span class="bracket bl"></span><span class="bracket br"></span>
+    <!-- ---------- LEFT ---------- -->
+    <div class="col left">
+      <section class="pnl" style="flex:none">
+        <div class="ph"><h2>System <b>//</b></h2><span class="tag">Capacity</span></div>
+        <div class="stats">
+          <div class="stat"><div class="k">Week left</div><div class="v">79<small>%</small></div></div>
+          <div class="stat"><div class="k">Session</div><div class="v">82<small>%</small></div></div>
+        </div>
+        <div class="met">
+          <div class="lbl"><span>Suite</span><b>1730 pass</b></div>
+          <div class="track"><i style="width:100%"></i></div>
+          <p class="sub">0 failed &middot; 25 not run</p>
+        </div>
+      </section>
 
-    <canvas id="reactor"></canvas>
-
-    <div class="readout">
-      <div class="state" id="stateLabel">Standing by</div>
-      <div class="heard" id="heard">Hold the mic, or press and hold Space</div>
-      <div class="level" id="levelLabel"></div>
+      <section class="pnl">
+        <div class="ph"><h2>System <b>//</b></h2><span class="tag">Work under way</span></div>
+        <div class="scroll" id="tasks"></div>
+      </section>
     </div>
 
-    <!-- work under way -->
-    <aside class="panel left">
-      <h3>Work under way <span class="n" id="taskCount">4</span></h3>
-      <div id="tasks"></div>
-    </aside>
+    <!-- ---------- CENTRE ---------- -->
+    <main class="stage">
+      <div class="radarWrap">
+        <canvas id="radar"></canvas>
+        <div class="coreLabel">
+          <div class="st" id="coreState">Core active</div>
+          <div class="sub" id="coreSub">Standing by</div>
+        </div>
+      </div>
 
-    <!-- decisions -->
-    <aside class="panel right">
-      <h3>Waiting on you <span class="n hot" id="decCount">4</span></h3>
-      <div id="decisions"></div>
-    </aside>
-  </div>
+      <div class="voice">
+        <canvas id="wave" width="620" height="34"></canvas>
+        <div class="heard" id="heard">Hold the button, or press and hold Space</div>
+        <button class="cmd" id="talk" type="button" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>
+          </svg>
+          <span id="cmdLabel">Awaiting command&hellip;</span>
+        </button>
+        <input class="typed" id="typed" type="text" placeholder="Or type a command" aria-label="Command firstmate">
+      </div>
+    </main>
 
-  <!-- ============ DOCK ============ -->
-  <div class="dock">
-    <button class="talk" id="talk" type="button" aria-pressed="false" aria-label="Hold to speak">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
-        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>
-      </svg>
-    </button>
-    <input id="typed" type="text" placeholder="Or type a command" aria-label="Command firstmate">
-    <span class="hint" id="micHint">Push to talk</span>
+    <!-- ---------- RIGHT ---------- -->
+    <div class="col right">
+      <section class="pnl" style="flex:none">
+        <div class="ph"><h2>System <b>//</b></h2><span class="tag hot" id="decTag">Waiting on you</span></div>
+        <div class="scroll" id="decisions" style="max-height:300px"></div>
+      </section>
+
+      <section class="pnl">
+        <div class="ph"><h2>System <b>//</b></h2><span class="tag">Activity</span></div>
+        <div class="scroll" id="log"></div>
+      </section>
+    </div>
+
   </div>
 </div>
 
 <script>
 /* ==================================================================
-   THE REACTOR - concentric rings driven by live microphone amplitude.
-   The captain's requirement is that it reacts to voice LEVEL, so the
-   geometry is bound to a smoothed RMS of the input rather than to a
-   decorative timer.
+   RADAR - concentric rings, crosshair, sweep. Reacts to voice level.
    ================================================================== */
-const cv  = document.getElementById('reactor');
-const ctx = cv.getContext('2d');
-
-let W = 0, H = 0, DPR = 1;
-function size() {
-  const box = cv.parentElement.getBoundingClientRect();
-  const d = Math.min(box.width, box.height) * 0.92;
+const rc = document.getElementById('radar'), rx = rc.getContext('2d');
+let RS = 420, DPR = 1;
+function sizeRadar(){
+  const b = rc.parentElement.getBoundingClientRect();
+  RS = Math.max(280, Math.min(Math.min(b.width, b.height) * .94, 520));
   DPR = window.devicePixelRatio || 1;
-  W = H = Math.max(320, Math.min(d, 640));
-  cv.style.width = W + 'px'; cv.style.height = H + 'px';
-  cv.width = W * DPR; cv.height = H * DPR;
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  rc.style.width = RS + 'px'; rc.style.height = RS + 'px';
+  rc.width = RS * DPR; rc.height = RS * DPR;
+  rx.setTransform(DPR,0,0,DPR,0,0);
 }
-size();
-addEventListener('resize', size);
+sizeRadar(); addEventListener('resize', sizeRadar);
 
-const CY = '#4FD8FF', DIM = '#1C6E8C', AMB = '#FFB24A';
+const CY='#00D9FF', DIM='#1B6076', AMB='#FFA92E';
+let level=0, target=0, bins=new Uint8Array(72), listening=false, t=0;
 
-let level = 0;        // smoothed 0..1 amplitude - the thing that drives everything
-let target = 0;
-let bins = new Uint8Array(64);
-let listening = false;
-let t = 0;
+function drawRadar(){
+  t += .016;
+  level += (target - level) * (target > level ? .35 : .06);
+  const c = RS/2, R = RS/2, L = level;
+  rx.clearRect(0,0,RS,RS);
 
-function ring(cx, cy, r, from, to, colour, width, glow) {
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, from, to);
-  ctx.strokeStyle = colour;
-  ctx.lineWidth = width;
-  ctx.shadowBlur = glow;
-  ctx.shadowColor = colour;
-  ctx.stroke();
-  ctx.shadowBlur = 0;
+  /* dashed outer ring */
+  rx.save(); rx.translate(c,c); rx.rotate(t*.05);
+  rx.beginPath(); rx.setLineDash([5,9]);
+  rx.arc(0,0,R*.93,0,Math.PI*2);
+  rx.strokeStyle=DIM; rx.lineWidth=1; rx.globalAlpha=.85; rx.stroke();
+  rx.setLineDash([]); rx.globalAlpha=1; rx.restore();
+
+  /* concentric rings */
+  [.76,.56,.36].forEach((k,i)=>{
+    rx.beginPath(); rx.arc(c,c,R*k,0,Math.PI*2);
+    rx.strokeStyle=DIM; rx.lineWidth=1; rx.globalAlpha=.5+i*.12; rx.stroke();
+  });
+  rx.globalAlpha=1;
+
+  /* crosshair */
+  rx.beginPath();
+  rx.moveTo(c-R*.86,c); rx.lineTo(c+R*.86,c);
+  rx.moveTo(c,c-R*.86); rx.lineTo(c,c+R*.86);
+  rx.strokeStyle=DIM; rx.lineWidth=1; rx.globalAlpha=.32; rx.stroke();
+  rx.globalAlpha=1;
+
+  /* diagonal spokes */
+  rx.save(); rx.translate(c,c); rx.rotate(t*.05);
+  for(let i=0;i<3;i++){
+    const a=(i/3)*Math.PI*2;
+    rx.beginPath();
+    rx.moveTo(Math.cos(a)*R*.36,Math.sin(a)*R*.36);
+    rx.lineTo(Math.cos(a)*R*.93,Math.sin(a)*R*.93);
+    rx.strokeStyle=DIM; rx.lineWidth=1; rx.globalAlpha=.28; rx.stroke();
+  }
+  rx.globalAlpha=1; rx.restore();
+
+  /* sweep */
+  rx.save(); rx.translate(c,c); rx.rotate(t*.55);
+  const g=rx.createConicGradient ? rx.createConicGradient(0,0,0) : null;
+  if(g){ g.addColorStop(0,'rgba(0,217,255,.20)'); g.addColorStop(.13,'rgba(0,217,255,0)');
+         g.addColorStop(1,'rgba(0,217,255,0)');
+         rx.beginPath(); rx.moveTo(0,0); rx.arc(0,0,R*.93,0,Math.PI*2);
+         rx.fillStyle=g; rx.fill(); }
+  rx.beginPath(); rx.moveTo(0,0); rx.lineTo(R*.93,0);
+  rx.strokeStyle=CY; rx.lineWidth=1.4; rx.globalAlpha=.7;
+  rx.shadowBlur=12; rx.shadowColor=CY; rx.stroke();
+  rx.shadowBlur=0; rx.globalAlpha=1; rx.restore();
+
+  /* voice spectrum ring - this ring IS the captain's voice */
+  rx.save(); rx.translate(c,c);
+  for(let i=0;i<bins.length;i++){
+    const a=(i/bins.length)*Math.PI*2 - Math.PI/2;
+    const v=listening?bins[i]/255:0;
+    if(v<.02) continue;
+    const r0=R*.60, len=v*R*.26;
+    rx.beginPath();
+    rx.moveTo(Math.cos(a)*r0,Math.sin(a)*r0);
+    rx.lineTo(Math.cos(a)*(r0+len),Math.sin(a)*(r0+len));
+    rx.strokeStyle=v>.65?AMB:CY; rx.globalAlpha=.35+v*.65;
+    rx.lineWidth=2; rx.stroke();
+  }
+  rx.globalAlpha=1; rx.restore();
+
+  /* two tracked blips */
+  [[0.62,1.9],[0.44,4.6]].forEach(([rr,off],i)=>{
+    const a=t*(i?-.4:.33)+off;
+    const x=c+Math.cos(a)*R*rr, y=c+Math.sin(a)*R*rr;
+    rx.beginPath(); rx.arc(x,y,2.4,0,Math.PI*2);
+    rx.fillStyle=CY; rx.shadowBlur=10; rx.shadowColor=CY; rx.fill(); rx.shadowBlur=0;
+  });
+
+  /* centre bracket box */
+  const bw=R*.24, bh=R*.15;
+  rx.strokeStyle=CY; rx.lineWidth=1; rx.globalAlpha=.55;
+  [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx,sy])=>{
+    const x=c+sx*bw, y=c+sy*bh, k=7;
+    rx.beginPath();
+    rx.moveTo(x, y-sy*k); rx.lineTo(x,y); rx.lineTo(x-sx*k, y);
+    rx.stroke();
+  });
+  rx.globalAlpha=1;
+
+  /* core glow, breathes with level */
+  const cr=R*(.035+L*.05);
+  const gg=rx.createRadialGradient(c,c,0,c,c,cr*4);
+  gg.addColorStop(0,'rgba(223,246,255,.9)');
+  gg.addColorStop(.35,'rgba(0,217,255,'+(.4+L*.45).toFixed(2)+')');
+  gg.addColorStop(1,'rgba(0,217,255,0)');
+  rx.beginPath(); rx.arc(c,c,cr*4,0,Math.PI*2); rx.fillStyle=gg; rx.fill();
+
+  requestAnimationFrame(drawRadar);
 }
-
-function draw() {
-  t += 0.016;
-  // ease toward the live level; fast attack, slow release reads as natural
-  level += (target - level) * (target > level ? 0.35 : 0.06);
-
-  const cx = W / 2, cy = H / 2;
-  const base = Math.min(W, H) * 0.5;
-  const L = level;
-
-  ctx.clearRect(0, 0, W, H);
-
-  /* --- outer ticked ring: rotates slowly, always present --- */
-  const rOuter = base * 0.94;
-  ctx.save();
-  ctx.translate(cx, cy); ctx.rotate(t * 0.06);
-  for (let i = 0; i < 90; i++) {
-    const a = (i / 90) * Math.PI * 2;
-    const long = i % 10 === 0;
-    const len = long ? 13 : 6;
-    ctx.beginPath();
-    ctx.moveTo(Math.cos(a) * rOuter, Math.sin(a) * rOuter);
-    ctx.lineTo(Math.cos(a) * (rOuter - len), Math.sin(a) * (rOuter - len));
-    ctx.strokeStyle = long ? CY : DIM;
-    ctx.globalAlpha = long ? 0.75 : 0.4;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
-  ctx.restore();
-
-  /* --- counter-rotating arc segments, opening with level --- */
-  const rSeg = base * 0.84;
-  const spread = 0.34 + L * 0.5;
-  ctx.save();
-  ctx.translate(cx, cy); ctx.rotate(-t * 0.22);
-  for (let i = 0; i < 3; i++) {
-    const a0 = (i / 3) * Math.PI * 2;
-    ring(0, 0, rSeg, a0, a0 + spread, CY, 2 + L * 2, 10 + L * 26);
-  }
-  ctx.restore();
-
-  /* --- spectrum ring: one spoke per frequency bin, the literal voice --- */
-  const rSpec = base * 0.66;
-  ctx.save();
-  ctx.translate(cx, cy);
-  const n = bins.length;
-  for (let i = 0; i < n; i++) {
-    const a = (i / n) * Math.PI * 2 - Math.PI / 2;
-    const v = listening ? bins[i] / 255 : 0;
-    const len = 6 + v * base * 0.3;
-    ctx.beginPath();
-    ctx.moveTo(Math.cos(a) * rSpec, Math.sin(a) * rSpec);
-    ctx.lineTo(Math.cos(a) * (rSpec + len), Math.sin(a) * (rSpec + len));
-    ctx.strokeStyle = v > 0.62 ? AMB : CY;
-    ctx.globalAlpha = 0.28 + v * 0.72;
-    ctx.lineWidth = 2;
-    ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
-  ctx.restore();
-
-  /* --- inner rings --- */
-  ring(cx, cy, base * 0.5, 0, Math.PI * 2, DIM, 1, 0);
-  ctx.save();
-  ctx.translate(cx, cy); ctx.rotate(t * 0.5);
-  ring(0, 0, base * 0.42, 0, Math.PI * 1.35, CY, 1.5, 8 + L * 18);
-  ctx.restore();
-  ctx.save();
-  ctx.translate(cx, cy); ctx.rotate(-t * 0.35);
-  ring(0, 0, base * 0.34, 0, Math.PI * 0.85, CY, 1.5, 8 + L * 18);
-  ctx.restore();
-
-  /* --- the core: breathes with level --- */
-  const rCore = base * (0.12 + L * 0.14);
-  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rCore * 2.6);
-  g.addColorStop(0,   'rgba(210,246,255,' + (0.95).toFixed(2) + ')');
-  g.addColorStop(0.3, 'rgba(79,216,255,'  + (0.55 + L * 0.4).toFixed(2) + ')');
-  g.addColorStop(1,   'rgba(79,216,255,0)');
-  ctx.beginPath();
-  ctx.arc(cx, cy, rCore * 2.6, 0, Math.PI * 2);
-  ctx.fillStyle = g;
-  ctx.fill();
-
-  ctx.beginPath();
-  ctx.arc(cx, cy, rCore, 0, Math.PI * 2);
-  ctx.fillStyle = '#EAFBFF';
-  ctx.shadowBlur = 30 + L * 60;
-  ctx.shadowColor = CY;
-  ctx.fill();
-  ctx.shadowBlur = 0;
-
-  requestAnimationFrame(draw);
-}
-draw();
+drawRadar();
 
 /* ==================================================================
-   MICROPHONE - real level, not a simulation. Permission is requested
-   only when the captain first holds the button: push-to-talk, never a
-   hot mic sitting open all day.
+   WAVEFORM - the bar cluster under the radar, straight from the mic
    ================================================================== */
-let audioCtx = null, analyser = null, stream = null, data = null;
-const stateLabel = document.getElementById('stateLabel');
-const heard      = document.getElementById('heard');
-const levelLabel = document.getElementById('levelLabel');
-const talk       = document.getElementById('talk');
-const micHint    = document.getElementById('micHint');
+const wc=document.getElementById('wave'), wx=wc.getContext('2d');
+function drawWave(){
+  const W=wc.width, H=wc.height, n=42, bw=3, gap=3;
+  const total=n*(bw+gap)-gap, x0=(W-total)/2;
+  wx.clearRect(0,0,W,H);
+  for(let i=0;i<n;i++){
+    const src=bins[Math.floor(i/n*bins.length)]/255;
+    const v=listening ? src : (.10+.06*Math.sin(t*2.2+i*.42));
+    const h=Math.max(2,v*H);
+    wx.fillStyle=v>.65?AMB:CY;
+    wx.globalAlpha=listening?(.35+v*.65):.30;
+    wx.fillRect(x0+i*(bw+gap),(H-h)/2,bw,h);
+  }
+  wx.globalAlpha=1;
+  requestAnimationFrame(drawWave);
+}
+drawWave();
 
-async function startMic() {
-  if (listening) return;
-  try {
-    if (!audioCtx) {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      stream   = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const src = audioCtx.createMediaStreamSource(stream);
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
-      analyser.smoothingTimeConstant = 0.75;
-      src.connect(analyser);
-      data = new Uint8Array(analyser.frequencyBinCount);
+/* ==================================================================
+   MICROPHONE - real amplitude, push-to-talk only. The mic opens when
+   the captain asks and closes when they let go; an always-open mic is
+   still an open decision, so the conservative posture is the one shown.
+   ================================================================== */
+let actx=null, ana=null, data=null;
+const talk=document.getElementById('talk'), heard=document.getElementById('heard'),
+      cmdLabel=document.getElementById('cmdLabel'), coreSub=document.getElementById('coreSub'),
+      coreState=document.getElementById('coreState');
+
+async function micOn(){
+  if(listening) return;
+  try{
+    if(!actx){
+      actx=new (window.AudioContext||window.webkitAudioContext)();
+      const st=await navigator.mediaDevices.getUserMedia({audio:true});
+      const src=actx.createMediaStreamSource(st);
+      ana=actx.createAnalyser(); ana.fftSize=256; ana.smoothingTimeConstant=.75;
+      src.connect(ana); data=new Uint8Array(ana.frequencyBinCount);
     }
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
-    listening = true;
-    talk.classList.add('live');
-    talk.setAttribute('aria-pressed', 'true');
-    stateLabel.textContent = 'Listening';
-    heard.textContent = '';
-    heard.classList.add('interim');
-    micHint.textContent = 'Release to send';
-    poll();
-    startRecognition();
-  } catch (err) {
-    stateLabel.textContent = 'Microphone unavailable';
+    if(actx.state==='suspended') await actx.resume();
+    listening=true;
+    talk.classList.add('live'); talk.setAttribute('aria-pressed','true');
+    cmdLabel.textContent='Listening'; coreSub.textContent='Receiving';
+    coreState.textContent='Listening';
+    heard.textContent=''; heard.classList.add('interim');
+    pump(); recOn();
+  }catch(e){
     heard.classList.remove('interim');
-    heard.textContent = 'No microphone, or permission was refused. Typing still works.';
+    heard.textContent='No microphone, or permission refused. Typing still works.';
+    coreSub.textContent='Mic unavailable';
   }
 }
-
-function stopMic() {
-  if (!listening) return;
-  listening = false;
-  target = 0;
-  talk.classList.remove('live');
-  talk.setAttribute('aria-pressed', 'false');
-  stateLabel.textContent = 'Standing by';
-  levelLabel.textContent = '';
-  micHint.textContent = 'Push to talk';
-  bins.fill(0);
-  stopRecognition();
+function micOff(){
+  if(!listening) return;
+  listening=false; target=0; bins.fill(0);
+  talk.classList.remove('live'); talk.setAttribute('aria-pressed','false');
+  cmdLabel.textContent='Awaiting command…';
+  coreState.textContent='Core active'; coreSub.textContent='Standing by';
+  recOff();
+}
+function pump(){
+  if(!listening) return;
+  ana.getByteFrequencyData(data);
+  const step=Math.floor(data.length/bins.length)||1;
+  let s=0;
+  for(let i=0;i<bins.length;i++){ bins[i]=data[i*step]; s+=bins[i]; }
+  target=Math.min(1,(s/bins.length/255)*2.6);
+  requestAnimationFrame(pump);
 }
 
-function poll() {
-  if (!listening) return;
-  analyser.getByteFrequencyData(data);
-  // down-sample into the 64 spokes the ring draws
-  const step = Math.floor(data.length / bins.length) || 1;
-  let sum = 0;
-  for (let i = 0; i < bins.length; i++) {
-    bins[i] = data[i * step];
-    sum += bins[i];
-  }
-  const avg = sum / bins.length / 255;
-  target = Math.min(1, avg * 2.6);
-  levelLabel.textContent = 'Level ' + String(Math.round(target * 100)).padStart(3, '0');
-  requestAnimationFrame(poll);
-}
-
-/* ---- speech recognition, when the browser has it ---- */
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec = null;
-function startRecognition() {
-  if (!SR) return;
-  rec = new SR();
-  rec.continuous = true;
-  rec.interimResults = true;
-  rec.lang = 'en-US';
-  rec.onresult = e => {
-    let txt = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) txt += e.results[i][0].transcript;
-    heard.textContent = txt;
-    heard.classList.toggle('interim', !e.results[e.results.length - 1].isFinal);
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let rec=null;
+function recOn(){
+  if(!SR) return;
+  rec=new SR(); rec.continuous=true; rec.interimResults=true; rec.lang='en-US';
+  rec.onresult=e=>{
+    let txt='';
+    for(let i=e.resultIndex;i<e.results.length;i++) txt+=e.results[i][0].transcript;
+    heard.textContent=txt;
+    heard.classList.toggle('interim',!e.results[e.results.length-1].isFinal);
   };
-  rec.onerror = () => {};
-  try { rec.start(); } catch (_) {}
+  rec.onerror=()=>{};
+  try{rec.start()}catch(_){}
 }
-function stopRecognition() {
-  if (!rec) return;
-  try { rec.stop(); } catch (_) {}
-  const said = heard.textContent.trim();
+function recOff(){
+  if(!rec) return;
+  try{rec.stop()}catch(_){}
+  const said=heard.textContent.trim();
   heard.classList.remove('interim');
-  if (said) { stateLabel.textContent = 'Heard'; reply(said); }
-  else heard.textContent = 'Hold the mic, or press and hold Space';
-  rec = null;
+  if(said) respond(said);
+  else heard.textContent='Hold the button, or press and hold Space';
+  rec=null;
 }
-
-/* ---- speaking back ---- */
-function speak(text) {
-  if (!window.speechSynthesis) return;
-  const u = new SpeechSynthesisUtterance(text);
-  u.rate = 1.02; u.pitch = 0.95;
-  const v = speechSynthesis.getVoices().find(x => /George|Hazel|Susan/i.test(x.name));
-  if (v) u.voice = v;
+function speak(txt){
+  if(!window.speechSynthesis) return;
+  const u=new SpeechSynthesisUtterance(txt);
+  u.rate=1.02; u.pitch=.95;
+  const v=speechSynthesis.getVoices().find(x=>/George|Hazel|Susan/i.test(x.name));
+  if(v) u.voice=v;
   speechSynthesis.speak(u);
 }
-
-function reply(said) {
-  const answer = 'Aye captain. ' + said.replace(/[.?!]+$/, '') + ' — understood.';
-  setTimeout(() => {
-    stateLabel.textContent = 'Speaking';
-    heard.textContent = answer;
-    speak(answer);
-    setTimeout(() => { stateLabel.textContent = 'Standing by'; }, 2600);
-  }, 320);
+function respond(said){
+  const line='Aye captain. '+said.replace(/[.?!]+$/,'')+' — understood.';
+  setTimeout(()=>{
+    coreState.textContent='Speaking'; heard.textContent=line;
+    logAdd(said,'hi'); speak(line);
+    setTimeout(()=>{coreState.textContent='Core active'},2600);
+  },300);
 }
 
-/* ---- controls: press and hold, mouse / touch / space ---- */
-talk.addEventListener('mousedown', startMic);
-talk.addEventListener('touchstart', e => { e.preventDefault(); startMic(); }, {passive:false});
-['mouseup','mouseleave','touchend'].forEach(ev => talk.addEventListener(ev, stopMic));
-addEventListener('keydown', e => {
-  if (e.code === 'Space' && !e.repeat && document.activeElement.id !== 'typed') {
-    e.preventDefault(); startMic();
-  }
-});
-addEventListener('keyup', e => { if (e.code === 'Space') stopMic(); });
-
-document.getElementById('typed').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && e.target.value.trim()) {
-    heard.textContent = e.target.value.trim();
-    reply(e.target.value.trim());
-    e.target.value = '';
-  }
-});
+talk.addEventListener('mousedown',micOn);
+talk.addEventListener('touchstart',e=>{e.preventDefault();micOn()},{passive:false});
+['mouseup','mouseleave','touchend'].forEach(ev=>talk.addEventListener(ev,micOff));
+addEventListener('keydown',e=>{
+  if(e.code==='Space'&&!e.repeat&&document.activeElement.id!=='typed'){e.preventDefault();micOn()}});
+addEventListener('keyup',e=>{if(e.code==='Space')micOff()});
+document.getElementById('typed').addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&e.target.value.trim()){
+    heard.textContent=e.target.value.trim();
+    respond(e.target.value.trim()); e.target.value='';
+  }});
 
 /* ==================================================================
-   FLEET STATE - shape matches what bin/fm-progress.ps1 already emits,
-   so the live bridge can drop real records in unchanged.
+   FLEET STATE - same shape bin/fm-progress.ps1 emits, so the live
+   bridge drops real records in unchanged.
    ================================================================== */
-const TASKS = [
-  { name: 'Voice channel',      pct: 100, state: 'done',    note: 'Ready to land.' },
-  { name: 'Browser front end',  pct: 100, state: 'done',    note: 'Design settled.' },
-  { name: 'Telegram bridge',    pct: 100, state: 'done',    note: 'Design settled.' },
-  { name: 'Suite rebuild',      pct: null, state: 'working', note: 'Running. Has not reported how far along.' }
+const TASKS=[
+  {n:'Voice channel',     p:100,  s:'Landed on main.'},
+  {n:'Browser front end', p:100,  s:'Design settled.'},
+  {n:'Telegram bridge',   p:100,  s:'Design settled.'},
+  {n:'Suite rebuild',     p:null, s:'Running. Has not reported how far along.'}
+];
+const DECISIONS=[
+  {src:'Telegram',q:'Create a Telegram bot?',
+   o:[{t:'Create it'},{t:'Not now'}]},
+  {src:'Telegram',q:'What may a message from your phone do?',
+   o:[{t:'Dispatch, not merge',r:1},{t:'Ask for a code'},{t:'Anything'}]},
+  {src:'Browser',q:'How far should this reach?',
+   o:[{t:'This laptop'},{t:'Your Wi-Fi',r:1},{t:'Anywhere'}]},
+  {src:'Voice',q:'May speech approve a merge?',
+   o:[{t:'Type those',r:1},{t:'Speech is enough'}]}
+];
+const LOG=[
+  ['12:45:01','Voice channel landed on main','hi'],
+  ['12:44:12','Suite green — 1730 passing, 0 failed','hi'],
+  ['12:43:22','Browser design finished','' ],
+  ['12:41:07','Telegram design finished',''],
+  ['12:38:55','Four decisions raised for the captain','warn'],
+  ['12:30:14','Three workers dispatched','']
 ];
 
-const DECISIONS = [
-  { src: 'Telegram', q: 'Create a Telegram bot?',
-    opts: [{ t: 'Create it' }, { t: 'Not now' }] },
-  { src: 'Telegram', q: 'What may a message from your phone do?',
-    opts: [{ t: 'Dispatch, not merge', rec: true }, { t: 'Ask for a code' }, { t: 'Anything' }] },
-  { src: 'Browser',  q: 'How far should this reach?',
-    opts: [{ t: 'This laptop' }, { t: 'Your Wi-Fi', rec: true }, { t: 'Anywhere' }] },
-  { src: 'Voice',    q: 'May speech approve a merge?',
-    opts: [{ t: 'Type those', rec: true }, { t: 'Speech is enough' }] }
-];
-
-const tasksEl = document.getElementById('tasks');
-TASKS.forEach(k => {
-  const known = k.pct !== null;
-  const el = document.createElement('div');
-  el.className = 'task';
-  el.innerHTML =
-    '<div class="row"><span class="nm">' + k.name + '</span>' +
-    '<span class="pc' + (known ? '' : ' none') + '">' +
-      (known ? k.pct + '%' : 'not said') + '</span></div>' +
-    '<div class="bar' + (known ? (k.pct === 100 ? ' done' : '') : ' none') + '">' +
-      (known ? '<i style="width:' + k.pct + '%"></i>' : '') + '</div>' +
-    '<p class="st">' + k.note + '</p>';
-  tasksEl.appendChild(el);
+const tasksEl=document.getElementById('tasks');
+TASKS.forEach(k=>{
+  const known=k.p!==null;
+  const d=document.createElement('div'); d.className='met';
+  d.innerHTML='<div class="lbl"><span>'+k.n+'</span><b class="'+(known?'':'none')+'">'+
+    (known?k.p+'%':'not said')+'</b></div>'+
+    '<div class="track'+(known?(k.p===100?' done':''):' none')+'">'+
+    (known?'<i style="width:'+k.p+'%"></i>':'')+'</div>'+
+    '<p class="sub">'+k.s+'</p>';
+  tasksEl.appendChild(d);
 });
-document.getElementById('taskCount').textContent = TASKS.length;
+document.getElementById('roTasks').textContent=TASKS.length;
 
-const decEl = document.getElementById('decisions');
-function renderDecisions() {
-  decEl.innerHTML = '';
-  DECISIONS.forEach((d, i) => {
-    const el = document.createElement('div');
-    el.className = 'dec';
-    el.innerHTML =
-      '<div class="src">' + d.src + '</div><p class="q">' + d.q + '</p>' +
-      '<div class="opts">' + d.opts.map(o =>
-        '<button type="button" class="' + (o.rec ? 'rec' : '') + '">' + o.t + '</button>').join('') +
-      '</div>';
-    el.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
-      DECISIONS.splice(i, 1);
-      renderDecisions();
-      const n = document.getElementById('decCount');
-      n.textContent = DECISIONS.length;
-      if (!DECISIONS.length) { n.classList.remove('hot'); decEl.innerHTML =
-        '<p class="st" style="color:var(--text-dim)">Nothing waiting on you.</p>'; }
-      const line = 'Noted, captain. ' + b.textContent + '.';
-      heard.textContent = line; speak(line);
+const decEl=document.getElementById('decisions');
+function renderDec(){
+  decEl.innerHTML='';
+  DECISIONS.forEach((d,i)=>{
+    const el=document.createElement('div'); el.className='dec';
+    el.innerHTML='<div class="src">'+d.src+'</div><p class="q">'+d.q+'</p><div class="opts">'+
+      d.o.map(o=>'<button type="button" class="'+(o.r?'rec':'')+'">'+o.t+'</button>').join('')+'</div>';
+    el.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+      const line='Noted, captain. '+b.textContent+'.';
+      logAdd(d.q+' → '+b.textContent,'hi');
+      DECISIONS.splice(i,1); renderDec();
+      document.getElementById('roDec').textContent=DECISIONS.length;
+      if(!DECISIONS.length){
+        document.getElementById('decTag').classList.remove('hot');
+        decEl.innerHTML='<p class="sub">Nothing waiting on you.</p>';
+      }
+      heard.textContent=line; speak(line);
     }));
     decEl.appendChild(el);
   });
 }
-renderDecisions();
-document.getElementById('decCount').textContent = DECISIONS.length;
+renderDec();
+document.getElementById('roDec').textContent=DECISIONS.length;
+
+const logEl=document.getElementById('log');
+function paintLog(){
+  logEl.innerHTML='';
+  LOG.forEach(([tm,msg,cls])=>{
+    const l=document.createElement('div'); l.className='logline '+(cls||'');
+    l.innerHTML='<time>['+tm+']</time><span>'+msg+'</span>';
+    logEl.appendChild(l);
+  });
+}
+function logAdd(msg,cls){
+  const d=new Date();
+  LOG.unshift([d.toTimeString().slice(0,8),msg,cls||'']);
+  if(LOG.length>40) LOG.pop();
+  paintLog();
+}
+paintLog();
+
+setInterval(()=>{
+  document.getElementById('clock').textContent=new Date().toTimeString().slice(0,8);
+},1000);
 </script>
 </body>
 </html>
