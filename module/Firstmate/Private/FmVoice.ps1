@@ -1,17 +1,20 @@
 #requires -Version 7.0
 # The voice channel's internals: the opt-in switch, the utterance bound, the
-# voice-name fallback, and the two seams that touch the speech engine.
+# voice-name fallback, the confidence floor, the authority refusal, and the four
+# seams that touch the speech engine.
 #
-# WHY THE ENGINE IS BEHIND TWO SMALL FUNCTIONS. Everything else here is pure and
-# testable; System.Speech is neither. Get-FmInstalledSpeechVoice and
-# Invoke-FmSpeechRequest are the only functions in this port that construct a
-# synthesizer, so the suite mocks exactly those two and never makes a sound on a
-# developer's machine - and the "no speech engine at all" path stays provable on
-# hardware that has one. See docs/voice-windows.md.
+# WHY THE ENGINE IS BEHIND FOUR SMALL FUNCTIONS. Everything else here is pure and
+# testable; System.Speech is neither. Get-FmInstalledSpeechVoice,
+# Invoke-FmSpeechRequest, Get-FmInstalledSpeechRecognizer and
+# Invoke-FmSpeechListenRequest are the only functions in this port that construct
+# a synthesizer or a recognizer, so the suite mocks exactly those four and never
+# makes a sound or opens a microphone on a developer's machine - and the "no
+# speech engine at all" path stays provable on hardware that has one. See
+# docs/voice-windows.md.
 #
-# NOTHING HERE THROWS. fm-say is called from supervision paths, where a missing
-# audio device must not end a turn, so both seams answer with a verdict object
-# rather than an error and every engine call is wrapped.
+# NOTHING HERE THROWS. fm-say and fm-ask are called from supervision paths, where
+# a missing audio device must not end a turn, so every seam answers with a
+# verdict object rather than an error and every engine call is wrapped.
 
 function Get-FmVoiceMaxLength {
     <#
@@ -66,7 +69,8 @@ function Get-FmVoiceSpeechText {
 function Get-FmVoiceConfig {
     <#
         .SYNOPSIS
-        Read config/voice: is the voice on, and which voice at which rate.
+        Read config/voice: is the voice on, which voice at which rate, and how
+        sure a spoken answer has to be.
 
         .DESCRIPTION
         OFF BY DEFAULT, and the default is the absence of the file - a machine
@@ -83,6 +87,13 @@ function Get-FmVoiceConfig {
             # config/voice
             voice=Microsoft Hazel Desktop
             rate=1
+            confidence=0.75
+
+        ONE FILE FOR THE WHOLE CHANNEL, both halves. `confidence` is the floor
+        fm-ask needs a spoken answer to clear, and it lives here rather than in a
+        second file because the captain who turns the voice on is the same
+        captain who decides how sure the machine has to be before it repeats what
+        it thinks it heard.
 
         WHERE THIS DIVERGES FROM config/autolaunch, and why. That reader refuses
         an unusable file outright, because a typo must not silently disable a
@@ -100,7 +111,13 @@ function Get-FmVoiceConfig {
     [OutputType([pscustomobject])]
     param([string]$HomePath)
 
-    $result = [pscustomobject]@{ Enabled = $false; VoiceName = ''; Rate = 0; Warning = '' }
+    $result = [pscustomobject]@{
+        Enabled           = $false
+        VoiceName         = ''
+        Rate              = 0
+        MinimumConfidence = Get-FmVoiceMinimumConfidence
+        Warning           = ''
+    }
 
     $pathArgs = @{ Name = 'voice' }
     if ($PSBoundParameters.ContainsKey('HomePath') -and $HomePath) { $pathArgs['HomePath'] = $HomePath }
@@ -132,19 +149,25 @@ function Get-FmVoiceConfig {
         # typo that would otherwise be indistinguishable from no choice at all.
         $key = $trimmed.Substring(0, $index).Trim()
         $value = $trimmed.Substring($index + 1).Trim()
-        if ($key -cnotin @('voice', 'rate')) {
-            $problems.Add("line ${number}: unknown key '$key' (expected voice or rate)")
+        if ($key -cnotin @('voice', 'rate', 'confidence')) {
+            $problems.Add("line ${number}: unknown key '$key' (expected voice, rate or confidence)")
             continue
         }
         if (-not $seen.Add($key)) {
             $problems.Add("line ${number}: '$key' is set twice; the last one wins")
         }
-        if ($key -ceq 'voice') {
-            $result.VoiceName = $value
-        } else {
-            $rate = ConvertTo-FmVoiceRate -Value $value
-            $result.Rate = $rate.Rate
-            if ($rate.Problem) { $problems.Add("line ${number}: $($rate.Problem)") }
+        switch -CaseSensitive ($key) {
+            'voice' { $result.VoiceName = $value }
+            'rate' {
+                $rate = ConvertTo-FmVoiceRate -Value $value
+                $result.Rate = $rate.Rate
+                if ($rate.Problem) { $problems.Add("line ${number}: $($rate.Problem)") }
+            }
+            'confidence' {
+                $floor = ConvertTo-FmVoiceConfidence -Value $value
+                $result.MinimumConfidence = $floor.Confidence
+                if ($floor.Problem) { $problems.Add("line ${number}: $($floor.Problem)") }
+            }
         }
     }
 
@@ -180,6 +203,200 @@ function ConvertTo-FmVoiceRate {
         return [pscustomobject]@{ Rate = 10; Problem = "rate $parsed is above the engine's range; using 10" }
     }
     return [pscustomobject]@{ Rate = $parsed; Problem = '' }
+}
+
+function Get-FmVoiceMinimumConfidence {
+    <#
+        .SYNOPSIS
+        The confidence a spoken answer must reach to count as an answer.
+
+        .DESCRIPTION
+        0.75 on the engine's 0-to-1 scale, and it is deliberately high.
+
+        The whole reason fm-ask builds a closed grammar from the caller's options
+        is that picking between three known words is a far easier problem than
+        transcribing a sentence - so an answer that clears a closed grammar and
+        still only reaches 0.6 is one the engine is telling you it guessed. The
+        cost of the two mistakes is not symmetric: a refusal costs the captain
+        one repeated word, and a wrong answer acts on something they did not say.
+        So this sits above where a closed-grammar match usually lands rather than
+        at the middle of the range, and the captain can lower it with
+        `confidence=` in config/voice if their microphone makes it tiresome.
+    #>
+    [CmdletBinding()]
+    [OutputType([double])]
+    param()
+    return 0.75
+}
+
+function ConvertTo-FmVoiceConfidence {
+    <#
+        .SYNOPSIS
+        A configured confidence floor as a 0-to-1 double.
+
+        .DESCRIPTION
+        Out of range is clamped and unparseable is the default, for the same
+        reason ConvertTo-FmVoiceRate does neither: a typo in config/voice must
+        not be the thing that decides whether the captain is heard. Both are
+        reported through Problem.
+
+        The parse is invariant-culture on purpose. `0.75` in a config file is
+        `0.75` on a machine whose decimal separator is a comma, and a
+        current-culture parse would silently read it as 75.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
+
+    $default = Get-FmVoiceMinimumConfidence
+    $parsed = 0.0
+    $styles = [System.Globalization.NumberStyles]::Float
+    if (-not [double]::TryParse($Value.Trim(), $styles, [cultureinfo]::InvariantCulture, [ref]$parsed)) {
+        return [pscustomobject]@{
+            Confidence = $default
+            Problem    = "confidence '$Value' is not a number; using $default"
+        }
+    }
+    if ($parsed -lt 0) {
+        return [pscustomobject]@{ Confidence = 0.0; Problem = "confidence $parsed is below 0; using 0" }
+    }
+    if ($parsed -gt 1) {
+        return [pscustomobject]@{ Confidence = 1.0; Problem = "confidence $parsed is above 1; using 1" }
+    }
+    return [pscustomobject]@{ Confidence = $parsed; Problem = '' }
+}
+
+function Get-FmVoiceOptionSet {
+    <#
+        .SYNOPSIS
+        The caller's options as the closed set a grammar can be built from.
+
+        .DESCRIPTION
+        REFUSES RATHER THAN NORMALISES A DEGENERATE SET, which is the one place
+        in this area that refuses at all. Two distinct options are the minimum: a
+        one-option grammar has nothing to choose between, so every sound the
+        recognizer decides is speech becomes that option and the answer carries
+        the caller's own expectation back to them dressed as the captain's.
+
+        Duplicates that differ only in case or surrounding space are the same
+        option said twice, and are collapsed rather than refused. Two options
+        that are genuinely the same word are refused, because the answer could
+        not say which was meant.
+
+        Returns Option (the trimmed, de-duplicated set) and Problem ('' when the
+        set is usable).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][AllowNull()][string[]]$Option)
+
+    $clean = [System.Collections.Generic.List[string]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($candidate in @($Option)) {
+        $text = ("$candidate" -replace '\s+', ' ').Trim()
+        if (-not $text) { continue }
+        if ($seen.Add($text)) { $clean.Add($text) }
+    }
+
+    if ($clean.Count -lt 2) {
+        return [pscustomobject]@{
+            Option  = [string[]]@()
+            Problem = 'a spoken question needs at least two distinct options to choose between'
+        }
+    }
+    return [pscustomobject]@{ Option = [string[]]$clean.ToArray(); Problem = '' }
+}
+
+function Resolve-FmVoiceAnswer {
+    <#
+        .SYNOPSIS
+        Recognized text matched back to the option the caller offered.
+
+        .DESCRIPTION
+        Returns '' for text that is not one of the options. The grammar is closed,
+        so that should not happen - but the recognizer is another process's idea
+        of what a grammar means, and a caller must never be handed an "answer"
+        that was not on the list it supplied.
+
+        Matching is exact and case-insensitive, never a prefix match, for the same
+        reason Resolve-FmVoiceName is: a prefix match between two options the
+        caller chose to distinguish would pick between them by list order.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Heard,
+        [string[]]$Option = @()
+    )
+
+    $text = ("$Heard" -replace '\s+', ' ').Trim()
+    if (-not $text) { return '' }
+    foreach ($candidate in @($Option)) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        if ([string]::Equals($candidate.Trim(), $text, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $candidate.Trim()
+        }
+    }
+    return ''
+}
+
+function Get-FmVoiceAuthorityRefusal {
+    <#
+        .SYNOPSIS
+        The reason a question may not be asked by voice at all, or '' when it may.
+
+        .DESCRIPTION
+        THE AUTHORITY BOUNDARY, applied before anything is spoken. AGENTS.md's
+        captain-instruction precedence rule requires the captain to state a
+        destructive, irreversible, security-sensitive, discard or merge action
+        explicitly, and a recognizer that is right most of the time does not
+        clear that bar - so a question that would collect one is refused here
+        rather than asked and then discounted afterwards.
+
+        The word list is derived from those five categories and nothing else, so
+        it has one owner and does not drift into a general profanity filter for
+        risky-sounding work. It is matched on stems against the question AND the
+        options, because "shall I do it?" with an option of "delete" is the same
+        question as "shall I delete it?".
+
+        THIS IS A GUARD AGAINST AN ACCIDENT, NOT A PROOF. A question phrased
+        around the list ("shall I land it?") passes, which is why the boundary is
+        also carried by Invoke-FmAsk's constant SufficientAuthority = $false:
+        there is no wording, and no configuration, that makes a spoken answer the
+        captain's explicit word.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Question,
+        [string[]]$Option = @()
+    )
+
+    $text = (@(@($Question) + @($Option)) -join ' ')
+    # Stems, so "deleting" and "merged" are caught with their roots. Ordered as
+    # AGENTS.md orders the categories: destructive, irreversible,
+    # security-sensitive, discard, merge.
+    $stems = @(
+        # 'wipe' rather than a 'wip' stem: the shorter one also matches WIP,
+        # which is ordinary work rather than a destructive action.
+        'destroy', 'destruct', 'delet', 'remov', 'eras', 'wipe', 'purg', 'truncat',
+        'overwrit', 'uninstall', 'irreversib', 'unrecoverab', 'permanent',
+        'credential', 'password', 'secret', 'token', 'api key',
+        'discard', 'revert', 'rollback', 'roll back', 'abandon', 'throw away',
+        'merg', 'squash', 'rebas', 'force push', 'force-push', 'reset --hard', 'hard reset',
+        'drop'
+    )
+    foreach ($stem in $stems) {
+        # Report the word the CALLER wrote, not the stem that matched it: the
+        # message is read by whoever has to rephrase the question, and 'merg'
+        # tells them less than 'merge' about what this refused.
+        $match = [regex]::Match($text, '\b' + [regex]::Escape($stem) + '\w*',
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($match.Success) {
+            return "a spoken answer is not the captain's explicit word for '$($match.Value)'"
+        }
+    }
+    return ''
 }
 
 function Resolve-FmVoiceName {
@@ -237,7 +454,7 @@ function Get-FmInstalledSpeechVoice {
     } catch {
         return [string[]]@()
     } finally {
-        if ($null -ne $synth) { Clear-FmSpeechSynthesizer -Synthesizer $synth }
+        if ($null -ne $synth) { Clear-FmSpeechEngine -Engine $synth }
     }
 }
 
@@ -300,28 +517,169 @@ function Invoke-FmSpeechRequest {
     } catch {
         return [pscustomobject]@{ Spoken = $false; Reason = 'unavailable' }
     } finally {
-        if ($null -ne $synth) { Clear-FmSpeechSynthesizer -Synthesizer $synth }
+        if ($null -ne $synth) { Clear-FmSpeechEngine -Engine $synth }
     }
 }
 
-function Clear-FmSpeechSynthesizer {
+function Get-FmInstalledSpeechRecognizer {
     <#
         .SYNOPSIS
-        Release a synthesizer, whatever state it is in.
+        The names of the installed speech recognizers, or nothing at all.
 
         .DESCRIPTION
-        Disposing an engine that is mid-utterance, or whose device has gone
-        away, can raise - in a finally block, where a raised error would replace
-        the verdict the caller is waiting for with an exception. One owner for
-        that, so neither seam has to repeat it.
+        Engine seam, and the one fm-ask asks FIRST. An empty result means "could
+        not ask" as well as "none installed", and the caller treats both the same
+        way: no answer, no microphone opened, and a reason saying so.
+
+        Asking this before listening is what makes "this machine cannot hear"
+        cost nothing rather than cost the caller a full listening window against
+        an engine that was never going to answer.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+
+    try {
+        Add-Type -AssemblyName System.Speech -ErrorAction Stop
+        # Description, not Name: Name is the engine id (MS-2057-80-DESK), and
+        # this is the list a person reads when asked what this machine can hear.
+        return [string[]]@([System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers() |
+                ForEach-Object { $_.Description })
+    } catch {
+        return [string[]]@()
+    }
+}
+
+function Invoke-FmSpeechListenRequest {
+    <#
+        .SYNOPSIS
+        Listen once for one of a closed set of options. Engine seam; never throws.
+
+        .DESCRIPTION
+        A CLOSED GRAMMAR, NOT DICTATION. The options become a Choices set, so the
+        recognizer is deciding between known words rather than transcribing an
+        arbitrary sentence. That is a different and far more reliable problem, and
+        it is the only reason a spoken answer is worth acting on at all.
+
+        RecognizeAsync with a bounded wait, for the same reason Invoke-FmSpeechRequest
+        uses SpeakAsync: the synchronous form hands the deadline to the engine, and
+        an engine listening to a device that will never answer never returns. The
+        async form gives both a deadline and a cancel, so silence costs the caller
+        TimeoutSeconds and never the turn.
+
+        BOTH OUTCOMES ARE COLLECTED, accepted and rejected. A rejection carries
+        text and a confidence too, and discarding it would turn "the engine heard
+        something it was not sure of" into "the captain said nothing" - two
+        different facts a caller may want to act on differently.
+
+        The engine is built from an explicitly named installed recognizer rather
+        than the default constructor, which picks by the current input language
+        and throws when nothing installed matches it. The grammar is built in that
+        recognizer's own culture for the same reason.
+
+        Returns Heard, Confidence and Reason (heard, silence, unavailable).
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string[]]$Option,
+        [int]$TimeoutSeconds = 15
+    )
+
+    $engine = $null
+    $sources = [System.Collections.Generic.List[string]]::new()
+    $silent = [pscustomobject]@{ Heard = ''; Confidence = 0.0; Reason = 'silence' }
+    try {
+        Add-Type -AssemblyName System.Speech -ErrorAction Stop
+        # Select-Object, never [0]. Under Set-StrictMode -Version Latest indexing
+        # an EMPTY array throws "Index was outside the bounds of the array"
+        # rather than answering $null, so the [0] form turns both "no recognizer
+        # installed" and "nobody said anything" into the catch below - which
+        # reports a machine that cannot hear when the truth was silence. Only a
+        # real run finds this: every mocked test replaces this whole function.
+        $recognizer = [System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers() |
+            Select-Object -First 1
+        if ($null -eq $recognizer) {
+            return [pscustomobject]@{ Heard = ''; Confidence = 0.0; Reason = 'unavailable' }
+        }
+        $engine = New-Object System.Speech.Recognition.SpeechRecognitionEngine -ArgumentList $recognizer
+        # Throws on a machine with no microphone, which is the path a supervision
+        # caller most needs to survive; the catch below turns it into a verdict.
+        $engine.SetInputToDefaultAudioDevice()
+
+        $choices = New-Object System.Speech.Recognition.Choices
+        $choices.Add([string[]]$Option)
+        $builder = New-Object System.Speech.Recognition.GrammarBuilder
+        $builder.Culture = $recognizer.Culture
+        $builder.Append($choices)
+        $engine.LoadGrammar((New-Object System.Speech.Recognition.Grammar -ArgumentList $builder))
+
+        # One identifier per call: two listening callers in one process must not
+        # read each other's events.
+        $token = "FmVoiceAsk-$([guid]::NewGuid().ToString('n'))"
+        foreach ($name in @('SpeechRecognized', 'SpeechRecognitionRejected')) {
+            $source = "$token-$name"
+            Register-ObjectEvent -InputObject $engine -EventName $name -SourceIdentifier $source | Out-Null
+            $sources.Add($source)
+        }
+
+        $engine.RecognizeAsync([System.Speech.Recognition.RecognizeMode]::Single)
+        $deadline = [datetime]::UtcNow.AddSeconds([Math]::Max(1, $TimeoutSeconds))
+        $received = $null
+        while ($null -eq $received -and [datetime]::UtcNow -lt $deadline) {
+            $received = Get-Event | Where-Object { $sources.Contains($_.SourceIdentifier) } |
+                Select-Object -First 1
+            if ($null -eq $received) { Start-Sleep -Milliseconds 50 }
+        }
+        if ($null -eq $received) { return $silent }
+
+        $recognition = $received.SourceEventArgs.Result
+        if ($null -eq $recognition) { return $silent }
+        return [pscustomobject]@{
+            Heard      = [string]$recognition.Text
+            Confidence = [double]$recognition.Confidence
+            Reason     = 'heard'
+        }
+    } catch {
+        return [pscustomobject]@{ Heard = ''; Confidence = 0.0; Reason = 'unavailable' }
+    } finally {
+        if ($null -ne $engine) {
+            try {
+                $engine.RecognizeAsyncCancel()
+            } catch {
+                Write-Verbose "fm-ask: the engine did not accept a cancel: $($_.Exception.Message)"
+            }
+        }
+        foreach ($source in $sources) {
+            try {
+                Unregister-Event -SourceIdentifier $source -ErrorAction Stop
+                @(Get-Event | Where-Object { $_.SourceIdentifier -eq $source }) | Remove-Event
+            } catch {
+                Write-Verbose "fm-ask: releasing the event subscription failed: $($_.Exception.Message)"
+            }
+        }
+        if ($null -ne $engine) { Clear-FmSpeechEngine -Engine $engine }
+    }
+}
+
+function Clear-FmSpeechEngine {
+    <#
+        .SYNOPSIS
+        Release a synthesizer or a recognizer, whatever state it is in.
+
+        .DESCRIPTION
+        Disposing an engine that is mid-utterance, or still listening, or whose
+        device has gone away, can raise - in a finally block, where a raised error
+        would replace the verdict the caller is waiting for with an exception. One
+        owner for that, so no seam has to repeat it.
     #>
     [CmdletBinding()]
     [OutputType([void])]
-    param([Parameter(Mandatory)]$Synthesizer)
+    param([Parameter(Mandatory)]$Engine)
 
     try {
-        $Synthesizer.Dispose()
+        $Engine.Dispose()
     } catch {
-        Write-Verbose "fm-say: releasing the speech engine failed: $($_.Exception.Message)"
+        Write-Verbose "voice: releasing the speech engine failed: $($_.Exception.Message)"
     }
 }

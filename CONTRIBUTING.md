@@ -167,10 +167,13 @@ module any other way.
 - `docs/instruction-surface.md` - the operating contract and the skills: what
   `AGENTS.md` is for, how each Linux skill was ported or recorded as absent, how
   the two committed links survive a Windows clone, and what the doctor checks.
-- `docs/voice-windows.md` - the spoken alert (`fm-say`): why it is off until
-  `config/voice` exists, why the engine call is asynchronous with a deadline
-  rather than blocking or detached, and why the two functions that touch
-  System.Speech are the only ones the suite has to mock.
+- `docs/voice-windows.md` - the voice channel (`fm-say` and `fm-ask`): why it is
+  off until `config/voice` exists, why the engine calls are asynchronous with a
+  deadline rather than blocking or detached, why a spoken answer is never the
+  captain's explicit word for a merge or a delete, and why the four functions
+  that touch System.Speech are the only ones the suite has to mock - plus the
+  blind spot that mocking creates, which has already cost one defect a green
+  suite could not see.
 - `docs/windows-quickstart.md` - the captain-facing path. Keep it short and keep
   it true: it is the only doc written for someone who has not read the others.
 - **`docs/windows-e2e-evidence.md` - what has actually been executed, and

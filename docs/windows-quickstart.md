@@ -178,15 +178,18 @@ never a surprise. [`autolaunch-windows.md`](autolaunch-windows.md) has the rest.
 ## Optional: hear it instead of watching for it
 
 Also off unless you ask for it. Write `config/voice` in the home - the file
-existing is the switch, and both keys are optional:
+existing is the switch, and all three keys are optional:
 
 ```
 voice=Microsoft Hazel Desktop
 rate=1
+confidence=0.75
 ```
 
-Then `fm-say.ps1 "the payments fix is ready for your review"` says it out loud.
-`fm-say.ps1 -h` has the rest, and this lists the voice names your machine has:
+Then `fm-say.ps1 "the payments fix is ready for your review"` says it out loud,
+and `fm-ask.ps1 "Ready to land?" -Options yes,no` asks you and listens for which
+one you say. Each script's `-h` has the rest, and this lists the voice names your
+machine has:
 
 ```powershell
 Add-Type -AssemblyName System.Speech
@@ -196,10 +199,18 @@ Add-Type -AssemblyName System.Speech
 A name it does not recognise falls back to the default voice and says so on
 stderr, rather than going quiet.
 
-Two things to know. Nothing speaks on its own: firstmate does not call this, so
-turning it on cannot leave your machine talking about work you did not ask to
-hear about. And speaking is never delivery - there is no spoken question in this
-port, so anything needing your answer still reaches you in chat.
+`fm-ask.ps1` only ever picks between the options you give it, and it refuses
+rather than guesses: below `confidence` it returns no answer at all, and tells
+you what it thought it heard and how sure it was. Silence returns no answer too,
+within a few seconds.
+
+Three things to know. Nothing speaks or listens on its own: firstmate does not
+call either command, so turning this on cannot leave your machine talking about
+work you did not ask to hear about, and the microphone is never opened unless
+you created that file. Speaking is never delivery - anything needing your answer
+still reaches you in chat whether or not you also heard it. And **a spoken answer
+is never taken as your word for a merge, a delete, or anything else you cannot
+undo**; ask one of those by voice and it refuses outright.
 [`voice-windows.md`](voice-windows.md) has the rest.
 
 ## When something is wrong

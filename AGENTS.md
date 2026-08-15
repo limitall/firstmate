@@ -79,7 +79,7 @@ config/secondmate-harness  harness the primary uses to launch secondmate agents,
 config/backlog-backend  backlog backend override; LOCAL, gitignored; "manual" forces the hand-edited backlog (section 10)
 config/startup-memory-budget  per-home startup-memory budget; LOCAL, gitignored, materialized by locked bootstrap
 config/autolaunch      opt-in startup command and grace window for `bin/fm-autolaunch.ps1`; LOCAL, gitignored; absent = off
-config/voice           opt-in spoken alerts for `bin/fm-say.ps1`, with the voice name and rate; LOCAL, gitignored; absent = off
+config/voice           opt-in voice channel for `bin/fm-say.ps1` and `bin/fm-ask.ps1`, with the voice name, rate and answer confidence; LOCAL, gitignored; absent = off, and the microphone is never opened
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
   captain.md         this home's captain preferences and working style; canonical even if harness memory mirrors it
@@ -415,8 +415,8 @@ Do not surface automatic fixes, retries, routine progress, or internal supervisi
 When a routine operational update's specific event requires no action but a response must be sent, reply exactly `Captain, shipshape.` without characterizing the visible session's unrelated decisions.
 Batch non-urgent updates into the next natural reply.
 Use plain chat for a yes-or-no decision and `lavish-axi` only when several options or a structured report benefit from a visual surface and that tool is installed.
-A spoken alert exists but is off until the captain creates `config/voice`, and nothing calls it by itself: `bin/fm-say.ps1 "<message>"` says one short line aloud, and its `-h` output states the rest.
-Speaking is never delivery - `fm-ask` is not ported, so nothing spoken can be answered by speaking, and every escalation still reaches the captain in chat whether or not it was also heard.
+The voice channel exists but is off until the captain creates `config/voice`, and nothing calls it by itself: `bin/fm-say.ps1 "<message>"` says one short line aloud and `bin/fm-ask.ps1 "<question>" -Options a,b` asks and listens for which option was said, each script's `-h` output stating the rest.
+Speaking is never delivery - every escalation still reaches the captain in chat whether or not it was also heard, and a spoken answer never closes a decision that `decision-hold-lifecycle` owns.
 A spoken message obeys this section's translation rule more strictly than a written one, because the captain cannot re-read it.
 Whenever a PR is mentioned, include its full `https://...` URL before any shorthand reference.
 Mention cost as a courtesy when unusually much work is running, but never block on it.
@@ -493,7 +493,7 @@ Each is a plain absence, not a degraded imitation: never simulate one, and tell 
 - **Away mode.** No `state/.afk`, no sub-supervisor daemon, no unattended escalation injection into a live session (section 8).
 - **Relay / X mode.** No public-mention integration, no `.env` pairing token, no public follow-ups. Nothing in this port posts anywhere public.
 - **Process-to-event sources.** No long-poll runner, no `state/procevent/` inbox. A blocking external wait must be a backlog item you check, never a held conversational turn.
-- **The rest of the voice channel.** Half of it landed: `bin/fm-say.ps1` says one short message aloud on request, off until `config/voice` exists (section 9). The spoken question did not - `fm-ask` is absent, so nothing spoken can be answered by speaking - and nothing calls `fm-say` automatically, so no escalation becomes audible without deliberate wiring.
+- **Automatic wiring for the voice channel.** The voice channel itself is complete - `fm-say` speaks and `fm-ask` asks and listens, both off until `config/voice` exists (section 9) - but nothing calls either by itself, so no escalation becomes audible and no question is asked aloud without deliberate wiring. There is no wake word: each listen is one bounded window opened by one call.
 - **Remote secondmates.** Secondmate spawning, charter briefs and retirement work locally; the seeding, convergence, liveness sweep, cross-home handoff, and every remote route are absent, and `data/secondmates.md` is hand-maintained except for the row a retirement removes.
 - **Harnesses other than `claude`, and backends other than `herdr`** (section 4).
 - **The automatic watcher arm.** The Claude Stop auto-arm hook is registered but has no arm owner to call, so nothing re-arms the watcher between turns. The emitted supervision block names this and gives the session-kept foreground cycle instead (section 8). Harness detection and the supervision block themselves ARE ported.
@@ -515,6 +515,7 @@ Never infer an override, broaden its scope, apply it by analogy, carry it to ano
 Ambiguous scope or conflict still requires one concise clarification before action.
 Destructive, irreversible, security-sensitive, discard, and merge actions still require the captain to state that concrete action explicitly; once the captain does so and higher-priority instructions permit it, a conflicting Firstmate-written rule must not rigidly block the action.
 Standing `yolo` authority is not a substitute for a current explicit captain instruction where an explicit action is required.
+Neither is a spoken answer: a recognizer that is right most of the time never carries that authority, so `fm-ask` refuses such a question outright and marks every answer it does return as insufficient for one.
 
 ## Maintaining this file
 

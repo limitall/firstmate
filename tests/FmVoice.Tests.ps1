@@ -1,13 +1,15 @@
 #requires -Version 7.0
-# Pester tests for the voice channel (fm-say).
+# Pester tests for the voice channel: the spoken alert (fm-say) and the spoken
+# question (fm-ask).
 #
-# NOTHING HERE MAKES A SOUND, and nothing here needs an audio device. The two
-# functions that touch System.Speech are mocked in every test that would reach
-# them, so this suite passes identically on a developer's machine, on a build
-# host with no speakers, and on Linux. The one place the real engine code runs
-# is the "no speech engine" Describe, which mocks Add-Type into failure to prove
-# the seam answers instead of throwing - the specific path a supervision caller
-# depends on.
+# NOTHING HERE MAKES A SOUND, NOTHING HERE OPENS A MICROPHONE, and nothing here
+# needs an audio device of either kind. The four functions that touch
+# System.Speech are mocked in every test that would reach them, so this suite
+# passes identically on a developer's machine, on a build host with no speakers,
+# on a machine with no microphone, and on Linux. The one place the real engine
+# code runs is the "no speech engine" Describe, which mocks Add-Type into failure
+# to prove both seams answer instead of throwing - the specific path a
+# supervision caller depends on.
 #
 # The entry-point Describe runs real child processes, which cannot be mocked at
 # all - so every one of them is given a home whose voice is off or absent. That
@@ -27,6 +29,7 @@ BeforeAll {
     . (Join-Path $script:ModuleRoot 'Private' 'FmPaths.ps1')
     . (Join-Path $script:ModuleRoot 'Private' 'FmVoice.ps1')
     . (Join-Path $script:ModuleRoot 'Public' 'Invoke-FmSay.ps1')
+    . (Join-Path $script:ModuleRoot 'Public' 'Invoke-FmAsk.ps1')
 
     # The five voices actually installed on the captain's machine, measured -
     # see docs/windows-e2e-evidence.md section 25. Two of them share a prefix
@@ -34,6 +37,10 @@ BeforeAll {
     $script:InstalledVoices = @(
         'Microsoft Hazel Desktop', 'Microsoft Zira Desktop',
         'Microsoft George', 'Microsoft Hazel', 'Microsoft Susan')
+
+    # The one recognizer actually installed on the captain's machine, measured -
+    # see docs/windows-e2e-evidence.md section 26.
+    $script:InstalledRecognizers = @('Microsoft Speech Recognizer 8.0 for Windows (English - UK)')
 
     function New-VoiceHome {
         <#
@@ -49,6 +56,42 @@ BeforeAll {
         }
         return $home_
     }
+
+    function Invoke-VoiceScript {
+        <#
+            .SYNOPSIS
+            Run a voice entry point as a real child process against a given home.
+
+            .DESCRIPTION
+            One owner for both entry points: a child process cannot be mocked, so
+            every test that uses this must give it a home whose voice is off or
+            absent. That is what keeps the CLI contract under test and the room
+            quiet - and the microphone shut - at the same time.
+        #>
+        param([Parameter(Mandatory)][string]$Script, [string[]]$CliArgs = @(), [string]$FmHome = '')
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $script:Pwsh
+        foreach ($a in (@('-NoProfile', '-File', $Script) + $CliArgs)) { $psi.ArgumentList.Add($a) }
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        foreach ($name in @('FM_HOME', 'FM_ROOT_OVERRIDE', 'FM_STATE_OVERRIDE', 'FM_CONFIG_OVERRIDE')) {
+            $psi.Environment.Remove($name) | Out-Null
+        }
+        if ($FmHome) {
+            $psi.Environment['FM_HOME'] = $FmHome
+            $psi.Environment['FM_ROOT_OVERRIDE'] = $FmHome
+        }
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $out = $proc.StandardOutput.ReadToEnd()
+        $err = $proc.StandardError.ReadToEnd()
+        $proc.WaitForExit()
+        return [pscustomobject]@{ ExitCode = $proc.ExitCode; StdOut = $out; StdErr = $err }
+    }
+
+    $script:Pwsh = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    $script:SayScript = Join-Path $script:RepoRoot 'bin' 'fm-say.ps1'
+    $script:AskScript = Join-Path $script:RepoRoot 'bin' 'fm-ask.ps1'
 }
 
 Describe 'the voice is off until the captain turns it on' {
@@ -307,33 +350,9 @@ Describe 'a missing or broken speech engine' {
 
 Describe 'bin/fm-say.ps1' {
     BeforeAll {
-        $script:Pwsh = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-        $script:SayScript = Join-Path $script:RepoRoot 'bin' 'fm-say.ps1'
-
         function Invoke-Say {
-            <#
-                .SYNOPSIS
-                Run the entry point as a real child process against a given home.
-            #>
             param([string[]]$CliArgs = @(), [string]$FmHome = '')
-            $psi = [System.Diagnostics.ProcessStartInfo]::new()
-            $psi.FileName = $script:Pwsh
-            foreach ($a in (@('-NoProfile', '-File', $script:SayScript) + $CliArgs)) { $psi.ArgumentList.Add($a) }
-            $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $psi.UseShellExecute = $false
-            foreach ($name in @('FM_HOME', 'FM_ROOT_OVERRIDE', 'FM_STATE_OVERRIDE', 'FM_CONFIG_OVERRIDE')) {
-                $psi.Environment.Remove($name) | Out-Null
-            }
-            if ($FmHome) {
-                $psi.Environment['FM_HOME'] = $FmHome
-                $psi.Environment['FM_ROOT_OVERRIDE'] = $FmHome
-            }
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $out = $proc.StandardOutput.ReadToEnd()
-            $err = $proc.StandardError.ReadToEnd()
-            $proc.WaitForExit()
-            return [pscustomobject]@{ ExitCode = $proc.ExitCode; StdOut = $out; StdErr = $err }
+            return Invoke-VoiceScript -Script $script:SayScript -CliArgs $CliArgs -FmHome $FmHome
         }
     }
 
@@ -367,5 +386,474 @@ Describe 'bin/fm-say.ps1' {
         $help = ($run.StdOut -replace '\s+', ' ')
         $help | Should -Match 'section 9'
         $help | Should -Match 'config/voice'
+    }
+}
+
+# ---------------------------------------------------------------------------
+# fm-ask: the spoken question. Everything below mocks the recognizer seams, so
+# no test here opens a microphone or needs one to exist.
+# ---------------------------------------------------------------------------
+
+Describe 'asking the captain a question out loud' {
+    BeforeEach {
+        Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
+        Mock Invoke-FmSpeechRequest { [pscustomobject]@{ Spoken = $true; Reason = 'spoken' } }
+        Mock Get-FmInstalledSpeechRecognizer { $script:InstalledRecognizers }
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'yes'; Confidence = 0.87; Reason = 'heard' }
+        }
+    }
+
+    It 'speaks the question and returns what it heard, with a confidence' {
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Answered | Should -BeTrue
+        $heard.Answer | Should -Be 'yes'
+        $heard.Heard | Should -Be 'yes'
+        $heard.Confidence | Should -Be 0.87
+        $heard.Reason | Should -Be 'answered'
+        Should -Invoke Invoke-FmSpeechRequest -Times 1 -Exactly -ParameterFilter { $Text -eq 'Ready to land?' }
+    }
+
+    It 'gives the recognizer the caller options as a closed set, not free dictation' {
+        # The whole reason a spoken answer is worth acting on: picking between
+        # known words, not transcribing a sentence.
+        $null = Invoke-FmAsk -Question 'Which one first?' -Option payments, checkout, neither `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        Should -Invoke Invoke-FmSpeechListenRequest -Times 1 -Exactly -ParameterFilter {
+            (@($Option) -join ',') -eq 'payments,checkout,neither'
+        }
+    }
+
+    It 'returns the option as the caller spelled it, whatever case came back' {
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'YES'; Confidence = 0.91; Reason = 'heard' }
+        }
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option Yes, No `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Answered | Should -BeTrue
+        $heard.Answer | Should -Be 'Yes'
+        $heard.Heard | Should -Be 'YES'
+    }
+
+    It 'collapses two spellings of one option rather than refusing the question' {
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option 'yes', ' YES ', 'no' `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        (@($heard.Option) -join ',') | Should -Be 'yes,no'
+        $heard.Answered | Should -BeTrue
+    }
+
+    It 'never hands back an answer that was not on the list it was given' {
+        # A closed grammar should not produce one. The recognizer is another
+        # component's reading of that grammar, so the caller is protected anyway.
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'maybe'; Confidence = 0.99; Reason = 'heard' }
+        }
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Answered | Should -BeFalse
+        $heard.Answer | Should -Be ''
+        $heard.Reason | Should -Be 'unsure'
+        $heard.Heard | Should -Be 'maybe'
+    }
+}
+
+Describe 'refusing rather than guessing' {
+    BeforeEach {
+        Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
+        Mock Invoke-FmSpeechRequest { [pscustomobject]@{ Spoken = $true; Reason = 'spoken' } }
+        Mock Get-FmInstalledSpeechRecognizer { $script:InstalledRecognizers }
+    }
+
+    It 'returns no answer at all below the confidence floor, and says what it heard' {
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'no'; Confidence = 0.41; Reason = 'heard' }
+        }
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Answered | Should -BeFalse
+        $heard.Answer | Should -Be ''
+        $heard.Reason | Should -Be 'unsure'
+        # The uncertainty is the point: a caller must be able to tell "the
+        # captain said no" from "something sounded a bit like no".
+        $heard.Heard | Should -Be 'no'
+        $heard.Confidence | Should -Be 0.41
+        $heard.MinimumConfidence | Should -Be (Get-FmVoiceMinimumConfidence)
+    }
+
+    It 'answers at the floor exactly, and refuses just below it' {
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'yes'; Confidence = 0.75; Reason = 'heard' }
+        }
+        $home_ = New-VoiceHome -ConfigLine @()
+        (Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -FirstmateHome $home_).Answered |
+            Should -BeTrue
+
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'yes'; Confidence = 0.7499; Reason = 'heard' }
+        }
+        (Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -FirstmateHome $home_).Answered |
+            Should -BeFalse
+    }
+
+    It 'takes the floor from config/voice' {
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'yes'; Confidence = 0.6; Reason = 'heard' }
+        }
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no `
+            -FirstmateHome (New-VoiceHome -ConfigLine @('confidence=0.5'))
+        $heard.MinimumConfidence | Should -Be 0.5
+        $heard.Answered | Should -BeTrue
+    }
+
+    It 'lets one call override the configured floor' {
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'yes'; Confidence = 0.8; Reason = 'heard' }
+        }
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -MinimumConfidence 0.95 `
+            -FirstmateHome (New-VoiceHome -ConfigLine @('confidence=0.5'))
+        $heard.MinimumConfidence | Should -Be 0.95
+        $heard.Answered | Should -BeFalse
+        $heard.Reason | Should -Be 'unsure'
+    }
+
+    It 'clamps and reports a configured floor outside 0 to 1, rather than refusing to ask' {
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'yes'; Confidence = 0.99; Reason = 'heard' }
+        }
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no `
+            -FirstmateHome (New-VoiceHome -ConfigLine @('confidence=7'))
+        $heard.MinimumConfidence | Should -Be 1
+        $heard.Warning | Should -Match 'above 1'
+    }
+
+    It 'reads a configured floor the same way whatever the decimal separator is' {
+        # A machine whose culture writes 0,75 must still read 0.75 out of the
+        # file as three quarters rather than as seventy five.
+        $culture = [System.Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = [cultureinfo]::new('de-DE')
+            (ConvertTo-FmVoiceConfidence -Value '0.5').Confidence | Should -Be 0.5
+        } finally {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = $culture
+        }
+    }
+
+    It 'treats an unreadable floor as the default rather than an error' {
+        $floor = ConvertTo-FmVoiceConfidence -Value 'quite sure'
+        $floor.Confidence | Should -Be (Get-FmVoiceMinimumConfidence)
+        $floor.Problem | Should -Match 'not a number'
+    }
+
+    It 'refuses a call whose own floor is outside 0 to 1, without asking anything' {
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -MinimumConfidence 4 `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Reason | Should -Be 'invalid'
+        $heard.Warning | Should -Match 'outside 0 to 1'
+        Should -Invoke Invoke-FmSpeechRequest -Times 0 -Exactly
+    }
+}
+
+Describe 'a question that is not a question' {
+    BeforeEach {
+        Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
+        Mock Invoke-FmSpeechRequest { [pscustomobject]@{ Spoken = $true; Reason = 'spoken' } }
+        Mock Get-FmInstalledSpeechRecognizer { $script:InstalledRecognizers }
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'yes'; Confidence = 0.9; Reason = 'heard' }
+        }
+    }
+
+    It 'refuses a single option, because there would be nothing to choose between' {
+        # Every sound the recognizer decided was speech would become that option,
+        # so the caller would get its own expectation back as the captain's word.
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Reason | Should -Be 'invalid'
+        $heard.Answered | Should -BeFalse
+        $heard.Warning | Should -Match 'at least two distinct options'
+        Should -Invoke Invoke-FmSpeechRequest -Times 0 -Exactly
+        Should -Invoke Invoke-FmSpeechListenRequest -Times 0 -Exactly
+    }
+
+    It 'refuses two options that are the same word said twice' {
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option 'yes', ' Yes ' `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Reason | Should -Be 'invalid'
+    }
+
+    It 'refuses no options at all' {
+        (Invoke-FmAsk -Question 'Ready to land?' -Option @() `
+                -FirstmateHome (New-VoiceHome -ConfigLine @())).Reason | Should -Be 'invalid'
+        (Invoke-FmAsk -Question 'Ready to land?' -Option $null `
+                -FirstmateHome (New-VoiceHome -ConfigLine @())).Reason | Should -Be 'invalid'
+    }
+
+    It 'listens for nothing when there was no question to ask' {
+        $heard = Invoke-FmAsk -Question "  `t " -Option yes, no `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Reason | Should -Be 'invalid'
+        Should -Invoke Invoke-FmSpeechListenRequest -Times 0 -Exactly
+    }
+}
+
+Describe 'the authority boundary on a spoken answer' {
+    # AGENTS.md's captain-instruction precedence rule requires the captain to
+    # state a destructive, irreversible, security-sensitive, discard or merge
+    # action explicitly. A recognizer that is right most of the time does not
+    # clear that bar, so fm-ask refuses to collect one at all.
+    BeforeEach {
+        Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
+        Mock Invoke-FmSpeechRequest { [pscustomobject]@{ Spoken = $true; Reason = 'spoken' } }
+        Mock Get-FmInstalledSpeechRecognizer { $script:InstalledRecognizers }
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'yes'; Confidence = 0.99; Reason = 'heard' }
+        }
+    }
+
+    It 'refuses a merge confirmation without speaking it or listening for it' {
+        $heard = Invoke-FmAsk -Question 'Shall I merge this?' -Option yes, no `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Reason | Should -Be 'refused'
+        $heard.Answered | Should -BeFalse
+        $heard.Answer | Should -Be ''
+        $heard.Warning | Should -Match "not the captain's explicit word for 'merge'"
+        # Refused BEFORE anything is spoken: asking it and then discounting the
+        # answer would still have put the words in the room.
+        Should -Invoke Invoke-FmSpeechRequest -Times 0 -Exactly
+        Should -Invoke Invoke-FmSpeechListenRequest -Times 0 -Exactly
+    }
+
+    It 'refuses every category the precedence rule names' {
+        $home_ = New-VoiceHome -ConfigLine @()
+        foreach ($question in @(
+                'Shall I merge this?', 'Shall I delete the branch?', 'Shall I discard those changes?',
+                'Shall I overwrite the local copy?', 'Shall I revert it?', 'Shall I drop the table?',
+                'Is this change irreversible?', 'Shall I use the stored password?',
+                'Shall I force push?', 'Shall I remove the worker?')) {
+            (Invoke-FmAsk -Question $question -Option yes, no -FirstmateHome $home_).Reason |
+                Should -Be 'refused' -Because "'$question' collects an answer only the captain may give"
+        }
+    }
+
+    It 'refuses when the destructive word is in an option rather than the question' {
+        # "Shall I do it?" with an option of "delete" is the same question.
+        $heard = Invoke-FmAsk -Question 'What next?' -Option 'delete it', 'leave it' `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Reason | Should -Be 'refused'
+    }
+
+    It 'still asks an ordinary readiness question' {
+        # The boundary is about who authorises the action, not about work that
+        # sounds risky. "Ready to land?" asks readiness; it does not merge.
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Reason | Should -Be 'answered'
+    }
+
+    It 'never reports sufficient authority, on any path, including a clean answer' {
+        # A constant, so there is no wording and no configuration that makes a
+        # spoken answer the captain's explicit word. The word-list refusal above
+        # catches the accident; this is what holds when a question is phrased
+        # around it.
+        $home_ = New-VoiceHome -ConfigLine @()
+        $paths = @(
+            (Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -FirstmateHome $home_),
+            (Invoke-FmAsk -Question 'Shall I merge this?' -Option yes, no -FirstmateHome $home_),
+            (Invoke-FmAsk -Question 'Ready to land?' -Option yes -FirstmateHome $home_),
+            (Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -FirstmateHome (New-VoiceHome))
+        )
+        foreach ($heard in $paths) { $heard.SufficientAuthority | Should -BeFalse }
+        $paths[0].Answered | Should -BeTrue -Because 'the clean-answer path must be one of the four'
+    }
+}
+
+Describe 'a machine that cannot hear' {
+    It 'asks nothing and listens to nothing while the voice is off' {
+        # The microphone is never opened without the captain turning the voice
+        # on. That is a stronger rule than fm-say's, and it is the same switch.
+        Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
+        Mock Invoke-FmSpeechRequest { [pscustomobject]@{ Spoken = $true; Reason = 'spoken' } }
+        Mock Get-FmInstalledSpeechRecognizer { $script:InstalledRecognizers }
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'yes'; Confidence = 0.99; Reason = 'heard' }
+        }
+
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -FirstmateHome (New-VoiceHome)
+        $heard.Answered | Should -BeFalse
+        $heard.Reason | Should -Be 'off'
+        Should -Invoke Invoke-FmSpeechRequest -Times 0 -Exactly
+        Should -Invoke Invoke-FmSpeechListenRequest -Times 0 -Exactly
+    }
+
+    It 'returns no answer, and does not throw, when no recognizer is installed' {
+        Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
+        Mock Invoke-FmSpeechRequest { [pscustomobject]@{ Spoken = $true; Reason = 'spoken' } }
+        Mock Get-FmInstalledSpeechRecognizer { [string[]]@() }
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'yes'; Confidence = 0.99; Reason = 'heard' }
+        }
+
+        $home_ = New-VoiceHome -ConfigLine @()
+        { Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -FirstmateHome $home_ } | Should -Not -Throw
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -FirstmateHome $home_
+        $heard.Answered | Should -BeFalse
+        $heard.Reason | Should -Be 'unavailable'
+        # No listening window against an engine that was never going to answer.
+        Should -Invoke Invoke-FmSpeechListenRequest -Times 0 -Exactly
+    }
+
+    It 'returns no answer, and does not throw, when there is no microphone' {
+        # SetInputToDefaultAudioDevice raises on a machine with no capture
+        # device; the seam turns that into a verdict, and this is the caller
+        # surviving it.
+        Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
+        Mock Invoke-FmSpeechRequest { [pscustomobject]@{ Spoken = $true; Reason = 'spoken' } }
+        Mock Get-FmInstalledSpeechRecognizer { $script:InstalledRecognizers }
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = ''; Confidence = 0.0; Reason = 'unavailable' }
+        }
+
+        $home_ = New-VoiceHome -ConfigLine @()
+        { Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -FirstmateHome $home_ } | Should -Not -Throw
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -FirstmateHome $home_
+        $heard.Answered | Should -BeFalse
+        $heard.Reason | Should -Be 'unavailable'
+    }
+
+    It 'returns no answer within the bounded wait when nobody says anything' {
+        Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
+        Mock Invoke-FmSpeechRequest { [pscustomobject]@{ Spoken = $true; Reason = 'spoken' } }
+        Mock Get-FmInstalledSpeechRecognizer { $script:InstalledRecognizers }
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = ''; Confidence = 0.0; Reason = 'silence' }
+        }
+
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -ListenSeconds 3 `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Answered | Should -BeFalse
+        $heard.Reason | Should -Be 'silence'
+        $heard.Heard | Should -Be ''
+        $heard.Confidence | Should -Be 0
+        Should -Invoke Invoke-FmSpeechListenRequest -Times 1 -Exactly -ParameterFilter { $TimeoutSeconds -eq 3 }
+    }
+
+    It 'does not listen for the answer to a question that was never asked' {
+        Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
+        Mock Invoke-FmSpeechRequest { [pscustomobject]@{ Spoken = $false; Reason = 'unavailable' } }
+        Mock Get-FmInstalledSpeechRecognizer { $script:InstalledRecognizers }
+        Mock Invoke-FmSpeechListenRequest {
+            [pscustomobject]@{ Heard = 'yes'; Confidence = 0.99; Reason = 'heard' }
+        }
+
+        $heard = Invoke-FmAsk -Question 'Ready to land?' -Option yes, no `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $heard.Spoken | Should -BeFalse
+        $heard.Reason | Should -Be 'unspoken'
+        Should -Invoke Invoke-FmSpeechListenRequest -Times 0 -Exactly
+    }
+
+    It 'does not throw even when the listening seam itself throws' {
+        Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
+        Mock Invoke-FmSpeechRequest { [pscustomobject]@{ Spoken = $true; Reason = 'spoken' } }
+        Mock Get-FmInstalledSpeechRecognizer { throw 'the capture endpoint was removed' }
+        Mock Invoke-FmSpeechListenRequest { throw 'the capture endpoint was removed' }
+
+        $home_ = New-VoiceHome -ConfigLine @()
+        { Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -FirstmateHome $home_ } | Should -Not -Throw
+        (Invoke-FmAsk -Question 'Ready to land?' -Option yes, no -FirstmateHome $home_).Reason |
+            Should -Be 'unavailable'
+    }
+
+    It 'answers instead of throwing when the speech assembly is not there' {
+        # The real seam code runs here: only Add-Type is replaced, so this is
+        # what a machine with no System.Speech actually does. It is also the one
+        # test in this file that reaches the recognizer seam's own body.
+        Mock Add-Type { throw 'Cannot find assembly System.Speech.' }
+
+        $verdict = Invoke-FmSpeechListenRequest -Option @('yes', 'no') -TimeoutSeconds 1
+        $verdict.Reason | Should -Be 'unavailable'
+        $verdict.Heard | Should -Be ''
+        $verdict.Confidence | Should -Be 0
+        Get-FmInstalledSpeechRecognizer | Should -HaveCount 0
+    }
+}
+
+Describe 'bin/fm-ask.ps1' {
+    BeforeAll {
+        function Invoke-Ask {
+            param([string[]]$CliArgs = @(), [string]$FmHome = '')
+            return Invoke-VoiceScript -Script $script:AskScript -CliArgs $CliArgs -FmHome $FmHome
+        }
+    }
+
+    It 'exits 2 with a usage line when given no question or no options' {
+        (Invoke-Ask -CliArgs @('-Options', 'yes,no') -FmHome (New-VoiceHome)).ExitCode | Should -Be 2
+        $run = Invoke-Ask -CliArgs @('Ready', 'to', 'land?') -FmHome (New-VoiceHome)
+        $run.ExitCode | Should -Be 2
+        $run.StdErr | Should -Match 'usage: fm-ask\.ps1'
+    }
+
+    It 'is silent, deaf and non-fatal with the voice off, and says which' {
+        # No config/voice in this home, so the child never reaches either engine.
+        $run = Invoke-Ask -CliArgs @('Ready to land?', '-Options', 'yes,no') -FmHome (New-VoiceHome)
+        $run.ExitCode | Should -Be 0
+        $run.StdErr | Should -Match 'no answer'
+        $run.StdErr | Should -Match 'config/voice'
+    }
+
+    It 'prints what it heard and how sure it was on every path' {
+        $run = Invoke-Ask -CliArgs @('Ready to land?', '-Options', 'yes,no') -FmHome (New-VoiceHome)
+        $run.StdOut | Should -Match '(?m)^answer=\r?$'
+        $run.StdOut | Should -Match '(?m)^heard=\r?$'
+        $run.StdOut | Should -Match '(?m)^confidence=0\.00\r?$'
+        $run.StdOut | Should -Match '(?m)^reason=off\r?$'
+    }
+
+    It 'refuses a merge confirmation with a non-zero exit, even with the voice off' {
+        # The refusal is not a property of the room: it holds before the config
+        # is read, so a caller cannot discover it only on a machine that talks.
+        $run = Invoke-Ask -CliArgs @('Shall I merge this?', '-Options', 'yes,no') -FmHome (New-VoiceHome)
+        $run.ExitCode | Should -Be 1
+        $run.StdOut | Should -Match '(?m)^reason=refused\r?$'
+        $run.StdErr | Should -Match "not the captain's explicit word"
+    }
+
+    It 'reads -Options yes,no as two options, not as one word called yes,no' {
+        # Every test here runs the script through `pwsh -File`, which is how a
+        # herdr pane, a Claude hook, or any non-PowerShell caller reaches it -
+        # and there `yes,no` arrives as ONE string. Unsplit it is a one-option
+        # grammar, which Invoke-FmAsk refuses, so the documented invocation
+        # would have failed for everyone who was not already in PowerShell.
+        $run = Invoke-Ask -CliArgs @('Ready to land?', '-Options', 'yes, no') -FmHome (New-VoiceHome)
+        $run.StdOut | Should -Match '(?m)^reason=off\r?$'
+        $run.ExitCode | Should -Be 0
+    }
+
+    It 'exits 1 for an option set with nothing to choose between' {
+        $run = Invoke-Ask -CliArgs @('Ready to land?', '-Options', 'yes') -FmHome (New-VoiceHome)
+        $run.ExitCode | Should -Be 1
+        $run.StdOut | Should -Match '(?m)^reason=invalid\r?$'
+        $run.StdErr | Should -Match 'at least two distinct options'
+    }
+
+    It 'prints what config/voice got wrong, and still exits 0' {
+        $run = Invoke-Ask -CliArgs @('Ready to land?', '-Options', 'yes,no') `
+            -FmHome (New-VoiceHome -ConfigLine @('off', 'volume=11'))
+        $run.ExitCode | Should -Be 0
+        $run.StdErr | Should -Match "config/voice: line 2: unknown key 'volume'"
+    }
+
+    It 'documents the confidence floor, that it is configurable, and the authority boundary' {
+        $run = Invoke-Ask -CliArgs @('-h') -FmHome (New-VoiceHome)
+        $run.ExitCode | Should -Be 0
+        # Help output is wrapped to the console width, so compare it flattened.
+        $help = ($run.StdOut -replace '\s+', ' ')
+        $help | Should -Match '0\.75'
+        $help | Should -Match 'confidence='
+        $help | Should -Match 'MinimumConfidence'
+        $help | Should -Match "(?i)not the captain's explicit word"
+        $help | Should -Match '(?i)answerable in chat'
+        $help | Should -Match 'section 9'
     }
 }

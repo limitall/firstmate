@@ -1,35 +1,110 @@
 # The voice channel on Windows
 
-`bin/fm-say.ps1` speaks one short message aloud, so work that needs the captain
+`bin/fm-say.ps1` speaks one short message aloud and `bin/fm-ask.ps1` speaks a
+question and listens for the spoken answer, so work that needs the captain
 reaches them when they are away from the screen.
-This note is why it is shaped the way it is.
-The mechanics - flags, config keys, exit codes - live in the script's own `-h`
+This note is why they are shaped the way they are.
+The mechanics - flags, config keys, exit codes - live in each script's own `-h`
 output, which is the one place they are stated.
 
-## Half a channel, and it says so
+## Both halves, and neither is a decision
 
-The Linux firstmate's voice channel is two commands: `fm-say` speaks, and
-`fm-ask` speaks a question and listens for the spoken answer.
-Only `fm-say` exists here.
-That matters to the operating contract rather than to the code: an escalation
-that needs a decision still has to reach the captain in chat, because nothing in
-this port can hear an answer.
-`AGENTS.md` sections 9 and 14 carry that consequence; this file does not restate
-it.
+The channel is complete: `fm-say` speaks, and `fm-ask` asks and listens.
+What is complete is the CAPABILITY, and it is deliberately not a decision
+procedure.
+An escalation that needs a decision still reaches the captain in chat whether or
+not it was also heard, and `decision-hold-lifecycle` still owns that decision's
+lifecycle - a spoken answer is evidence of what the captain said, never the thing
+that closes a hold.
+`AGENTS.md` section 9 carries that consequence; this file does not restate it.
+
+## What a spoken answer is not
+
+**A spoken answer is never the captain's explicit word for a merge, a discard, a
+delete, or anything destructive, irreversible or security-sensitive.**
+`AGENTS.md`'s captain-instruction precedence rule requires the captain to state
+those explicitly, and a recognizer that is right most of the time does not clear
+that bar.
+
+`fm-ask` enforces that in two layers, because one of them is a heuristic and says
+so.
+
+- **The refusal.** `Get-FmVoiceAuthorityRefusal` matches the question AND the
+  options against a word list derived from those five categories and nothing
+  else, and refuses BEFORE anything is spoken. Asking the question and
+  discounting the answer afterwards would still have put the words in the room.
+  It refuses rather than marking the result, because a mark has to be checked by
+  every caller and this port's costliest bugs have all been a check that was not
+  made. Since AGENTS.md permits no correct use of a spoken answer for those
+  actions, a refusal loses nothing real.
+- **The constant.** `SufficientAuthority` is `$false` on every result, including
+  a clean high-confidence answer, and no input or configuration makes it true. A
+  word list catches the accident; a question phrased around it ("shall I land
+  it?") passes, and the constant is what still holds there. It is a field rather
+  than only prose so that a caller reading the object finds the boundary instead
+  of having to already know it.
+
+The permissive version of this - letting a spoken answer carry that authority -
+is a later change and not a config flag that already exists, because the captain
+has an open decision on exactly that question.
 
 ## Off by default, and the file is the switch
 
-`config/voice` is the whole switch: absent means silent, present means the voice
-is on.
+`config/voice` is the whole switch for BOTH halves: absent means silent, present
+means the voice is on.
 No other setting turns speech on, because a machine that starts talking without
 being asked is a bug rather than a feature.
 A lone `off` line silences it while keeping the captain's voice and rate choice,
 so turning the voice off does not cost them their settings.
 
+That the same one file governs listening is a stronger rule than it looks.
+**The microphone is never opened unless the captain turned the voice on**, and
+never for a question that could not actually be spoken - a machine that starts
+listening because some other setting changed would be a worse bug than one that
+starts talking.
+One file rather than two because the captain who turns the voice on is the same
+captain who decides how sure the machine has to be before it repeats what it
+thinks it heard, which is what the `confidence` key is.
+
 The format is `key=value` rather than the bare token line `config/crew-harness`
 uses, for one concrete reason: a voice name contains spaces
 ("Microsoft Hazel Desktop"), so the space-separated form
 `config/secondmate-harness` uses cannot carry one.
+
+## A closed grammar, and a floor under it
+
+`fm-ask` builds its grammar from the options the caller supplies, so the
+recognizer is choosing between known words rather than transcribing a sentence.
+That is not a convenience: free-form recognition of an arbitrary spoken sentence
+is a far harder and far less reliable problem than picking one of three known
+words, and this decides actions.
+
+Measured on the captain's machine against a `yes`/`no` grammar
+(`docs/windows-e2e-evidence.md` section 26): `yes` came back at 0.98 and `no` at
+0.91, while `maybe` and a whole sentence were not accepted at all.
+That is the shape the design leans on - an in-grammar word lands high, and an
+out-of-grammar one produces nothing rather than a confident wrong answer.
+
+**The default floor is 0.75, and it is high on purpose.** A match against a closed
+grammar that only reaches 0.6 is the engine saying it guessed, and the two
+mistakes do not cost the same: a refusal costs the captain one repeated word, and
+a wrong answer acts on something they did not say. `confidence=` in
+`config/voice` lowers it for a machine whose microphone makes that tiresome, and
+`-MinimumConfidence` overrides it for one call.
+
+**Below the floor there is no answer, and the uncertainty is still returned.**
+`Answered` is false and `Answer` is empty, but `Heard` and `Confidence` carry what
+actually reached the recognizer. A caller must be able to tell "the captain said
+yes" from "something sounded a bit like yes", and it cannot do that from a bare
+option with the uncertainty discarded.
+
+Two smaller refusals fall out of the same reasoning.
+A one-option question is refused, because every sound the recognizer decided was
+speech would become that option and the caller would get its own expectation back
+dressed as the captain's word.
+And a recognized word that is not one of the options is never handed back as an
+answer, even though a closed grammar should not produce one - the recognizer is
+another component's reading of that grammar.
 
 ## Speak asynchronously, wait with a deadline
 
@@ -57,6 +132,17 @@ The measured numbers behind the defaults are in
 seconds on the captain's machine at rate 0 and 1, so the 200-character bound and
 the 30-second default deadline leave room for a slower rate without either one
 becoming the thing that cuts the captain's news off.
+
+**Listening takes the same shape, for the same reason.**
+`SpeechRecognitionEngine.Recognize()` hands the deadline to the engine, so
+`Invoke-FmSpeechListenRequest` uses `RecognizeAsync` and polls a PowerShell event
+subscription against a deadline, then cancels.
+Silence costs the caller `-ListenSeconds` and never the turn.
+The two waits are separate parameters rather than one, because a caller cares
+about the listening window and the speaking one is a different question: the
+worst case for a whole call is `-SpeakSeconds` plus `-ListenSeconds`.
+The listening default is 15 seconds against speaking's 30 - a captain who is not
+at the machine should not cost the caller a full utterance's worth of silence.
 
 ## Nothing here throws, and nothing here is clever
 
@@ -86,27 +172,39 @@ captain's machine has both `Microsoft Hazel` and `Microsoft Hazel Desktop`
 installed, and they do not sound alike, so a prefix match would pick between
 them by list order.
 
-## Why the engine is behind two small functions
+## Why the engine is behind four small functions
 
-`Get-FmInstalledSpeechVoice` and `Invoke-FmSpeechRequest` are the only functions
-in this port that construct a synthesizer.
+`Get-FmInstalledSpeechVoice`, `Invoke-FmSpeechRequest`,
+`Get-FmInstalledSpeechRecognizer` and `Invoke-FmSpeechListenRequest` are the only
+functions in this port that construct a synthesizer or a recognizer.
 Everything else in the area is pure, which is what lets `tests/FmVoice.Tests.ps1`
-mock exactly those two and never make a sound: the suite passes identically on a
-developer's machine, on a build host with no speakers, and on Linux.
+mock exactly those four and never make a sound or open a microphone: the suite
+passes identically on a developer's machine, on a build host with no speakers, on
+a machine with no microphone, and on Linux.
 The one test that runs the real seam code replaces `Add-Type` with a throw,
 which is what a machine with no `System.Speech` actually does - that is the
 "broken engine does not fail the caller" path, proven rather than asserted.
 
+Asking `Get-FmInstalledSpeechRecognizer` before listening is what makes "this
+machine cannot hear" cost nothing rather than cost the caller a full listening
+window against an engine that was never going to answer.
+
+**That mocking has a known blind spot, and it has already cost one defect.**
+A seam every test replaces is a seam no test executes, and the strict-mode
+indexing bug in section 26.4 - which reported silence as a broken microphone -
+survived a green suite and was found by one real run. When you change a seam
+body here, run it. The suite cannot.
+
 ## What is deliberately not here
 
-- **`fm-ask`** - speaking a question and listening for the answer. A separate
-  capability, not a smaller version of this one.
-- **Any automatic wiring.** Nothing in the escalation path calls `fm-say`. The
-  capability ships first and on purpose, so that turning the voice on cannot
-  surprise the captain with a machine that suddenly starts talking about work
-  they have not asked to hear about. Wiring it in is a deliberate later
-  decision, and it is the point at which section 9's translation contract has to
-  be applied to every message that would be spoken.
+- **Any automatic wiring.** Nothing in the escalation path calls `fm-say` or
+  `fm-ask`. The capability ships alone and on purpose, so that turning the voice
+  on cannot surprise the captain with a machine that suddenly starts talking
+  about work they have not asked to hear about, or asking them things. Wiring it
+  in is a deliberate later decision, and it is the point at which section 9's
+  translation contract has to be applied to every message that would be spoken.
+- **A wake word.** Nothing here listens until it is asked to, and each listen is
+  one bounded window opened by one call.
 - **A message filter.** What is passed is what is spoken. The translation
   contract binds the caller, because only the caller knows the outcome it is
   describing; a filter here could only mangle a message it does not understand.

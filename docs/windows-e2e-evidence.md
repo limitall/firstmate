@@ -2218,13 +2218,17 @@ a separate defect; what is closed is the question of whose they are.
   `.agents/skills` tree with it. It is recoverable with `git checkout --
   .agents/skills`, but only if you notice. Remove the reparse point first
   (`[System.IO.Directory]::Delete($link, $false)`), then restore.
-- **The two `FmContract` "own instruction surface" tests require a SET-UP
-  checkout**, not merely a cloned one: they assert `MirrorState` is `link` or
-  `mirror` and that `CLAUDE.md` carries the contract's bytes. In a fresh task
-  worktree, where `CLAUDE.md` is still the 9-byte git placeholder, both fail
-  until `bin/fm-setup.ps1` has been run against that checkout once. That is a
-  real precondition of the suite and is worth stating where a new lane will hit
-  it.
+- **Eight tests require a SET-UP checkout**, not merely a cloned one. Two are
+  `FmContract`'s "own instruction surface" pair, asserting `MirrorState` is
+  `link` or `mirror` and that `CLAUDE.md` carries the contract's bytes. The other
+  six are `FmInstall` doctor checks that pass the REAL repo root and assert
+  `$doctor.Healthy`, which reads the same surface. In a fresh task worktree,
+  where `CLAUDE.md` is still the 9-byte git placeholder and `.claude/skills` the
+  14-byte one, all eight fail until `bin/fm-setup.ps1` has been run against that
+  checkout once. That is a real precondition of the suite and is worth stating
+  where a new lane will hit it. Section 26.6 measures the set and shows all eight
+  passing from the same code once the surface is materialized; it was recorded
+  here as two because only two had been hit.
 - **Three entry points have a `-h` flag that prints nothing.** `fm-brief.ps1`,
   `fm-lock.ps1` and `fm-crew-state.ps1` each answer `-h` with `Get-Help -Full`,
   and each prints only the script name: their header block carries no
@@ -3714,3 +3718,219 @@ state, recorded in section 17.
   test at the seam, and no engine on this machine wedged long enough to see it.
 - **A machine with no audio device at all was not tested**, only a machine with
   no speech assembly (simulated at `Add-Type`, in the suite).
+
+## 26. The spoken question, on the captain's Windows 11 laptop - `PROVEN (Windows 11)`
+
+`bin/fm-ask.ps1`, `Invoke-FmAsk` and the two recognizer seams
+(`docs/voice-windows.md`), on `fm/voice-ask` over `29bbb80`.
+Run in a disposable worktree against a temporary home on 2026-08-15.
+The spoken half was heard as well as printed.
+
+### 26.1 The engine, and the one recognizer that is actually installed
+
+```
+MS-2057-80-DESK | en-GB | Microsoft Speech Recognizer 8.0 for Windows (English - UK)
+```
+
+No install, no service, no network, exactly as the synthesizer needed none:
+`Add-Type -AssemblyName System.Speech` and a `SpeechRecognitionEngine` are
+enough.
+One recognizer, and its culture is `en-GB` rather than the machine's input
+language - which is why the engine is constructed from a named installed
+recognizer and the grammar is built in that recognizer's own culture.
+The default constructor picks by input language and throws when nothing
+installed matches it.
+
+Note also what `RecognizerInfo.Name` returns here: `MS-2057-80-DESK`, the engine
+id rather than a name a person would read.
+`Get-FmInstalledSpeechRecognizer` returns `Description` for that reason.
+
+### 26.2 The closed grammar, measured against a `yes`/`no` option set
+
+Each word was synthesized to a WAV and fed to the recognition engine, so these
+are real recognitions with no microphone and no human in the loop:
+
+```
+spoke 'yes'                       -> heard 'yes' at 0.98
+spoke 'no'                        -> heard 'no'  at 0.91
+spoke 'maybe'                     -> nothing accepted
+spoke 'the payments fix is ready' -> nothing accepted
+```
+
+**This is the measurement the 0.75 floor is set against.** An in-grammar word
+lands well above it, and an out-of-grammar word produces nothing at all rather
+than a confident wrong answer - so the floor sits in the gap rather than in the
+middle of the range, and refusing below it costs a correct answer nothing on this
+hardware.
+
+### 26.3 The entry point, end to end
+
+Against a home carrying `voice=Microsoft Hazel Desktop` / `rate=0`:
+
+```
+=== 1. voice off (no config/voice) ===
+answer=
+heard=
+confidence=0.00
+reason=off
+fm-ask: no answer - the voice is off (create config/voice to turn it on)
+exit=0
+
+=== 2. voice on, question spoken aloud, nobody answers ===
+answer=
+heard=
+confidence=0.00
+reason=silence
+fm-ask: no answer - nothing was said within 6 seconds
+exit=0 elapsed=15.7s
+
+=== 3. merge confirmation ===
+answer=
+heard=
+confidence=0.00
+reason=refused
+fm-ask: no answer - a spoken answer is not the captain's explicit word for 'merge'
+exit=1
+```
+
+Row 2 is the whole channel working: "Ready to land?" was spoken aloud through the
+synthesizer, the recognizer then listened for six seconds, and the bounded wait
+returned cleanly with no answer.
+The 15.7 seconds is the entire child process - PowerShell startup, module import,
+the utterance, then the listening window.
+
+Row 3 is the authority boundary, and it holds with the voice OFF as well as on:
+the refusal is evaluated before the config is read, so a caller cannot discover it
+only on a machine that talks.
+
+**Row 2 also caught a defect no test could.** It first returned
+`reason=unavailable` - see 26.4.
+
+### 26.4 The defect a real run found, and a green suite could not
+
+`Invoke-FmSpeechListenRequest` reported `unavailable` - "no speech recognizer,
+microphone or audio device is available" - on a machine that had all three, when
+the truth was that nobody had said anything.
+
+The cause was one expression:
+
+```powershell
+$received = @(Get-Event | Where-Object { $sources.Contains($_.SourceIdentifier) })[0]
+```
+
+Under `Set-StrictMode -Version Latest` indexing an EMPTY array does not answer
+`$null`; it throws `Index was outside the bounds of the array`.
+Every poll of a quiet microphone therefore threw, the seam's own `catch` turned
+that into `unavailable`, and silence was reported as broken hardware.
+The same `[0]` form on `InstalledRecognizers()` had the same fault.
+Both are now `Select-Object -First 1`.
+
+**Why the suite could not see it.** The seam is mocked in every test that reaches
+it - which is the design, and is what lets the suite pass with no microphone - so
+the seam's own body is executed by exactly one test, the one that replaces
+`Add-Type` with a throw and never reaches the polling loop at all. A seam every
+test replaces is a seam no test executes. `docs/voice-windows.md` now says so
+where someone about to change one will read it.
+
+This is also the second time this port has been bitten by a strict-mode surprise
+inside a `catch`-wrapped verdict function: the failure is silent by construction,
+because the wrapper's whole job is to turn errors into answers.
+
+### 26.5 The comma the documented invocation needed
+
+`./bin/fm-ask.ps1 "Ready to land?" -Options yes,no` is the documented form, and it
+reached the script two different ways.
+Typed in a PowerShell session, `yes,no` is an array literal and arrives as two
+elements.
+Run through `pwsh -File` - which is how a herdr pane, a Claude hook, or any
+non-PowerShell caller reaches it - it arrives as one string, `yes,no`, and bound
+unsplit it is a ONE-option grammar.
+That is the degenerate set `Invoke-FmAsk` refuses, so the documented invocation
+failed with `reason=invalid` for everyone who was not already in PowerShell.
+
+Found by the entry-point tests, which run real `pwsh -File` children for exactly
+this class of difference.
+The script now splits on commas, and a test asserts the split rather than the
+symptom.
+
+### 26.6 The whole suite, on Windows, at this branch
+
+```
+Tests completed in 2235.62s
+Tests Passed: 1793, Failed: 8, Skipped: 25, Inconclusive: 0, NotRun: 0
+```
+
+43 files, including the repo-wide analyzer sweep `tests/FmAnalyzer.Tests.ps1`
+runs.
+`tests/FmVoice.Tests.ps1` contributes 71 of those, 37 of them fm-ask's, and makes
+no sound and opens no microphone while doing it.
+
+**All eight failures are section 17's known set-up-checkout dependency, and this
+run made that provable rather than asserted.** Every one is either a
+`MirrorState`/`ClaudeSkillsState` assertion or a `$doctor.Healthy` check against
+the REAL repo root, in a fresh task worktree where `CLAUDE.md` is still the
+9-byte git placeholder and `.claude/skills` the 14-byte one. Six of them are in
+`FmInstall`, which section 17 did not previously name - it counted only the two
+in `FmContract`.
+
+The proof is in the run itself. `FmInstall`'s own "the entry points" block runs
+`fm-setup.ps1 -RepoRoot <this checkout>` and repairs both links as part of its
+job, so by the end of the run the surface was materialized. Re-running the two
+files against that repaired checkout:
+
+```
+tests/FmContract.Tests.ps1   Tests Passed: 37, Failed: 0
+tests/FmInstall.Tests.ps1    Tests Passed: 77, Failed: 0
+```
+
+Zero failures, from the same code. Both files were then restored to their tracked
+placeholders - by unlinking the junction with `Directory.Delete` FIRST, because
+`git checkout -- .claude/skills` on a materialized link deletes the link's TARGET
+and takes `.agents/skills` with it, as `CONTRIBUTING.md` warns.
+
+`FmAnalyzer`, `FmVoice` and `FmModuleAssembly` were re-run last, after the final
+edits: 112 passed, 0 failed. The analyzer bar is zero findings at every severity
+and `fm-ask.ps1` is inside the enumerated sweep, so it is covered rather than
+skipped.
+
+The arithmetic cross-checks against the branch this one rebased onto, which was
+measured on a set-up checkout: `7be4760` reports 1764 passed, 0 failed, 25
+skipped. This branch adds 37 tests to `FmVoice`, and 1764 + 37 = 1801 = the 1793
+passed plus the 8 environmental failures above. Nothing else moved.
+
+### 26.8 Two failures this branch inherited from main, and did not cause
+
+Rebasing onto `7be4760` brought in `bin/fm-bridge.ps1`, and with it two failures
+that are not this branch's:
+
+```
+FmAnalyzer       fm-bridge.ps1:137 [PSAvoidUsingEmptyCatchBlock]
+FmModuleAssembly fm-bridge.ps1: does not dot-source fm-module-load.ps1 with -RequiredCommand
+```
+
+**Attributed by reproduction, not by argument.** Both were re-run at a detached
+`7be4760` - main's tip, without this branch's commit - and both fail there
+identically: 39 passed, 2 failed. `bin/fm-ask.ps1` clears both gates.
+
+They are real and worth fixing by their owner: the analyzer bar is zero findings
+at every severity, and the module-load prelude is what makes a `bin/` script work
+in a shell that loaded no profile, which is exactly the shell `fm-bridge.ps1`
+will be launched from. Left here rather than fixed, because that file is another
+lane's in-flight work and this branch has no business editing it.
+
+### 26.7 What was NOT proven here
+
+- **A human answering out loud.** The mic on this machine has no acoustic path to
+  its own speakers, so an attempt to have `fm-say` answer `fm-ask`'s question
+  through the room returned silence - correctly. The recognition itself is proven
+  in 26.2 through a WAV rather than through a microphone, so what remains
+  unproven is the capture device, not the grammar, the matching or the
+  confidence.
+- **A machine with no recognizer, and a machine with no microphone.** Both are
+  covered by tests at the seam and neither was reproduced on hardware; this
+  machine has both.
+- **Nothing calls `fm-ask` automatically**, so there is no evidence of an
+  escalation being asked aloud. The capability ships alone, by design.
+- **The permissive authority behaviour was not built**, deliberately: the captain
+  has an open decision on whether a spoken answer may ever approve a merge, and
+  this branch implements only the conservative side of it.
