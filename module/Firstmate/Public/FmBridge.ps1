@@ -240,6 +240,164 @@ function Stop-FmBridgeSession {
     catch { Write-Debug "session already gone: $($_.Exception.Message)" }
 }
 
+function Test-FmBridgeConfigured {
+    <#
+        .SYNOPSIS
+        Has this machine been told where firstmate's workspace lives?
+
+        .DESCRIPTION
+        The answer is a real workspace on disk, not a pointer file that happens
+        to exist: a pointer naming a directory that was deleted or moved is
+        exactly the case where a silent "configured" answer sends every later
+        command at nothing.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][string]$RepoRoot)
+
+    $marker = Join-Path $RepoRoot '.fm-workspace'
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $false }
+    $path = ''
+    try { $path = ([System.IO.File]::ReadAllText($marker)).Trim() } catch { return $false }
+    if (-not $path) { return $false }
+    Test-Path -LiteralPath (Join-Path $path 'state') -PathType Container
+}
+
+function Get-FmBridgeWorkspace {
+    <#
+        .SYNOPSIS
+        The workspace this machine was set up with, or '' when it has none.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$RepoRoot)
+
+    $marker = Join-Path $RepoRoot '.fm-workspace'
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return '' }
+    try { return ([System.IO.File]::ReadAllText($marker)).Trim() } catch { return '' }
+}
+
+function Initialize-FmBridgeWorkspace {
+    <#
+        .SYNOPSIS
+        Create firstmate's workspace at a captain-chosen path and record it.
+
+        .DESCRIPTION
+        Called once, from the browser, on first run. It creates the home layout,
+        points this checkout at it, and remembers the choice so every later start
+        goes straight there.
+
+        It REFUSES rather than guessing on anything ambiguous: a path that is not
+        absolute, a path that is a file, or a path it cannot create. A workspace
+        silently created somewhere other than where the captain typed is worse
+        than a refusal they can act on.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $wanted = $Path.Trim().Trim('"')
+    if (-not $wanted) {
+        return [pscustomobject]@{ Ok = $false; Path = ''; Error = 'no path given' }
+    }
+    # Expand %VARS% and ~ so a captain can type what they would type anywhere
+    # else, rather than learning this box's rules.
+    $wanted = [Environment]::ExpandEnvironmentVariables($wanted)
+    if ($wanted.StartsWith('~')) {
+        $wanted = Join-Path ([Environment]::GetFolderPath('UserProfile')) $wanted.TrimStart('~', '/', '\')
+    }
+    if (-not [System.IO.Path]::IsPathRooted($wanted)) {
+        return [pscustomobject]@{ Ok = $false; Path = $wanted
+            Error = 'give a full path, such as C:\Users\you\firstmate' }
+    }
+    if (Test-Path -LiteralPath $wanted -PathType Leaf) {
+        return [pscustomobject]@{ Ok = $false; Path = $wanted; Error = 'that path is a file' }
+    }
+    # Normalized, so a pasted path with doubled separators or a trailing slash is
+    # recorded the way every later comparison will spell it. Observed storing
+    # `C:\\Users\\...` verbatim, which worked but made the marker file and the
+    # home pointer disagree with everything that reads them back.
+    try { $wanted = [System.IO.Path]::GetFullPath($wanted).TrimEnd('\', '/') }
+    catch {
+        return [pscustomobject]@{ Ok = $false; Path = $wanted; Error = 'that path cannot be read as a location' }
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($wanted, 'create the firstmate workspace')) {
+        return [pscustomobject]@{ Ok = $false; Path = $wanted; Error = 'not confirmed' }
+    }
+
+    try {
+        foreach ($d in @('', 'config', 'data', 'projects', 'state')) {
+            $target = if ($d) { Join-Path $wanted $d } else { $wanted }
+            if (-not (Test-Path -LiteralPath $target -PathType Container)) {
+                $null = New-Item -ItemType Directory -Path $target -Force
+            }
+        }
+        # herdr is the only session provider this port drives, so a fresh
+        # workspace names it rather than resolving to one nothing can run.
+        $backend = Join-Path $wanted 'config' 'backend'
+        if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) {
+            [System.IO.File]::WriteAllText($backend, "herdr`n", [System.Text.UTF8Encoding]::new($false))
+        }
+        # Two records, deliberately. .fm-home is what every entry point reads to
+        # resolve the home with no profile and no environment; .fm-workspace is
+        # what the bridge reads to know setup has HAPPENED, and survives even if
+        # the home is later repointed by hand.
+        [System.IO.File]::WriteAllText((Join-Path $RepoRoot '.fm-home'), $wanted,
+            [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::WriteAllText((Join-Path $RepoRoot '.fm-workspace'), "$wanted`n",
+            [System.Text.UTF8Encoding]::new($false))
+    } catch {
+        return [pscustomobject]@{ Ok = $false; Path = $wanted; Error = $_.Exception.Message }
+    }
+
+    [pscustomobject]@{ Ok = $true; Path = $wanted; Error = '' }
+}
+
+function ConvertTo-FmBridgePlainText {
+    <#
+        .SYNOPSIS
+        Strip internal machinery out of a line before the captain sees it.
+
+        .DESCRIPTION
+        `AGENTS.md` section 9's translation contract is a UI requirement, not a
+        chat habit, and piping raw status lines into a panel is exactly the
+        mistake it exists to prevent. Observed on screen: file paths, branch
+        names, bracketed decision keys, percentage prefixes and line references
+        into this repo's own documents.
+
+        This removes the labels that are noise to a reader. It does not pretend
+        to be a full translation - a worker writes its own note and only that
+        worker knows what it meant - so the honest goal is to strip what is
+        certainly internal and leave the sentence alone.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+    $s = $Text
+
+    $s = $s -replace '^\s*[a-z-]+\s*:\s*', ''          # the state prefix
+    $s = $s -replace '\[\s*\d{1,3}\s*%\s*\]\s*', ''     # a percentage prefix
+    $s = $s -replace '\[key=[^\]]+\]\s*', ''            # a decision key
+    $s = $s -replace '\breport at \S+', 'report ready'  # a path to a report
+    $s = $s -replace '\bat (?:data|state|docs|module|bin|tests)/\S+', ''
+    $s = $s -replace '\b(?:data|state|docs|module|bin|tests|ui)/[^\s,;]+', ''
+    $s = $s -replace '\bin branch \S+', ''              # a branch name
+    $s = $s -replace '\bfm/[^\s,;]+', ''
+    $s = $s -replace '\b[A-Za-z0-9_.-]+\.(?:md|ps1|json|yml)\b(?:\s+\d+(?:-\d+)?)?', ''
+    $s = $s -replace '\s{2,}', ' '
+    $s = $s -replace '\s+([,;.])', '$1'
+    $s = $s.Trim().Trim('-', ';', ',').Trim()
+
+    if ($s) { $s = $s.Substring(0, 1).ToUpper() + $s.Substring(1) }
+    $s
+}
+
 function Get-FmBridgeFleet {
     <#
         .SYNOPSIS
@@ -274,7 +432,7 @@ function Get-FmBridgeFleet {
                 if ($lines.Count) {
                     $last = [string]$lines[-1]
                     if ($last -match '^\s*([a-z-]+)\s*:') { $st = $Matches[1] }
-                    $note = ($last -replace '^\s*[a-z-]+\s*:\s*', '') -replace '^\[\s*\d{1,3}\s*%\s*\]\s*', ''
+                    $note = ConvertTo-FmBridgePlainText -Text $last
 
                     if ($st -eq 'done') {
                         $percent = 100
@@ -298,7 +456,7 @@ function Get-FmBridgeFleet {
                             $decisions += [pscustomobject]@{
                                 Task     = $id
                                 Key      = $key
-                                Question = ($body -replace '\[\s*\d{1,3}\s*%\s*\]\s*', '' -replace '\[key=[^\]]+\]\s*', '').Trim()
+                                Question = ConvertTo-FmBridgePlainText -Text $body
                             }
                         } elseif ($s -match '^\s*resolved\s*:') {
                             $key = if ($s -match '\[key=([^\]]+)\]') { $Matches[1] } else { 'default' }

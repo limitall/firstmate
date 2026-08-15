@@ -64,7 +64,14 @@ $ErrorActionPreference = 'Stop'
 
 $root  = Split-Path -Parent $PSScriptRoot
 $uiDir = Join-Path $root 'ui'
-$home_ = Get-FmHome
+
+# FIRST RUN. When this machine has never been told where the workspace goes, the
+# bridge starts WITHOUT an engine and the browser asks. The captain should not
+# have to know a directory layout before they can start - and they should not be
+# asked in a terminal, since the whole point is that the terminal is not the
+# surface.
+$configured = Test-FmBridgeConfigured -RepoRoot $root
+$home_ = if ($configured) { Get-FmBridgeWorkspace -RepoRoot $root } else { '' }
 # Read once, at startup. The address is a standing property of the home, not a
 # per-message setting, so every surface this bridge feeds uses the same word.
 $captainName = Get-FmCaptainName
@@ -89,16 +96,38 @@ catch {
 }
 
 # ---- the engine -------------------------------------------------------------
+# A function, because on first run it starts AFTER the captain has chosen a
+# workspace in the browser rather than before the listener exists.
 $session = $null
-if (-not $NoEngine) {
+function Start-Engine {
+    # The entry point owns the decision to run at all; this is the mechanics.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Local helper over New-FmBridgeSession, which the entry point has already decided to call.')]
+    [CmdletBinding()]
+    param(
+        [string]$HomePath,
+        # Taken as parameters rather than read from the enclosing scope, so the
+        # analyzer can see they are used - and so this reads as a function rather
+        # than something that quietly depends on where it was defined.
+        [bool]$Suppressed,
+        [string]$ModelName
+    )
+    if ($Suppressed -or -not $HomePath) { return $null }
     [Console]::Out.WriteLine('fm-bridge: starting the firstmate session...')
-    $session = New-FmBridgeSession -HomePath $home_ -Model $Model
-    if ($null -eq $session) {
+    $s = New-FmBridgeSession -HomePath $HomePath -Model $ModelName
+    if ($null -eq $s) {
         [Console]::Error.WriteLine('fm-bridge: could not start a firstmate session (is the Claude CLI installed?)')
         [Console]::Error.WriteLine('           serving read-only; the page will say so rather than pretend')
     } else {
-        [Console]::Out.WriteLine("fm-bridge: session up (id $($session.SessionId))")
+        [Console]::Out.WriteLine("fm-bridge: session up (id $($s.SessionId))")
     }
+    $s
+}
+
+if ($configured) {
+    $session = Start-Engine -HomePath $home_ -Suppressed $NoEngine.IsPresent -ModelName $Model
+} else {
+    [Console]::Out.WriteLine('fm-bridge: first run - asking in the browser where the workspace goes')
 }
 
 [Console]::Out.WriteLine("fm-bridge: $prefix")
@@ -153,11 +182,47 @@ try {
 
                 if ($path -eq '/api/health') {
                     Write-Json -Response $res -Object @{
-                        ok      = $true
-                        engine  = ($null -ne $session -and -not $session.Process.HasExited)
-                        home    = $home_
-                        captain = $captainName
-                        session = $(if ($session) { $session.SessionId } else { '' })
+                        ok         = $true
+                        configured = $configured
+                        engine     = ($null -ne $session -and -not $session.Process.HasExited)
+                        home       = $home_
+                        captain    = $captainName
+                        suggested  = (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'firstmate')
+                        session    = $(if ($session) { $session.SessionId } else { '' })
+                    }
+                    continue
+                }
+
+                if ($path -eq '/api/setup') {
+                    # First run only. Creates the workspace where the captain
+                    # asked, then brings the engine up against it, so the page
+                    # goes straight from the question to a working fleet without
+                    # anyone restarting anything.
+                    if ($req.HttpMethod -ne 'POST') {
+                        Write-Json -Response $res -Object @{ error = 'POST only' } -Status 405
+                        continue
+                    }
+                    $setupBody = ''
+                    $sr2 = [System.IO.StreamReader]::new($req.InputStream, [System.Text.Encoding]::UTF8)
+                    try { $setupBody = $sr2.ReadToEnd() } finally { $sr2.Dispose() }
+                    $wantPath = ''
+                    try { $wantPath = [string]($setupBody | ConvertFrom-Json).path } catch { $wantPath = '' }
+
+                    $made = Initialize-FmBridgeWorkspace -RepoRoot $root -Path $wantPath -Confirm:$false
+                    if (-not $made.Ok) {
+                        Write-Json -Response $res -Object @{ ok = $false; error = $made.Error } -Status 400
+                        continue
+                    }
+
+                    $home_ = $made.Path
+                    $configured = $true
+                    $captainName = Get-FmCaptainName -ConfigDir (Join-Path $home_ 'config')
+                    [Console]::Out.WriteLine("fm-bridge: workspace created at $home_")
+                    $session = Start-Engine -HomePath $home_ -Suppressed $NoEngine.IsPresent -ModelName $Model
+                    Write-Json -Response $res -Object @{
+                        ok     = $true
+                        home   = $home_
+                        engine = ($null -ne $session -and -not $session.Process.HasExited)
                     }
                     continue
                 }
@@ -302,3 +367,4 @@ try {
     if ($session) { Stop-FmBridgeSession -Session $session -Confirm:$false }
     [Console]::Out.WriteLine('fm-bridge: stopped')
 }
+
