@@ -252,6 +252,10 @@ try {
                         tasks     = @($fleet.Tasks)
                         decisions = @($fleet.Decisions)
                         activity  = @($fleet.Activity)
+                        # What this machine is doing for itself, kept apart from
+                        # `tasks` so the screen never counts housekeeping as work
+                        # on the captain's code.
+                        house     = @($fleet.House)
                         at        = $fleet.At
                     }
                     continue

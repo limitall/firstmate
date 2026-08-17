@@ -471,6 +471,79 @@ function Convert-FmSpeechToText {
     [pscustomobject]@{ Ok = $false; Text = ''; Error = 'nothing was heard in that recording' }
 }
 
+function Get-FmBridgeVocabulary {
+    <#
+        .SYNOPSIS
+        Section 9's translation table, as ordered (pattern, plain word) pairs.
+
+        .DESCRIPTION
+        `AGENTS.md` section 9 lists the internal terms that must never reach the
+        captain and the plain noun each becomes. This is that list, and it is
+        deliberately a data table rather than a chain of replacements so the two
+        can be read against each other.
+
+        ORDER IS LOAD-BEARING. The longer phrase wins, because "primary checkout"
+        translated a word at a time becomes "primary local copy" - which reads as
+        a distinction the captain is meant to understand and is exactly the noise
+        this removes. Multi-word entries therefore come first.
+
+        WHERE SECTION 9 OFFERS A CHOICE, THE MILDEST READING WINS. `stale` may be
+        "waiting too long" or "stopped responding"; a panel that announces a
+        worker has stopped when it has merely gone quiet is a false alarm the
+        captain acts on, so it says the weaker of the two. The strong reading
+        belongs in an escalation a human wrote, not in an automatic rewrite.
+
+        PRODUCT NAMES ARE MACHINERY TOO. The runtime and worktree tools are named
+        in status lines constantly and mean nothing outside this repository, so
+        they are folded into the same "tool" noun as the rest.
+    #>
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param()
+    return @(
+        # Multi-word first - see ORDER IS LOAD-BEARING above.
+        [pscustomobject]@{ Pattern = '\bprimary\s+checkouts?\b'; Plain = 'main local copy' }
+        [pscustomobject]@{ Pattern = '\btask\s+worktrees?\b'; Plain = 'isolated local copy' }
+        [pscustomobject]@{ Pattern = '\blocal[\s-]main\b'; Plain = 'the local branch' }
+        [pscustomobject]@{ Pattern = '\bstatus\s+files?\b|\bmetadata\b|\btask\s+ids?\b'; Plain = 'record' }
+        [pscustomobject]@{ Pattern = '\bask[\s-]user\b|\bneeds[\s-]decisions?\b'; Plain = 'decision' }
+        [pscustomobject]@{ Pattern = '\bwake\s+queue\b'; Plain = 'notifications' }
+        [pscustomobject]@{ Pattern = '\bfail[\s-]closed\b|\bfails\s+closed\b|\bfail\s+loudly\b'; Plain = 'stops safely' }
+        [pscustomobject]@{ Pattern = '\bfail[\s-]open\b|\bfails\s+open\b'; Plain = 'continues without that check' }
+
+        # Places.
+        [pscustomobject]@{ Pattern = '\bworktrees?\b|\bcheckouts?\b'; Plain = 'local copy' }
+
+        # People and their instructions.
+        [pscustomobject]@{ Pattern = '\bcrewmates?\b'; Plain = 'worker' }
+        [pscustomobject]@{ Pattern = '\bsecondmates?\b'; Plain = 'second mate' }
+        [pscustomobject]@{ Pattern = '\bbriefs?\b'; Plain = 'instructions' }
+
+        # Lifecycle.
+        [pscustomobject]@{ Pattern = '\bteardowns?\b'; Plain = 'cleanup' }
+        [pscustomobject]@{ Pattern = '\btorn\s+down\b'; Plain = 'cleaned up' }
+        [pscustomobject]@{ Pattern = '\bpromot(?:e|ed|ion)\b'; Plain = 'carried forward' }
+
+        # Supervision. `stale` and `wedged` take the mild reading on purpose.
+        [pscustomobject]@{ Pattern = '\bwatchers?\b'; Plain = 'monitoring' }
+        [pscustomobject]@{ Pattern = '\bheartbeats?\b'; Plain = 'sign of life' }
+        [pscustomobject]@{ Pattern = '\bstale\b'; Plain = 'quiet for a while' }
+        [pscustomobject]@{ Pattern = '\bwedged\b'; Plain = 'stuck' }
+        [pscustomobject]@{ Pattern = '\bwakes?\b'; Plain = 'notification' }
+
+        # Tools, including the ones with product names.
+        [pscustomobject]@{ Pattern = '\bharness(?:es)?\b|\badapters?\b'; Plain = 'tool' }
+        [pscustomobject]@{ Pattern = '\bherdr\b|\btreehouse\b|\borca\b|\bcmux\b'; Plain = 'the tool' }
+
+        # Delivery vocabulary. `no-mistakes` is a mode name, not an outcome, and
+        # reads on a panel as a boast about the work rather than a label.
+        [pscustomobject]@{ Pattern = '\bdirect[\s-]PR\b'; Plain = 'a pull request' }
+        [pscustomobject]@{ Pattern = '\blocal[\s-]only\b'; Plain = 'a local branch' }
+        [pscustomobject]@{ Pattern = '\bno[\s-]mistakes(?:[\s-]prod[\s-]only)?\b'; Plain = 'the full checks' }
+        [pscustomobject]@{ Pattern = '\byolo\b'; Plain = 'deciding routine things itself' }
+    )
+}
+
 function ConvertTo-FmBridgePlainText {
     <#
         .SYNOPSIS
@@ -487,6 +560,25 @@ function ConvertTo-FmBridgePlainText {
         to be a full translation - a worker writes its own note and only that
         worker knows what it meant - so the honest goal is to strip what is
         certainly internal and leave the sentence alone.
+
+        STRIPPING THE LABELS IS NOT ENOUGH, and that gap shipped once. Removing
+        the `done:` prefix and the path out of
+
+            done: PR ready in worktree fm/tg-build
+
+        leaves "PR ready in worktree" on screen, which is still three quarters of
+        section 9's forbidden list. Measured on four of five sample lines:
+        `worktree`, `crewmate`, `teardown`, `harness`, `watcher`, `heartbeat` and
+        the runtime's own product name all reached the panel intact. So the
+        vocabulary is translated too, from section 9's own table, and the
+        `harness=claude backend=herdr` machinery pairs are dropped whole.
+
+        WORD-FOR-WORD, NEVER SENTENCE-FOR-SENTENCE. Each replacement is the noun
+        section 9 names for that term, so the sentence a worker wrote survives
+        with its meaning: "crewmate wedged" becomes "worker stuck", not a
+        rewritten summary this function is in no position to write. Where section
+        9 offers several readings the mildest is used, because overstating a
+        worker's note is worse than leaving it flat.
 
         A URL IS NEVER MACHINERY, and every rule below would happily eat one:
         `https:` reads as a state prefix, and a path segment spelt `docs/` or
@@ -521,6 +613,15 @@ function ConvertTo-FmBridgePlainText {
     $s = $s -replace '\bin branch \S+', ''              # a branch name
     $s = $s -replace '\bfm/[^\s,;]+', ''
     $s = $s -replace '\b[A-Za-z0-9_.-]+\.(?:md|ps1|json|yml)\b(?:\s+\d+(?:-\d+)?)?', ''
+    # The machinery pairs a status line carries verbatim. Named rather than
+    # matched as any `word=value`, because a worker's own note may legitimately
+    # contain one and eating that would lose meaning rather than jargon.
+    $s = $s -replace '\b(?:harness|backend|runtime|adapter|window|worktree|project|model|effort|kind|mode|yolo|tasktmp|endpoint_task_id|treehouse_lease_id)=\S+', ''
+
+    foreach ($rule in (Get-FmBridgeVocabulary)) {
+        $s = [regex]::Replace($s, $rule.Pattern, $rule.Plain, 'IgnoreCase')
+    }
+
     $s = $s -replace '\s{2,}', ' '
     $s = $s -replace '\s+([,;.])', '$1'
     $s = $s.Trim().Trim('-', ';', ',').Trim()
@@ -623,6 +724,83 @@ function Get-FmBridgeFleet {
         Tasks     = @($tasks | Sort-Object Id)
         Decisions = @($decisions)
         Activity  = @($activity | Sort-Object At -Descending | Select-Object -First 24)
+        House     = @(Get-FmBridgeHouseWork)
         At        = (Get-Date).ToString('HH:mm:ss')
     }
+}
+
+function Get-FmBridgeHouseWork {
+    <#
+        .SYNOPSIS
+        What this machine is doing for itself, as distinct from work on the
+        captain's projects.
+
+        .DESCRIPTION
+        THE CAPTAIN ASKED "WHAT IS RUNNING" AND THE SCREEN SAID NOTHING while
+        four things were. Both answers were true and that is the whole problem:
+        the panel counts work on the captain's projects, there was genuinely
+        none, and it reported that as if it were the whole question. A screen
+        that quietly narrows the question it answers is worse than one that
+        answers nothing, because it is believed.
+
+        KEPT SEPARATE FROM Tasks ON PURPOSE. Folding these in would show "4 under
+        way" when none of it touches the captain's code, which is a bigger lie
+        than the blank panel it replaces. Housekeeping and project work are
+        different things and the screen says so.
+
+        READ FROM LIVE PROCESSES, not from a record this could drift from. The
+        durable records answer "what work exists"; only the process table
+        answers "what is running right now", which is the question asked.
+
+        NAMED IN THE CAPTAIN'S NOUNS. `AGENTS.md` section 9 binds on a panel
+        exactly as in chat, so nothing here surfaces a script name.
+    #>
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param()
+
+    # Script actually being RUN, to plain noun. Anything not named here is
+    # deliberately not shown: an unrecognised process is not evidence of work the
+    # captain cares about, and guessing a label for it would put machinery back
+    # on the screen.
+    $known = @{
+        'fm-bridge'  = @{ Name = 'This screen'; Detail = 'ready' }
+        'fm-tg-poll' = @{ Name = 'Listening to your phone'; Detail = 'ready' }
+        'fm-watch'   = @{ Name = 'Watching for progress'; Detail = 'ready' }
+        'fm-doctor'  = @{ Name = 'Health check'; Detail = 'running' }
+    }
+
+    $out = [System.Collections.Generic.List[object]]::new()
+    try {
+        $procs = @(Get-CimInstance Win32_Process -Filter "Name='pwsh.exe'" -ErrorAction Stop)
+    } catch {
+        # A process table this cannot read is reported as not knowing, never as
+        # nothing running - the second is the failure this function exists for.
+        return @([pscustomobject]@{ Name = 'Could not check what is running'; Detail = 'unknown' })
+    }
+
+    # MATCH WHAT IS RUNNING, NOT WHAT IS MENTIONED. A plain substring search over
+    # the command line reported "Watching for progress" for two processes that
+    # merely NAMED that script inside a long `-Command` string - so the panel
+    # built to stop the screen misleading the captain misled them within the
+    # hour. Only the argument of `-File` is the script actually being executed.
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($p in $procs) {
+        if (-not $p.CommandLine) { continue }
+        if ($p.CommandLine -notmatch '(?i)-File\s+"?([^"]*?\bfm-[a-z0-9-]+)\.ps1"?') { continue }
+        $null = $seen.Add((Split-Path $Matches[1] -Leaf))
+    }
+
+    # A test run is a pwsh process with no script of its own, so it is recognised
+    # by the runner it invokes rather than by a -File argument.
+    if (@($procs | Where-Object { $_.CommandLine -match '(?i)Invoke-Pester' }).Count) {
+        $out.Add([pscustomobject]@{ Name = 'Running the checks'; Detail = 'working' })
+    }
+
+    foreach ($name in ($seen | Sort-Object)) {
+        if ($known.ContainsKey($name)) {
+            $out.Add([pscustomobject]@{ Name = $known[$name].Name; Detail = $known[$name].Detail })
+        }
+    }
+    $out.ToArray()
 }

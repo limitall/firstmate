@@ -112,6 +112,12 @@ body::before{
 .col{display:flex;flex-direction:column;gap:16px;min-height:0}
 
 /* ---------------- metric rows ---------------- */
+/* Housekeeping sits under a rule, visually subordinate to project work, so it
+   reads as context rather than as something demanding the captain's attention. */
+.house{margin-top:11px;padding-top:9px;border-top:1px solid rgba(120,190,215,.16)}
+.house .lbl{margin-bottom:5px}
+.house .lbl span{font-size:9px;letter-spacing:.13em;text-transform:uppercase;opacity:.55}
+.house .sub{margin:2px 0}
 .met{margin-bottom:13px}
 .met:last-child{margin-bottom:0}
 .met .lbl{display:flex;align-items:baseline;gap:8px;margin-bottom:5px}
@@ -144,6 +150,10 @@ body::before{
 .logline span{color:var(--txt-dim);letter-spacing:.03em}
 .logline.hi span{color:var(--cy)}
 .logline.warn span{color:var(--amber)}
+/* A worker's own report, distinct from the captain's conversation above it, so
+   the two are never read as one voice. */
+.logline.work span{color:var(--txt)}
+.logline.work time{color:var(--cy);opacity:.7}
 
 /* ---------------- decisions ---------------- */
 .dec{padding-bottom:12px;margin-bottom:12px;border-bottom:1px solid var(--edge-soft)}
@@ -837,12 +847,27 @@ const tasksEl=document.getElementById('tasks');
 const decEl=document.getElementById('decisions');
 const logEl=document.getElementById('log');
 const LOG=[];
+// Identities of worker events already on screen, so polling the same records
+// every few seconds shows each one once rather than every time.
+const SEEN=new Set();
 
 function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-function paintTasks(tasks){
+function paintTasks(tasks,house){
   tasksEl.innerHTML='';
-  if(!tasks.length){ tasksEl.innerHTML='<p class="sub">Nothing under way.</p>'; }
+  // "Nothing under way." while four things were running. Both true: this panel
+  // counts work on the captain's PROJECTS and there was none. But a screen that
+  // silently narrows the question it answers gets believed, so when there is no
+  // project work it now says what IS running instead of implying nothing is.
+  if(!tasks.length){
+    tasksEl.innerHTML='<p class="sub">No work on your projects right now.</p>';
+    if(house && house.length){
+      const h=document.createElement('div'); h.className='house';
+      h.innerHTML='<div class="lbl"><span>On this machine</span></div>'+
+        house.map(x=>'<p class="sub">'+esc(x.Name)+' &mdash; '+esc(x.Detail)+'</p>').join('');
+      tasksEl.appendChild(h);
+    }
+  }
   tasks.forEach(k=>{
     const known = k.Percent !== null && k.Percent !== undefined;
     const done = k.State === 'done';
@@ -888,6 +913,14 @@ function paintDecisions(ds){
 
 function paintLog(){
   logEl.innerHTML='';
+  // An empty box is not an empty list - it reads as a panel that failed to
+  // load. Observed on screen: Activity was blank while the panel beside it
+  // managed to say "Nothing waiting on you.", so the captain could not tell
+  // idle from broken. Every panel here says its own absence out loud.
+  if(!LOG.length){
+    logEl.innerHTML='<p class="sub">Nothing has happened yet.</p>';
+    return;
+  }
   LOG.forEach(([tm,msg,cls])=>{
     const l=document.createElement('div'); l.className='logline '+(cls||'');
     l.innerHTML='<time>['+esc(tm)+']</time><span>'+esc(msg)+'</span>';
@@ -914,15 +947,36 @@ async function refreshFleet(){
       heard.textContent = f.dictated;
       respond(f.dictated);
     }
-    paintTasks(f.tasks||[]);
+    paintTasks(f.tasks||[], f.house||[]);
     paintDecisions(f.decisions||[]);
     // The bridge has been sending this all along and the page threw it away, so
     // Activity sat empty while there was plenty to show. Seeded once from the
     // durable records; everything after arrives through logAdd as it happens.
-    if(!LOG.length && f.activity && f.activity.length){
-      f.activity.forEach(a=>LOG.push([a.At, a.Task.replace(/[-_]+/g,' ')+': '+a.Text, '']));
-      paintLog();
+    // MERGED EVERY POLL, NOT SEEDED ONCE. This used to fill the panel on the
+    // first fetch and never touch it again, so a worker's progress after that
+    // moment never appeared: Activity was live only for the captain's own
+    // messages, and stone dead for the work it is named after. Anything already
+    // shown is skipped by its own identity, so a repeated fetch of the same
+    // events cannot duplicate a line.
+    if(f.activity && f.activity.length){
+      const fresh=[];
+      f.activity.forEach(a=>{
+        const key=a.Task+' '+a.At+' '+a.Text;
+        if(SEEN.has(key)) return;
+        SEEN.add(key);
+        fresh.push([a.At, a.Task.replace(/[-_]+/g,' ')+': '+a.Text, 'work']);
+      });
+      // The server sends newest first and LOG is newest-first too, so the batch
+      // is replayed oldest-first to land in the right order at the top.
+      fresh.reverse().forEach(entry=>{
+        LOG.unshift(entry);
+        if(LOG.length>40) LOG.pop();
+      });
     }
+    // Painted unconditionally. Guarding this on there being something to show
+    // is what left the panel blank rather than saying so: with no activity the
+    // seed was skipped, and skipping the seed skipped the paint with it.
+    paintLog();
     const dot=document.getElementById('dot');
     const bs=document.getElementById('bridgeState');
     if(f.engine){ dot.classList.remove('amber'); bs.textContent='Listening'; }
@@ -963,7 +1017,12 @@ async function bootCheck(){
 function startFleet(){
   firstRun.style.display='none';
   refreshFleet();
-  if(!fleetTimer) fleetTimer = setInterval(refreshFleet, 4000);
+  // Two seconds, because this is the captain's only view of work they are not
+  // watching directly - a worker's progress reaching the screen four seconds
+  // late is four seconds of a panel that is quietly wrong. The call reads
+  // durable records already on this machine, so the cost of asking often is
+  // small and paid locally.
+  if(!fleetTimer) fleetTimer = setInterval(refreshFleet, 2000);
 }
 
 async function doSetup(){
