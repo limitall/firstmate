@@ -4199,7 +4199,22 @@ It still can: an eviction that lands earlier in the victim's critical section lo
 
 **Why the concurrent-increment test was not tightened to catch it.** Asserting that every release succeeded would make that test catch an eviction directly, rather than only when one happens to lose a write - but it would then fail intermittently while 28.4 is open, and a red suite is not an acceptable way to hold a finding. That assertion belongs with the fix for 28.4.
 
-### 28.5 One red herring, recorded so it is not chased twice
+### 28.5 Suite and analyzer, on the rebased tree
+
+```
+Invoke-Pester -Path ./tests
+  1918 passed  0 failed  25 skipped        (44 files, 1980s)
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+  0 findings
+```
+
+The 25 skips are the pre-existing symlink-privilege ones.
+Two earlier runs got there:
+
+- **Run 1 failed 9**, all of them the fresh-worktree clone artifact sections 22.5 and 22.6 already own - `FmContract`'s own-instruction-surface trio plus six `FmInstall`/`Invoke-FmDoctor` tests that read the same surface. `FmInstall.Tests.ps1` repaired the surface mid-run, exactly as 22.6 describes, and re-running that file alone afterwards passed all 77. Nothing in this work touches those paths.
+- **Run 2 failed 1**, and that one was real: `hands the lock on when a holder is killed outright` failed in its own CLEANUP with a terminating `IOException: The pipe is being closed`. `Remove-Job -Force` stops the job first, this test has just killed that job's process on purpose, and `-ErrorAction` does not suppress a terminating error. Every assertion in the test had already passed. The reap is now wrapped; no assertion was relaxed and no timing value was touched.
+
+### 28.6 One red herring, recorded so it is not chased twice
 
 An instrumented run showed a worker throwing `this process already holds the lock` for 91 consecutive iterations and losing 91 increments.
 That was **not** the lock.
