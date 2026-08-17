@@ -572,7 +572,21 @@ Describe 'One holder, proven with real processes' {
                 $lock.RecoveredProcessId | Should -Be $holderPid
             } finally { $null = Unlock-FmLock -Lock $lock }
         } finally {
-            $holder | Remove-Job -Force -ErrorAction SilentlyContinue
+            # Remove-Job -Force STOPS the job first, and this test has just
+            # killed that job's process outright - so the transport it talks to
+            # may already be gone, which surfaces as a TERMINATING
+            # "IOException: The pipe is being closed". -ErrorAction governs
+            # non-terminating error records and does not suppress it, so the
+            # reaping step failed the test after every assertion in it had
+            # already passed. Measured once in a whole-suite run on Windows 11.
+            #
+            # Caught rather than removed: the job object is still worth reaping
+            # when it can be, and a cleanup that cannot reap a process this test
+            # deliberately killed is not a mutual-exclusion defect and must not
+            # be reported as one. No assertion is relaxed by this.
+            try { $holder | Remove-Job -Force -ErrorAction SilentlyContinue } catch {
+                Write-Verbose "test cleanup: could not reap the killed holder job - $($_.Exception.Message)"
+            }
         }
     }
 }
