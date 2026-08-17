@@ -323,7 +323,7 @@ Describe 'Stale-holder recovery' {
                 $live = Request-FmLock -Path $path
                 $live | Should -Not -BeNullOrEmpty -Because 'the stale lock is legitimately recoverable'
                 try {
-                    Invoke-FmLockBreak -LockPath $path -HolderProcessId $deadPid |
+                    Invoke-FmLockBreak -LockPath $path -HolderRecord "$deadPid" |
                         Should -BeFalse -Because 'the holder it proved stale is no longer the holder'
                     $after = Get-FmLockInfo -Path $path
                     $after.State | Should -Be 'held' -Because 'the live holder must survive an out-of-date break'
@@ -343,6 +343,79 @@ Describe 'Stale-holder recovery' {
         }
     }
 
+    It 'reads a pid file that went away as free, not as a very old stale one' {
+        # THE DEFECT THIS PINS. Reproduced under contention and traced in
+        # docs/windows-e2e-evidence.md section 18, which owns the numbers.
+        #
+        # A release is exactly one delete, so the pid file can vanish between
+        # this function's existence check and its next line. The age was taken
+        # first, and Get-FmPathAge answers 999999 - "very old" - for a path it
+        # cannot read at all. A lock that had just been released therefore read
+        # as an unreadable holder 999999 seconds old, which is to say STALE, and
+        # Request-FmLock broke a lock the next process was already holding.
+        #
+        # Staged with the read mocked, because the window is two adjacent
+        # statements and cannot be hit on demand by timing. The mock does what a
+        # releasing holder does - deletes the pid file - and then answers what
+        # Read-FmStateFile really answers for a file that is gone. The pid file
+        # is backdated so that ANY age read is comfortably past the grace: the
+        # property is that a pid file which is not there when it is read is not
+        # judged by an age at all, whatever that age happens to say.
+        InModuleScope Firstmate {
+            $path = Join-Path ([System.IO.Path]::GetTempPath()) ("vanished-" + [guid]::NewGuid().ToString('N'))
+            $null = New-Item -ItemType Directory -Path $path -Force
+            $pidFile = Join-Path $path 'pid'
+            [System.IO.File]::WriteAllText($pidFile, "$PID`n")
+            [System.IO.File]::SetLastWriteTimeUtc($pidFile, [datetime]::UtcNow.AddSeconds(-60))
+            $realRead = Get-Command Read-FmStateFile
+            Mock Read-FmStateFile {
+                if ($Path -like '*[\\/]pid') {
+                    [System.IO.File]::Delete($Path)     # the holder releases, right here
+                    return $null
+                }
+                & $realRead -Path $Path
+            }
+            try {
+                $info = Get-FmLockInfo -Path $path
+                $info.State | Should -Be 'free' -Because 'a released lock is free, not a holder to be broken'
+                $info.HolderRecord | Should -BeNullOrEmpty -Because 'nothing was read, so no holder was observed'
+            } finally { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It 'refuses a break for a stale verdict that observed no holder at all' {
+        # The other half of the same defect. The guard above - break only the
+        # holder you proved stale - took a process id and SKIPPED ITSELF when it
+        # got none, so precisely the verdicts with the least evidence behind them
+        # broke whatever they found. A stale verdict reached because the pid
+        # could not be parsed has no process id to give it, and the eviction
+        # captured in docs/windows-e2e-evidence.md section 18 came through
+        # exactly that door.
+        InModuleScope Firstmate {
+            $path = Join-Path ([System.IO.Path]::GetTempPath()) ("nullbreak-" + [guid]::NewGuid().ToString('N'))
+            $live = Request-FmLock -Path $path
+            try {
+                $live | Should -Not -BeNullOrEmpty
+                Invoke-FmLockBreak -LockPath $path -HolderRecord $null |
+                    Should -BeFalse -Because 'a verdict that named nobody may not evict somebody'
+                $after = Get-FmLockInfo -Path $path
+                $after.State | Should -Be 'held'
+                $after.ProcessId | Should -Be $PID
+
+                # The whole point: nobody else can now take a lock this process
+                # still believes it holds.
+                $script:FmHeldLocks.Remove((Get-FmLockKey -Path $path)) | Out-Null
+                $thief = Request-FmLock -Path $path
+                if ($thief) { $null = Unlock-FmLock -Lock $thief -Confirm:$false }
+                $thief | Should -BeNullOrEmpty -Because 'two processes must never hold one lock'
+            } finally {
+                $script:FmHeldLocks[(Get-FmLockKey -Path $path)] = $live
+                $null = Unlock-FmLock -Lock $live -Confirm:$false
+                Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
     It 'still recovers a lock whose recorded holder really is the dead one' {
         # The guard above must not have turned stale recovery off: a break that
         # names the holder it proved stale still succeeds. Without this, the fix
@@ -353,7 +426,7 @@ Describe 'Stale-holder recovery' {
             try {
                 $deadPid = 2147483600
                 [System.IO.File]::WriteAllText((Join-Path $path 'pid'), "$deadPid`n")
-                Invoke-FmLockBreak -LockPath $path -HolderProcessId $deadPid | Should -BeTrue
+                Invoke-FmLockBreak -LockPath $path -HolderRecord "$deadPid" | Should -BeTrue
                 (Get-FmLockInfo -Path $path).State | Should -Be 'free'
             } finally { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
         }

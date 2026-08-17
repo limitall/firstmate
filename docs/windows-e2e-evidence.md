@@ -2179,10 +2179,17 @@ a separate defect; what is closed is the question of whose they are.
   diagnosed and fixed (section 21.8); the other three are not.
 - **`gh` is absent on the laptop**, so `direct-PR` cannot complete there. An
   install, not a code defect (section 13).
-- **One intermittent lost increment in the lock area** (section 24.4). Seen once
-  in a whole-suite run, with both of that test's false-attribution guards
-  passing; does not reproduce alone, at idle or under load. It belongs to the
-  lock area, so an install-area lane reports it rather than editing it.
+- **One intermittent lost increment in the lock area** (section 24.4).
+  **SETTLED - see section 28.** It was the lock, not the test: reproduced
+  deliberately under contention, traced to a stale verdict that named nobody
+  breaking a live holder's claim, and fixed.
+- **The lock still evicts a live holder on a torn identity read** (section 28.4).
+  A second, distinct mechanism found while settling the one above: `pid` and
+  `pid-identity` are read as separate operations, so the pid-reuse guard can
+  compare one holder's pid against another holder's identity and report a live
+  holder stale. Traced with the eviction captured. Not fixed there, because every
+  sound fix changes the lock record's layout or its staleness mechanism, which is
+  a cross-platform compatibility decision rather than an implementation one.
 - **`tests/FmInstall.Tests.ps1` repairs the checkout it runs in** (section 21.6),
   which dirties a fresh Windows worktree mid-suite and leaves it needing
   `--force` to tear down. The install area's file, so it is reported here.
@@ -2780,7 +2787,6 @@ One thing worth naming so a later reader does not misread it: that checkout
 writes that landed *after* this run had finished and cleaned up. That is another
 lane working in the captain's checkout concurrently, not this one. Timestamps
 there are not evidence about this task either way.
-=======
 
 ---
 
@@ -4073,3 +4079,129 @@ A tier-1 question never closes a decision.
   waits up to 24 hours on Telegram's servers and is then dropped. That is a
   property of the design, not a gap in the testing, and it stays true until the
   long-lived service exists.
+
+---
+
+## 28. The concurrent-increment check was not flaky - the lock was - `PROVEN (Windows 11)`
+
+This settles the finding section 24.4 left open.
+
+**Verdict: the lock.**
+`FmLock.Tests.ps1`'s "never lets two processes increment a counter at once" read 35 where 36 increments were made, on a busy machine, and passed four times in isolation - the classic shape of a flaky test.
+It is not flaky.
+Two processes really were inside one critical section, the counter really did lose a write, and the mechanism was captured in the act.
+
+Run on 2026-08-17, Windows 11 Pro 26200, 12 cores, PowerShell 7.6.4.
+
+### 28.1 Reproduced deliberately, not by chance
+
+Section 24.4 could not reproduce it because it ran the test as written.
+The shape is right - workers take the lock, read a counter, sleep 5ms, write it back - but 3 workers x 12 iterations is 36 chances, and the defect fires at roughly one lost increment per 1200.
+Scaled to 6 worker processes x 100 iterations per run, with 12 to 16 CPU-spinning `pwsh` processes as competing load, it reproduces on demand.
+
+The workers were instrumented so a lost increment could be attributed rather than guessed:
+
+| Signal | What it proves |
+| --- | --- |
+| `Unlock-FmLock` returning false | the pid file no longer named this worker when it released, so something took the lock off a live holder |
+| the same counter value read twice | two processes were inside the critical section together |
+| the worker's own throws and unfinished jobs | a worker that died never made an increment, which is NOT a mutual-exclusion defect |
+
+Four runs at that scale, 2400 increments, against the code as it stood:
+
+```
+Run Seconds Expected Final Lost WorkerErrors StolenLocks DupReads
+  1     121      600   600    0            0           4
+  2     126      600   599    1            0           5  value 110 read 2x
+  3     159      600   599    1            0           1  value 358 read 2x
+  4     135      600   600    0            0           5
+```
+
+Fifteen live holders lost their lock, two increments were lost, and each loss came with two workers reading the same counter value.
+No worker threw and none was unfinished, so the losses are not workers dying - which is exactly what section 24.4's guards already established for the original sighting.
+
+### 28.2 The defect: a stale verdict about nobody, breaking whoever was there
+
+`Get-FmLockInfo` took the pid file's AGE before its CONTENT.
+A release is exactly one delete, so the pid file can vanish between the function's existence check and the age read, and `Get-FmPathAge` answers its documented 999999 sentinel - "very old", so that no caller mistakes an unreadable path for a fresh one - for a path it cannot read at all.
+A lock that had just been released therefore read as a holder that was unreadable and 999999 seconds old, which is to say `stale`.
+
+That verdict has no process id in it, because no pid was parsed.
+`Invoke-FmLockBreak`'s guard - break only the holder you proved stale, the guard its own help calls "the whole safety" - took a process id and **skipped itself entirely when it got none**.
+So exactly the verdicts with the least evidence behind them broke whatever pid file happened to be there by the time the break ran, which under contention is the next process's live claim.
+
+Instrumented, the whole chain lands in two lines from one worker:
+
+```
+36972 12:34:15.9194255 INFO-UNREADABLE state=stale age=999999 raw=[] exists=True now=[35908]
+36972 12:34:16.2208986 BREAK   holder=[]  age=999999 victim=[35908] result=True
+```
+
+A stale verdict naming nobody, breaking a lock that live holder 35908 was holding.
+The victim's own log line is the other half:
+
+```
+i=40 pid=35908 unlock=False
+```
+
+35908 released and found the pid file no longer named it - silently, with nothing thrown, which is why this has always looked like a flaky test rather than a defect.
+
+### 28.3 The fix
+
+Two changes, both in `module/Firstmate/Private/FmLock.ps1`:
+
+- **The pid file is read before its age is taken.** A pid file that is not there when it is read is the same answer as a pid file that was not there one statement earlier, which is `free`. The age sentinel is out of the decision entirely rather than merely less likely to be hit. A read that THREW is a different thing - something is there and cannot be read - and keeps the existing grace treatment, but records no holder.
+- **The break is conditional on the exact record judged, not on a parsed pid.** `Get-FmLockInfo` publishes the exact text it read as `.HolderRecord`, `Request-FmLock` passes it, and `Invoke-FmLockBreak` refuses outright when it is `$null`. When the text is a pid it is the pid, so legitimate stale recovery is unchanged; when it is blank or malformed the break still only removes the same blank or malformed claim that was judged.
+
+Two tests pin them, and both were confirmed to FAIL against the code with only these changes backed out:
+
+```
+[-] reads a pid file that went away as free, not as a very old stale one
+    Expected: 'free'   But was: 'stale'
+[-] refuses a break for a stale verdict that observed no holder at all
+    Expected $false, because a verdict that named nobody may not evict somebody, but got $true
+```
+
+Every other test in the file passed with the fix backed out, so these two are the only thing guarding it.
+
+After the fix, at the same scale and under the same load: **4200 increments across seven runs, zero lost, zero duplicate reads.**
+Two live-holder evictions remain in that total, both in one run, and they are 28.4 rather than this defect.
+
+### 28.4 A SECOND defect, reported not fixed: a torn pid/identity read
+
+The evictions that survive the fix have a different mechanism, and it is reported here rather than fixed because the brief for this work scopes out redesigning the locking approach - which every sound fix for it requires.
+
+`Get-FmLockInfo` reads the `pid` file and then reads the `pid-identity` sidecar as a separate operation.
+Between those two reads the lock can be released and re-taken any number of times, so the identity it compares can belong to a **different holder** than the pid it compares it against.
+The pid-reuse guard then fires on a live, legitimate holder and reports it stale - and this verdict DOES carry a process id, so the break's guard passes and the eviction succeeds:
+
+```
+9868 12:59:20.2672849 INFO-DEAD pid=24792 age=0 rec=[24792]
+       recordedIdentity=[windows-starttime=639225683282158377 name=pwsh]
+       observedIdentity=[windows-starttime=639225683322273488 name=pwsh]
+       getprocess=[found] plainAlive=True
+9868 12:59:20.3834679 BREAK-OK rec=[24792]
+```
+
+`getprocess=[found] plainAlive=True` - process 24792 was alive and holding the lock.
+The recorded and observed start times differ by 4.0 seconds because they belong to two different `pwsh` workers, and that same recorded token turns up against a second pid elsewhere in the same trace, which is the mis-pairing itself.
+
+**Why no fix here.** The pairing cannot be made provable by re-reading: pid, identity, pid can return the same pair through an A-B-A handover, so a re-read only narrows the window, and narrowing a window is what this task exists to avoid. The sound fixes each change something out of scope:
+
+- bind the identity to its pid inside the sidecar's content, which a Linux firstmate sharing the home would then misread as a mismatch and steal from;
+- key the sidecar by pid (`pid-identity.<pid>`), which adds a child to the record layout that `docs/foundation.md` documents as matching bash;
+- drop the sidecar and prove reuse from the pid file's claim time against the process's start time - sound, needs no sidecar at all, and changes the staleness mechanism outright.
+
+The last is the strongest and is the recommended direction, but choosing it is a cross-platform compatibility decision above an implementation worker.
+
+**Rate.** Three evictions in 4800 post-fix increments (0.06%) against fifteen in 2400 before it (0.63%), so this path is roughly a tenth of the original and did not lose an increment in any post-fix run.
+It still can: an eviction that lands earlier in the victim's critical section loses its write.
+
+**Why the concurrent-increment test was not tightened to catch it.** Asserting that every release succeeded would make that test catch an eviction directly, rather than only when one happens to lose a write - but it would then fail intermittently while 28.4 is open, and a red suite is not an acceptable way to hold a finding. That assertion belongs with the fix for 28.4.
+
+### 28.5 One red herring, recorded so it is not chased twice
+
+An instrumented run showed a worker throwing `this process already holds the lock` for 91 consecutive iterations and losing 91 increments.
+That was **not** the lock.
+It was a bug in the throwaway instrumentation: `(try { ... } catch { ... })` is not a valid PowerShell expression, so the diagnostic line raised `The term 'try' is not recognized` and aborted `Unlock-FmLock` before it cleared its held-lock table entry.
+Useful anyway - the diagnostic only runs on the release-refused path, so its failure is independent proof that 24792's release WAS refused, which is the victim half of 28.4.

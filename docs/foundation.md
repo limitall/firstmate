@@ -99,7 +99,7 @@ section 2). Enforced by `FmState.ps1` and asserted on raw bytes in
 | Area | bash | here | why |
 | --- | --- | --- | --- |
 | Lock publication | symlink to an owner directory | a `pid` file created with `FileMode.CreateNew` inside a permanent lock directory | Windows symlinks need a privilege ordinary sessions lack; exclusive file creation is atomic on both platforms |
-| Breaking a stale lock | a recursive `<lock>.steal` lock | one atomic rename of the dead holder's `pid` file | rename picks exactly one breaker in a single step, with no recursion that might not terminate |
+| Breaking a stale lock | a recursive `<lock>.steal` lock | one atomic rename of the exact `pid` record the caller proved stale | rename picks exactly one breaker in a single step, with no recursion that might not terminate; conditioning it on the record judged is what stops a late breaker evicting a live holder |
 | Waiting for a lock | waits forever | waits for a timeout, then throws naming the holder | an unattended agent blocked forever is indistinguishable from a wedge |
 | Appending a line | `>>`, atomic through the kernel's `O_APPEND` | serialized on a sibling lock | .NET's `FileMode.Append` seeks to end at open and writes at the offset it recorded, so concurrent appenders overwrite each other |
 | Process identity | `/proc/<pid>/stat` field 22 | the same on Linux; the absolute FILETIME behind `StartTime` on Windows | the token must read the same to the process itself and to an observer |

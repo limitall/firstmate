@@ -115,13 +115,21 @@ function Get-FmLockInfo {
 
         .DESCRIPTION
         States:
-          free     - no lock directory, or no pid file in it
+          free     - no lock directory, no pid file in it, or a pid file that
+                     was gone by the time this inspection read it
           held     - the recorded process is alive and still the same process
           claiming - a pid file exists but is not readable yet and is younger
                      than the stale grace: someone is mid-claim, treat as held
           stale    - the recorded process is gone, or the id was recycled by a
                      different process, or an unreadable claim outlived the grace
           invalid  - something that is not a lock directory sits at the path
+
+        .HolderRecord carries the EXACT text this inspection read out of the pid
+        file, or $null when it read nothing at all. That is what a break must be
+        conditional on, and it is not the same thing as .ProcessId: a stale
+        verdict reached because the pid could not be parsed has no ProcessId to
+        name, and a break with nothing to match against is a break of whatever
+        happens to be there - see Invoke-FmLockBreak.
 
         Never mutates anything. Recovery decisions are made only by Request-FmLock.
     #>
@@ -132,16 +140,17 @@ function Get-FmLockInfo {
     $full = Resolve-FmFullPath -Path $Path
     $pidFile = Join-Path $full 'pid'
     $info = [pscustomobject]@{
-        PSTypeName  = 'Firstmate.LockInfo'
-        Path        = $full
-        State       = 'free'
-        ProcessId   = $null
-        Identity    = $null
-        Home        = $null
-        Role        = $null
-        WatcherPath = $null
-        AgeSeconds  = $null
-        IsHeld      = $false
+        PSTypeName   = 'Firstmate.LockInfo'
+        Path         = $full
+        State        = 'free'
+        ProcessId    = $null
+        HolderRecord = $null
+        Identity     = $null
+        Home         = $null
+        Role         = $null
+        WatcherPath  = $null
+        AgeSeconds   = $null
+        IsHeld       = $false
     }
 
     if ([System.IO.File]::Exists($full)) {
@@ -151,10 +160,33 @@ function Get-FmLockInfo {
     if (-not [System.IO.Directory]::Exists($full)) { return $info }
     if (-not [System.IO.File]::Exists($pidFile)) { return $info }
 
-    $info.AgeSeconds = Get-FmPathAge -Path $pidFile
+    # THE PID FILE IS READ BEFORE ITS AGE IS TAKEN, AND THAT ORDER IS THE
+    # CORRECTNESS. A release is exactly one delete, so the pid file can vanish
+    # between the existence check above and this line. Get-FmPathAge answers its
+    # documented 999999 sentinel for a path it cannot read - "very old", so that
+    # no caller ever mistakes an unreadable path for a brand new one - and taking
+    # the age FIRST fed that sentinel into the grace comparison below. A lock
+    # that had just been released then read as a holder that was unreadable and
+    # 999999 seconds old, which is to say STALE, and Request-FmLock went on to
+    # break a lock the next process was already legitimately holding.
+    #
+    # Measured under contention, not inferred: docs/windows-e2e-evidence.md
+    # section 18 has the runs, the captured eviction and the rate.
+    #
+    # Reading the content first removes the sentinel from the decision entirely:
+    # a pid file that is not there when it is read is the same answer as a pid
+    # file that was not there one statement earlier, which is FREE. A read that
+    # THREW is a different thing - something is there and cannot be read - and
+    # keeps the grace treatment below, but records no holder, so the break has
+    # nothing to match and refuses.
     $raw = $null
-    try { $raw = Read-FmStateFile -Path $pidFile } catch { $raw = $null }
-    $trimmed = if ($null -eq $raw) { '' } else { $raw.Trim() }
+    $unreadable = $false
+    try { $raw = Read-FmStateFile -Path $pidFile } catch { $unreadable = $true }
+    if ($null -eq $raw -and -not $unreadable) { return $info }
+
+    $info.AgeSeconds = Get-FmPathAge -Path $pidFile
+    if (-not $unreadable) { $info.HolderRecord = $raw.Trim() }
+    $trimmed = if ($null -eq $info.HolderRecord) { '' } else { $info.HolderRecord }
 
     if (-not (Test-FmProcessId -Id $trimmed)) {
         # Unreadable or half-written claim. Fresh means someone is mid-claim.
@@ -271,7 +303,7 @@ function Invoke-FmLockBreak {
         lock. The renamed file is then deleted; a crash between the two leaves an
         inert pid.stale.* file that the next holder sweeps up.
 
-        -HolderProcessId IS NOT OPTIONAL BOOKKEEPING, IT IS THE WHOLE SAFETY.
+        -HolderRecord IS NOT OPTIONAL BOOKKEEPING, IT IS THE WHOLE SAFETY.
         The caller judges staleness with Get-FmLockInfo and breaks in a separate
         step, and between those two steps another process can legitimately
         recover the same lock and claim it. This function used to rename
@@ -287,21 +319,32 @@ function Invoke-FmLockBreak {
         rename has arbitrated, when the file this caller now owns can be read
         without a race. A late breaker that grabbed a live holder's pid file
         puts it straight back and reports failure.
+
+        THE HOLDER IS THE PID FILE'S TEXT, NOT A PID. The guard used to take a
+        process id and skip itself whenever it got none, and a stale verdict
+        reached because the pid could not be PARSED has no process id to give
+        it - so exactly the verdicts with the least evidence behind them broke
+        unconditionally, which is how a live holder lost its critical section
+        under contention. Matching the exact text covers every stale verdict
+        with one rule: when the text is a pid it is the pid, when it is blank or
+        malformed the break still only removes the same blank or malformed claim
+        that was judged, and a verdict that read NOTHING - $null - names no
+        victim and is refused outright.
     #>
     param(
         [Parameter(Mandatory)][string]$LockPath,
-        [AllowNull()][object]$HolderProcessId = $null
+        [AllowNull()][object]$HolderRecord = $null
     )
 
+    # Nothing was observed, so there is nothing this call can prove stale.
+    if ($null -eq $HolderRecord) { return $false }
     $pidFile = Join-Path $LockPath 'pid'
-    $expected = if ($null -eq $HolderProcessId) { '' } else { ([string]$HolderProcessId).Trim() }
+    $expected = ([string]$HolderRecord).Trim()
 
     # Before: do not destroy a live holder's sidecars over an outdated verdict.
-    if ($expected) {
-        $current = $null
-        try { $current = Read-FmStateFile -Path $pidFile } catch { $current = $null }
-        if ($null -eq $current -or $current.Trim() -ne $expected) { return $false }
-    }
+    $current = $null
+    try { $current = Read-FmStateFile -Path $pidFile } catch { $current = $null }
+    if ($null -eq $current -or $current.Trim() -ne $expected) { return $false }
 
     Remove-FmLockChildFile -LockPath $LockPath -Name ($script:FmLockChildNames | Where-Object { $_ -ne 'pid' })
 
@@ -317,15 +360,13 @@ function Invoke-FmLockBreak {
     # read. If it is not the holder we proved stale, we took a live holder's
     # lock - put it back and stand down. Move without overwrite, so a process
     # that has already claimed the freed slot is never clobbered by the undo.
-    if ($expected) {
-        $taken = $null
-        try { $taken = Read-FmStateFile -Path $claimed } catch { $taken = $null }
-        if ($null -eq $taken -or $taken.Trim() -ne $expected) {
-            try { [System.IO.File]::Move($claimed, $pidFile, $false) } catch {
-                Write-Verbose "firstmate: could not restore $pidFile after an out-of-date lock break"
-            }
-            return $false
+    $taken = $null
+    try { $taken = Read-FmStateFile -Path $claimed } catch { $taken = $null }
+    if ($null -eq $taken -or $taken.Trim() -ne $expected) {
+        try { [System.IO.File]::Move($claimed, $pidFile, $false) } catch {
+            Write-Verbose "firstmate: could not restore $pidFile after an out-of-date lock break"
         }
+        return $false
     }
 
     # A crash before this delete leaves an inert pid.stale.* file that the next
@@ -469,9 +510,10 @@ function Request-FmLock {
             $recovered = $info.ProcessId
             # Name the holder this verdict is ABOUT. By the time the break runs,
             # the lock may already have been recovered by someone else and be
-            # live again; passing the pid we proved stale is what stops this
-            # call evicting that new holder.
-            $null = Invoke-FmLockBreak -LockPath $full -HolderProcessId $info.ProcessId
+            # live again; passing what we READ - which is not always a pid, and
+            # is $null when the pid file was gone by the time we looked - is what
+            # stops this call evicting that new holder.
+            $null = Invoke-FmLockBreak -LockPath $full -HolderRecord $info.HolderRecord
             continue                        # win or lose the break, re-attempt
         }
         if ($info.State -ne 'free') {       # held, claiming, or invalid
