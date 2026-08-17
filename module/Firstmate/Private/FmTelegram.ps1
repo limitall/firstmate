@@ -31,6 +31,14 @@
 # machine: 5 hung until their timeout while the rest answered in a median 469 ms.
 # A failing call is a HANG, not an error, so every request here is bounded and
 # retried, and "sent" means the API confirmed it - never that the call returned.
+#
+# ROUTING NEVER NAMES A TASK ID TO THE CAPTAIN. A message from a phone is resolved
+# against the live work, and which piece of work it landed on is reported back in
+# the captain's nouns only - AGENTS.md section 9 lists task ids among the internal
+# terms a captain-facing message must not carry, and a channel that leaked them
+# would be leaking the exact vocabulary the captain does not think in.
+# Get-FmTelegramWorkLabel is the one place a piece of work acquires a speakable
+# name, and every captain-facing routing string is built from it.
 
 Set-StrictMode -Version Latest
 
@@ -744,6 +752,477 @@ function Get-FmTelegramUpdateField {
         return $flat
     }
     return $flat
+}
+
+function Get-FmTelegramFinishedVerb {
+    <#
+        .SYNOPSIS
+        The status verbs that mean a piece of work is over.
+
+        .DESCRIPTION
+        Deliberately NOT Test-FmStatusIsTerminalVerb's set. That one answers "is
+        this a captain verb a wake must stop on", which counts needs-decision and
+        blocked - work that is very much still live and is exactly what a captain
+        asks about from a phone. This answers a different question: is there still
+        a worker here to route a message to.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]], [object[]])]
+    param()
+    return @('done', 'failed', 'cancelled')
+}
+
+function Get-FmTelegramNewWorkPattern {
+    <#
+        .SYNOPSIS
+        The shapes that ask for work to START rather than ask about work already
+        under way.
+
+        .DESCRIPTION
+        WITHOUT THIS, ROUTING ASKS A POINTLESS QUESTION. "Have someone look at the
+        slow checkout page" names no existing work, so matching it against the live
+        tasks finds nothing - and a resolver that read "nothing matched, several
+        tasks exist" as ambiguity would answer a clear instruction with "which one
+        did you mean?". It is consulted ONLY where nothing matched by name, so a
+        message that both asks for a start and names live work still routes to it.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]], [object[]])]
+    param()
+    return @(
+        '\b(?:start|kick\s*off|spin\s*up|open|raise|queue|add)\b'
+        '\b(?:dispatch|investigate|look\s+into|dig\s+into|find\s+out)\b'
+        '\b(?:have|get|put|send)\s+(?:some\s?(?:one|body)|a\s+worker|the\s+team)\b'
+        '\bsome\s?(?:one|body)\s+(?:should|to|on|look)\b'
+        '\bnew\s+(?:task|job|piece\s+of\s+work|investigation)\b'
+    )
+}
+
+function Test-FmTelegramAsksForNewWork {
+    <# True when a message reads as "begin something" rather than "how is X". #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    foreach ($pattern in (Get-FmTelegramNewWorkPattern)) {
+        if ("$Text" -imatch $pattern) { return $true }
+    }
+    return $false
+}
+
+function Get-FmTelegramRouteStopWord {
+    <#
+        .SYNOPSIS
+        The words that carry no evidence about WHICH work a message is about.
+
+        .DESCRIPTION
+        Everything a captain says while asking about work without naming it. It is
+        a short list on purpose: a stopword that is also a project's own word would
+        throw away the one signal that identifies it, so nothing goes in here that
+        could plausibly be part of a project or task name.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]], [object[]])]
+    param()
+    return @(
+        'the', 'and', 'but', 'for', 'with', 'from', 'that', 'this', 'these', 'those'
+        'how', 'what', 'whats', 'when', 'where', 'who', 'whose', 'why', 'which'
+        'are', 'was', 'were', 'has', 'have', 'had', 'did', 'does', 'can', 'will', 'would', 'should'
+        'you', 'your', 'yours', 'our', 'ours', 'them', 'they', 'their'
+        'any', 'all', 'some', 'one', 'ones', 'more', 'else', 'other', 'others'
+        'now', 'yet', 'still', 'again', 'about', 'over', 'into', 'onto', 'than', 'then'
+        'news', 'update', 'updates', 'status', 'progress', 'bearings', 'report', 'summary'
+        'going', 'doing', 'get', 'got', 'give', 'tell', 'show', 'list', 'see', 'let', 'know'
+        'please', 'thanks', 'thank', 'captain', 'firstmate'
+        'work', 'working', 'job', 'task', 'thing', 'things', 'stuff', 'stand', 'standing'
+        'far', 'long', 'much', 'many', 'ready', 'done', 'left', 'waiting'
+    )
+}
+
+function Get-FmTelegramRouteWord {
+    <#
+        .SYNOPSIS
+        The words in one piece of text that could identify a piece of work.
+
+        .DESCRIPTION
+        TWO PASSES, AND THE SECOND ONE IS THE POINT. The captain writes "sign-in"
+        and the work is named "fix-signin"; splitting on punctuation alone yields
+        "sign" and "in" from one and "signin" from the other, so the strongest
+        available signal misses completely. The second pass removes hyphens and
+        underscores BEFORE splitting, so each side also offers its joined-up form
+        and the two meet.
+
+        Tokens under three characters are dropped rather than stopword-listed:
+        "is", "it", "on", "me" and their kind carry no evidence, and enumerating
+        them would be a list nobody could keep complete.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]], [object[]])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    $words = [System.Collections.Generic.List[string]]::new()
+    if ([string]::IsNullOrWhiteSpace($Text)) { return , @($words.ToArray()) }
+
+    $stop = [System.Collections.Generic.HashSet[string]]::new([string[]](Get-FmTelegramRouteStopWord))
+    $lower = "$Text".ToLowerInvariant()
+    $split = $lower -replace '[^a-z0-9]+', ' '
+    $joined = ($lower -replace '[-_]+', '') -replace '[^a-z0-9]+', ' '
+
+    foreach ($pass in @($split, $joined)) {
+        foreach ($token in ($pass -split ' ')) {
+            if ($token.Length -lt 3) { continue }
+            if ($stop.Contains($token)) { continue }
+            if (-not $words.Contains($token)) { $words.Add($token) }
+        }
+    }
+    return , @($words.ToArray())
+}
+
+function Get-FmTelegramWorkLabel {
+    <#
+        .SYNOPSIS
+        What one piece of work is called when the captain is told about it.
+
+        .DESCRIPTION
+        A TASK ID MAY NEVER APPEAR HERE. AGENTS.md section 9 lists task ids among
+        the internal terms a captain-facing message must not carry, and the whole
+        reason routing exists is that the captain does not think in them. So a
+        piece of work is named by what it last said, or failing that by the project
+        it belongs to, or failing that as work that has not spoken yet.
+
+        The note goes through ConvertTo-FmBridgePlainText - the one owner of the
+        stripping - because a worker's own note is the exact material section 9
+        forbids relaying, and it is right here and already written.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Note,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Project
+    )
+
+    $plain = ConvertTo-FmBridgePlainText -Text $Note
+    if ($plain) {
+        # Short enough to read on a phone in a list of several, cut at a word. The
+        # full stop goes before the ellipsis is added, or trimming would eat it.
+        $plain = $plain.TrimEnd('.', ' ')
+        if ($plain.Length -gt 64) {
+            $head = $plain.Substring(0, 64)
+            $break = $head.LastIndexOf(' ')
+            if ($break -gt 32) { $head = $head.Substring(0, $break) }
+            $plain = $head.TrimEnd() + '...'
+        }
+        return $plain
+    }
+    if ($Project) { return "the work on $Project" }
+    return 'work that has not reported yet'
+}
+
+function Get-FmTelegramLiveWork {
+    <#
+        .SYNOPSIS
+        The pieces of work a message could be about, each with its identifying
+        words and its plain-English name.
+
+        .DESCRIPTION
+        LIVE MEANS DISPATCHED AND NOT OVER. The set is state/*.meta, which is what
+        records that a piece of work exists at all, minus anything whose last word
+        was done, failed or cancelled. Get-FmBridgeFleet reads the fleet from the
+        same enumeration, so the browser and the phone cannot disagree about what
+        is running.
+
+        THE WEIGHTS. A word from the work's own name or its project is worth three
+        and a word from its last report one, because a name is what the captain and
+        firstmate agreed this work is called while a report is whatever the worker
+        happened to type this minute. Both are evidence; they are not equal
+        evidence.
+    #>
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param([Parameter(Mandatory)][string]$StateDir)
+
+    $live = @()
+    if (-not (Test-Path -LiteralPath $StateDir -PathType Container)) { return , $live }
+    $finished = Get-FmTelegramFinishedVerb
+
+    foreach ($meta in @(Get-ChildItem -LiteralPath $StateDir -Filter '*.meta' -File -Force `
+                -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        $task = $meta.BaseName
+        $statusPath = Join-Path $StateDir "$task.status"
+        $last = Get-FmLastStatusLine -Path $statusPath
+        $verb = Get-FmStatusLineVerb -Line $last
+        if ($verb -and ($verb -cin $finished)) { continue }
+
+        $note = Get-FmStatusLineNote -Line $last
+        $project = Get-FmMetaValue -Path $meta.FullName -Key 'project'
+
+        $weight = [System.Collections.Generic.Dictionary[string, int]]::new()
+        foreach ($word in (Get-FmTelegramRouteWord -Text "$task $project")) { $weight[$word] = 3 }
+        foreach ($word in (Get-FmTelegramRouteWord -Text $note)) {
+            if (-not $weight.ContainsKey($word)) { $weight[$word] = 1 }
+        }
+
+        # Three fields, and only three: the id firstmate acts on, the name the
+        # captain is told, and the evidence. The verb and the raw note are read
+        # above and deliberately not carried - a field nothing reads is the one
+        # that goes stale without anything noticing.
+        $live += [pscustomobject]@{
+            Task   = $task
+            Label  = Get-FmTelegramWorkLabel -Note $last -Project $project
+            Weight = $weight
+        }
+    }
+    return , $live
+}
+
+function Get-FmTelegramAmbiguityQuestion {
+    <#
+        .SYNOPSIS
+        The question asked instead of a guess.
+
+        .DESCRIPTION
+        A STEER DELIVERED TO THE WRONG WORKER IS WORSE THAN A QUESTION ASKED, and
+        it is worse in a way the captain cannot see: they get a confident
+        acknowledgement and their instruction lands on work it was never about.
+        So an unresolved message asks, names the candidates in the captain's own
+        nouns, and says their words are kept either way - because a question that
+        implied the message was dropped would just get retyped.
+
+        NO BULLETS AND NO LEADING DASHES. Every line of an outbound message goes
+        through ConvertTo-FmBridgePlainText, which trims a leading dash as
+        machinery, so a bulleted list would arrive with its bullets eaten and its
+        items running together.
+
+        THE LIST IS CAPPED, AND THE CAP IS SPOKEN. Reading eight choices on a
+        phone is not a question, it is a wall. What is left out is counted out
+        loud rather than silently dropped.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Candidate)
+
+    $named = @($Candidate | Select-Object -First 3)
+    if ($named.Count -eq 0) { return '' }
+
+    $parts = @()
+    for ($i = 0; $i -lt $named.Count; $i++) {
+        $parts += "($($i + 1)) $($named[$i].Label)"
+    }
+    $list = $parts -join ', '
+    $rest = $Candidate.Count - $named.Count
+    if ($rest -eq 1) { $list = "$list, or one other" }
+    elseif ($rest -gt 1) { $list = "$list, or one of $rest others" }
+
+    return @(
+        'Captain, that could be about more than one thing, so I have not guessed.'
+        ''
+        # Braced, because PowerShell reads a bare `$list?` as a variable named
+        # "list?" and the whole question dies on an unset variable.
+        "Did you mean ${list}?"
+        ''
+        'Tell me which and I will pass it straight on. Your words are kept either way.'
+    ) -join "`n"
+}
+
+function Get-FmTelegramRoutePath {
+    <#
+        .SYNOPSIS
+        The durable record of which worker each phone message was about.
+
+        .DESCRIPTION
+        NOT *.inbox, *.status OR *.turn-ended. Get-FmWatchSignalChanges scans all
+        three by wildcard, and this file is bookkeeping rather than news: a routing
+        decision recorded at the same moment as the inbox line it describes would
+        otherwise raise a second notification about the same message.
+
+        Append-only, and folded on read the way a keyed decision is: a `routed`
+        record opens one routing and an `answered` record carrying the same id
+        closes it. That is the existing idiom in this home for "still outstanding",
+        so a future reader recognises the shape instead of learning a new one.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$StateDir)
+    return (Join-Path $StateDir 'captain-telegram.routed')
+}
+
+function Add-FmTelegramRouteRecord {
+    <#
+        .SYNOPSIS
+        Append one routing record: epoch, kind, id, task, baseline, text.
+
+        .DESCRIPTION
+        WHY THE BASELINE IS A LINE COUNT AND NOT A TIMESTAMP. It answers "which of
+        this worker's reports came after the captain asked", and a status stream is
+        append-only, so the count of lines that already existed identifies that
+        boundary exactly. A timestamp would have to trust two clocks and a file
+        mtime that a copy or a touch can move.
+
+        Only tabs and newlines are flattened out of the text, because the record is
+        tab-separated and a message must not be able to forge a field or a record
+        boundary.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$StateDir,
+        [Parameter(Mandatory)][ValidateSet('routed', 'answered')][string]$Kind,
+        [Parameter(Mandatory)][string]$RouteId,
+        [Parameter(Mandatory)][string]$Task,
+        [Parameter(Mandatory)][long]$Baseline,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text
+    )
+    $flat = (("$Text" -replace "`r`n", ' ') -replace "[`r`n`t]", ' ').Trim()
+    $line = "{0}`t{1}`t{2}`t{3}`t{4}`t{5}" -f (Get-FmUnixTime), $Kind, $RouteId, $Task, $Baseline, $flat
+    Add-FmStateLine -Path (Get-FmTelegramRoutePath -StateDir $StateDir) -Line $line -Confirm:$false
+    return $line
+}
+
+function New-FmTelegramRouteId {
+    <#
+        .SYNOPSIS
+        A fresh routing id.
+
+        .DESCRIPTION
+        A random id rather than a sequence number, so nothing has to read the
+        ledger before appending to it. A read-then-append would be two operations
+        under one assumption of exclusivity, and this file has more than one
+        possible writer - the poller and firstmate itself.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Mints a value and changes nothing; -WhatIf would return an empty id the caller then writes.')]
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+    return [guid]::NewGuid().ToString('N').Substring(0, 12)
+}
+
+function Get-FmTelegramRouteRecord {
+    <#
+        .SYNOPSIS
+        Every routing record on disk, in order, malformed lines skipped.
+
+        .DESCRIPTION
+        A line this cannot read is dropped rather than raised. The ledger sits
+        between the captain asking something and firstmate answering it, and one
+        bad line must not be able to hide every good one behind it.
+
+        ASSIGN THE RESULT, DO NOT PIPE IT AND DO NOT WRAP IT IN @(). The list comes
+        back behind a unary comma so an empty ledger cannot unroll away, and
+        re-wrapping turns "nothing recorded" into one nameless record that the next
+        property read throws on.
+    #>
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param([Parameter(Mandatory)][string]$StateDir)
+
+    $records = @()
+    $path = Get-FmTelegramRoutePath -StateDir $StateDir
+    $lines = @()
+    try {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return , $records }
+        $lines = @(Read-FmStateLines -Path $path)
+    } catch { return , $records }
+
+    foreach ($line in $lines) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $field = "$line" -split "`t"
+        if ($field.Count -lt 6) { continue }
+        if ($field[1] -notin @('routed', 'answered')) { continue }
+        $at = [long]0
+        $baseline = [long]0
+        if (-not [long]::TryParse($field[0], [ref]$at)) { continue }
+        if (-not [long]::TryParse($field[4], [ref]$baseline)) { continue }
+        if (-not $field[2] -or -not $field[3]) { continue }
+        $records += [pscustomobject]@{
+            At       = $at
+            Kind     = $field[1]
+            RouteId  = $field[2]
+            Task     = $field[3]
+            Baseline = $baseline
+            Text     = ($field[5..($field.Count - 1)] -join ' ')
+        }
+    }
+    return , $records
+}
+
+function Get-FmTelegramRecentRoute {
+    <#
+        .SYNOPSIS
+        The piece of work the last phone message was routed to, or ''.
+
+        .DESCRIPTION
+        The "most recently discussed" signal, read from the durable record rather
+        than from anything held in a session - which is what lets it survive the
+        poller stopping between one message and the next.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$StateDir)
+    # Assigned before it is filtered, never piped straight: the ledger comes back
+    # behind a unary comma, and piping an empty one sends the empty array itself
+    # down the pipeline as a single nameless record.
+    $records = Get-FmTelegramRouteRecord -StateDir $StateDir
+    $routed = @($records | Where-Object { $_.Kind -eq 'routed' })
+    if ($routed.Count -eq 0) { return '' }
+    return [string]$routed[-1].Task
+}
+
+function Get-FmTelegramStatusLineCount {
+    <# How many reports one piece of work has made, ignoring blank lines. #>
+    [CmdletBinding()]
+    [OutputType([long])]
+    param(
+        [Parameter(Mandatory)][string]$StateDir,
+        [Parameter(Mandatory)][string]$Task
+    )
+    $path = Join-Path $StateDir "$Task.status"
+    try {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return [long]0 }
+        return [long]@(Read-FmStateLines -Path $path |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+    } catch { return [long]0 }
+}
+
+function Get-FmTelegramWorkerReport {
+    <#
+        .SYNOPSIS
+        What one worker has said since a routing was recorded.
+
+        .DESCRIPTION
+        ITS OWN STATUS STREAM, AND NOTHING ELSE. A worker reports by appending to
+        state/<id>.status; that is the supported signal in this home and the answer
+        to a routed message has to come from it rather than from a second channel
+        invented for the phone. Nothing here reads a pane, a log, or a worker's
+        own words by any other route.
+
+        The LAST line past the baseline is the answer. A worker that reported three
+        times since the captain asked has a current word and two superseded ones,
+        and the current one is the answer; Count says how many there were so the
+        caller can say "and it has moved on since" rather than implying the answer
+        was the whole of it.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$StateDir,
+        [Parameter(Mandatory)][string]$Task,
+        [Parameter(Mandatory)][long]$Baseline
+    )
+
+    $result = [pscustomobject]@{ Reported = $false; Line = ''; Count = 0 }
+    $path = Join-Path $StateDir "$Task.status"
+    $lines = @()
+    try {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $result }
+        $lines = @(Read-FmStateLines -Path $path | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    } catch { return $result }
+
+    if ($lines.Count -le $Baseline) { return $result }
+    $fresh = @($lines[$Baseline..($lines.Count - 1)])
+    $result.Count = $fresh.Count
+    $result.Line = [string]$fresh[-1]
+    $result.Reported = $true
+    return $result
 }
 
 function Get-FmTelegramRefusalMessage {

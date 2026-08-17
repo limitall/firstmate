@@ -622,6 +622,15 @@ function ConvertTo-FmBridgePlainText {
         $s = [regex]::Replace($s, $rule.Pattern, $rule.Plain, 'IgnoreCase')
     }
 
+    # LAST OF THE REMOVALS, AFTER THE VOCABULARY, and the order is the point: a
+    # stripped token leaves the word that introduced it dangling, and every pass
+    # above can leave one behind. "Writing the test in fm/fix-signin" became
+    # "writing the test in" - visibly broken English rather than merely terse, on a
+    # phone, where the captain cannot go and look at what was meant. Only a
+    # preposition at the very end or immediately before punctuation goes; anything
+    # with a word after it still has its object.
+    $s = $s -replace '\s+(?:in|on|at|to|from|into|under|via|see)\s*([,;.])', '$1'
+    $s = $s -replace '\s+(?:in|on|at|to|from|into|under|via|see)\s*$', ''
     $s = $s -replace '\s{2,}', ' '
     $s = $s -replace '\s+([,;.])', '$1'
     $s = $s.Trim().Trim('-', ';', ',').Trim()

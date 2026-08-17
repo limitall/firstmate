@@ -32,6 +32,7 @@ BeforeAll {
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     $script:TellScript = Join-Path $script:RepoRoot 'bin' 'fm-tell.ps1'
     $script:PollScript = Join-Path $script:RepoRoot 'bin' 'fm-tg-poll.ps1'
+    $script:RouteScript = Join-Path $script:RepoRoot 'bin' 'fm-tg-route.ps1'
     $script:Pwsh = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 
     # Two halves so a leak assertion can look for the secret half on its own: a
@@ -101,6 +102,41 @@ BeforeAll {
         # string on the way out, which would leave every .Count assertion below
         # asking a String for a property it does not have.
         $path = Join-Path $HomePath 'state' 'captain-telegram.inbox'
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return , @() }
+        return , @([System.IO.File]::ReadAllLines($path) | Where-Object { $_ })
+    }
+
+    function Add-LiveWork {
+        <#
+            .SYNOPSIS
+            One dispatched piece of work in a disposable home.
+
+            .DESCRIPTION
+            A state/<id>.meta is what records that a piece of work exists, so
+            routing enumerates those; a status line is what it has said so far.
+            Both are written the way the real spawn and a real worker write them,
+            through the same public verb, rather than by hand.
+        #>
+        param(
+            [Parameter(Mandatory)][string]$HomePath,
+            [Parameter(Mandatory)][string]$Task,
+            [string]$Project = '',
+            [string]$State = 'working',
+            [string]$Note = ''
+        )
+        $stateDir = Join-Path $HomePath 'state'
+        [System.IO.File]::WriteAllText((Join-Path $stateDir "$Task.meta"), "project=$Project`n")
+        if ($Note) {
+            $null = Add-FmTaskStatus -StateDir $stateDir -TaskId $Task -State $State -Note $Note -Confirm:$false
+        }
+        return $Task
+    }
+
+    function Get-RouteLine {
+        param([Parameter(Mandatory)][string]$HomePath)
+        # The unary comma keeps a one-line ledger from unrolling into a bare string,
+        # which would leave every .Count assertion asking a String for it.
+        $path = Join-Path $HomePath 'state' 'captain-telegram.routed'
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return , @() }
         return , @([System.IO.File]::ReadAllLines($path) | Where-Object { $_ })
     }
@@ -363,6 +399,19 @@ Describe 'the shared plain-text stripper, which the channel leans on' {
     It 'still strips the machinery it was written to strip' {
         $plain = ConvertTo-FmBridgePlainText -Text 'needs-decision: [40%] [key=api-shape] flat or nested'
         $plain | Should -Be 'Flat or nested'
+    }
+
+    # Removing the branch left the word that introduced it behind, and "writing the
+    # test in" is visibly broken English rather than merely terse - on a phone, where
+    # the captain cannot go and look at what was meant.
+    It 'takes the dangling word with the token it stripped' {
+        ConvertTo-FmBridgePlainText -Text 'working: [70%] sign-in restored, writing the test in fm/fix-signin' |
+            Should -Be 'Sign-in restored, writing the test'
+    }
+
+    It 'leaves a word alone when it still has something after it' {
+        ConvertTo-FmBridgePlainText -Text 'ready: see https://github.com/acme/docs/pull/7 for the write-up' |
+            Should -Be 'See https://github.com/acme/docs/pull/7 for the write-up'
     }
 }
 
@@ -892,6 +941,702 @@ Describe 'the inbound record is a notification the watcher already understands' 
     }
 }
 
+Describe 'working out which worker a message is about' {
+    BeforeEach {
+        $script:RouteHome = New-ConfiguredHome
+    }
+
+    It 'routes a message that plainly concerns one live piece of work' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin' -Project 'acme-web' `
+            -Note '[40%] restoring sign-in for accounts made before the migration'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'slow-checkout' -Project 'acme-shop' `
+            -Note '[20%] profiling the cart page'
+
+        $routed = Resolve-FmTelegramWorker -Text 'how is the sign-in fix going' -FirstmateHome $script:RouteHome
+        $routed.Reason | Should -Be 'routed'
+        $routed.Task | Should -Be 'fix-signin'
+        $routed.Evidence | Should -Be 'name'
+    }
+
+    # The captain writes "sign-in" and the work is called "fix-signin". Splitting
+    # on punctuation alone gives "sign" from one and "signin" from the other, so the
+    # strongest signal available would miss completely.
+    It 'matches across a hyphen, because the captain does not spell it the way the work is named' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin' -Project 'acme-web'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'cart-speed' -Project 'acme-shop'
+        (Resolve-FmTelegramWorker -Text 'any progress on sign-in' -FirstmateHome $script:RouteHome).Task |
+            Should -Be 'fix-signin'
+    }
+
+    # The word split never yields a hyphenated name whole, so testing only the
+    # literal form would leave the strongest signal unreachable for every
+    # multi-word name - which is most of them.
+    It 'takes a name quoted back as the strongest possible signal' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin' -Note '[40%] first pass'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin-app' -Note '[40%] first pass'
+        $routed = Resolve-FmTelegramWorker -Text 'where is fix-signin up to' -FirstmateHome $script:RouteHome
+        $routed.Task | Should -Be 'fix-signin'
+        # Ten for the name, over any accumulation of words the other one shares.
+        $routed.Score | Should -BeGreaterThan 10
+    }
+
+    It 'routes on what a worker last reported when the name gives nothing away' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'task-one' -Note '[30%] rewriting the invoice totals'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'task-two' -Note '[30%] chasing a flaky upload test'
+        $routed = Resolve-FmTelegramWorker -Text 'how are the invoice totals looking' -FirstmateHome $script:RouteHome
+        $routed.Task | Should -Be 'task-one'
+        $routed.Evidence | Should -Be 'report'
+    }
+
+    It 'routes to the only live piece of work when the message names nothing' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $routed = Resolve-FmTelegramWorker -Text 'any news?' -FirstmateHome $script:RouteHome
+        $routed.Reason | Should -Be 'routed'
+        $routed.Task | Should -Be 'fix-signin'
+        $routed.Evidence | Should -Be 'only-one'
+    }
+
+    It 'asks rather than guessing when two pieces of work fit the message equally' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-login-web' -Note '[10%] first pass'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-login-app' -Note '[10%] first pass'
+        $asked = Resolve-FmTelegramWorker -Text 'how is the login fix going' -FirstmateHome $script:RouteHome
+        $asked.Reason | Should -Be 'ambiguous'
+        $asked.Task | Should -BeNullOrEmpty
+        $asked.Question | Should -Not -BeNullOrEmpty
+    }
+
+    It 'asks rather than guessing when nothing is named and several are running' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'cart-speed' -Note '[20%] profiling the cart page'
+        $asked = Resolve-FmTelegramWorker -Text 'any news?' -FirstmateHome $script:RouteHome
+        $asked.Reason | Should -Be 'ambiguous'
+        $asked.Question | Should -Match 'more than one thing'
+        $asked.Question | Should -Match 'have not guessed'
+    }
+
+    # AGENTS.md section 9 lists task ids among the internal terms a captain-facing
+    # message must not carry, and routing is the one feature whose whole reason for
+    # existing is that the captain does not think in them.
+    It 'never names a task id in the question it asks' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'cart-speed' -Note '[20%] profiling the cart page'
+        $asked = Resolve-FmTelegramWorker -Text 'any news?' -FirstmateHome $script:RouteHome
+        $asked.Question | Should -Not -Match 'fix-signin'
+        $asked.Question | Should -Not -Match 'cart-speed'
+        $asked.Question | Should -Not -Match '40%|20%|status|working:'
+    }
+
+    It 'names the choices, and says the words are kept whichever it is' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'one' -Note '[40%] restoring sign-in'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'two' -Note '[20%] profiling the cart page'
+        $asked = Resolve-FmTelegramWorker -Text 'any news?' -FirstmateHome $script:RouteHome
+        $asked.Question | Should -Match 'Restoring sign-in'
+        $asked.Question | Should -Match 'Profiling the cart page'
+        $asked.Question | Should -Match 'kept either way'
+    }
+
+    # Reading eight choices on a phone is a wall rather than a question, and a cap
+    # that dropped the rest silently would read as "those are all of them".
+    It 'caps the choices it lists, and counts out loud what it left out' {
+        foreach ($i in 1..5) {
+            $null = Add-LiveWork -HomePath $script:RouteHome -Task "job$i" -Note "[10%] doing piece $i"
+        }
+        $asked = Resolve-FmTelegramWorker -Text 'any news?' -FirstmateHome $script:RouteHome
+        $asked.Reason | Should -Be 'ambiguous'
+        $asked.Question | Should -Match 'or one of 2 others'
+    }
+
+    It 'says there is nothing to route to when no work is running' {
+        $routed = Resolve-FmTelegramWorker -Text 'how is the sign-in fix going' -FirstmateHome $script:RouteHome
+        $routed.Reason | Should -Be 'none'
+        $routed.Task | Should -BeNullOrEmpty
+    }
+
+    It 'ignores work that is already over' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin' -State 'done' `
+            -Note 'sign-in restored, ready for review'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'gone-wrong' -State 'failed' -Note 'could not reproduce'
+        $routed = Resolve-FmTelegramWorker -Text 'how is the sign-in fix going' -FirstmateHome $script:RouteHome
+        $routed.Reason | Should -Be 'none'
+    }
+
+    # "Have someone look at the pricing page" names no existing work because there
+    # is none yet to name. A resolver that read that as ambiguity would answer a
+    # clear instruction with "which one did you mean?".
+    It 'does not ask which existing work an instruction to start something meant' -ForEach @(
+        @{ Text = 'have someone look at the pricing page' }
+        @{ Text = 'start looking at the invoice bug' }
+        @{ Text = 'get someone to investigate the slow report' }
+    ) {
+        $home_ = New-ConfiguredHome
+        $null = Add-LiveWork -HomePath $home_ -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $null = Add-LiveWork -HomePath $home_ -Task 'cart-speed' -Note '[20%] profiling the cart page'
+        $routed = Resolve-FmTelegramWorker -Text $Text -FirstmateHome $home_
+        $routed.Reason | Should -Be 'none'
+        $routed.Question | Should -BeNullOrEmpty
+    }
+
+    # Measured before the name/report split existed: this landed on the worker
+    # profiling the CART page, because both messages contain the word "page".
+    It 'is not sent to a worker by one stray word from that worker''s last report' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'cart-speed' -Note '[20%] profiling the cart page'
+        (Resolve-FmTelegramWorker -Text 'have someone look at the pricing page' `
+                -FirstmateHome $script:RouteHome).Reason | Should -Be 'none'
+    }
+
+    It 'still routes an instruction that both starts something and names live work' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'cart-speed' -Note '[20%] profiling the cart page'
+        (Resolve-FmTelegramWorker -Text 'get someone else onto the sign-in fix' `
+                -FirstmateHome $script:RouteHome).Task | Should -Be 'fix-signin'
+    }
+
+    It 'follows the work most recently talked about when the message names nothing' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'cart-speed' -Note '[20%] profiling the cart page'
+
+        # The conversation is established by a message that DID name its target.
+        (Receive-FmTelegramCommand -Text 'how is the sign-in fix going' `
+                -FirstmateHome $script:RouteHome).RoutedTo | Should -Be 'fix-signin'
+
+        $followUp = Resolve-FmTelegramWorker -Text 'any news?' -FirstmateHome $script:RouteHome
+        $followUp.Reason | Should -Be 'routed'
+        $followUp.Task | Should -Be 'fix-signin'
+        $followUp.Evidence | Should -Be 'recent'
+    }
+
+    It 'stops following work that has since finished, and asks instead' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'cart-speed' -Note '[20%] profiling the cart page'
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'bill-run' -Note '[10%] reading the billing job'
+        $null = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $script:RouteHome
+        $null = Add-FmTaskStatus -StateDir (Join-Path $script:RouteHome 'state') -TaskId 'fix-signin' `
+            -State 'done' -Note 'sign-in restored' -Confirm:$false
+
+        (Resolve-FmTelegramWorker -Text 'any news?' -FirstmateHome $script:RouteHome).Reason |
+            Should -Be 'ambiguous'
+    }
+
+    It 'resolves nothing from an empty message' {
+        $null = Add-LiveWork -HomePath $script:RouteHome -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $routed = Resolve-FmTelegramWorker -Text '   ' -FirstmateHome $script:RouteHome
+        $routed.Reason | Should -Be 'none'
+        $routed.Task | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'the routing decision is written down' {
+    BeforeEach {
+        $script:LedgerHome = New-ConfiguredHome
+        $script:LedgerState = Join-Path $script:LedgerHome 'state'
+        $null = Add-LiveWork -HomePath $script:LedgerHome -Task 'fix-signin' -Project 'acme-web' `
+            -Note '[40%] restoring sign-in'
+        $null = Add-LiveWork -HomePath $script:LedgerHome -Task 'cart-speed' -Project 'acme-shop' `
+            -Note '[20%] profiling the cart page'
+    }
+
+    It 'records which work the message went to, with the captain''s own words' {
+        $handled = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $script:LedgerHome
+        $handled.RouteReason | Should -Be 'routed'
+        $handled.RoutedTo | Should -Be 'fix-signin'
+        $handled.RouteId | Should -Not -BeNullOrEmpty
+
+        $lines = Get-RouteLine -HomePath $script:LedgerHome
+        $lines.Count | Should -Be 1
+        $field = $lines[0] -split "`t"
+        $field[1] | Should -Be 'routed'
+        $field[2] | Should -Be $handled.RouteId
+        $field[3] | Should -Be 'fix-signin'
+        # One report existed when the captain asked, so the answer is whatever
+        # comes after it.
+        $field[4] | Should -Be '1'
+        $field[5] | Should -Be 'how is the sign-in fix going'
+    }
+
+    It 'tells the captain which work it decided on, in their nouns and never by id' {
+        $handled = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $script:LedgerHome
+        $handled.Reply | Should -Match 'Restoring sign-in'
+        $handled.Reply | Should -Match 'wrong one'
+        $handled.Reply | Should -Not -Match 'fix-signin'
+        $handled.Reply | Should -Not -Match '40%|working:|status'
+    }
+
+    It 'asks the captain instead of recording a guess' {
+        $handled = Receive-FmTelegramCommand -Text 'any news?' -FirstmateHome $script:LedgerHome
+        $handled.RouteReason | Should -Be 'ambiguous'
+        $handled.RoutedTo | Should -BeNullOrEmpty
+        $handled.Reply | Should -Match 'have not guessed'
+        Get-RouteLine -HomePath $script:LedgerHome | Should -BeNullOrEmpty
+        # The words are still kept, so nothing the captain said is lost by asking.
+        (Get-InboxLine -HomePath $script:LedgerHome).Count | Should -Be 1
+    }
+
+    It 'gives two messages about the same work two separate records' {
+        $first = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $script:LedgerHome
+        $second = Receive-FmTelegramCommand -Text 'and is sign-in tested yet' -FirstmateHome $script:LedgerHome
+        $first.RouteId | Should -Not -Be $second.RouteId
+        (Get-RouteLine -HomePath $script:LedgerHome).Count | Should -Be 2
+    }
+
+    It 'routes an answered question to the work that asked it, without inferring anything' {
+        $null = Add-FmTaskStatus -StateDir $script:LedgerState -TaskId 'cart-speed' -State 'needs-decision' `
+            -Key 'cache-shape' -Note 'cache the whole page or just the totals' -Confirm:$false
+        # Nothing in "use the totals" names the cart work; the closed decision does.
+        $handled = Receive-FmTelegramCommand -Text 'just the totals' -FirstmateHome $script:LedgerHome
+        $handled.Closed | Should -BeTrue
+        $handled.RouteReason | Should -Be 'decision'
+        $handled.RoutedTo | Should -Be 'cart-speed'
+        # The closure's own reply outranks the routing's: what firstmate made of the
+        # ANSWER matters more than what it made of which work it belonged to.
+        $handled.Reply | Should -Match 'cache the whole page or just the totals'
+    }
+
+    It 'is its own kind of record, and does not raise a second notification' {
+        $null = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $script:LedgerHome
+        Test-Path -LiteralPath (Join-Path $script:LedgerState 'captain-telegram.routed') | Should -BeTrue
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:LedgerHome } {
+            param($HomePath)
+            $context = Get-FmWakeContext -FmHome $HomePath -State (Join-Path $HomePath 'state')
+            $changes = @(Get-FmWatchSignalChanges -Context $context)
+            # The message itself is news. Where it was routed is bookkeeping written
+            # in the same moment, and a second notification about it would be the
+            # same message arriving twice.
+            @($changes | Where-Object { $_.Path -like '*captain-telegram.inbox' }).Count | Should -Be 1
+            @($changes | Where-Object { $_.Path -like '*captain-telegram.routed' }).Count | Should -Be 0
+        }
+    }
+
+    It 'reads back nothing at all from a home that has never routed a message' {
+        $bare = New-ConfiguredHome
+        $routes = Get-FmTelegramRoute -FirstmateHome $bare
+        @($routes).Count | Should -Be 0
+    }
+
+    # The message is already in the inbox by the time routing runs, so a routing
+    # that cannot be written has to degrade to "not routed". Letting it fail the
+    # whole receive would tell the poller to count a recorded message as ignored and
+    # answer the captain with nothing at all.
+    It 'keeps a recorded message when the routing itself cannot be written down' {
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:LedgerHome } {
+            param($HomePath)
+            Mock Add-FmTelegramRouteRecord { throw 'the record could not be written' }
+            $handled = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $HomePath
+            $handled.Accepted | Should -BeTrue
+            $handled.Recorded | Should -BeTrue
+            $handled.Reason | Should -Be 'recorded'
+            # Said, not passed off as routed - a RouteId nothing can be looked up by
+            # would be worse than none.
+            $handled.RouteReason | Should -Be 'unavailable'
+            $handled.RoutedTo | Should -BeNullOrEmpty
+            $handled.RouteId | Should -BeNullOrEmpty
+            # And the captain still gets an answer rather than silence.
+            $handled.Reply | Should -Not -BeNullOrEmpty
+        }
+        (Get-InboxLine -HomePath $script:LedgerHome).Count | Should -Be 1
+    }
+
+    # A piece of work can be cleaned up between the captain asking about it and the
+    # answer being looked for. That has to read as "still nothing to say", not as an
+    # error and not as a false answer.
+    It 'says nothing has come back when the work''s record is gone entirely' {
+        $null = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $script:LedgerHome
+        Remove-Item -LiteralPath (Join-Path $script:LedgerState 'fix-signin.status') -Force
+        $routes = Get-FmTelegramRoute -FirstmateHome $script:LedgerHome
+        @($routes).Count | Should -Be 1
+        $routes[0].Reported | Should -BeFalse
+        $routes[0].Answer | Should -BeNullOrEmpty
+        # And the label falls back to the project rather than to an identifier.
+        $routes[0].Label | Should -Be 'the work on acme-web'
+    }
+
+    It 'survives a garbled line in the record rather than losing every good one' {
+        $null = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $script:LedgerHome
+        $path = Join-Path $script:LedgerState 'captain-telegram.routed'
+        $kept = [System.IO.File]::ReadAllText($path)
+        [System.IO.File]::WriteAllText($path, "not a record at all`n$kept")
+        $routes = Get-FmTelegramRoute -FirstmateHome $script:LedgerHome
+        @($routes).Count | Should -Be 1
+        $routes[0].Task | Should -Be 'fix-signin'
+    }
+}
+
+Describe 'carrying the worker''s answer back' {
+    BeforeEach {
+        $script:AnswerBackHome = New-ConfiguredHome
+        $script:AnswerBackState = Join-Path $script:AnswerBackHome 'state'
+        $null = Add-LiveWork -HomePath $script:AnswerBackHome -Task 'fix-signin' -Project 'acme-web' `
+            -Note '[40%] restoring sign-in'
+        $null = Add-LiveWork -HomePath $script:AnswerBackHome -Task 'cart-speed' -Project 'acme-shop' `
+            -Note '[20%] profiling the cart page'
+        $null = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $script:AnswerBackHome
+    }
+
+    It 'says nothing at all while the worker has not reported since' {
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:AnswerBackHome } {
+            param($HomePath)
+            Mock Invoke-FmTelegramApi { throw 'nothing must be sent before there is an answer' }
+            $carried = Send-FmTelegramWorkerReply -FirstmateHome $HomePath
+            $carried.Sent | Should -Be 0
+            $carried.Waiting | Should -Be 1
+            $carried.Reason | Should -Be 'nothing'
+            Should -Invoke Invoke-FmTelegramApi -Times 0 -Exactly
+        }
+    }
+
+    It 'matches the answer to the message that asked for it, and quotes the question' {
+        $null = Add-FmTaskStatus -StateDir $script:AnswerBackState -TaskId 'fix-signin' -State 'working' `
+            -Note '[70%] sign-in works again for accounts made before the migration' -Confirm:$false
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:AnswerBackHome } {
+            param($HomePath)
+            Mock Invoke-FmTelegramApi {
+                [pscustomobject]@{ Ok = $true; Reason = 'ok'; ErrorCode = 0; Description = ''; Result = $null }
+            }
+            $carried = Send-FmTelegramWorkerReply -FirstmateHome $HomePath
+            $carried.Sent | Should -Be 1
+            $carried.Reason | Should -Be 'sent'
+            Should -Invoke Invoke-FmTelegramApi -Times 1 -Exactly -ParameterFilter {
+                $text = ($BodyJson | ConvertFrom-Json).text
+                $Url -like '*/sendMessage' -and
+                $text -match 'you asked: how is the sign-in fix going' -and
+                $text -match 'Sign-in works again for accounts made before the migration'
+            }
+        }
+    }
+
+    It 'does not answer a question with another worker''s report' {
+        # The cart worker speaks; the captain asked about sign-in.
+        $null = Add-FmTaskStatus -StateDir $script:AnswerBackState -TaskId 'cart-speed' -State 'working' `
+            -Note '[50%] the cart query was the slow part' -Confirm:$false
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:AnswerBackHome } {
+            param($HomePath)
+            Mock Invoke-FmTelegramApi { throw 'an unrelated worker must not answer this' }
+            $carried = Send-FmTelegramWorkerReply -FirstmateHome $HomePath
+            $carried.Sent | Should -Be 0
+            $carried.Waiting | Should -Be 1
+            Should -Invoke Invoke-FmTelegramApi -Times 0 -Exactly
+        }
+    }
+
+    # The whole point of the record: a reply arriving with no memory of what it
+    # answers is how a captain gets told the wrong thing, confidently.
+    It 'answers each of two questions with its own worker''s report' {
+        $null = Receive-FmTelegramCommand -Text 'and how is the cart page coming along' `
+            -FirstmateHome $script:AnswerBackHome
+        $null = Add-FmTaskStatus -StateDir $script:AnswerBackState -TaskId 'fix-signin' -State 'working' `
+            -Note '[70%] sign-in works again' -Confirm:$false
+        $null = Add-FmTaskStatus -StateDir $script:AnswerBackState -TaskId 'cart-speed' -State 'working' `
+            -Note '[50%] the cart query was the slow part' -Confirm:$false
+
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:AnswerBackHome } {
+            param($HomePath)
+            Mock Invoke-FmTelegramApi {
+                [pscustomobject]@{ Ok = $true; Reason = 'ok'; ErrorCode = 0; Description = ''; Result = $null }
+            }
+            $carried = Send-FmTelegramWorkerReply -FirstmateHome $HomePath
+            $carried.Sent | Should -Be 2
+            Should -Invoke Invoke-FmTelegramApi -Times 1 -Exactly -ParameterFilter {
+                $text = ($BodyJson | ConvertFrom-Json).text
+                $text -match 'how is the sign-in fix going' -and $text -match 'Sign-in works again'
+            }
+            Should -Invoke Invoke-FmTelegramApi -Times 1 -Exactly -ParameterFilter {
+                $text = ($BodyJson | ConvertFrom-Json).text
+                $text -match 'how is the cart page coming along' -and $text -match 'cart query was the slow part'
+            }
+        }
+    }
+
+    # AGENTS.md section 9 binds harder on a phone than anywhere else, and the
+    # easiest possible mistake here is forwarding the status line that is right
+    # there and already written.
+    It 'lets no worker''s raw words reach the captain' {
+        $null = Add-FmTaskStatus -StateDir $script:AnswerBackState -TaskId 'fix-signin' -State 'done' `
+            -Key 'api-shape' -Note ('[95%] sign-in restored, landed in branch fm/fix-signin, ' +
+            'see docs/telegram-windows.md and state/fix-signin.status') -Confirm:$false
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:AnswerBackHome } {
+            param($HomePath)
+            Mock Invoke-FmTelegramApi {
+                [pscustomobject]@{ Ok = $true; Reason = 'ok'; ErrorCode = 0; Description = ''; Result = $null }
+            }
+            $null = Send-FmTelegramWorkerReply -FirstmateHome $HomePath
+            Should -Invoke Invoke-FmTelegramApi -Times 1 -Exactly -ParameterFilter {
+                $text = ($BodyJson | ConvertFrom-Json).text
+                $text -notmatch 'done:' -and $text -notmatch '95%' -and $text -notmatch 'key=' -and
+                $text -notmatch 'fm/fix-signin' -and $text -notmatch 'docs/' -and
+                $text -notmatch 'state/' -and $text -notmatch '\.md|\.status' -and
+                # And it still says what happened, which is the whole point of
+                # stripping rather than refusing.
+                $text -match 'Sign-in restored'
+            }
+        }
+    }
+
+    # The stripper is the ONE owner of section 9's translation, vocabulary table
+    # included, and this path reuses it rather than carrying a second copy. So the
+    # words that table exists to replace have to arrive replaced, and this test is
+    # what would notice if the carry-back ever grew a translator of its own.
+    It 'gets the shared vocabulary, not a second copy of it' {
+        $null = Add-FmTaskStatus -StateDir $script:AnswerBackState -TaskId 'fix-signin' -State 'working' `
+            -Note 'crewmate wedged in its worktree, the harness went stale after teardown' -Confirm:$false
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:AnswerBackHome } {
+            param($HomePath)
+            Mock Invoke-FmTelegramApi {
+                [pscustomobject]@{ Ok = $true; Reason = 'ok'; ErrorCode = 0; Description = ''; Result = $null }
+            }
+            $null = Send-FmTelegramWorkerReply -FirstmateHome $HomePath
+            Should -Invoke Invoke-FmTelegramApi -Times 1 -Exactly -ParameterFilter {
+                $text = ($BodyJson | ConvertFrom-Json).text
+                $text -notmatch 'crewmate' -and $text -notmatch 'worktree' -and
+                $text -notmatch 'harness' -and $text -notmatch 'teardown' -and $text -notmatch 'stale' -and
+                $text -match 'worker' -and $text -match 'local copy' -and $text -match 'cleanup'
+            }
+        }
+    }
+
+    It 'marks a carried answer answered, so the captain is not told twice' {
+        $null = Add-FmTaskStatus -StateDir $script:AnswerBackState -TaskId 'fix-signin' -State 'working' `
+            -Note '[70%] sign-in works again' -Confirm:$false
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:AnswerBackHome } {
+            param($HomePath)
+            Mock Invoke-FmTelegramApi {
+                [pscustomobject]@{ Ok = $true; Reason = 'ok'; ErrorCode = 0; Description = ''; Result = $null }
+            }
+            (Send-FmTelegramWorkerReply -FirstmateHome $HomePath).Sent | Should -Be 1
+            $again = Send-FmTelegramWorkerReply -FirstmateHome $HomePath
+            $again.Sent | Should -Be 0
+            $again.Waiting | Should -Be 0
+            Should -Invoke Invoke-FmTelegramApi -Times 1 -Exactly -ParameterFilter { $Url -match 'sendMessage' }
+        }
+        # The closure is a second record carrying the same id, not a rewrite: the
+        # ledger stays a history rather than becoming a current value.
+        $lines = Get-RouteLine -HomePath $script:AnswerBackHome
+        $lines.Count | Should -Be 2
+        ($lines[1] -split "`t")[1] | Should -Be 'answered'
+        ($lines[1] -split "`t")[2] | Should -Be (($lines[0] -split "`t")[2])
+    }
+
+    It 'leaves the question open when the send did not get through' {
+        $null = Add-FmTaskStatus -StateDir $script:AnswerBackState -TaskId 'fix-signin' -State 'working' `
+            -Note '[70%] sign-in works again' -Confirm:$false
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:AnswerBackHome } {
+            param($HomePath)
+            Mock Invoke-FmTelegramApi {
+                [pscustomobject]@{ Ok = $false; Reason = 'timeout'; ErrorCode = 0; Description = ''; Result = $null }
+            }
+            Mock Start-Sleep { }
+            $carried = Send-FmTelegramWorkerReply -FirstmateHome $HomePath
+            $carried.Sent | Should -Be 0
+            $carried.Failed | Should -Be 1
+            $carried.Reason | Should -Be 'unavailable'
+        }
+        # Still open, so the next call carries it rather than losing it silently.
+        (Get-RouteLine -HomePath $script:AnswerBackHome).Count | Should -Be 1
+        $routes = Get-FmTelegramRoute -FirstmateHome $script:AnswerBackHome
+        @($routes).Count | Should -Be 1
+        $routes[0].Reported | Should -BeTrue
+    }
+
+    It 'says so, and carries nothing, when the channel is not set up' {
+        $bare = New-TelegramHome
+        $null = Add-LiveWork -HomePath $bare -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        # Recorded with the channel off is still a real routing decision; only the
+        # sending half is switched off.
+        $null = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $bare
+        $null = Add-FmTaskStatus -StateDir (Join-Path $bare 'state') -TaskId 'fix-signin' -State 'working' `
+            -Note '[70%] sign-in works again' -Confirm:$false
+        InModuleScope Firstmate -Parameters @{ HomePath = $bare } {
+            param($HomePath)
+            Mock Invoke-FmTelegramApi { throw 'the network must not be reached when the channel is off' }
+            $carried = Send-FmTelegramWorkerReply -FirstmateHome $HomePath
+            $carried.Sent | Should -Be 0
+            $carried.Reason | Should -Be 'off'
+            Should -Invoke Invoke-FmTelegramApi -Times 0 -Exactly
+        }
+        (Get-RouteLine -HomePath $bare).Count | Should -Be 1
+    }
+
+    It 'says where things stand now rather than implying one report was the whole of it' {
+        foreach ($note in @('[50%] found the cause', '[60%] fixing it', '[70%] sign-in works again')) {
+            $null = Add-FmTaskStatus -StateDir $script:AnswerBackState -TaskId 'fix-signin' -State 'working' `
+                -Note $note -Confirm:$false
+        }
+        $routes = Get-FmTelegramRoute -FirstmateHome $script:AnswerBackHome
+        $routes[0].Reports | Should -Be 3
+        # The current word is the answer; the superseded ones are counted, not sent.
+        $routes[0].Answer | Should -Match 'Sign-in works again'
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:AnswerBackHome } {
+            param($HomePath)
+            Mock Invoke-FmTelegramApi {
+                [pscustomobject]@{ Ok = $true; Reason = 'ok'; ErrorCode = 0; Description = ''; Result = $null }
+            }
+            $null = Send-FmTelegramWorkerReply -FirstmateHome $HomePath
+            Should -Invoke Invoke-FmTelegramApi -Times 1 -Exactly -ParameterFilter {
+                ($BodyJson | ConvertFrom-Json).text -match 'moved on 3 times since you asked'
+            }
+        }
+    }
+
+    It 'carries back only the work it was asked for' {
+        $null = Receive-FmTelegramCommand -Text 'and how is the cart page coming along' `
+            -FirstmateHome $script:AnswerBackHome
+        $null = Add-FmTaskStatus -StateDir $script:AnswerBackState -TaskId 'fix-signin' -State 'working' `
+            -Note '[70%] sign-in works again' -Confirm:$false
+        $null = Add-FmTaskStatus -StateDir $script:AnswerBackState -TaskId 'cart-speed' -State 'working' `
+            -Note '[50%] the cart query was the slow part' -Confirm:$false
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:AnswerBackHome } {
+            param($HomePath)
+            Mock Invoke-FmTelegramApi {
+                [pscustomobject]@{ Ok = $true; Reason = 'ok'; ErrorCode = 0; Description = ''; Result = $null }
+            }
+            (Send-FmTelegramWorkerReply -FirstmateHome $HomePath -Task 'cart-speed').Sent | Should -Be 1
+            Should -Invoke Invoke-FmTelegramApi -Times 1 -Exactly -ParameterFilter {
+                ($BodyJson | ConvertFrom-Json).text -match 'cart query was the slow part'
+            }
+        }
+    }
+}
+
+Describe 'routing cannot widen a refusal' {
+    BeforeEach {
+        $script:RefuseHome = New-ConfiguredHome
+        $null = Add-LiveWork -HomePath $script:RefuseHome -Task 'fix-signin' -Project 'acme-web' `
+            -Note '[40%] restoring sign-in'
+    }
+
+    # The refusal returns before routing runs at all, so a message that is refused
+    # is refused whoever it was about.
+    It 'refuses a message that plainly concerns live work, and routes nothing' -ForEach @(
+        @{ Text = 'merge the sign-in fix' }
+        @{ Text = 'discard the sign-in work' }
+        @{ Text = 'delete the sign-in branch' }
+        @{ Text = 'tear down the sign-in fix' }
+        @{ Text = 'show me the token for the sign-in work' }
+    ) {
+        $home_ = New-ConfiguredHome
+        $null = Add-LiveWork -HomePath $home_ -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $handled = Receive-FmTelegramCommand -Text $Text -FirstmateHome $home_
+        $handled.Reason | Should -Be 'refused'
+        $handled.Accepted | Should -BeFalse
+        $handled.RoutedTo | Should -BeNullOrEmpty
+        $handled.RouteReason | Should -Be 'none'
+        Get-RouteLine -HomePath $home_ | Should -BeNullOrEmpty
+        Get-InboxLine -HomePath $home_ | Should -BeNullOrEmpty
+    }
+
+    It 'still refuses when the only live work is the one the message names' {
+        $handled = Receive-FmTelegramCommand -Text 'land the sign-in fix' -FirstmateHome $script:RefuseHome
+        $handled.Reason | Should -Be 'refused'
+        $handled.Reply | Should -Match 'land that work'
+        Get-RouteLine -HomePath $script:RefuseHome | Should -BeNullOrEmpty
+    }
+
+    It 'routes nothing for a steer a narrowed channel refuses' {
+        $narrowed = New-ConfiguredHome -AuthorityLine @('allow-tier=1')
+        $null = Add-LiveWork -HomePath $narrowed -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $handled = Receive-FmTelegramCommand -Text 'put the sign-in fix on hold' -FirstmateHome $narrowed
+        $handled.Reason | Should -Be 'refused'
+        $handled.RoutedTo | Should -BeNullOrEmpty
+        Get-RouteLine -HomePath $narrowed | Should -BeNullOrEmpty
+    }
+
+    It 'still routes a question a narrowed channel allows' {
+        $narrowed = New-ConfiguredHome -AuthorityLine @('allow-tier=1')
+        $null = Add-LiveWork -HomePath $narrowed -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $handled = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $narrowed
+        $handled.Accepted | Should -BeTrue
+        $handled.RoutedTo | Should -Be 'fix-signin'
+    }
+
+    It 'refuses a message the poller took, without recording where it would have gone' {
+        InModuleScope Firstmate -Parameters @{ HomePath = $script:RefuseHome; Captain = $script:CaptainId } {
+            param($HomePath, $Captain)
+            Mock Invoke-FmTelegramApi {
+                if ($Url -match 'getUpdates') {
+                    return [pscustomobject]@{
+                        Ok = $true; Reason = 'ok'; ErrorCode = 0; Description = ''
+                        Result = @([pscustomobject]@{
+                                update_id = 31
+                                message   = [pscustomobject]@{
+                                    date = (Get-FmUnixTime); text = 'merge the sign-in fix'
+                                    from = [pscustomobject]@{ id = $Captain }
+                                }
+                            })
+                    }
+                }
+                [pscustomobject]@{ Ok = $true; Reason = 'ok'; ErrorCode = 0; Description = ''; Result = $null }
+            }
+            $run = Start-FmTelegramPoll -FirstmateHome $HomePath -MaxCycles 1
+            $run.Refused | Should -Be 1
+            $run.Accepted | Should -Be 0
+        }
+        Get-RouteLine -HomePath $script:RefuseHome | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'the whole way round, from the phone and back to it' {
+    It 'takes a message, routes it, waits for the worker, then answers the captain' {
+        $home_ = New-ConfiguredHome
+        $state = Join-Path $home_ 'state'
+        $null = Add-LiveWork -HomePath $home_ -Task 'fix-signin' -Project 'acme-web' `
+            -Note '[40%] restoring sign-in'
+        $null = Add-LiveWork -HomePath $home_ -Task 'cart-speed' -Project 'acme-shop' `
+            -Note '[20%] profiling the cart page'
+
+        InModuleScope Firstmate -Parameters @{ HomePath = $home_; Captain = $script:CaptainId } {
+            param($HomePath, $Captain)
+            Mock Invoke-FmTelegramApi {
+                if ($Url -match 'getUpdates') {
+                    return [pscustomobject]@{
+                        Ok = $true; Reason = 'ok'; ErrorCode = 0; Description = ''
+                        Result = @([pscustomobject]@{
+                                update_id = 41
+                                message   = [pscustomobject]@{
+                                    date = (Get-FmUnixTime); text = 'how is the sign-in fix going'
+                                    from = [pscustomobject]@{ id = $Captain }
+                                }
+                            })
+                    }
+                }
+                [pscustomobject]@{ Ok = $true; Reason = 'ok'; ErrorCode = 0; Description = ''; Result = $null }
+            }
+            $run = Start-FmTelegramPoll -FirstmateHome $HomePath -MaxCycles 1
+            $run.Accepted | Should -Be 1
+            # It told the captain which work it decided on, by what that work is
+            # doing rather than by any identifier.
+            Should -Invoke Invoke-FmTelegramApi -Times 1 -Exactly -ParameterFilter {
+                $Url -match 'sendMessage' -and
+                ($BodyJson | ConvertFrom-Json).text -match 'Restoring sign-in'
+            }
+        }
+
+        $routes = Get-FmTelegramRoute -FirstmateHome $home_
+        @($routes).Count | Should -Be 1
+        $routes[0].Task | Should -Be 'fix-signin'
+        $routes[0].Reported | Should -BeFalse
+
+        # The worker reports through its own status stream. That is the only signal.
+        $null = Add-FmTaskStatus -StateDir $state -TaskId 'fix-signin' -State 'done' `
+            -Note 'sign-in works again for accounts made before the migration, ready for review' -Confirm:$false
+
+        InModuleScope Firstmate -Parameters @{ HomePath = $home_ } {
+            param($HomePath)
+            Mock Invoke-FmTelegramApi {
+                [pscustomobject]@{ Ok = $true; Reason = 'ok'; ErrorCode = 0; Description = ''; Result = $null }
+            }
+            (Send-FmTelegramWorkerReply -FirstmateHome $HomePath).Sent | Should -Be 1
+            # Guarded on the URL first, and it has to be: this It also ran the
+            # poller, whose getUpdates calls carry no body at all, and a filter that
+            # parsed the body before checking would die on the first of them.
+            Should -Invoke Invoke-FmTelegramApi -Times 1 -Exactly -ParameterFilter {
+                $Url -match 'sendMessage' -and
+                ($BodyJson | ConvertFrom-Json).text -match 'you asked: how is the sign-in fix going' -and
+                ($BodyJson | ConvertFrom-Json).text -match 'Sign-in works again for accounts' -and
+                $BodyJson -notmatch 'done:' -and $BodyJson -notmatch 'fix-signin'
+            }
+        }
+    }
+}
+
 Describe 'the entry points, run as real processes' {
     It 'fm-tell.ps1 says nothing and exits cleanly when the channel is not set up' {
         $bare = New-TelegramHome
@@ -963,5 +1708,66 @@ Describe 'the entry points, run as real processes' {
         $run = Invoke-TelegramScript -Script $script:PollScript -FmHome (New-TelegramHome) -CliArgs @('-h')
         $run.ExitCode | Should -Be 0
         $run.StdOut | Should -Match 'fm-tg-poll'
+    }
+
+    It 'fm-tg-route.ps1 answers -h with its own help' {
+        $run = Invoke-TelegramScript -Script $script:RouteScript -FmHome (New-TelegramHome) -CliArgs @('-h')
+        $run.ExitCode | Should -Be 0
+        $run.StdOut | Should -Match 'fm-tg-route'
+    }
+
+    It 'fm-tg-route.ps1 says plainly that nothing is waiting, rather than printing nothing' {
+        $run = Invoke-TelegramScript -Script $script:RouteScript -FmHome (New-ConfiguredHome)
+        $run.ExitCode | Should -Be 0
+        $run.StdOut | Should -Match 'no phone message is waiting'
+    }
+
+    It 'fm-tg-route.ps1 lists what is outstanding without sending anything' {
+        $home_ = New-ConfiguredHome
+        $null = Add-LiveWork -HomePath $home_ -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $null = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $home_
+        $null = Add-FmTaskStatus -StateDir (Join-Path $home_ 'state') -TaskId 'fix-signin' -State 'working' `
+            -Note '[70%] sign-in works again' -Confirm:$false
+
+        # The API root points at a dead loopback port, so a send would be visible as
+        # a refusal on stderr. Listing must not attempt one at all.
+        $run = Invoke-TelegramScript -Script $script:RouteScript -FmHome $home_
+        $run.ExitCode | Should -Be 0
+        $run.StdOut | Should -Match 'ready\s+fix-signin'
+        $run.StdOut | Should -Match 'how is the sign-in fix going'
+        $run.StdErr | Should -Not -Match 'not carried back'
+        # Still open, because listing is a read.
+        (Get-RouteLine -HomePath $home_).Count | Should -Be 1
+    }
+
+    It 'fm-tg-route.ps1 -Send says nothing was carried back when the channel is not set up' {
+        $bare = New-TelegramHome
+        $null = Add-LiveWork -HomePath $bare -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $null = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $bare
+        $null = Add-FmTaskStatus -StateDir (Join-Path $bare 'state') -TaskId 'fix-signin' -State 'working' `
+            -Note '[70%] sign-in works again' -Confirm:$false
+
+        $run = Invoke-TelegramScript -Script $script:RouteScript -FmHome $bare -CliArgs @('-Send')
+        $run.ExitCode | Should -Be 0
+        $run.StdErr | Should -Match 'not set up'
+    }
+
+    It 'fm-tg-route.ps1 never prints the token, even when the send fails' {
+        $home_ = New-ConfiguredHome
+        $null = Add-LiveWork -HomePath $home_ -Task 'fix-signin' -Note '[40%] restoring sign-in'
+        $null = Receive-FmTelegramCommand -Text 'how is the sign-in fix going' -FirstmateHome $home_
+        $null = Add-FmTaskStatus -StateDir (Join-Path $home_ 'state') -TaskId 'fix-signin' -State 'working' `
+            -Note '[70%] sign-in works again' -Confirm:$false
+
+        $run = Invoke-TelegramScript -Script $script:RouteScript -FmHome $home_ `
+            -CliArgs @('-Send', '-TimeoutSeconds', '2', '-Retries', '0')
+        $run.ExitCode | Should -Be 0
+        $everything = $run.StdOut + $run.StdErr
+        $everything | Should -Not -Match ([regex]::Escape($script:FakeToken))
+        $everything | Should -Not -Match ([regex]::Escape($script:FakeTokenSecret))
+        foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $home_ 'state') -File -Recurse -Force)) {
+            [System.IO.File]::ReadAllText($file.FullName) |
+                Should -Not -Match ([regex]::Escape($script:FakeTokenSecret))
+        }
     }
 }

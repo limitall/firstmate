@@ -4220,3 +4220,233 @@ An instrumented run showed a worker throwing `this process already holds the loc
 That was **not** the lock.
 It was a bug in the throwaway instrumentation: `(try { ... } catch { ... })` is not a valid PowerShell expression, so the diagnostic line raised `The term 'try' is not recognized` and aborted `Unlock-FmLock` before it cleared its held-lock table entry.
 Useful anyway - the diagnostic only runs on the release-refused path, so its failure is independent proof that 24792's release WAS refused, which is the victim half of 28.4.
+
+---
+
+## 29. Reaching the worker a message is about, and hearing back - `PROVEN (Windows 11), OFFLINE ONLY`
+
+The routing half of the private channel: `Resolve-FmTelegramWorker`,
+`Get-FmTelegramRoute`, `Send-FmTelegramWorkerReply`, `bin/fm-tg-route.ps1`, and the
+routing added to `Receive-FmTelegramCommand` (`docs/telegram-windows.md`).
+Run in a disposable worktree on the captain's Windows 11 laptop on 2026-08-17, on
+`fm/tg-route` over `87f71e0`.
+
+**Section 27's limit applies unchanged and is the whole shape of this one too.**
+No bot was created, no token was obtained, no real message was sent, and nothing in
+this task reached `api.telegram.org`. Everything below ran against a mocked
+`Invoke-FmTelegramApi` or, for the entry points, against
+`FM_TELEGRAM_API_BASE=http://127.0.0.1:9` - a loopback port nothing listens on.
+
+**No worker was driven either, and that is a design property rather than a testing
+gap.** Nothing in this half types into a pane: the routing decision is recorded and
+firstmate hands the message over itself through the ordinary steer path. So there is
+no evidence here of a steer reaching a live worker, because nothing here attempts
+one.
+
+### 29.1 What was executed
+
+```
+tests/FmTelegram.Tests.ps1   Tests Passed: 145, Failed: 0   (69s)
+tests/FmBridge.Tests.ps1     Tests Passed:  26, Failed: 0
+```
+
+Measured against the same Telegram file on `main` before this task, which passes 87,
+so 58 of those are the routing's own. `FmBridge` is listed because the fix in 29.5
+is in its file and the two were run together after the rebase.
+
+**A FULLY GREEN WHOLE-DIRECTORY RUN WAS NOT ACHIEVED IN THIS WORKTREE, and this
+section does not claim one.** Four attempts were made. Every number below is
+reported, including the ones that make the branch look worse, because the only
+thing this file is for is telling those apart.
+
+```
+attempt 1  Passed: 1965  Failed: 9  Skipped: 25  (1948s)   fresh worktree, surface unrepaired
+attempt 2  Passed: 1973  Failed: 1  Skipped: 25  (1588s)   heavy concurrent load
+attempt 3  Passed: 1969  Failed: 5  Skipped: 25            orphaned process - INVALID
+attempt 4  Passed: 1972  Failed: 2  Skipped: 25  (1589s)   surface changed underneath it
+attempt 5  no result - killed before it reported, as were two earlier tries
+```
+
+**Not one of those five is a clean measurement, and four of the five were spoiled by
+how this task ran them rather than by the port.** Attempts 1 and 4 read an
+instruction surface that was changing, attempt 2 ran against contention this task
+created by overlapping its own attempts, attempt 3 ran orphaned, and attempt 5 was
+killed. That is a finding about this worktree's ability to hold a 30-minute run, and
+it is why the verdict below rests on targeted suites instead.
+
+What WAS measured cleanly, on the rebased tree, with the surface repaired and nothing
+else running - the seven suites that between them cover this branch's own code, the
+files it changed, the cross-area assembly rules, and the repo-wide analyzer bar:
+
+```
+FmTelegram + FmBridge + FmInstall + FmContract + FmLock + FmModuleAssembly
+  + FmAnalyzer                                     Passed: 377  Failed: 0
+FmLock + FmIdentity + FmSupervision + FmState      Passed: 188  Failed: 0
+```
+
+**Attempt 1's nine failures are the fresh-worktree instruction surface.** A
+`core.symlinks=false` clone writes `CLAUDE.md` and `.claude/skills` as text
+placeholders, and `tests/FmInstall.Tests.ps1` repairs them by running
+`fm-setup.ps1` against this checkout as part of its own job - so the tests that read
+that surface fail before the repair lands and pass after it. All nine are
+`this checkout's own instruction surface` (3), `Invoke-FmDoctor` (4), the
+`Install-FmHome` backend warning, and the home-vs-checkout doctor warning. Nine is
+the known count here. Section 27.1 recorded the same effect from the other side: it
+ran in an already-repaired checkout and said so.
+
+**Attempt 2's single failure has since been diagnosed and fixed by somebody else,
+and section 28.5 owns it.** It was `One holder, proven with real processes.hands the
+lock on when a holder is killed outright, with no cleanup step`, and the cause was
+not the lock and not this branch: the test reaps a job whose process it has just
+killed on purpose, `Remove-Item -Force` stops that job first, and the resulting
+`IOException: The pipe is being closed` is terminating, so it fails in its own
+cleanup after every assertion has already passed. That reap is now wrapped on `main`.
+
+This section's own checks pointed the same way before that landed, and are kept
+because they are what a reader would otherwise have to redo:
+
+```
+FmLock alone, under load                            Passed: 47   Failed: 0
+FmLock + FmIdentity + FmSupervision + FmState, idle Passed: 188  Failed: 0
+```
+
+The staged diff also adds no lock, state, or process-identity code, checked
+mechanically rather than asserted. `CONTRIBUTING.md` requires treating a failure
+there as a real race until proven otherwise, and the proof is section 28's, not this
+one's.
+
+**Attempt 3 is invalid and is listed so nobody reads its five failures as real.** It
+was launched with `Start-Process` from a shell that then exited, so the suite ran
+orphaned - and `Get-FmParentProcessId.finds a parent for this process` is one of the
+five that failed. Every one of the five is a process-identity or lock-ownership test,
+all of which need live process ancestry. That run measured the workaround, not the
+port.
+
+**Attempt 4's two failures are `Invoke-FmDoctor` reading the instruction surface
+while this task was changing it.** The rebase onto `main` needed a clean tree, so
+`CLAUDE.md` and `.claude/skills` were put back to the placeholder bytes git records
+for them - at 21:05, while that run was still going and did not finish until 21:18.
+Mutating the tree under a running suite invalidates it. Worth noting anyway: the lock
+crash-recovery test PASSED in this one, which is what an intermittent failure looks
+like from the other side.
+
+**Attempt 5 was killed before printing a result**, as were two earlier tries; a
+30-minute run did not reliably survive here. What that leaves is stated plainly: the
+suites above are proven and the whole-directory green is not.
+
+The suite fixtures build live work the way the real thing does - a
+`state/<id>.meta` for each dispatched piece of work, and status lines written
+through `Add-FmTaskStatus` - so what routing enumerates is what a real spawn and a
+real worker leave behind, not a hand-written imitation of it.
+
+### 29.2 The resolution, and the two cases that are not ambiguity
+
+Two pieces of live work in the home (`fix-signin` on `acme-web` restoring sign-in,
+`cart-speed` on `acme-shop` profiling the cart page):
+
+```
+how is the sign-in fix going          -> routed  fix-signin   evidence=name    score 7
+any progress on sign-in               -> routed  fix-signin   (matched across the hyphen)
+how are the invoice totals looking    -> routed  task-one     evidence=report
+any news?                             -> ambiguous, question asked
+how is the login fix going  (two "fix-login-*")  -> ambiguous, question asked
+have someone look at the pricing page -> none, no question asked
+get someone else onto the sign-in fix -> routed  fix-signin   (start-shaped AND named)
+any news?  (one piece of work only)   -> routed, evidence=only-one
+any news?  (after a named message)    -> routed, evidence=recent
+any news?  (that work since done)     -> ambiguous again
+```
+
+The hyphen case is worth naming: the captain writes "sign-in" and the work is called
+`fix-signin`, so splitting on punctuation alone yields "sign" from one and "signin"
+from the other and the strongest signal available misses completely. Each side also
+offers its joined-up form.
+
+**One measured false positive, now guarded.** Before the name/report weights were
+tracked apart, "have someone look at the pricing page" routed to the worker
+profiling the CART page, because both strings contain the word "page". An
+instruction to start something now needs the work *named* rather than brushed
+against; a test asserts that exact message resolves to nothing.
+
+The question asked instead of a guess was checked for what it must not contain as
+well as what it must: no task id, no percentage, no status verb. Five live pieces of
+work produce a question listing three and saying "or one of 2 others" rather than
+dropping the rest silently.
+
+### 29.3 The record, and the answer matched back to its question
+
+```
+1786971831  routed  79b77503e35a  fix-signin  1  how is the sign-in fix going
+```
+
+One report existed when the captain asked, so the answer is what that worker says
+after line 1. Proven for the whole loop, in one test that runs the poller and then
+the carry-back:
+
+```
+poll     -> 1 taken, and the captain told "Restoring sign-in", never "fix-signin"
+route    -> 1 outstanding, Reported=False
+worker   -> done: sign-in works again for accounts made before the migration
+carry    -> "Captain, you asked: how is the sign-in fix going" + the translated answer
+```
+
+Two questions to two different workers each get their own worker's report, and a
+report from an unrelated worker answers neither. A carried answer is recorded
+`answered` under the same id - a second record, not a rewrite - and a second call
+sends nothing. A send that timed out leaves the routing open and reported, so the
+next call tries it again.
+
+### 29.4 The two boundaries this half must not move
+
+**Refusal happens before routing.** Five refused messages that each plainly name
+live work (`merge the sign-in fix`, `discard the sign-in work`, `delete the sign-in
+branch`, `tear down the sign-in fix`, `show me the token for the sign-in work`) each
+came back refused with nothing in the inbox and nothing in the routing record, and
+the same held for one taken by the poller itself. A steer a narrowed
+(`allow-tier=1`) channel refuses records nothing either, while a question over the
+same channel still routes.
+
+**No worker's raw words reach the captain.** A status line stuffed with everything
+`AGENTS.md` section 9 forbids was carried back and the sent body asserted to contain
+none of it - no `done:`, no `95%`, no `key=`, no `fm/fix-signin`, no `docs/`, no
+`state/`, no filename - while still carrying "Sign-in restored", because stripping
+rather than refusing is the point.
+
+### 29.5 One captain-facing defect fixed in the shared stripper
+
+`ConvertTo-FmBridgePlainText` removed a branch name and left the word that
+introduced it behind, so a worker's answer arrived on the phone reading "writing the
+test in". It now takes a dangling preposition with the token it stripped, as the last
+removal after the vocabulary pass, because every pass above it can leave one behind.
+Fixed in the one owner rather than worked round here, so the browser and the voice
+channel get it too.
+
+The reuse is asserted rather than assumed: a worker note reading "crewmate wedged in
+its worktree, the harness went stale after teardown" is carried back with none of
+those words in it and "worker", "local copy" and "cleanup" in their place. That test
+is what would notice if this path ever grew a translator of its own, which is the
+failure the one-owner rule exists to prevent - the vocabulary table landed on `main`
+during this task and this path picked it up with no change.
+
+### 29.6 What was NOT proven here
+
+- **Everything in section 27.6 still stands**, unchanged.
+- **No steer was delivered to a live worker**, because nothing in this half
+  attempts one. The handover is firstmate's, through `fm-send.ps1`, whose own
+  delivery guarantee is proven in its own section.
+- **Nothing calls the carry-back by itself.** Wiring this into the escalation path
+  is a separate decision the captain has not made, so there is no evidence of an
+  answer reaching a phone unprompted.
+- **The resolution is lexical, and its limits are not measured against real
+  traffic.** "Sign-in" and "login" mean the same thing to a captain and share no
+  letters that matter; where the last report does not bridge them, this asks rather
+  than guessing. That is the intended behaviour, but how often it asks when a human
+  would not have needed to is unknown until the channel carries real messages.
+- **A fully green `Invoke-Pester -Path ./tests` was not obtained here**, as 29.1 sets
+  out in full: of four attempts, one predated the surface repair, one hit the
+  cleanup defect section 28.5 has since fixed, one was invalidated by being run
+  orphaned, and one was killed before it reported. The area suites and the repo-wide
+  analyzer bar are proven; the whole-directory green is the one acceptance criterion
+  of this task that rests on targeted re-runs rather than on a clean whole run, so
+  whoever lands this should take that run themselves - it is now expected to pass,
+  since the only real failure any attempt found has an owner and a fix.

@@ -160,8 +160,10 @@ module any other way.
   from has to be proved to be firstmate's own rather than trusted.
 - `docs/telegram-windows.md` - the private Telegram channel: why it ships inert,
   why the tier-3 refusal is a constant in the code rather than a setting, where
-  the bot token leaks if anything logs a request, and what has never been run
-  against a real endpoint.
+  the bot token leaks if anything logs a request, how a message about one piece of
+  work is resolved to it and the answer matched back without opening a route
+  between a phone and a worker, and what has never been run against a real
+  endpoint.
 - `docs/windows-install.md` - `fm-setup.ps1` and `fm-doctor.ps1`: why the wiring
   is a managed PowerShell-profile block rather than a User environment variable,
   why setup writes `config/backend=herdr` (without it a fresh home resolves
@@ -199,6 +201,14 @@ below are what those bugs cost.
 - **One owner per rule.** When a shared helper exists, delegate to it rather than
   keeping a second copy (`Write-FmTextFileLf`, `Get-FmMetaValue`,
   `Test-FmPathEqual`, `Get-FmJsonValue`).
+- **A function that `return , $list`s must be ASSIGNED, never wrapped or piped.**
+  Thirty functions here return a list behind a unary comma so an empty one cannot
+  unroll to `$null` and read as "unparseable" (`docs/herdr-backend-windows.md`
+  explains the original case). The caller-side half is the trap: `@(Get-FmThing)`
+  collects the ONE array-shaped output object into a one-element array, so an empty
+  result becomes a single nameless element and the next property read throws under
+  strict mode - and piping it straight into `Where-Object` does the same. Assign
+  first, then wrap or filter. Both halves of this bit during development.
 - **Two areas defining one function name is silent, not an error.** The loader
   dot-sources `Private/*.ps1` then `Public/*.ps1` in filename order, so the
   later file simply wins and every caller gets it - a Public copy also takes
@@ -271,10 +281,19 @@ and by nothing else, so nothing load-bearing may depend on it.
   mirror and `.claude/skills` link as part of its job. The fixture already sends
   the home pointer somewhere disposable for exactly this reason; the two repairs
   were missed. Check `git status` after a full run.
-- **Never `git checkout --` a repaired `.claude/skills`.** Once setup has turned
-  that placeholder into a real link to `.agents/skills`, restoring it deletes
-  the link's TARGET - the whole skills tree goes with it. Restore `.agents/skills`
-  from git afterwards, and prefer leaving the repaired link alone.
+- **Never point ANY git write at a repaired `.claude/skills`.** Once setup has
+  turned that placeholder into a real link to `.agents/skills`, a git operation
+  that writes that path deletes the link's TARGET - the whole skills tree goes
+  with it. `git checkout --` does it and so does `git stash push -- .claude/skills`,
+  which is how `.agents/skills/updatefirstmate/SKILL.md` was lost while clearing
+  the tree for a rebase. Restore `.agents/skills` from git afterwards.
+  When a clean tree is genuinely needed, do not go through git at all: both paths
+  are tracked mode 120000 and `core.symlinks` is false here, so what git wants on
+  disk is a plain file holding the target text. Write those bytes with no trailing
+  newline - `../.agents/skills` and `AGENTS.md` - and the tree is clean with the
+  skills tree untouched. `ln -s` is not the answer either: with symlinks off, MSYS
+  copies instead, which turned `.claude/skills` into a 19-directory duplicate and
+  `CLAUDE.md` into a 56KB copy of the contract.
 
 ## Which directory a Claude session starts in
 

@@ -84,7 +84,7 @@ config/backlog-backend  backlog backend override; LOCAL, gitignored; "manual" fo
 config/startup-memory-budget  per-home startup-memory budget; LOCAL, gitignored, materialized by locked bootstrap
 config/autolaunch      opt-in startup command and grace window for `bin/fm-autolaunch.ps1`; LOCAL, gitignored; absent = off
 config/voice           opt-in voice channel for `bin/fm-say.ps1` and `bin/fm-ask.ps1`, with the voice name, rate and answer confidence; LOCAL, gitignored; absent = off, and the microphone is never opened
-config/telegram-token config/telegram-allow  opt-in private channel to the captain for `bin/fm-tell.ps1` and `bin/fm-tg-poll.ps1`: the bot token, and the numeric Telegram user id(s) allowed to command it and be told things; LOCAL, gitignored; either absent = off (section 14).
+config/telegram-token config/telegram-allow  opt-in private channel to the captain for `bin/fm-tell.ps1`, `bin/fm-tg-poll.ps1` and `bin/fm-tg-route.ps1`: the bot token, and the numeric Telegram user id(s) allowed to command it and be told things; LOCAL, gitignored; either absent = off (section 14).
                        Optional `config/telegram-authority` may narrow that channel to reporting only and can never widen it.
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
@@ -104,6 +104,8 @@ state/               volatile runtime signals; gitignored
   <id>.check-trust   the content binding that makes an intentional custom check executable
   captain-telegram.inbox  what the captain sent from their phone, "<epoch><TAB><their words>"; scanned as a signal
                      like *.status but carries no status verb, so it never reads as a task (section 14)
+  captain-telegram.routed  which piece of work each phone message was resolved to, and which of those the worker
+                     has since answered; append-only and folded on read, and NOT scanned as a signal (section 14)
   .wake-queue        durable queued wakes retained until post-handling acknowledgement
   .watch.lock .wake-queue.lock   watcher singleton and queue serialization locks (directories, not symlinks)
   .last-watcher-beat watcher liveness beacon, touched every poll; guard scripts read it
@@ -500,6 +502,8 @@ Each is a plain absence, not a degraded imitation: never simulate one, and tell 
   There is now a PRIVATE channel to the captain instead, and it is a different thing: `bin/fm-tell.ps1` sends them one message and `bin/fm-tg-poll.ps1` takes messages back while a session is alive, between firstmate and the captain alone.
   It **ships inert** - there is no bot and no token, so both commands do nothing until the captain creates one - nothing calls either by itself, and a message asking firstmate to land work, throw work away, delete, clean up for good, or touch a login is refused over it whatever any setting says.
   It is also session-scoped: a message sent while nothing is running waits a day and is then lost, so it is not a way to reach firstmate when nobody is home. Each script's `-h` output and `docs/telegram-windows.md` own the rest.
+  A message about one live piece of work is now resolved to it against what is running, that decision is recorded in `state/captain-telegram.routed`, and `bin/fm-tg-route.ps1` carries that worker's own status report back translated and quoted against the question that asked for it.
+  It asks rather than guessing where the message could be about more than one thing, and it is still firstmate that hands the message to the worker through the ordinary steer path: nothing here types into a worker, nothing sends by itself, and refusal happens before routing runs at all.
 - **Process-to-event sources.** No process-event long-poll runner, no `state/procevent/` inbox. A blocking external wait must be a backlog item you check, never a held conversational turn.
 - **Automatic wiring for the voice channel.** The voice channel itself is complete - `fm-say` speaks and `fm-ask` asks and listens, both off until `config/voice` exists (section 9) - but nothing calls either by itself, so no escalation becomes audible and no question is asked aloud without deliberate wiring. There is no wake word: each listen is one bounded window opened by one call.
 - **Remote secondmates.** Secondmate spawning, charter briefs and retirement work locally; the seeding, convergence, liveness sweep, cross-home handoff, and every remote route are absent, and `data/secondmates.md` is hand-maintained except for the row a retirement removes.

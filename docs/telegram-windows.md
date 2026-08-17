@@ -19,9 +19,11 @@ independently useful:
   phone instead of waiting for them to be at the machine.
 - `bin/fm-tg-poll.ps1` - a long-poll loop, so they can ask how things stand and
   hand out work from anywhere, while a session is alive.
+- `bin/fm-tg-route.ps1` - the record of which piece of work each message was about,
+  and the command that carries a worker's answer back.
 
-Both are `bin/` entry points over `module/Firstmate/Public/FmTelegram.ps1`.
-Neither adds a dependency: the whole surface is two HTTP calls PowerShell 7 makes
+All three are `bin/` entry points over `module/Firstmate/Public/FmTelegram.ps1`.
+None adds a dependency: the whole surface is two HTTP calls PowerShell 7 makes
 natively.
 
 ## What it is not, and this is the part to keep true
@@ -77,6 +79,96 @@ Telegram" means "command firstmate from the internet".
 - **Its own `state/*.inbox` file kind.**
   A status file's verbs carry lifecycle meaning, so an inbound message written as one would open keyed decisions nobody raised and read as a phantom task to every future reader of the home.
   `Get-FmWatchSignalChanges` scans `*.inbox` alongside `*.status` and `*.turn-ended`, so the record still becomes an actionable notification with no verb abuse at all.
+
+## Reaching the worker a message is about, and hearing back
+
+The channel used to carry messages to and from FIRSTMATE only.
+A message about a specific piece of work had nowhere to go but a human reading the
+inbox and deciding.
+
+**It is a courier, not a pipe, and that is the whole shape of it.**
+Crewmates never address the captain (`AGENTS.md` hard rule 4), so nothing here
+opens a route between a phone and a worker.
+The poller resolves which piece of work a message is about and writes that decision
+down; firstmate hands the message over itself with the ordinary `fm-send.ps1` steer;
+the answer comes back from that worker's own status stream, translated, and quoted
+against the question that asked for it.
+A poller that typed into a worker's pane would be the bypass this deliberately is
+not - and it would also mean a regular expression, rather than firstmate, deciding
+where a message goes.
+
+**Refusal happens before routing, and the order is a property rather than an
+accident.**
+`Receive-FmTelegramCommand` returns on a refused message before any resolution
+runs, so a refused message is refused whoever it was about and nothing routing does
+can widen what the tiers allow.
+Resolving first - to "know what they meant before deciding" - would have exactly
+that effect.
+
+**How the work is identified.**
+Against what is actually running: every `state/*.meta` whose last word was not done,
+failed or cancelled.
+Evidence, strongest first:
+
+| Evidence | Worth | Why that much |
+|---|---|---|
+| The message names the work outright | 10 | A captain who quoted the name back has said which one |
+| A word shared with the work's name or project | 3 | What firstmate and the captain agreed this work is called |
+| A word shared with its last report | 1 | What the worker happened to type this minute |
+
+A hyphen is not a boundary: each side also offers its joined-up form, so the
+captain's "sign-in" meets work named `fix-signin`.
+Without that, the strongest signal available missed completely - and the name
+quoted back whole is checked in both forms for the same reason, or a multi-word
+name could never earn the ten.
+
+**Where it refuses to pick, it asks.**
+A tie between the best two, or nothing matched while several are running, produces a
+stated question naming the choices in the captain's own nouns - never a task id,
+which `AGENTS.md` section 9 lists among the internal terms a captain-facing message
+must not carry.
+A steer delivered to the wrong worker is worse than a question asked, and worse
+invisibly: the captain gets a confident acknowledgement either way.
+The list of choices is capped at three and what is left out is counted out loud.
+
+**Three cases that are deliberately not ambiguity.**
+
+- **An instruction to start something** names no existing work because there is
+  none yet to name, so it resolves to nothing rather than asking which running work
+  "have someone look at the pricing page" meant.
+  It also needs the work *named* rather than brushed against: measured before that
+  distinction existed, that exact message landed on a worker profiling the CART
+  page, because both contain "page".
+- **Exactly one piece of work running** is what a message that names nothing is
+  about; there is nothing else it could be.
+- **A message that answers a waiting question** belongs to the work that asked it.
+  A closed decision names its own work exactly, and no inference beats that.
+
+**"Any news?" works because the record remembers.**
+Where nothing is named and several are running, routing follows the work the last
+message went to, read from the durable record rather than from anything held in a
+session - so it survives the poller stopping between one message and the next.
+It stops following work that has since finished and asks instead.
+
+**The record is why an answer can be matched at all.**
+`state/captain-telegram.routed` is append-only and folded on read, the same shape a
+keyed decision uses in a status stream: a `routed` record opens one routing and an
+`answered` record carrying the same id closes it.
+Each `routed` record carries how many reports that worker had *already* made, and
+the answer is what it says after that boundary - a line count rather than a
+timestamp, because a status stream is append-only while a timestamp would have to
+trust two clocks and an mtime a copy can move.
+A routing is closed only by a confirmed send, so a message that timed out stays
+outstanding and is tried again rather than lost silently.
+It is deliberately not a `*.inbox`, `*.status` or `*.turn-ended` file: those three
+are scanned by wildcard, and bookkeeping written in the same moment as the message
+it describes would raise a second notification about the same message.
+
+**Nothing here reaches the captain as a worker wrote it.**
+The report is translated by `ConvertTo-FmBridgePlainText` when the record is read,
+and again by `Send-FmTelegramMessage` on the way out.
+There is no path that composes a captain-facing message from a raw status line -
+that mistake is the easiest one available and the one section 9 forbids by name.
 
 ## The command-authority ceiling
 
