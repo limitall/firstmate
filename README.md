@@ -4,10 +4,35 @@ A native Windows / PowerShell port of firstmate.
 
 **Goal:** run on Windows with PowerShell natively, with no Linux dependency of any kind.
 
+## One clone, one command
+
+```powershell
+git clone <this repo> C:\Users\<you>\firstmate-win
+cd C:\Users\<you>\firstmate-win
+.\install.ps1
+```
+
+That is the whole setup on a fresh Windows machine.
+`install.ps1` assumes nothing is already installed - not the shell, not git, not Node, not even the package manager it would use for them - and checks every one of those before it needs them.
+It installs each missing tool from the vendor that publishes it, wires the home, repairs the two committed symlinks a Windows clone does not get, and then **proves the result**: every tool is run and made to print a version, the instructions and skills are read and counted, and this repo's own test suite is executed.
+
+No step needs administrator.
+Where a tool is already installed but older than the latest published version, you are asked once, with what is installed and what is available; declining is always safe and never stops the run.
+Where a tool is below a minimum this repo actually states, you are told, that step is skipped rather than installed over, and the machine is reported as not ready.
+
+Run `.\install.ps1 -Unattended` to take the safe default for every question, or `.\install.ps1 -DetectOnly` to see what the machine has and change nothing.
+Re-running it at any time is safe.
+
+Then, from any shell:
+
+```powershell
+firstmate               # start it - opens your browser, everything happens there
+```
+
 ## Start here
 
 - **[docs/windows-quickstart.md](docs/windows-quickstart.md)** - install, set up,
-  and run it. One command: `bin/fm-setup.ps1`.
+  and run it, with what each step does.
 - **[docs/windows-e2e-evidence.md](docs/windows-e2e-evidence.md)** - what has
   actually been executed and what has not. Read this before relying on anything.
 - [AGENTS.md](AGENTS.md) - the first mate's operating contract. This is what a
@@ -16,6 +41,7 @@ A native Windows / PowerShell port of firstmate.
 - `docs/` - one design note per area.
 
 ```powershell
-.\bin\fm-setup.ps1     # bare machine -> working firstmate home, idempotent
+.\install.ps1          # fresh machine -> working, verified firstmate; idempotent
+.\bin\fm-setup.ps1     # just the home and the wiring, without touching any tool
 fm-doctor.ps1          # what is missing, and how to fix it
 ```

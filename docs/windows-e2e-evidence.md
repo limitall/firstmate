@@ -4684,3 +4684,184 @@ run, not stronger - Pester shares one process per run, so a split hides exactly
 the cross-file environment leak `CONTRIBUTING.md` warns about.
 It is recorded because it corroborates the single run, never as a substitute for
 it.
+
+## 31. The installer, on the captain's Windows 11 machine - `PROVEN (Windows 11)`, with one part deliberately not run
+
+Dated 2026-08-17/18, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\3\firstmate-win`,
+PowerShell 7.6.4, Windows 11 Pro 10.0.26200.
+
+**The brief's premise, confirmed first.** `install.ps1` installed the two most
+important tools from npm. Both npm names are the wrong software:
+
+```
+npm "treehouse"  -> "Opinionated mini-framework for dealing with state in
+                    single-page applications"
+npm "herdr"      -> 0.0.0, "Reserved package name for Herdr"
+```
+
+What this machine actually runs, and where each came from:
+
+```
+treehouse -> C:\Users\ADMIN\AppData\Local\treehouse\treehouse.exe          v2.1.1
+herdr     -> C:\Users\ADMIN\AppData\Local\Programs\Herdr\bin\herdr.exe     0.7.5-preview.2026-07-21-0f10e1453a7f
+gh        -> C:\Users\ADMIN\AppData\Local\Programs\gh\bin\gh.exe           2.97.0
+claude    -> C:\Users\ADMIN\.local\bin\claude.exe                          2.1.233
+```
+
+Each of those directories is exactly what the vendor's own installer writes, and
+each is on the USER PATH. None of them came from npm and none needed
+administrator. The four published installers were fetched and read before being
+written into the route table:
+
+| tool | fetched | what it does |
+| --- | --- | --- |
+| `https://kunchenguid.github.io/treehouse/install.ps1` | 200, 1360 bytes | GitHub release zip -> `%LOCALAPPDATA%\treehouse`, adds it to the USER PATH |
+| `https://herdr.dev/install.ps1` | 200, 25635 bytes | versioned folders under `%LOCALAPPDATA%\Programs\Herdr\bin`, preview channel on Windows |
+| `https://claude.ai/install.ps1` | 200, 3189 bytes | checksum-verified binary, then `claude install` |
+| `https://aka.ms/install-powershell.ps1` | 200 | Microsoft's own; `-Destination` + `-AddToPath`, zip rather than MSI |
+| `https://api.github.com/repos/cli/cli/releases/latest` | 200 | `gh_2.97.0_windows_amd64.zip`, whose root is `bin/` and `LICENSE` |
+
+**winget is present and unreachable by name - measured.**
+
+```
+PS> Get-Command winget
+Get-Command: The term 'winget' is not recognized ...
+
+PS> & "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe" --version
+v1.29.280
+
+PS> [Environment]::GetEnvironmentVariable('Path','User') -split ';' | Select-String WindowsApps
+C:\WINDOWS\system32\config\systemprofile\AppData\Local\Microsoft\WindowsApps
+```
+
+The user PATH carries the SYSTEM profile's app-alias directory rather than this
+user's, so a `Get-Command`-only check refuses every winget route on a machine
+that has winget. `Get-FmToolWingetPath` looks in the real place second.
+
+**The Windows PowerShell 5.1 preflight, run for real.**
+
+```
+PS> & "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DetectOnly
+
+  FIRSTMATE - install
+
+  This is Windows PowerShell 5.1.26100.8115. Firstmate is PowerShell 7 only -
+  every script in this repo declares '#requires -Version 7.0'.
+
+  Re-running under C:\Program Files\PowerShell\7\pwsh.exe...
+  ...
+EXIT=0
+```
+
+The branch that INSTALLS PowerShell 7 was not exercised: this machine has it, and
+installing a second copy to prove the path would have changed the environment the
+rest of this run was measured in. What was proven is the detection and the
+relaunch, which is the half that decides whether the captain ever sees a useful
+message.
+
+**Detection, end to end, against the real machine.**
+
+```
+PS> .\install.ps1 -DetectOnly
+  what this machine has:
+    [ok]          PowerShell 7            7.6.4
+    [ok]          winget                  v1.29.280
+    [ok]          npm                     11.11.0
+
+    [older]       git                     git version 2.49.0.windows.1 is installed; v2.55.0.windows.4 is published
+    [older]       Node.js                 v22.15.0 is installed; v24.19.0 is published
+    [ok]          Claude CLI              2.1.233 (Claude Code) is the latest published version
+    [older]       herdr                   herdr 0.7.5-preview.2026-07-21-0f10e1453a7f is installed; preview-2026-08-17-1147e60bc0a4 is published
+    [ok]          treehouse               v2.1.1 is the latest published version
+    [ok]          gh                      gh version 2.97.0 (2026-07-31) is the latest published version
+    [ok]          gh-axi                  0.1.30 is the latest published version
+    [ok]          chrome-devtools-axi     0.1.29 is the latest published version
+    [ok]          lavish-axi              0.1.52 is the latest published version
+    [ok]          tasks-axi               0.2.5 is the latest published version
+    [ok]          quota-axi               0.1.28 is the latest published version
+    [ok]          module Pester           6.1.0 is the latest published version
+    [ok]          module PSScriptAnalyzer 1.25.0 is the latest published version
+    [skipped]     no-mistakes             the validation pipeline has no Windows support ...
+  -DetectOnly: nothing was changed.
+```
+
+Three tools classify as `older` on the captain's own machine, which is the case
+the addendum's optional-update question exists for. herdr is the interesting one:
+its Windows builds are tagged `preview-<date>-<sha>` with no semantic version at
+all, so ranking it by semver would compare `0.7.5` against nothing.
+`Get-FmToolComparableVersion` ranks two date-stamped builds by their date and
+refuses to rank a date against a semver.
+
+**One bug this detection found in itself.** The first online run reported every
+Node.js and herdr version at once as a single space-joined "latest":
+
+```
+node -> "v26.7.0 v26.6.0 v26.5.1 ... v0.1.14"
+```
+
+`Invoke-RestMethod` hands a JSON array back as ONE object, so `@(...)` around it
+produces a one-element array holding the whole list, and `$wrapped[0].version`
+then member-enumerates every entry. Both call sites now pipe instead, and both
+carry the reason.
+
+**The protection, applied and verified.**
+
+```
+PS> bin\fm-setup.ps1
+  [updated] instruction links - git will no longer restore over .claude/skills or CLAUDE.md
+PS> git ls-files -v -- CLAUDE.md .claude/skills
+S .claude/skills
+S CLAUDE.md
+```
+
+**A defect the suite caught in this change.** Wiring `Protect-FmInstructionLink`
+into setup made setup non-idempotent, and `tests/FmInstall.Tests.ps1` failed on
+it:
+
+```
+FAIL: Install-FmHome: the home layout.is idempotent: the second run changes nothing and reports already
+```
+
+`git update-index --skip-worktree` exits 0 on a path that ALREADY carries the
+bit, so the step reported `updated` on every run and could never converge to
+`already` like every other step in the area. The fix reads the state first -
+`git ls-files -v` prints the tag `S` for a skip-worktree entry - and reports
+`already` when there is nothing to do. That function had no tests at all before
+this; it has six now, including the negative control that runs the real
+`git checkout -- .` against a protected checkout and finds the skills still
+there.
+
+**What was NOT run, and why.** No tool was actually installed or updated on this
+machine. Doing so would have replaced the working treehouse, herdr, gh and Claude
+CLI this whole task was measured against, which the brief forbids. So:
+
+- the classification, the plan, the questions, the routes, the elevation
+  declarations, the summary and the refusals are all covered by
+  `tests/FmToolInstall.Tests.ps1` and were run;
+- the portable install - expand, layout check, PATH edit, second-run idempotence,
+  `-StripRoot`, and the refusal when the archive layout is wrong - runs for real
+  in that suite against a zip built in `TestDrive`, with `-PathScope Process` so
+  it never touches the captain's environment;
+- the DOWNLOAD itself, and `Invoke-FmToolRoute` actually executing a vendor
+  installer, have not been executed anywhere. They are the one part of this area
+  that a clean machine is needed to prove.
+
+**The suite and the analyzer, on this branch.**
+
+```
+Invoke-Pester -Path ./tests
+  2063 passed, 0 failed, 25 skipped   (30m15s)
+```
+
+One whole-directory run in one process, on Windows 11, over the merged tree.
+`tests/FmAnalyzer.Tests.ps1` is inside that run, so the repo-wide
+`Invoke-ScriptAnalyzer` sweep at every severity is clean as part of it.
+The run before it, over the same tree with the idempotence defect above still in
+place, was 2056 passed / 1 failed - so the failure was real and the fix is what
+closed it, rather than the number moving on its own.
+
+As section 30's note says, these were made in a checkout whose `CLAUDE.md` and
+`.claude/skills` were already materialized.
+That repair is now also what `Protect-FmInstructionLink` keeps in place, and this
+run is the first where `git status` stayed clean of both paths for the whole
+suite.

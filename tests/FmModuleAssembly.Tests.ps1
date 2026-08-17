@@ -381,6 +381,91 @@ Describe 'entry points' {
     }
 }
 
+Describe 'the two entry points at the repo root' {
+    # install.ps1 and start.ps1 are the captain's own commands rather than
+    # firstmate's, so they live at the root and not in bin/. They were outside
+    # every check above for exactly that reason, which is how install.ps1 came to
+    # carry its own second install table - one that named the wrong npm packages
+    # for two of the tools and went unnoticed until a real machine ran it.
+    BeforeAll {
+        Import-Module -Name $script:Manifest -Force -ErrorAction Stop
+        $script:RootExported = @(Get-Command -Module Firstmate -CommandType Function).Name
+        $script:RootScripts = @('install.ps1', 'start.ps1' | ForEach-Object {
+                Get-Item -LiteralPath (Join-Path $script:RepoRoot $_)
+            })
+    }
+
+    It 'ships both of them' {
+        foreach ($script in $script:RootScripts) { $script.Exists | Should -BeTrue }
+    }
+
+    It 'parses both of them' {
+        foreach ($script in $script:RootScripts) {
+            $parseErrors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$null, [ref]$parseErrors)
+            @($parseErrors).Count | Should -Be 0 -Because "$($script.Name) must parse"
+        }
+    }
+
+    It 'resolves the module through the ONE shared prelude, naming a command the module exports' {
+        foreach ($script in $script:RootScripts) {
+            $text = [System.IO.File]::ReadAllText($script.FullName)
+            $match = [regex]::Match($text, "fm-module-load\.ps1'\)\s+-RequiredCommand\s+'([A-Za-z]+-Fm[A-Za-z]+)'")
+            if (-not $match.Success) { continue }
+            $script:RootExported | Should -Contain $match.Groups[1].Value -Because "$($script.Name) requires it"
+        }
+    }
+
+    It 'calls only Fm functions the module actually defines' {
+        $defined = @($script:Definitions | ForEach-Object { $_.Name })
+        $missing = @()
+        foreach ($script in $script:RootScripts) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$null, [ref]$null)
+            foreach ($call in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+                $name = $call.GetCommandName()
+                if (-not $name -or $name -notmatch '^[A-Za-z]+-Fm') { continue }
+                if ($defined -notcontains $name) { $missing += "$($script.Name) calls $name" }
+            }
+        }
+        ($missing -join '; ') | Should -Be ''
+    }
+
+    It 'pins strict mode in both, and #requires 7 in start.ps1 only' {
+        # install.ps1 deliberately carries NO #requires. A clean Windows machine
+        # opens Windows PowerShell 5.1, where a #requires line produces "cannot
+        # be run because it contained a '#requires' statement" and nothing about
+        # what to do next. It checks $PSVersionTable itself and relaunches under
+        # pwsh, which is the one thing the installer must do before anything
+        # else works.
+        $install = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'install.ps1'))
+        $start = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'start.ps1'))
+        # Anchored to the start of a line, which is the only place PowerShell
+        # honours the directive; the file talks ABOUT #requires in its own
+        # comments, and that prose must not read as the statement itself.
+        $install | Should -Not -Match '(?m)^#requires'
+        $install | Should -Match '\$PSVersionTable\.PSVersion\.Major -lt 7'
+        $install | Should -Match 'Set-StrictMode -Version Latest'
+        $start | Should -Match '(?m)^#requires -Version 7\.0'
+        $start | Should -Match 'Set-StrictMode -Version Latest'
+    }
+
+    It 'keeps install.ps1 parseable by Windows PowerShell 5.1, which is the shell it will meet first' {
+        # Its version check is useless if the file cannot be parsed to reach it.
+        # 5.1 is not present on every machine this repo is developed on, so the
+        # check is skipped rather than silently passing where it cannot run.
+        $windowsPowerShell = Join-Path $env:WINDIR 'System32' 'WindowsPowerShell' 'v1.0' 'powershell.exe'
+        if (-not ($IsWindows -and (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf))) {
+            Set-ItResult -Skipped -Because 'Windows PowerShell 5.1 is not on this machine'
+            return
+        }
+        $probe = 'param($Path) $e=$null; $null=[System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$null,[ref]$e); if ($e) { $e[0].Message } else { "OK" }'
+        $probeFile = Join-Path $TestDrive 'parse-probe.ps1'
+        [System.IO.File]::WriteAllText($probeFile, $probe)
+        $result = & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $probeFile -Path (Join-Path $script:RepoRoot 'install.ps1')
+        ($result -join ' ') | Should -Be 'OK'
+    }
+}
+
 Describe 'cross-area bindings' {
     # WHY THIS EXISTS. Areas bind to each other by NAME at call time:
     #

@@ -4,6 +4,13 @@ The install area: `bin/fm-setup.ps1`, `bin/fm-doctor.ps1`,
 `module/Firstmate/Private/FmInstall.ps1`, `Public/Install-FmHome.ps1`,
 `Public/Invoke-FmDoctor.ps1`, `tests/FmInstall.Tests.ps1`.
 
+The MACHINE install sits on top of it: `install.ps1` at the repo root,
+`module/Firstmate/Private/FmToolInstall.ps1`, `Private/FmMachine.ps1`,
+`Public/Install-FmMachine.ps1`, `tests/FmToolInstall.Tests.ps1`.
+"The machine install" is the section of that name below; everything else in this
+file is about the home and the wiring, which is the step the machine install
+runs in the middle of its own.
+
 There is no bash original for this area. The Linux firstmate is installed by
 cloning it and being on a machine that already has a POSIX userland; nothing in
 `bin/` corresponds to "make this machine able to run firstmate". The closest
@@ -39,10 +46,17 @@ Public functions: `Install-FmHome`, `Invoke-FmDoctor`.
    means a session loads ZERO skills while every command still works.
    `docs/instruction-surface.md` owns why the two repair ladders differ (a
    hardlink cannot name a directory; a junction can).
-7. **Profile wiring** - the managed block in `$PROFILE.CurrentUserAllHosts`.
-8. **Claude hooks** - `SessionStart`, `PreToolUse`, `Stop` in the checkout's
+7. **Instruction links** - marks `CLAUDE.md` and `.claude/skills`
+   `--skip-worktree`, so an ordinary `git checkout -- .` cannot follow the
+   junction and empty the skills tree behind it. `Protect-FmInstructionLink`
+   owns why. It belongs to setup rather than to the machine install because
+   skip-worktree is per-checkout index state that no clone and no new worktree
+   inherits, so every copy has to be given it separately - which is exactly how
+   it reappeared in a fresh worker copy after being fixed on the primary.
+8. **Profile wiring** - the managed block in `$PROFILE.CurrentUserAllHosts`.
+9. **Claude hooks** - `SessionStart`, `PreToolUse`, `Stop` in the checkout's
    `.claude/settings.json`.
-9. **Doctor** - re-reads the environment and returns the report.
+10. **Doctor** - re-reads the environment and returns the report.
 
 ## The three rules this area is built on
 
@@ -340,9 +354,70 @@ that actually matters - does the home resolve with nothing configured - and so
 it tests the pointer. An environment variable on top of the pointer is an
 override and the line says which one is winning.
 
-Install commands have one owner: `Get-FmBootstrapInstallCommand` and
-`Get-FmBootstrapManualInstallUrl` in the bootstrap area, which are already
-platform-aware. This area never keeps a second table.
+Install commands have one owner: `Get-FmBootstrapInstallCommand`,
+`Get-FmBootstrapPortableRelease` and `Get-FmBootstrapManualInstallUrl` in the
+bootstrap area, which are already platform-aware. This area never keeps a second
+table, and neither does `install.ps1` - see below for what a second table cost.
+
+## The machine install
+
+`install.ps1` is the captain's one command on a fresh machine, and `Install-FmMachine` is all of it except the prompting.
+It exists because `bin/fm-setup.ps1` deliberately installs nothing: setup answers "is this home wired", and something still has to answer "does this machine have the tools at all".
+
+**Why the route table is not here.**
+`install.ps1` used to keep its own, and the two disagreed in the one way that matters.
+Measured 2026-08-17: it installed `treehouse` and `herdr` FROM NPM, where the package called `treehouse` is an unrelated single-page-application state framework and the one called `herdr` is a `0.0.0` placeholder containing nothing.
+Both installs exit 0.
+Nothing reported a problem until a dispatch failed with no explanation, and the bootstrap area had the correct treehouse route the whole time.
+So the machine install now reads every route from that one owner, and the regression is pinned in `tests/FmToolInstall.Tests.ps1` as "never resolves treehouse or herdr to npm again".
+
+**Never trust a package name; read a version back.**
+A route is only correct if the installed command runs and prints something `Get-FmToolVersionNumber` can parse.
+A command that resolves but answers nothing to `--version` is reported as unverified, never as installed, because that is the exact shape a wrong package takes.
+
+**No step needs administrator.**
+Every preferred route writes into the user's own profile: the vendor's per-user installer (Claude Code, herdr, treehouse, PowerShell 7) or a release archive expanded under `%LOCALAPPDATA%\Programs` with its `bin` added to the USER PATH (gh).
+`choco install gh` was measured failing with "Access to the path 'C:\ProgramData\chocolatey\lib-bad' is denied" on an unelevated session; the portable zip needed nothing.
+The only two routes that genuinely need elevation are the winget packages for git and Node.js, which run machine-scope MSIs.
+Those are DECLARED by `Test-FmBootstrapInstallNeedsAdministrator`, named in the report, and skipped - never attempted, and never allowed to stop the rest of the run.
+
+**Three outcomes per requirement, not two.**
+`Get-FmToolClassification` is the single owner of the decision, and the middle two must never be blurred:
+
+| class | what happens |
+| --- | --- |
+| `missing` | installed. Running `install.ps1` is the consent for that. |
+| `older` | the captain is ASKED, once, with the installed and published versions and the cost of declining. The default is no, and declining never stops the run. |
+| `unsupported` | the captain is TOLD, the step is SKIPPED, nothing is installed over the top, and the run reports the machine as NOT READY. |
+| `unknown-version` | present but prints no readable version, so nothing about it is proven. |
+| `unknown-latest` | present, but no vendor answered, so currency is unknown rather than assumed. |
+
+A minimum only exists where this repo STATES one, and `Get-FmToolMinimum` names where each comes from: the axi-family floors bootstrap already enforces, Pester 5 for the suite, and treehouse's `get --lease`, which is a capability rather than a number.
+Nothing invents a threshold, so a tool with no stated minimum can be older but never unsupported.
+
+`Get-FmToolUpdateCommand` exists for one difference that is not cosmetic: `winget install <id>` on an already-installed package reports "already installed" and exits 0 without upgrading anything, so a captain who agreed to an update would have been told it happened and left on the old version.
+Every other route already fetches the newest thing there is, so only the winget verb is rewritten.
+
+**Two enablers are checked before they are used**, because the failure they prevent is a bare "command not found" in the middle of a run: `winget`, which the git and Node.js routes need, and `npm`, which the five axi tools need.
+Both are reported in the plan with what they enable and what to do when absent.
+
+`Get-FmToolWingetPath` also looks for `%LOCALAPPDATA%\Microsoft\WindowsApps\winget.exe` directly.
+Measured on the captain's machine: `Get-Command winget` fails while that file runs and prints `v1.29.280`, because the user PATH carries the SYSTEM profile's app-alias directory rather than this user's.
+Without that fallback, every winget route is refused on a machine that has winget.
+
+**The shell itself is the first requirement.**
+`install.ps1` carries NO `#requires -Version 7.0`, and that is deliberate: a clean Windows machine opens Windows PowerShell 5.1, where the directive produces "cannot be run because it contained a '#requires' statement" and nothing about what to do next.
+It checks `$PSVersionTable` itself, offers Microsoft's own per-user PowerShell 7 install, and re-runs itself under `pwsh`.
+Nothing above that relaunch may use PowerShell 7 syntax, and `tests/FmModuleAssembly.Tests.ps1` parses the file with the real 5.1 to keep it that way.
+
+**It ends by proving itself.**
+`Install-FmMachine` finishes with a verification pass rather than a success message: every catalogued tool is run and made to print a version, `Invoke-FmDoctor` re-reads the home and the instruction surface (including the skills count and the contract's byte length), and the repository's own Pester suite is executed in a bounded child process.
+`Ready` is false when any of that fails, when anything was skipped as unsupported, or when any install did not complete - and the last line says so in plain words instead of ending on a cheerful note.
+`-SkipSuite` is allowed and reports the install as unproven.
+
+The verification's tool group and the doctor's prerequisite group overlap on herdr, treehouse and the Claude CLI on purpose: they ask different questions at different thresholds.
+The doctor asks whether this HOME is healthy, where an absent herdr is a warning.
+The verification asks whether the INSTALL delivered what it promised, where a required tool that cannot print a version is a failure.
 
 ## Platform notes
 

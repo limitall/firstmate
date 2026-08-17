@@ -68,6 +68,7 @@ function Protect-FmInstructionLink {
     # this is for.
     $paths = @('.claude/skills', 'CLAUDE.md')
     $done = @()
+    $already = @()
     $failed = @()
 
     foreach ($p in $paths) {
@@ -79,19 +80,35 @@ function Protect-FmInstructionLink {
         $null = & git -C $RepoRoot ls-files --error-unmatch $p 2>&1
         if ($LASTEXITCODE -ne 0) { continue }
 
+        # CONVERGE, DO NOT REPEAT. `update-index --skip-worktree` on a path that
+        # already carries the bit exits 0, so re-running it would report
+        # 'updated' forever and setup would never reach the 'already' every other
+        # step converges to. `ls-files -v` prints the tag S for a skip-worktree
+        # entry, which is the only way to tell the two apart.
+        $state = @(& git -C $RepoRoot ls-files -v -- $p 2>&1)
+        if ($LASTEXITCODE -eq 0 -and @($state | Where-Object { $_ -match '^S\s' }).Count -gt 0) {
+            $already += $p
+            continue
+        }
+
         if (-not $PSCmdlet.ShouldProcess($p, 'protect from git restore')) { continue }
 
         $null = & git -C $RepoRoot update-index --skip-worktree $p 2>&1
         if ($LASTEXITCODE -eq 0) { $done += $p } else { $failed += $p }
     }
 
-    $result.Protected = $done
-    if ($done.Count -and -not $failed.Count) {
-        $result.Action = 'updated'
-        $result.Detail = "git will no longer restore over $($done -join ' or ') - see Protect-FmInstructionLink for why that matters"
-    } elseif ($failed.Count) {
+    # Everything that IS protected when this returns, not only what this call
+    # changed - a caller asking "is the skills tree safe" wants the state.
+    $result.Protected = @($done + $already)
+    if ($failed.Count) {
         $result.Action = 'skipped'
         $result.Detail = "could not protect $($failed -join ', '); a git restore there can still empty the skills tree"
+    } elseif ($done.Count) {
+        $result.Action = 'updated'
+        $result.Detail = "git will no longer restore over $($done -join ' or ') - see Protect-FmInstructionLink for why that matters"
+    } elseif ($already.Count) {
+        $result.Action = 'already'
+        $result.Detail = "$($already -join ' and ') are already protected from git restore"
     } else {
         $result.Detail = 'neither link is tracked here, so git has nothing to restore over'
     }

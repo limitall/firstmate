@@ -17,9 +17,12 @@ WHAT IT DOES
   3. starts the bridge, which hosts a real firstmate session
   4. opens the browser at the page, carrying this run's key
 
-WHAT IT DOES NOT DO. It installs nothing. A missing tool is reported with the
-command that installs it and the run stops, because a half-started fleet is
-worse than one that refused - AGENTS.md section 3's detect-ask-install rule.
+WHAT IT DOES NOT DO. It installs nothing, and it does not keep its own list of
+where a tool comes from. A missing tool is reported and the run stops, pointing
+at ./install.ps1, which is the one thing that installs - because a half-started
+fleet is worse than one that refused (AGENTS.md section 3's detect-ask-install
+rule) and a second install table is how two tools came to be installed from the
+wrong npm packages.
 
 .PARAMETER Port
 Loopback port for the browser. Default 7433.
@@ -48,8 +51,8 @@ $root = $PSScriptRoot
 # ---- 1. what must be present ------------------------------------------------
 $missing = @()
 foreach ($t in @(
-        @{ n = 'git'; why = 'isolated copies for workers'; get = 'winget install Git.Git' }
-        @{ n = 'claude'; why = 'firstmate itself'; get = 'npm install -g @anthropic-ai/claude-code' }
+        @{ n = 'git'; why = 'isolated copies for workers' }
+        @{ n = 'claude'; why = 'firstmate itself' }
     )) {
     if (-not (Get-Command $t.n -ErrorAction SilentlyContinue)) { $missing += $t }
 }
@@ -59,8 +62,13 @@ if ($missing.Count) {
     [Console]::Error.WriteLine('  Cannot start - something required is missing:')
     foreach ($m in $missing) {
         [Console]::Error.WriteLine("    $($m.n)  - $($m.why)")
-        [Console]::Error.WriteLine("      install with: $($m.get)")
     }
+    [Console]::Error.WriteLine('')
+    # ONE remedy, not one per tool. install.ps1 reads every route from the
+    # bootstrap area, checks the versions afterwards and reports what it could
+    # not do; a command copied into this file would be a third place the answer
+    # lives and the first one to go stale.
+    [Console]::Error.WriteLine("  Install everything this machine needs with:  $(Join-Path $root 'install.ps1')")
     [Console]::Error.WriteLine('')
     exit 1
 }

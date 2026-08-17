@@ -163,8 +163,20 @@ Describe 'Get-FmBootstrapMissingDiagnostic' {
         Get-FmBootstrapMissingDiagnostic -Tool 'tasks-axi' | Should -Be 'MISSING: tasks-axi (install: npm install -g tasks-axi)'
     }
 
-    It 'renders MISSING_MANUAL for a tool with no automated route' {
-        Get-FmBootstrapMissingDiagnostic -Tool 'herdr' | Should -Be 'MISSING_MANUAL: herdr (instructions: https://herdr.dev)'
+    It 'renders MISSING_MANUAL for a tool with no automated route' -Skip:(-not $IsWindows) {
+        # tmux is the last tool on this port with no scriptable install: there is
+        # no native Windows build at all, so choosing another backend is a human
+        # decision rather than a command.
+        Get-FmBootstrapMissingDiagnostic -Tool 'tmux' |
+            Should -Be 'MISSING_MANUAL: tmux (instructions: https://firstmate.invalid/windows-backends)'
+    }
+
+    It 'renders MISSING, not MISSING_MANUAL, for herdr' -Skip:(-not $IsWindows) {
+        # herdr used to be listed as a manual install. Measured 2026-08-17:
+        # herdr.dev publishes install.ps1 and install.sh, so telling the captain
+        # to go and read a web page was sending them the long way round.
+        Get-FmBootstrapMissingDiagnostic -Tool 'herdr' |
+            Should -Be 'MISSING: herdr (install: irm https://herdr.dev/install.ps1 | iex)'
     }
 }
 
@@ -286,9 +298,22 @@ Describe 'Install-FmTool' {
         $out[1] | Should -Be 'would install tasks-axi: npm install -g tasks-axi'
     }
 
-    It 'refuses a tool that has no automated install route' {
-        { Install-FmTool -Name 'herdr' -Approved } |
-            Should -Throw 'error: herdr requires manual installation (instructions: https://herdr.dev)'
+    It 'refuses a tool that has no automated install route' -Skip:(-not $IsWindows) {
+        { Install-FmTool -Name 'tmux' -Approved } |
+            Should -Throw 'error: tmux requires manual installation (instructions: https://firstmate.invalid/windows-backends)'
+    }
+
+    It 'offers herdr and treehouse from their own installers, never from npm' -Skip:(-not $IsWindows) {
+        # The npm packages called `treehouse` and `herdr` are an unrelated web
+        # framework and an empty 0.0.0 placeholder. Installing either exits 0 and
+        # leaves the machine broken with nothing reporting it, so the refusal
+        # this pins is against the wrong software rather than against no
+        # software.
+        foreach ($tool in @('herdr', 'treehouse')) {
+            $out = @(Install-FmTool -Name $tool)
+            $out[1] | Should -Not -Match 'npm'
+            $out[1] | Should -Match 'install\.ps1'
+        }
     }
 
     It 'refuses an unknown tool' {

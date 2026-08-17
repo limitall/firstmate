@@ -905,9 +905,13 @@ function Get-FmInstallPrerequisiteCheck {
     if (Get-Command -Name 'claude' -CommandType Application -ErrorAction SilentlyContinue) {
         $checks += New-FmInstallCheck -Name 'Claude CLI' -Status 'ok' -Detail (Get-FmInstallCommandVersion -Command 'claude')
     } else {
+        # The route comes from the owner, not from a string here. This line used
+        # to name npm, which is a genuine Anthropic package but not what the rest
+        # of the port installs, and a second copy of a route is how the machine
+        # install came to disagree with the digest about two other tools.
         $checks += New-FmInstallCheck -Name 'Claude CLI' -Status 'warn' `
             -Detail 'not on PATH - the hooks are registered but nothing will run them' `
-            -Fix 'npm install -g @anthropic-ai/claude-code'
+            -Fix (Get-FmInstallToolFix -Tool 'claude')
     }
 
     $checks

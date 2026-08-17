@@ -2,27 +2,54 @@
 
 Native PowerShell 7. No WSL, no Git Bash, no Linux anything.
 
-## 1. Install the prerequisites
-
-```powershell
-winget install Microsoft.PowerShell     # PowerShell 7.6+  - required
-winget install Git.Git                  # git              - required
-npm install -g @anthropic-ai/claude-code
-irm https://kunchenguid.github.io/treehouse/install.ps1 | iex   # isolated worktrees
-# herdr (the session provider): https://herdr.dev
-```
-
-Then **open a new `pwsh` window** so the installs are on PATH.
-
-Only PowerShell 7 and git are hard requirements. Without herdr and treehouse
-you get a working home that cannot dispatch a worker yet; the doctor says so.
-
-## 2. Set up - one command
+## 1. One clone, one command
 
 ```powershell
 git clone <your firstmate-win remote> C:\Users\<you>\firstmate-win
+cd C:\Users\<you>\firstmate-win
+.\install.ps1
+```
+
+That is everything.
+`install.ps1` assumes nothing is already on the machine - including the shell it is running in - and does step 2 below as part of its run.
+It is safe to re-run at any time.
+
+Run it from Windows PowerShell 5.1 if that is what opened: it detects the wrong shell, offers to install PowerShell 7 into your own profile with no administrator, and re-runs itself under it.
+
+**What it installs, and from where.**
+Each of these is the vendor's own published installer or release archive, and each one writes into your own profile rather than into Program Files, so none of it needs administrator:
+
+| tool | source |
+| --- | --- |
+| Claude CLI | `irm https://claude.ai/install.ps1 \| iex` |
+| herdr | `irm https://herdr.dev/install.ps1 \| iex` |
+| treehouse | `irm https://kunchenguid.github.io/treehouse/install.ps1 \| iex` |
+| gh | the `gh_*_windows_*.zip` from `cli/cli` releases, expanded under `%LOCALAPPDATA%\Programs\gh` |
+| the five axi tools | `npm install -g <name>` - these genuinely are npm packages |
+| Pester, PSScriptAnalyzer | `Install-Module -Scope CurrentUser` |
+| git, Node.js | `winget install` - the only two that need an elevated shell, so they are named and skipped when you do not have one |
+
+**Do not install `treehouse` or `herdr` from npm.**
+The npm package called `treehouse` is an unrelated single-page-application state framework, and the one called `herdr` is an empty `0.0.0` placeholder.
+Both install cleanly and leave a machine that fails at dispatch with nothing saying why.
+
+**Three outcomes per requirement.**
+Anything missing is installed.
+Anything present but older than the latest published version is offered as an optional update, one question at a time, and declining is always safe.
+Anything present but below a minimum this repo actually states is reported and **skipped** rather than installed over, and the run ends by saying the machine is not ready.
+
+Use `.\install.ps1 -Unattended` to take the safe default for every question, `-SkipOptional` for the required tools only, and `-DetectOnly` to see the state of the machine without changing it.
+
+**It ends by proving itself**, not by announcing success: every tool is run and made to print a version, the doctor re-reads the home and the instruction surface, and this repo's own test suite is executed.
+The last thing printed is a summary of every requirement and what happened to it.
+
+## 2. What setup does, if you run it alone
+
+```powershell
 C:\Users\<you>\firstmate-win\bin\fm-setup.ps1
 ```
+
+`install.ps1` runs this for you; run it directly when you only want the home and the wiring repaired and no tool touched.
 
 That creates the home (`config/ data/ projects/ state/`) **inside the checkout**,
 selects the herdr backend, records the home in `.fm-home`, repairs the checkout's

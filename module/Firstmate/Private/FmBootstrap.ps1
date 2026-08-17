@@ -30,6 +30,25 @@
 # reads; the command inside it has to actually run on the host being diagnosed,
 # and `brew install tmux` is not a runnable instruction on Windows. The Linux
 # branch keeps the bash strings verbatim so a mixed fleet reads the same advice.
+#
+# THIS IS THE ONE OWNER OF "WHERE DOES TOOL X COME FROM". install.ps1 drives the
+# machine install from these answers rather than keeping a second table, and it
+# keeps a second table for exactly as long as it takes the two to disagree.
+# MEASURED, 2026-08-17: install.ps1 did keep one, and it said `npm install -g
+# treehouse` and `npm install -g herdr`. Neither npm name is the software:
+# `treehouse` on npm is an unrelated single-page-application state framework, and
+# `herdr` on npm is a 0.0.0 placeholder that contains nothing. A machine
+# following that table got a web framework instead of the worktree tool and an
+# empty package instead of the session provider, with nothing saying so until
+# dispatch failed later.
+#
+# EVERY WINDOWS ROUTE BELOW IS THE VENDOR'S OWN PUBLISHED INSTALLER, and each one
+# was read before it was written down here. treehouse, herdr, Claude Code and
+# PowerShell 7 all install into a per-user directory and add it to the USER PATH,
+# so none of them needs administrator. The two that DO need it - the winget
+# packages for git and Node.js, which run machine-scope MSIs - are declared as
+# such by Test-FmBootstrapInstallNeedsAdministrator so the installer can name and
+# skip them instead of crashing an unelevated run.
 
 function Get-FmBootstrapInstallCommand {
     [OutputType([string])]
@@ -40,14 +59,19 @@ function Get-FmBootstrapInstallCommand {
         switch ($Tool) {
             'node' { return 'winget install OpenJS.NodeJS' }
             'git' { return 'winget install Git.Git' }
-            'gh' { return 'winget install GitHub.cli' }
+            # The MSI winget runs is machine-scope, so it needs administrator.
+            # firstmate's own installer prefers the portable zip from the same
+            # project's releases, which does not - see Get-FmBootstrapPortableRelease.
+            'gh' { return 'winget install GitHub.cli  # or ./install.ps1, which uses the portable zip and needs no administrator' }
             'curl' { return 'winget install cURL.cURL' }
             'jq' { return 'winget install jqlang.jq' }
             'zellij' { return 'cargo install --locked zellij  # or the platform''s package manager' }
             'orca' { return 'winget install orca  # or the platform''s package manager' }
             'cmux' { return 'winget install cmux  # or see https://cmux.com' }
             'tmux' { return $null }
+            'claude' { return 'irm https://claude.ai/install.ps1 | iex' }
             'treehouse' { return 'irm https://kunchenguid.github.io/treehouse/install.ps1 | iex' }
+            'herdr' { return 'irm https://herdr.dev/install.ps1 | iex' }
             'no-mistakes' { return 'irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.ps1 | iex' }
             { $_ -in 'gh-axi', 'chrome-devtools-axi', 'lavish-axi' } { return "npm install -g $Tool && $Tool setup hooks" }
             { $_ -in 'tasks-axi', 'quota-axi' } { return "npm install -g $Tool" }
@@ -58,7 +82,9 @@ function Get-FmBootstrapInstallCommand {
     switch ($Tool) {
         { $_ -in 'tmux', 'node', 'git', 'gh', 'curl', 'jq', 'orca', 'zellij' } { return "brew install $Tool  # or the platform's package manager" }
         'cmux' { return 'brew install --cask cmux  # or see https://cmux.com' }
+        'claude' { return 'curl -fsSL https://claude.ai/install.sh | bash' }
         'treehouse' { return 'curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh' }
+        'herdr' { return 'curl -fsSL https://herdr.dev/install.sh | sh' }
         'no-mistakes' { return 'curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh' }
         { $_ -in 'gh-axi', 'chrome-devtools-axi', 'lavish-axi' } { return "npm install -g $Tool && $Tool setup hooks" }
         { $_ -in 'tasks-axi', 'quota-axi' } { return "npm install -g $Tool" }
@@ -72,11 +98,62 @@ function Get-FmBootstrapManualInstallUrl {
     param([Parameter(Mandatory)][string]$Tool)
 
     switch ($Tool) {
-        'herdr' { return 'https://herdr.dev' }
         # tmux has no native Windows build at all: a Windows home must select a
         # backend that does, so its absence is a manual, human decision.
         'tmux' { if ($IsWindows) { return 'https://firstmate.invalid/windows-backends' } else { return $null } }
         default { return $null }
+    }
+}
+
+# Does the published route for this tool run an installer that writes outside the
+# user's own profile?
+#
+# Only the winget packages do. Both of them run a machine-scope MSI, which fails
+# on a session that is not elevated - and fails LATE, after the download, with a
+# message about the installer rather than about privilege. The installer asks
+# this first so an unelevated run reports the step by name and carries on with
+# everything else, rather than stopping on the first tool a locked-down machine
+# will not accept.
+function Test-FmBootstrapInstallNeedsAdministrator {
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Tool)
+
+    $cmd = Get-FmBootstrapInstallCommand -Tool $Tool
+    if (-not $cmd) { return $false }
+    return ($cmd -match '^\s*winget\s')
+}
+
+# The no-administrator route for a tool whose vendor publishes a plain archive.
+#
+# THE PATTERN, MEASURED ON THIS MACHINE 2026-08-17. `choco install gh` failed
+# with "Access to the path 'C:\ProgramData\chocolatey\lib-bad' is denied" in a
+# session that had no elevation. What worked, with none: take the zip from the
+# project's own release, expand it under %LOCALAPPDATA%\Programs\<tool>, and put
+# that directory's bin on the USER PATH. gh, herdr and treehouse all sit in
+# exactly that shape on the captain's machine today, which is why this is the
+# pattern to prefer generally rather than a special case for one tool.
+#
+# Only gh is listed: treehouse, herdr and Claude Code publish their OWN
+# installers that do the same thing, and re-deriving their release layout here
+# would be a second copy of a contract those vendors already own.
+function Get-FmBootstrapPortableRelease {
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Tool)
+
+    if (-not $IsWindows) { return $null }
+    if ($Tool -ne 'gh') { return $null }
+
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+    [pscustomobject]@{
+        Tool            = 'gh'
+        Repository      = 'cli/cli'
+        AssetPattern    = "gh_*_windows_$arch.zip"
+        # The gh zip's root holds bin/ and LICENSE, so the expansion IS the
+        # install directory and bin/ under it is what goes on PATH.
+        BinSubdirectory = 'bin'
+        StripRoot       = $false
     }
 }
 

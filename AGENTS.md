@@ -72,6 +72,8 @@ README.md            public overview
 .agents/skills/      firstmate-loaded internal skills, committed
 .claude/skills       link to .agents/skills for claude compatibility (see the note below)
 .claude/settings.json  the registered Claude hooks (SessionStart, PreToolUse, Stop), written by setup
+install.ps1          the captain's one command on a fresh machine: installs every tool from its real source, wires the home, then proves it
+start.ps1            the captain's one command to start firstmate; installs nothing
 bin/fm-*.ps1         entry points, committed; read each script's header or -h before first use
 module/Firstmate/    the PowerShell module every entry point is a thin wrapper over
 docs/                per-area design notes; docs/windows-e2e-evidence.md separates proven from implemented

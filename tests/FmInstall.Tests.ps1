@@ -296,12 +296,12 @@ Describe 'Install-FmHome: the home layout' {
 
         $second = Invoke-Setup -Fixture $fixture
 
-        # The two checkout-side steps are exempt because this fixture withholds
+        # The three checkout-side steps are exempt because this fixture withholds
         # them deliberately - the suite must not edit the tree it is testing - so
         # they report 'skipped' on every run, first and second alike. Every step
         # that actually ran must still converge to 'already'.
         @($second.Steps |
-                Where-Object { $_.Name -notin @('checkout memory', 'skills link') } |
+                Where-Object { $_.Name -notin @('checkout memory', 'skills link', 'instruction links') } |
                 Where-Object { $_.Action -ne 'already' }) | Should -BeNullOrEmpty
         [System.IO.File]::ReadAllBytes($fixture.Profile) | Should -Be $profileBefore
         [System.IO.File]::ReadAllBytes($fixture.Settings) | Should -Be $settingsBefore
@@ -1177,5 +1177,96 @@ Describe 'the entry points' {
             -FirstmateHome $fixture.Home -RepoRoot $script:RepoRoot `
             -ProfilePath $fixture.Profile -HookSettingsPath $fixture.Settings -HomePointerPath $fixture.Pointer 2>&1
         $LASTEXITCODE | Should -Be 0 -Because ($out -join "`n")
+    }
+}
+
+Describe 'Protect-FmInstructionLink' {
+    # THE TRAP IT EXISTS FOR. `.claude/skills` is materialized on Windows as a
+    # junction, git sees it as modified, and restoring it recurses THROUGH the
+    # junction and deletes the skills behind it. skip-worktree is what stops
+    # that, and it is per-checkout index state that no clone and no new worktree
+    # inherits - so setup has to apply it to every copy, and has to converge
+    # rather than report 'updated' forever.
+    BeforeAll {
+        function New-ProtectFixture {
+            <#
+                A real git repository with the two tracked paths in it, so the
+                index state under test is a real index rather than a mock.
+            #>
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+                Justification = 'Test helper: builds a disposable git repository under TestDrive.')]
+            param([switch]$Empty)
+
+            $root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+            $null = New-Item -ItemType Directory -Path (Join-Path $root '.claude') -Force
+            $null = & git init --quiet $root 2>&1
+            $null = & git -C $root config user.email 'suite@firstmate.invalid' 2>&1
+            $null = & git -C $root config user.name 'suite' 2>&1
+            if (-not $Empty) {
+                Set-Content -LiteralPath (Join-Path $root 'CLAUDE.md') -Value 'contract' -NoNewline
+                Set-Content -LiteralPath (Join-Path $root '.claude' 'skills') -Value '../.agents/skills' -NoNewline
+                $null = & git -C $root add -A 2>&1
+                $null = & git -C $root commit --quiet -m 'seed' 2>&1
+            } else {
+                Set-Content -LiteralPath (Join-Path $root 'other.md') -Value 'x' -NoNewline
+                $null = & git -C $root add -A 2>&1
+                $null = & git -C $root commit --quiet -m 'seed' 2>&1
+            }
+            $root
+        }
+    }
+
+    It 'marks both committed links skip-worktree, so a restore cannot follow them' {
+        $root = New-ProtectFixture
+        $result = Protect-FmInstructionLink -RepoRoot $root -Confirm:$false
+        $result.Action | Should -Be 'updated'
+        $result.Protected | Should -Contain 'CLAUDE.md'
+        $result.Protected | Should -Contain '.claude/skills'
+        # Asserted through git's own index, not through the return value alone.
+        $state = @(& git -C $root ls-files -v -- 'CLAUDE.md' '.claude/skills')
+        @($state | Where-Object { $_ -match '^S\s' }).Count | Should -Be 2
+    }
+
+    It 'reports already on a second run, so setup converges instead of repeating' {
+        # `update-index --skip-worktree` exits 0 on a path that already carries
+        # the bit, so without a state read this reported 'updated' forever and
+        # setup could never reach the 'already' every other step converges to.
+        $root = New-ProtectFixture
+        $null = Protect-FmInstructionLink -RepoRoot $root -Confirm:$false
+        $second = Protect-FmInstructionLink -RepoRoot $root -Confirm:$false
+        $second.Action | Should -Be 'already'
+        $second.Protected.Count | Should -Be 2
+    }
+
+    It 'survives the restore that used to empty the skills tree' {
+        # The negative control: the same command that cost the skills tree three
+        # times in one session, run against a protected checkout.
+        $root = New-ProtectFixture
+        $null = Protect-FmInstructionLink -RepoRoot $root -Confirm:$false
+        Set-Content -LiteralPath (Join-Path $root '.claude' 'skills') -Value 'materialized' -NoNewline
+        $null = & git -C $root checkout -- . 2>&1
+        (Get-Content -LiteralPath (Join-Path $root '.claude' 'skills') -Raw) | Should -Be 'materialized'
+    }
+
+    It 'writes nothing under -WhatIf' {
+        $root = New-ProtectFixture
+        $null = Protect-FmInstructionLink -RepoRoot $root -WhatIf
+        $state = @(& git -C $root ls-files -v -- 'CLAUDE.md' '.claude/skills')
+        @($state | Where-Object { $_ -match '^S\s' }).Count | Should -Be 0
+    }
+
+    It 'says so rather than failing when neither link is tracked here' {
+        $root = New-ProtectFixture -Empty
+        $result = Protect-FmInstructionLink -RepoRoot $root -Confirm:$false
+        $result.Action | Should -Be 'skipped'
+        $result.Detail | Should -Match 'neither link is tracked'
+    }
+
+    It 'says so rather than failing outside a git checkout' {
+        $root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $root -Force
+        $result = Protect-FmInstructionLink -RepoRoot $root -Confirm:$false
+        $result.Action | Should -Be 'skipped'
+        $result.Detail | Should -Match 'not a git checkout'
     }
 }

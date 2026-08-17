@@ -1,203 +1,242 @@
-#requires -Version 7.0
 <#
 .SYNOPSIS
-install.ps1 - install firstmate once. Afterwards, `firstmate` is a command.
+install.ps1 - clone this repo, run this once, and the machine is a working
+firstmate. Afterwards, `firstmate` is a command.
 
 .DESCRIPTION
-Run this once on a new machine. It installs what is missing, wires the home, and
-puts a `firstmate` command on PATH so starting it is one word from any shell:
+This is the whole setup. It assumes NOTHING is already on the machine - not the
+shell, not git, not Node, not even the package manager it would use to install
+them - and it checks every one of those before it needs them, so an absent one
+is an explained skip rather than a "command not found" halfway through.
 
-    firstmate
+    git clone <this repo> C:\Users\<you>\firstmate-win
+    cd C:\Users\<you>\firstmate-win
+    .\install.ps1
 
-That is the whole workflow after this. Nothing else is ever run by hand.
+THREE OUTCOMES PER REQUIREMENT, not two.
 
-WHAT IT INSTALLS, and only with consent. AGENTS.md section 3's rule is detect,
-ask, then install - so this reports what is missing and stops unless -Yes is
-given or the captain agrees at the prompt. A half-installed machine is worse
-than one that refused.
+  missing        installed, from the vendor's own published source. Running
+                 this script is the consent for that; it is what the script is
+                 for, so it is not asked about one tool at a time.
+  older          installed and working, but behind the latest published
+                 version. You are ASKED, one requirement at a time, with what is
+                 installed and what is available. Declining is always safe, is
+                 always the default, and never stops the run.
+  unsupported    installed but below a minimum this repo actually states. You
+                 are TOLD, the step is SKIPPED, and nothing is installed over
+                 the top of it. A machine in that state is reported as NOT
+                 READY rather than finished.
 
-  git                required - isolated copies for workers
-  Node.js            required - carries the Claude CLI and the axi tools
-  Claude CLI         required - firstmate itself
-  herdr, treehouse   required - worker sessions and their isolated copies
-  gh                 optional - pull requests
-  the axi tools      optional - GitHub, browser, decisions, quota
+NO STEP NEEDS ADMINISTRATOR. Every tool comes from a per-user installer or a
+release archive expanded under %LOCALAPPDATA%\Programs. The two routes that
+genuinely need elevation - the winget packages for git and Node.js - are named
+and skipped on an unelevated run, and everything else still installs.
 
-WHAT IT WILL NOT DO. It never elevates silently. Anything needing administrator
-is reported with the exact command rather than attempted, because a prompt the
-captain did not expect is how machines get changed without anyone deciding to.
+IT ENDS BY PROVING ITSELF. Every tool is run and made to print a version, the
+instructions and skills are read and counted, and this repo's own test suite is
+executed. The last thing printed is a summary of every requirement and what
+happened to it.
 
-.PARAMETER Yes
-Install everything missing without asking.
+RE-RUNNING IS SAFE. Nothing already current is touched.
+
+.PARAMETER Unattended
+Never ask anything: install what is missing and leave every older-but-working
+tool exactly as it is. This is the safe default for every question. `-Yes` is
+the same switch.
 
 .PARAMETER SkipOptional
-Only install what firstmate cannot run without.
+Install only what firstmate cannot run without.
+
+.PARAMETER SkipSuite
+Do not run the test suite at the end. The verdict then says the install is
+unproven rather than claiming a pass it did not take.
+
+.PARAMETER Offline
+Do not ask any vendor what it publishes. Nothing is then classified as older,
+and the report says currency was not checked.
+
+.PARAMETER DetectOnly
+Print what this machine has and what it needs, and change nothing.
 
 .EXAMPLE
-./install.ps1
+.\install.ps1
 
 .EXAMPLE
-./install.ps1 -Yes
+.\install.ps1 -Unattended
+
+.EXAMPLE
+.\install.ps1 -DetectOnly
 #>
 [CmdletBinding()]
 param(
-    [switch]$Yes,
-    [switch]$SkipOptional
+    [Alias('Yes')]
+    [switch]$Unattended,
+    [switch]$SkipOptional,
+    [switch]$SkipSuite,
+    [switch]$Offline,
+    [switch]$DetectOnly
 )
+
+# ============================================================================
+# 0. THE SHELL ITSELF
+#
+# NO `#requires -Version 7.0` ON THIS FILE, and nothing above the relaunch below
+# may use PowerShell 7 syntax. A clean Windows machine opens Windows PowerShell
+# 5.1, and a `#requires` line there produces "cannot be run because it contained
+# a '#requires' statement" - a true statement that tells the captain nothing
+# about what to do next. This block is the one part of the installer that has to
+# survive being run by the wrong shell, so it says what is wrong and fixes it.
+# ============================================================================
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    [Console]::Out.WriteLine('')
+    [Console]::Out.WriteLine('  FIRSTMATE - install')
+    [Console]::Out.WriteLine('')
+    [Console]::Out.WriteLine("  This is Windows PowerShell $($PSVersionTable.PSVersion). Firstmate is PowerShell 7 only -")
+    [Console]::Out.WriteLine("  every script in this repo declares '#requires -Version 7.0'.")
+    [Console]::Out.WriteLine('')
+
+    $relaunchArguments = @()
+    foreach ($key in $PSBoundParameters.Keys) {
+        $value = $PSBoundParameters[$key]
+        if ($value -is [System.Management.Automation.SwitchParameter]) {
+            if ($value.IsPresent) { $relaunchArguments += "-$key" }
+        } else {
+            $relaunchArguments += "-$key"
+            $relaunchArguments += [string]$value
+        }
+    }
+
+    $pwshCommand = Get-Command -Name 'pwsh' -ErrorAction SilentlyContinue
+    if (-not $pwshCommand) {
+        $localPwsh = Join-Path $env:LOCALAPPDATA 'Programs\PowerShell7\pwsh.exe'
+        if (Test-Path -LiteralPath $localPwsh) { $pwshCommand = Get-Command -Name $localPwsh -ErrorAction SilentlyContinue }
+    }
+
+    if (-not $pwshCommand) {
+        # Microsoft's own installer, pointed at a per-user directory: it takes
+        # the zip rather than the MSI, so it needs no administrator.
+        $installLine = '& ([scriptblock]::Create((Invoke-RestMethod https://aka.ms/install-powershell.ps1))) ' +
+        '-Destination "$env:LOCALAPPDATA\Programs\PowerShell7" -AddToPath'
+        [Console]::Out.WriteLine('  PowerShell 7 is not on this machine. It installs without administrator:')
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine("    $installLine")
+        [Console]::Out.WriteLine('')
+        $answer = 'n'
+        if ($Unattended) {
+            $answer = 'y'
+        } elseif (-not [Console]::IsInputRedirected) {
+            $answer = Read-Host '  Install PowerShell 7 now, into your own profile? [Y/n]'
+            if ([string]::IsNullOrWhiteSpace($answer)) { $answer = 'y' }
+        }
+        if ($answer -notmatch '^(y|yes)$') {
+            [Console]::Out.WriteLine('  Nothing installed. Run the line above, open a new window, and re-run this script.')
+            exit 1
+        }
+        try {
+            $installer = Invoke-RestMethod -Uri 'https://aka.ms/install-powershell.ps1' -ErrorAction Stop
+            & ([scriptblock]::Create($installer)) -Destination (Join-Path $env:LOCALAPPDATA 'Programs\PowerShell7') -AddToPath
+        } catch {
+            [Console]::Out.WriteLine("  Could not install PowerShell 7: $($_.Exception.Message)")
+            [Console]::Out.WriteLine('  Run the line above by hand, open a new window, and re-run this script.')
+            exit 1
+        }
+        $localPwsh = Join-Path $env:LOCALAPPDATA 'Programs\PowerShell7\pwsh.exe'
+        if (-not (Test-Path -LiteralPath $localPwsh)) {
+            [Console]::Out.WriteLine('  PowerShell 7 installed, but pwsh.exe is not where this expected it.')
+            [Console]::Out.WriteLine('  Open a new window and re-run this script.')
+            exit 1
+        }
+        $pwshCommand = Get-Command -Name $localPwsh -ErrorAction SilentlyContinue
+    }
+
+    [Console]::Out.WriteLine("  Re-running under $($pwshCommand.Source)...")
+    [Console]::Out.WriteLine('')
+    & $pwshCommand.Source -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @relaunchArguments
+    exit $LASTEXITCODE
+}
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$root = $PSScriptRoot
-function Say { param([string]$T = '') [Console]::Out.WriteLine($T) }
-function Warn { param([string]$T) [Console]::Error.WriteLine($T) }
+function Say { param([string]$Text = '') [Console]::Out.WriteLine($Text) }
+function Warn { param([string]$Text) [Console]::Error.WriteLine($Text) }
+
+# A prompt is only legitimate when the captain is at the keyboard. A redirected
+# stdin, a CI run, or -Unattended all take the safe default instead of waiting
+# for an answer nobody is there to give.
+function Confirm-Update {
+    param([Parameter(Mandatory)][string]$Question)
+
+    if ($Unattended) { return $false }
+    if ([Console]::IsInputRedirected) { return $false }
+    Say ''
+    Say "  $Question"
+    $answer = Read-Host '  Update it? [y/N]'
+    return ($answer -match '^(y|yes)$')
+}
+
+. (Join-Path $PSScriptRoot 'bin' 'fm-module-load.ps1') -RequiredCommand 'Install-FmMachine'
 
 Say ''
 Say '  FIRSTMATE - install'
 Say ''
 
-# ---- what is here already ---------------------------------------------------
-$required = @(
-    @{ Name = 'git';       Cmd = 'git';       Why = 'isolated copies for workers'
-       Choco = 'git';      Npm = '' }
-    @{ Name = 'Node.js';   Cmd = 'node';      Why = 'carries the Claude CLI and the axi tools'
-       Choco = 'nodejs-lts'; Npm = '' }
-    @{ Name = 'Claude CLI'; Cmd = 'claude';   Why = 'firstmate itself'
-       Choco = '';         Npm = '@anthropic-ai/claude-code' }
-    @{ Name = 'herdr';     Cmd = 'herdr';     Why = 'worker sessions'
-       Choco = '';         Npm = 'herdr' }
-    @{ Name = 'treehouse'; Cmd = 'treehouse'; Why = 'isolated copies, leased'
-       Choco = '';         Npm = 'treehouse' }
-)
-$optional = @(
-    @{ Name = 'gh';                  Cmd = 'gh';                  Why = 'pull requests'; Choco = 'gh'; Npm = '' }
-    @{ Name = 'gh-axi';              Cmd = 'gh-axi';              Why = 'GitHub, ergonomically'; Choco = ''; Npm = 'gh-axi' }
-    @{ Name = 'chrome-devtools-axi'; Cmd = 'chrome-devtools-axi'; Why = 'browser work'; Choco = ''; Npm = 'chrome-devtools-axi' }
-    @{ Name = 'lavish-axi';          Cmd = 'lavish-axi';          Why = 'visual reviews'; Choco = ''; Npm = 'lavish-axi' }
-    @{ Name = 'tasks-axi';           Cmd = 'tasks-axi';           Why = 'shared backlog format'; Choco = ''; Npm = 'tasks-axi' }
-    @{ Name = 'quota-axi';           Cmd = 'quota-axi';           Why = 'model headroom before dispatch'; Choco = ''; Npm = 'quota-axi' }
-)
-
-# PATH is re-read from the environment first, because a tool installed into a
-# per-user directory earlier in this same session is on the PERSISTED path but
-# not on this shell's copy of it - measured with gh, which was present and
-# reported missing.
-$env:Path = [Environment]::GetEnvironmentVariable('Path', 'User') + ';' +
-            [Environment]::GetEnvironmentVariable('Path', 'Machine')
-
-function Missing { param($Set) @($Set | Where-Object { -not (Get-Command $_.Cmd -ErrorAction SilentlyContinue) }) }
-
-# Forced to arrays at the ASSIGNMENT. A pipeline that matches nothing unrolls to
-# $null, and $null.Count throws under StrictMode - which is exactly what happened
-# on a machine where everything required was already installed, so the installer
-# failed only in the case where it had least to do.
-$needReq = @(Missing $required)
-$needOpt = @(if ($SkipOptional) { } else { Missing $optional })
-
-Say '  Checking what is already here...'
-foreach ($t in ($required + $optional)) {
-    $have = [bool](Get-Command $t.Cmd -ErrorAction SilentlyContinue)
-    Say ("    {0} {1,-22} {2}" -f $(if ($have) { '[ok]     ' } else { '[missing]' }), $t.Name, $t.Why)
-}
+# ---- 1. what this machine has, and what it needs ----------------------------
+$plan = Get-FmMachineInstallPlan -SkipOptional:$SkipOptional -Offline:$Offline
+foreach ($line in $plan.Lines) { Say $line }
 Say ''
 
-# ---- consent ----------------------------------------------------------------
-if ($needReq.Count -or $needOpt.Count) {
-    $list = @($needReq + $needOpt | ForEach-Object { $_.Name }) -join ', '
-    Say "  Missing: $list"
-    if (-not $Yes) {
-        $answer = Read-Host '  Install these now? [y/N]'
-        if ($answer -notmatch '^(y|yes)$') {
-            Say '  Nothing installed. Re-run when you are ready.'
-            exit 1
-        }
-    }
-    Say ''
-} else {
-    Say '  Everything needed is already here.'
+foreach ($enabler in $plan.Enablers) {
+    if ($enabler.Satisfied) { continue }
+    Warn "  $($enabler.Name) is not on this machine, and it is what provides $($enabler.Enables)."
+    Warn "    $($enabler.Fix)"
     Say ''
 }
 
-# ---- install ----------------------------------------------------------------
-$failed = [System.Collections.Generic.List[object]]::new()
-foreach ($t in @($needReq + $needOpt)) {
-    Say "  Installing $($t.Name)..."
-    try {
-        if ($t.Npm) {
-            if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-                throw 'npm is not available yet - install Node.js first, then re-run'
-            }
-            & npm install -g $t.Npm 2>&1 | Out-Null
-        } elseif ($t.Choco) {
-            if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-                throw "needs Chocolatey or a manual install: choco install $($t.Choco)"
-            }
-            # Machine-wide, so it needs an elevated shell. Reported rather than
-            # attempted: silently raising a UAC prompt is how a machine gets
-            # changed without anyone deciding to.
-            & choco install $t.Choco -y 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "run this in an ADMINISTRATOR shell: choco install $($t.Choco) -y" }
-        } else {
-            throw 'no install route known'
-        }
-        if (Get-Command $t.Cmd -ErrorAction SilentlyContinue) { Say "    done" }
-        else { $failed.Add($t); Warn "    installed, but '$($t.Cmd)' is not on PATH yet - open a new shell" }
-    } catch {
-        $failed.Add($t)
-        Warn "    could not install $($t.Name): $($_.Exception.Message)"
-    }
-}
-Say ''
-
-# ---- wire the home ----------------------------------------------------------
-Say '  Wiring the home...'
-& (Join-Path $root 'bin' 'fm-setup.ps1') | Out-Null
-Say '    done'
-
-# ---- the `firstmate` command ------------------------------------------------
-# A shim on the user's PATH, so starting it is one word from any shell.
-#
-# NOT %LOCALAPPDATA%\Microsoft\WindowsApps, which is the obvious choice and does
-# not work: it is a reparse point Windows reserves for App Execution Aliases, and
-# a plain .cmd dropped there is not resolved by the shell even though the folder
-# IS on PATH and the file IS present. Measured - `firstmate` came back "not
-# recognized" from a cmd.exe given a freshly rebuilt PATH.
-#
-# A dedicated per-user directory, added to PATH explicitly, is predictable and
-# still needs no elevation.
-Say '  Adding the `firstmate` command...'
-$binDir = Join-Path $env:LOCALAPPDATA 'Programs\firstmate'
-if (-not (Test-Path -LiteralPath $binDir -PathType Container)) {
-    $null = New-Item -ItemType Directory -Path $binDir -Force
-}
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if ($userPath -notlike "*$binDir*") {
-    [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ';' + $binDir), 'User')
-}
-
-$startPath = Join-Path $root 'start.ps1'
-# Two shims: a .cmd so it works from cmd.exe and from a bare `firstmate`, and a
-# .ps1 for a PowerShell caller that wants to pass parameters through.
-$cmdShim = @"
-@echo off
-pwsh -NoProfile -ExecutionPolicy Bypass -File "$startPath" %*
-"@
-[System.IO.File]::WriteAllText((Join-Path $binDir 'firstmate.cmd'), $cmdShim)
-Say "    firstmate -> $startPath"
-Say ''
-
-# ---- done -------------------------------------------------------------------
-if ($failed.Count) {
-    Warn '  Finished, but some things did not install:'
-    foreach ($f in $failed) { Warn "    $($f.Name) - $($f.Why)" }
-    Warn '  Firstmate may refuse to start until those are present.'
+# ---- 2. unsupported versions are TOLD, never repaired uninvited --------------
+foreach ($requirement in $plan.Unsupported) {
+    Warn "  $($requirement.Label) cannot work at the version installed."
+    Warn "    $($requirement.Reason)"
+    Warn "    Please update it yourself: $($requirement.UpdateCommand)"
+    Warn '    This installer will SKIP that step rather than install over the top of it.'
     Say ''
 }
 
-Say '  Installed.'
+if ($DetectOnly) {
+    Say '  -DetectOnly: nothing was changed.'
+    Say ''
+    exit 0
+}
+
+# ---- 3. the optional updates, one question each -----------------------------
+$agreed = @()
+foreach ($requirement in $plan.Older) {
+    if (Confirm-Update -Question $requirement.Question) { $agreed += $requirement.Name }
+}
+if ($plan.Older.Count -gt 0) { Say '' }
+
+# ---- 4. install ---------------------------------------------------------------
+# Running this script IS the consent to install what is missing; that is the
+# whole job it was invoked for, so it is not re-asked one tool at a time.
+Say '  Installing what is missing, and proving the result. This takes a few minutes.'
+Say ''
+# The plan is handed over rather than recomputed: it already asked every vendor
+# what it publishes, and asking them a second time would double the slowest part
+# of the run for an answer that cannot have changed since the prompt above.
+$report = Install-FmMachine -Approved -Plan $plan -UpdateTool $agreed -SkipOptional:$SkipOptional `
+    -SkipSuite:$SkipSuite -Offline:$Offline -RepoRoot $PSScriptRoot -Confirm:$false
+
+foreach ($line in $report.Lines) { Say ([string]$line) }
+Say ''
+
+if (-not $report.Ready) {
+    Warn '  This machine is NOT fully ready. The summary above names every requirement and its outcome.'
+    Say ''
+    exit 1
+}
+
+Say '  Open a NEW shell, so the `firstmate` command is on PATH, then:'
 Say ''
 Say '    firstmate          start it - opens your browser, everything happens there'
 Say ''
-Say '  Open a NEW shell first, so the command is on PATH.'
-Say ''
-
+exit 0

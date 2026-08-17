@@ -72,6 +72,8 @@ module/Firstmate/Firstmate.psm1   loader
 module/Firstmate/Private/*.ps1    internals, one file per area
 module/Firstmate/Public/*.ps1     exported verbs, one file per area
 bin/fm-*.ps1                      thin entry points, one per command
+install.ps1 start.ps1             the CAPTAIN's two commands, at the root because
+                                  they are not for firstmate's own use
 tests/*.Tests.ps1                 Pester 5+, one per area
 docs/                             per-area design notes
 AGENTS.md                         the OPERATING contract; CLAUDE.md links to it
@@ -83,6 +85,17 @@ not build memory. Anything a session needs only in a nameable situation belongs
 in a skill with a one-line trigger in `AGENTS.md` section 13; anything a
 contributor needs belongs in this file or a `docs/` note. `docs/instruction-surface.md`
 owns why the surface is shaped that way and what verifies it.
+
+**After editing `AGENTS.md` on Windows, re-run `bin/fm-setup.ps1`.**
+On this platform `CLAUDE.md` is a HARDLINK to `AGENTS.md`, and most editors write a new file and rename it over the old one, which breaks the link silently.
+`AGENTS.md` then carries the edit while `CLAUDE.md` still carries the bytes from before it, so the session reads instructions nothing else agrees with.
+`fm-doctor.ps1` catches it as `[missing] contract for Claude`.
+Setup will not overwrite either file once they differ - two real, different memory files are the captain's to reconcile - so the repair is to delete `CLAUDE.md` and run setup again, which re-links it.
+
+**Stage your files by name, never with `git add -A` or `git add .`.**
+`.claude/skills` is committed as a symlink and materialized on Windows as a junction, and `git add -A` walks THROUGH that junction: it replaces the one symlink entry in the index with the 19 real `SKILL.md` files behind it.
+`Protect-FmInstructionLink`'s skip-worktree mark does not stop this - it governs checkout and status, not `add` - so the damage is silent and lands in the commit.
+Measured while landing the installer, and recovered with `git reset --mixed`, which restores the index and leaves the working tree alone; re-run `bin/fm-setup.ps1` afterwards, because the reset clears the skip-worktree bit.
 
 `bin/` scripts are thin: they resolve the module, forward arguments, and map
 outcomes to exit codes (0 success, 1 refusal or failure, 2 usage). Refusals go
@@ -170,6 +183,10 @@ module any other way.
   to `tmux` and the captain's first digest asks Windows to install it), and why
   `-KeepHomePointer` exists - a checkout has exactly one `.fm-home`, so
   provisioning a second home from it must not claim that pointer.
+  Its "The machine install" section covers `install.ps1` and `Install-FmMachine`:
+  why the route table has exactly one owner (a second one installed two tools from npm packages that were not the software),
+  why no route may need administrator, the three-outcome classification and why `older` and `unsupported` must never be blurred,
+  and why `install.ps1` carries no `#requires` line.
 - `docs/instruction-surface.md` - the operating contract and the skills: what
   `AGENTS.md` is for, how each Linux skill was ported or recorded as absent, how
   the two committed links survive a Windows clone, and what the doctor checks.

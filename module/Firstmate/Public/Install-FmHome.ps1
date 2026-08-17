@@ -208,6 +208,8 @@ function Install-FmHome {
             -Detail '-SkipCheckoutRepair: left the checkout''s AGENTS.md/CLAUDE.md pair untouched'
         $steps += New-FmInstallStep -Name 'skills link' -Action 'skipped' `
             -Detail '-SkipCheckoutRepair: left the checkout''s .claude/skills untouched'
+        $steps += New-FmInstallStep -Name 'instruction links' -Action 'skipped' `
+            -Detail '-SkipCheckoutRepair: left the checkout''s git index untouched'
     } else {
         # `cd <checkout>; claude` is only useful if the checkout's CLAUDE.md holds
         # the instructions rather than the text git leaves behind for a symlink it
@@ -220,6 +222,18 @@ function Install-FmHome {
         # skills.
         $skills = Set-FmInstallSkillsLink -RepoRoot $RepoRoot
         $steps += New-FmInstallStep -Name 'skills link' -Action $skills.Action -Detail $skills.Detail
+
+        # AND THE TRAP THE REPAIR LEAVES BEHIND. Both links are now materialized
+        # as a junction and a hardlink, which git reports as modified - and the
+        # obvious cleanup, `git checkout -- .claude/skills`, follows the junction
+        # and deletes every skill behind it. Protect-FmInstructionLink owns why;
+        # this is where a checkout gets that protection, because skip-worktree is
+        # per-checkout index state that no clone and no new worktree inherits.
+        # It cost the skills tree three times in one session, and reappeared in a
+        # fresh worker copy for exactly that reason.
+        $protect = Protect-FmInstructionLink -RepoRoot $RepoRoot
+        $protectAction = if ($protect.Action -in @('updated', 'already')) { $protect.Action } else { 'skipped' }
+        $steps += New-FmInstallStep -Name 'instruction links' -Action $protectAction -Detail $protect.Detail
     }
 
     if ($SkipProfile) {
