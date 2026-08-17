@@ -408,8 +408,16 @@ function Get-FmTelegramTierThreePattern {
         # refused to hear about it would be useless on the first day; "token" and
         # "account" are the same. So these refuse an act on a credential, not a
         # mention of one.
+        #
+        # BOTH DIRECTIONS, and the reading one matters more here than the writing
+        # one. A phone is the thing that gets lost, and the message a finder types
+        # is "send me the bot token" - not "rotate" it. Refusing only the writing
+        # verbs would leave the one request this channel most needs to refuse
+        # classified as a harmless question, because "show" reads like a status
+        # ask. Measured before the fix: "show the token" -> tier 1, allowed.
         [pscustomobject]@{
-            Pattern = '\b(?:creat|mak|chang|reset|updat|add|rotat|revok|regenerat|renew|store|storing|paste|pasting)\w*\b' +
+            Pattern = '\b(?:creat|mak|chang|reset|updat|add|rotat|revok|regenerat|renew|store|storing|paste|pasting|' +
+            'show|send|print|reveal|display|echo|cat|read|repeat|forward|expos|leak|dump|copy|what\s+is|what.?s|tell\s+me)\w*\b' +
             '[^.!?]{0,30}?\b(?:tokens?|logins?|log\s*ins?|sign[\s-]*ins?|accounts?|auth\w*)\b'
             Action  = 'touch a login'
         }

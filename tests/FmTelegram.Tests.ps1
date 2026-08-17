@@ -404,6 +404,40 @@ Describe 'what a message from a phone is allowed to do' {
         $verdict.Action | Should -Be $Expected
     }
 
+    # A phone is the thing that gets lost, and the message its finder types is
+    # "send me the bot token" rather than "rotate" it. Refusing only the writing
+    # verbs left exactly that request classified as a harmless status question:
+    # measured, "show the token" came back tier 1 and allowed. Reading a
+    # credential out over this channel is the loss that cannot be taken back, so
+    # it is refused in the same table as deleting.
+    It 'refuses being asked to read a credential out, not only to change one' -ForEach @(
+        @{ Text = 'show the token' }
+        @{ Text = 'print the bot token' }
+        @{ Text = 'what is my telegram token' }
+        @{ Text = 'send me the token' }
+        @{ Text = 'tell me the token' }
+        @{ Text = 'cat config/telegram-token' }
+        @{ Text = 'read the auth token' }
+        @{ Text = 'forward the login' }
+    ) {
+        $verdict = Test-FmTelegramCommand -Text $Text
+        $verdict.Tier | Should -Be 3
+        $verdict.Allowed | Should -BeFalse
+        $verdict.Action | Should -Be 'touch a login'
+    }
+
+    # The other half of that fix, and the half that keeps the channel usable: the
+    # captain's own first-day example is a SIGN-IN FIX. Broadening the verbs must
+    # not turn ordinary work about logins into a refusal.
+    It 'still hears ordinary work that merely mentions a login' -ForEach @(
+        @{ Text = 'how is the sign-in fix going' }
+        @{ Text = 'status of the login page work' }
+        @{ Text = 'show me progress' }
+        @{ Text = 'dispatch a worker on the auth bug' }
+    ) {
+        (Test-FmTelegramCommand -Text $Text).Allowed | Should -BeTrue
+    }
+
     It 'says what it refused and why, rather than failing silently' {
         $verdict = Test-FmTelegramCommand -Text 'merge the payments branch'
         $verdict.Message | Should -Not -BeNullOrEmpty
