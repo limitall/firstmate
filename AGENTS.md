@@ -80,6 +80,8 @@ config/backlog-backend  backlog backend override; LOCAL, gitignored; "manual" fo
 config/startup-memory-budget  per-home startup-memory budget; LOCAL, gitignored, materialized by locked bootstrap
 config/autolaunch      opt-in startup command and grace window for `bin/fm-autolaunch.ps1`; LOCAL, gitignored; absent = off
 config/voice           opt-in voice channel for `bin/fm-say.ps1` and `bin/fm-ask.ps1`, with the voice name, rate and answer confidence; LOCAL, gitignored; absent = off, and the microphone is never opened
+config/telegram-token config/telegram-allow  opt-in private channel to the captain for `bin/fm-tell.ps1` and `bin/fm-tg-poll.ps1`: the bot token, and the numeric Telegram user id(s) allowed to command it and be told things; LOCAL, gitignored; either absent = off (section 14).
+                       Optional `config/telegram-authority` may narrow that channel to reporting only and can never widen it.
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
   captain.md         this home's captain preferences and working style; canonical even if harness memory mirrors it
@@ -96,6 +98,8 @@ state/               volatile runtime signals; gitignored
                      effort=, kind=, mode=, yolo=, tasktmp=, plus this port's own treehouse_lease_id=
   <id>.check.ps1     authenticated slow poll; content-hash bound before the watcher may execute it
   <id>.check-trust   the content binding that makes an intentional custom check executable
+  captain-telegram.inbox  what the captain sent from their phone, "<epoch><TAB><their words>"; scanned as a signal
+                     like *.status but carries no status verb, so it never reads as a task (section 14)
   .wake-queue        durable queued wakes retained until post-handling acknowledgement
   .watch.lock .wake-queue.lock   watcher singleton and queue serialization locks (directories, not symlinks)
   .last-watcher-beat watcher liveness beacon, touched every poll; guard scripts read it
@@ -492,7 +496,10 @@ Each is a plain absence, not a degraded imitation: never simulate one, and tell 
 - **`no-mistakes` delivery mode.** Refused by name at brief and spawn (section 7). `direct-PR` and `local-only` ship.
 - **Away mode.** No `state/.afk`, no sub-supervisor daemon, no unattended escalation injection into a live session (section 8).
 - **Relay / X mode.** No public-mention integration, no `.env` pairing token, no public follow-ups. Nothing in this port posts anywhere public.
-- **Process-to-event sources.** No long-poll runner, no `state/procevent/` inbox. A blocking external wait must be a backlog item you check, never a held conversational turn.
+  There is now a PRIVATE channel to the captain instead, and it is a different thing: `bin/fm-tell.ps1` sends them one message and `bin/fm-tg-poll.ps1` takes messages back while a session is alive, between firstmate and the captain alone.
+  It **ships inert** - there is no bot and no token, so both commands do nothing until the captain creates one - nothing calls either by itself, and a message asking firstmate to land work, throw work away, delete, clean up for good, or touch a login is refused over it whatever any setting says.
+  It is also session-scoped: a message sent while nothing is running waits a day and is then lost, so it is not a way to reach firstmate when nobody is home. Each script's `-h` output and `docs/telegram-windows.md` own the rest.
+- **Process-to-event sources.** No process-event long-poll runner, no `state/procevent/` inbox. A blocking external wait must be a backlog item you check, never a held conversational turn.
 - **Automatic wiring for the voice channel.** The voice channel itself is complete - `fm-say` speaks and `fm-ask` asks and listens, both off until `config/voice` exists (section 9) - but nothing calls either by itself, so no escalation becomes audible and no question is asked aloud without deliberate wiring. There is no wake word: each listen is one bounded window opened by one call.
 - **Remote secondmates.** Secondmate spawning, charter briefs and retirement work locally; the seeding, convergence, liveness sweep, cross-home handoff, and every remote route are absent, and `data/secondmates.md` is hand-maintained except for the row a retirement removes.
 - **Harnesses other than `claude`, and backends other than `herdr`** (section 4).

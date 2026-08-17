@@ -215,15 +215,24 @@ function New-FmWakeDelivery {
 
 function Get-FmWatchSignalChanges {
     <#
-        scan_signals. Compare every state/*.status and state/*.turn-ended against
-        its persisted size:mtime signature. PURE READ - the .seen-* marker is
-        advanced only after the wake is surfaced or deliberately absorbed, so a
-        watcher killed mid-cycle never swallows a signal.
+        scan_signals. Compare every state/*.status, state/*.turn-ended and
+        state/*.inbox against its persisted size:mtime signature. PURE READ - the
+        .seen-* marker is advanced only after the wake is surfaced or deliberately
+        absorbed, so a watcher killed mid-cycle never swallows a signal.
+
+        *.inbox is a message the captain sent from outside this machine (see
+        Public/FmTelegram.ps1). It gets its own file kind rather than borrowing a
+        status file because a status file's verbs carry lifecycle meaning: written
+        as one, an inbound message would open keyed decisions nobody raised and
+        read as a phantom task to every future reader of this home. It carries no
+        verb, so it is never captain-relevant on its own and never names a crew
+        that could be provably working - which is exactly the "not provably
+        working" case the triage below surfaces rather than absorbs.
     #>
     param([Parameter(Mandatory)][hashtable]$Context)
 
     $results = [System.Collections.Generic.List[object]]::new()
-    foreach ($pattern in @('*.status', '*.turn-ended')) {
+    foreach ($pattern in @('*.status', '*.turn-ended', '*.inbox')) {
         $files = @()
         try { $files = [System.IO.Directory]::GetFiles($Context.State, $pattern) }
         catch { $files = @() }

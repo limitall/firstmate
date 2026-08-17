@@ -3934,3 +3934,124 @@ lane's in-flight work and this branch has no business editing it.
 - **The permissive authority behaviour was not built**, deliberately: the captain
   has an open decision on whether a spoken answer may ever approve a merge, and
   this branch implements only the conservative side of it.
+
+## 27. The private Telegram channel, built and tested with no bot - `PROVEN (Windows 11), OFFLINE ONLY`
+
+`bin/fm-tell.ps1`, `bin/fm-tg-poll.ps1` and `module/Firstmate/*/FmTelegram.ps1`
+(`docs/telegram-windows.md`), on `fm/tg-build` over `03fe14d`.
+Run in a disposable worktree on the captain's Windows 11 laptop on 2026-08-17.
+
+**Read the limit first, because it is the whole shape of this section.**
+No bot was created, no token was obtained, no real message was sent, and nothing
+in this task reached `api.telegram.org` at all.
+The captain has not decided whether to create the bot, so everything below was
+executed against a mocked endpoint or against a loopback port nothing listens on.
+What is proven is the code path, the refusals and the discipline; what is
+untouched is the real endpoint.
+
+### 27.1 What was executed
+
+The area's own suite, which needs neither a token nor a network:
+
+```
+tests/FmTelegram.Tests.ps1   Tests Passed: 75, Failed: 0
+```
+
+`Invoke-FmTelegramApi` is the one function in the area that opens a socket, so
+every test that would reach it mocks exactly that one - the same discipline the
+voice channel applies to its four speech-engine seams.
+The seven entry-point tests cannot mock anything, because a child process cannot
+be mocked, so each is given either a home with no token or
+`FM_TELEGRAM_API_BASE=http://127.0.0.1:9`, a loopback port nothing listens on.
+That is what makes the failing-send test a REAL `Invoke-RestMethod` failure
+rather than a simulated one, with no packet leaving the machine.
+
+### 27.2 The token-leak assertion, which is the one worth naming
+
+The scout measured that Telegram carries the token in the URL path and that both
+`Invoke-RestMethod -Verbose` and `$_.TargetObject.RequestUri` print it verbatim.
+So the test does not merely check that nothing printed a token - it first proves
+the token WAS used, then proves it did not escape:
+
+```
+Should -Invoke Invoke-FmTelegramApi -ParameterFilter { $Url -like "*$Token*" }   # it really was used
+$sent | Format-List | Out-String     ->  no match for the token, or for its secret half
+$sent | ConvertTo-Json -Depth 5      ->  no match for either
+```
+
+and at the entry point, as a real child process against the dead loopback port:
+
+```
+fm-tell.ps1 ... -> exit 0, stderr "fm-tell: not sent - the link could not be reached, after 1 attempt(s)"
+stdout + stderr           ->  no match for the token, or for its secret half
+every file under state/   ->  no match for the secret half
+```
+
+The fixture token is literal nonsense (`9988776655:AAF-NOT-A-REAL-TOKEN-DO-NOT-USE`).
+
+### 27.3 The refusal, proven to be in the code and not in a setting
+
+The tier-3 refusal was exercised through four different ways of trying to widen
+it, and all four still refuse:
+
+```
+-MaxTier 3 / 4 / 99 / [int]::MaxValue        -> refused, tier 3
+config/telegram-authority allow-tier=3       -> refused, and warned "allow-tier 3 is refused"
+config/telegram-authority allow-tier=99      -> refused
+no config/telegram-authority at all          -> refused
+config/telegram-authority full of nonsense   -> refused
+```
+
+Narrowing still works in the direction it is meant to: `allow-tier=1` refuses a
+steer and still answers a question, and `allow-tier=0` is clamped up to 1, so
+asking how things stand can never be switched off.
+
+### 27.4 The singleton, proven across two real processes
+
+The Pester process takes the poller lock itself - so the holder is unarguably
+alive and the refusal under test is the singleton rather than stale-owner
+recovery - and then `bin/fm-tg-poll.ps1` is launched as a real child:
+
+```
+fm-tg-poll.ps1 -MaxCycles 1 -> exit 0
+stderr: fm-tg-poll: not listening - another one is already listening; two would take each other's messages
+```
+
+The in-process half also asserts the refused poller left the holder's lock
+untouched on its way out, and that a poller which finishes releases the lock.
+
+### 27.5 The decision closure, end to end
+
+The defect the scout found is that the wake drain prints a `-ResolveKey` flag
+`bin/fm-send.ps1` does not have, and that entry point absorbs the flag into the
+message body rather than refusing it - so the command it prints closes nothing.
+This does not change `fm-send.ps1`; it gives the closure an owner that works:
+
+```
+needs-decision [key=api-shape]: flat or nested response
+resolved [key=api-shape]: use the flat one          <- written by the answer from the phone
+Get-FmOpenDecisionScan -> 0 open
+```
+
+Proven for the single-open case, for a message naming `key=<slug>` while two are
+open, and - equally - for the case it REFUSES to guess: two open and none named
+closes nothing, records the words, and says so.
+A tier-1 question never closes a decision.
+
+### 27.6 What was NOT proven here, and cannot be without the captain's decision
+
+- **Every call against a real bot.** `getMe`, a real long poll, a real
+  `sendMessage`, the API's own 4096 rejection, the 429 back-off, and the
+  two-poller conflict on one token. All need a bot and a token.
+- **The two-poller conflict itself remains inferred**, exactly as the scout
+  reported it. The singleton lock is cheap insurance against a failure that would
+  be very hard to diagnose, not a fix for a measured one.
+- **Nothing is wired into the escalation path**, deliberately, so there is no
+  evidence of an escalation reaching a phone. The capability ships alone.
+- **The permissive authority behaviour was not built**, deliberately: the captain
+  has an open decision on where the tier line sits, and this branch implements
+  only the conservative side of it.
+- **The channel is session-scoped.** A message sent while nothing is running
+  waits up to 24 hours on Telegram's servers and is then dropped. That is a
+  property of the design, not a gap in the testing, and it stays true until the
+  long-lived service exists.

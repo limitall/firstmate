@@ -158,6 +158,10 @@ module any other way.
   why "untouched" is proved by unchanged capture bytes rather than by a composer
   shape verdict this port does not own, and why the baseline those bytes come
   from has to be proved to be firstmate's own rather than trusted.
+- `docs/telegram-windows.md` - the private Telegram channel: why it ships inert,
+  why the tier-3 refusal is a constant in the code rather than a setting, where
+  the bot token leaks if anything logs a request, and what has never been run
+  against a real endpoint.
 - `docs/windows-install.md` - `fm-setup.ps1` and `fm-doctor.ps1`: why the wiring
   is a managed PowerShell-profile block rather than a User environment variable,
   why setup writes `config/backend=herdr` (without it a fresh home resolves

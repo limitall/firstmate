@@ -487,6 +487,14 @@ function ConvertTo-FmBridgePlainText {
         to be a full translation - a worker writes its own note and only that
         worker knows what it meant - so the honest goal is to strip what is
         certainly internal and leave the sentence alone.
+
+        A URL IS NEVER MACHINERY, and every rule below would happily eat one:
+        `https:` reads as a state prefix, and a path segment spelt `docs/` or
+        `bin/` reads as a path into this repository. `AGENTS.md` section 9
+        requires the full https:// URL of a PR in every mention - and on a phone
+        a mangled link is not a cosmetic defect, it is the one thing on screen the
+        captain needed to tap. So URLs are masked out first and put back last,
+        untouched.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -494,6 +502,15 @@ function ConvertTo-FmBridgePlainText {
 
     if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
     $s = $Text
+
+    $fence = ([char]1).ToString()
+    $urls = [System.Collections.Generic.List[string]]::new()
+    foreach ($match in [regex]::Matches($s, 'https?://\S+')) {
+        if (-not $urls.Contains($match.Value)) { $urls.Add($match.Value) }
+    }
+    for ($i = 0; $i -lt $urls.Count; $i++) {
+        $s = $s.Replace($urls[$i], "$fence$i$fence")
+    }
 
     $s = $s -replace '^\s*[a-z-]+\s*:\s*', ''          # the state prefix
     $s = $s -replace '\[\s*\d{1,3}\s*%\s*\]\s*', ''     # a percentage prefix
@@ -509,6 +526,9 @@ function ConvertTo-FmBridgePlainText {
     $s = $s.Trim().Trim('-', ';', ',').Trim()
 
     if ($s) { $s = $s.Substring(0, 1).ToUpper() + $s.Substring(1) }
+    for ($i = 0; $i -lt $urls.Count; $i++) {
+        $s = $s.Replace("$fence$i$fence", $urls[$i])
+    }
     $s
 }
 
