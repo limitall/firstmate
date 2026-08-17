@@ -3966,6 +3966,24 @@ be mocked, so each is given either a home with no token or
 That is what makes the failing-send test a REAL `Invoke-RestMethod` failure
 rather than a simulated one, with no packet leaving the machine.
 
+The whole suite, on this branch, after the commit:
+
+```
+Tests Passed: 1878, Failed: 0, Skipped: 25   (43 files, 1878s)
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1   ->  0 findings
+```
+
+Two things about that run should be said rather than left to be inferred.
+It was made in a checkout whose `CLAUDE.md` and `.claude/skills` had already been
+materialized - `tests/FmInstall.Tests.ps1` runs `fm-setup.ps1` against this
+checkout as part of its own job - so it is not measuring an unrepaired Windows
+clone, and section 26.6's set-up-checkout dependency is neither reproduced nor
+contradicted here.
+An earlier run in the same worktree, before that repair and before two analyzer
+findings in this branch's own new files were fixed, reported 11 failures; the two
+analyzer ones are named and settled, and the rest were not individually captured,
+so this section claims only the clean run above.
+
 ### 27.2 The token-leak assertion, which is the one worth naming
 
 The scout measured that Telegram carries the token in the URL path and that both
