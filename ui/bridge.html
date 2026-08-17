@@ -169,9 +169,14 @@ body::before{
 .dec button:focus-visible{outline:2px solid var(--cy);outline-offset:2px}
 
 /* ---------------- centre stage ---------------- */
+/* minmax(0,1fr), not 1fr. A bare `1fr` track keeps an AUTO minimum, so the
+   radar's own pixel size became the floor for the row and the reply below it
+   pushed the whole composition out through the panel's top edge. With a zero
+   minimum the row gives way, and sizeRadar() draws the radar to whatever is
+   left rather than to what it wishes it had. */
 .stage{position:relative;border:1px solid var(--edge-soft);background:
     radial-gradient(ellipse at center,rgba(0,217,255,.035),transparent 62%),var(--panel);
-    display:grid;grid-template-rows:1fr auto;min-height:0}
+    display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0;min-width:0}
 .stage::before,.stage::after{content:"";position:absolute;width:11px;height:11px;
     border:1px solid var(--cy);opacity:.85}
 .stage::before{top:-1px;left:-1px;border-right:0;border-bottom:0}
@@ -180,9 +185,14 @@ body::before{
    positioning the label against the panel let it drift to the bottom of a tall
    window while the radar stayed in the middle - they read as two unrelated
    things. */
+/* overflow:hidden is the guarantee, not the fix. sizeRadar() keeps the canvas
+   inside this box; this makes "inside" true even for the frame between the box
+   changing and the radar being told - which is exactly the moment a long reply
+   arrives, and exactly how the radar came to be painted over the header. */
 .radarWrap{position:relative;display:flex;flex-direction:column;
-    align-items:center;justify-content:center;gap:10px;min-height:0;padding:14px}
-canvas#radar{display:block}
+    align-items:center;justify-content:center;gap:10px;min-height:0;min-width:0;
+    padding:14px;overflow:hidden}
+canvas#radar{display:block;flex:none}
 /* BELOW the rings, not over the core. Centred on the glow it was unreadable -
    the core is the brightest thing on the screen by design, so text sitting on it
    loses every time. In normal flow, so it travels with the radar. */
@@ -198,11 +208,64 @@ canvas#radar{display:block}
    as a separate pill - speaking and typing are the same act, so they share one
    surface. */
 .voice{padding:0 26px 20px;display:flex;flex-direction:column;align-items:center;
-    gap:9px;flex:none;min-width:0}
-canvas#wave{display:block;height:26px;opacity:.9}
+    gap:9px;flex:none;min-width:0;max-width:100%}
+/* The canvas is 620 CSS pixels of bitmap; without a cap it stood 22px wider
+   than the column at 1366px and drew its bars over the panel edge. */
+canvas#wave{display:block;height:26px;opacity:.9;width:100%;max-width:620px;flex:none}
 
-.heard{font-size:12.5px;letter-spacing:.02em;color:var(--txt);text-align:center;
-    min-height:1.5em;max-width:70ch;line-height:1.55}
+/* ---- what is happening, right now ----
+   The captain could not tell a screen that was working from one that had
+   ignored them: dictation went quiet for as long as it took and said nothing.
+   This is the one place that answers "is it doing something", and the seconds
+   next to it are counted, not invented - there is no percentage here because
+   nothing on this path knows one. */
+.state{display:flex;align-items:center;gap:8px;flex:none;min-height:1.2em;
+    font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--txt-faint)}
+.state .pip{width:6px;height:6px;border-radius:50%;background:var(--txt-faint);flex:none}
+.state .secs{color:var(--txt-faint);opacity:.75;letter-spacing:.1em}
+.state[data-state="listening"]{color:var(--red)}
+.state[data-state="listening"] .pip{background:var(--red);box-shadow:0 0 8px var(--red);
+    animation:pulse 1.1s ease-in-out infinite}
+.state[data-state="hearing"],.state[data-state="thinking"]{color:var(--cy)}
+.state[data-state="hearing"] .pip,.state[data-state="thinking"] .pip{
+    background:var(--cy);box-shadow:0 0 8px var(--cy);animation:pulse 1.4s ease-in-out infinite}
+.state[data-state="answered"]{color:var(--green)}
+.state[data-state="answered"] .pip{background:var(--green);box-shadow:0 0 8px var(--green)}
+.state[data-state="trouble"]{color:var(--amber)}
+.state[data-state="trouble"] .pip{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* THE REPLY LIVES HERE AND IT STAYS HERE. A ~90-word answer used to grow this
+   box until the radar - sized in pixels when the page loaded and never told its
+   row had shrunk - painted over the text and dragged the CORE ACTIVE caption
+   into it. Measured at 1366x768: the canvas overflowed its 408px row by 85px at
+   the bottom and 59px past the top of the panel, and the caption landed inside
+   the transcript. Both were readable through each other and neither was
+   legible.
+   So the box is BOUNDED rather than trusted: a width it cannot exceed, a height
+   past which it scrolls inside itself, and min-width:0 with overflow-wrap so a
+   URL or a path can never force the column wider - the same pair .dock-line
+   already needed. Reserving the space is what keeps the radar out of it. */
+.heard{
+    width:100%;
+    max-width:min(70ch,100%);
+    min-width:0;
+    /* Eleven lines at this size, and 30vh on a short window so the radar is
+       never squeezed to nothing to show a wall of text. Past that it scrolls. */
+    max-height:min(30vh,220px);
+    overflow-y:auto;
+    overflow-x:hidden;
+    overflow-wrap:anywhere;
+    flex:none;
+    scrollbar-width:thin;scrollbar-color:var(--cy-dim) transparent;
+    font-size:12.5px;letter-spacing:.02em;color:var(--txt);text-align:center;
+    min-height:1.5em;line-height:1.55}
+/* A line cut in half at the bottom edge reads as broken text rather than as text
+   that continues, so an answer with more below it fades out instead of stopping
+   mid-sentence. Set from markMore(), and dropped again once it is scrolled to
+   the end - a permanent fade would hide the last line for good. */
+.heard.more{mask-image:linear-gradient(to bottom,#000 calc(100% - 22px),transparent);
+    -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 22px),transparent)}
 .heard.interim{color:var(--txt-dim);font-style:italic}
 
 .dock-line{
@@ -261,7 +324,8 @@ canvas#wave{display:block;height:26px;opacity:.9}
   .col.right{display:none}}
 @media(max-width:980px){.grid{grid-template-columns:minmax(0,1fr)}
   .col{display:none}}
-@media(prefers-reduced-motion:reduce){.dot{box-shadow:none}}
+@media(prefers-reduced-motion:reduce){.dot{box-shadow:none}
+  .state .pip{animation:none}}
 </style>
 </head>
 <body>
@@ -373,6 +437,17 @@ canvas#wave{display:block;height:26px;opacity:.9}
 
       <div class="voice">
         <canvas id="wave" width="620" height="26"></canvas>
+
+        <!-- Announced, so a captain using a screen reader hears the same state
+             change the pulsing dot shows everyone else. The counter is hidden
+             from that announcement on purpose: a live region that reads out a
+             new number every second is unusable. -->
+        <div class="state" id="stateStrip" data-state="idle" role="status" aria-live="polite">
+          <span class="pip" aria-hidden="true"></span>
+          <span id="stateWord">Standing by</span>
+          <span class="secs" id="stateSecs" aria-hidden="true"></span>
+        </div>
+
         <div class="heard" id="heard">Ask me anything &mdash; hold right Alt to dictate</div>
 
         <div class="dock-line" id="dockLine">
@@ -418,18 +493,41 @@ canvas#wave{display:block;height:26px;opacity:.9}
 const rc = document.getElementById('radar'), rx = rc.getContext('2d');
 let RS = 420, DPR = 1;
 function sizeRadar(){
-  const b = rc.parentElement.getBoundingClientRect();
-  // The cap was a flat 520px, which left a large void under the radar on a tall
-  // panel - the eye reads that gap as something missing rather than as space.
-  // Growing with the panel keeps the composition filled at any window size,
-  // while the floor keeps it legible on a short one.
-  RS = Math.max(280, Math.min(Math.min(b.width, b.height) * .94, 620));
+  // MEASURED FROM WHAT IS LEFT, NOT FROM THE PANEL. The old cut took 94% of the
+  // wrapper's box and ignored both its padding and the caption inside it, so the
+  // radar was always a little too big for its own row - and once a long reply
+  // shrank that row, "a little" became 85px of canvas painted over the caption
+  // and the header. Now the caption's height and the padding come off first: the
+  // radar gets the space that actually remains.
+  const wrap = rc.parentElement;
+  const label = wrap.querySelector('.coreLabel');
+  const cs = getComputedStyle(wrap);
+  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  const gap = parseFloat(cs.rowGap) || 0;
+  const availW = wrap.clientWidth - padX;
+  const availH = wrap.clientHeight - padY - (label ? label.offsetHeight + gap : 0);
+  // The floor is small on purpose. A 280px floor is a promise the row cannot
+  // always keep, and a canvas that refuses to shrink is the whole defect.
+  const want = Math.max(80, Math.min(Math.min(availW, availH), 620));
+  // Nothing to do is the common case once the layout settles, and returning
+  // early is also what stops the ResizeObserver below from chasing its own tail.
+  if (Math.abs(want - RS) < 1 && rc.width) return;
+  RS = want;
   DPR = window.devicePixelRatio || 1;
   rc.style.width = RS + 'px'; rc.style.height = RS + 'px';
   rc.width = RS * DPR; rc.height = RS * DPR;
   rx.setTransform(DPR,0,0,DPR,0,0);
 }
 sizeRadar(); addEventListener('resize', sizeRadar);
+// A reply arriving is not a resize event, and that is precisely why the radar
+// used to keep a size its row no longer had. This watches the box itself, so the
+// radar tracks the space the transcript leaves it whatever changed the layout.
+//
+// The callback runs after layout and BEFORE paint, so no frame is ever painted
+// at the old size - but code that measures in the same task as the text change
+// will read the old box and think this is broken. Measure a frame later.
+if (window.ResizeObserver) new ResizeObserver(()=>sizeRadar()).observe(rc.parentElement);
 
 const CY='#00D9FF', DIM='#1B6076', AMB='#FFA92E';
 let level=0, target=0, bins=new Uint8Array(72), listening=false, t=0;
@@ -628,17 +726,245 @@ function buildWav(chunks, fromRate, toRate){
   return new Blob([buf], { type: 'audio/wav' });
 }
 const talk=document.getElementById('talk'), heard=document.getElementById('heard'),
-      cmdLabel=document.getElementById('cmdLabel'), coreSub=document.getElementById('coreSub'),
+      coreSub=document.getElementById('coreSub'),
       coreState=document.getElementById('coreState'),
       dockLine=document.getElementById('dockLine'), sendBtn=document.getElementById('sendBtn'),
-      typedEl=document.getElementById('typed'), dockHint=document.getElementById('dockHint');
+      typedEl=document.getElementById('typed'), dockHint=document.getElementById('dockHint'),
+      stateStrip=document.getElementById('stateStrip'),
+      stateWord=document.getElementById('stateWord'),
+      stateSecs=document.getElementById('stateSecs');
 
 // Send is only offered when there is something to send, so a dead button never
 // invites a click that does nothing.
 typedEl.addEventListener('input', ()=>{ sendBtn.disabled = !typedEl.value.trim(); });
 
-async function micOn(){
+/* ==================================================================
+   ONE PLACE SAYS WHAT IS HAPPENING.
+
+   The captain could not tell dictation that was working from a screen
+   that had ignored them: the microphone closed, seconds passed, and
+   nothing on the page moved. Every stage now says itself out loud -
+   listening while the microphone is open, working while the words are
+   being made, the answer when it lands, and the REASON when it does
+   not. Silence is never the report.
+
+   The strip in the dock and the caption under the radar are set from
+   here together, so the two can never disagree, and the counter is
+   elapsed seconds rather than a percentage: nothing on this path knows
+   a percentage, and inventing one would be the same lie as silence.
+   ================================================================== */
+const STAGE = {
+  idle:      { word:'Standing by',              core:'Core active', sub:'Standing by' },
+  listening: { word:'Listening',                core:'Listening',   sub:'Speak now' },
+  hearing:   { word:'Turning that into words',  core:'Working',     sub:'Turning that into words' },
+  thinking:  { word:'Thinking',                 core:'Thinking',    sub:'Working' },
+  answered:  { word:'Answered',                 core:'Speaking',    sub:'Standing by' },
+  trouble:   { word:'That did not work',        core:'Core active', sub:'Nothing came back' }
+};
+let stageTimer=null, stageAt=0;
+function setStage(name, opts){
+  const s = STAGE[name] || STAGE.idle;
+  opts = opts || {};
+  stateStrip.dataset.state = name;
+  stateWord.textContent = opts.word || s.word;
+  coreState.textContent = s.core;
+  coreSub.textContent = opts.sub || s.sub;
+  if (stageTimer) { clearInterval(stageTimer); stageTimer=null; }
+  stateSecs.textContent = '';
+  // Counted only where there is a wait to count. A frozen "0s" beside a finished
+  // answer would read as something still running.
+  if (name==='listening' || name==='hearing' || name==='thinking'){
+    stageAt = Date.now();
+    const tick = ()=>{ stateSecs.textContent = Math.round((Date.now()-stageAt)/1000) + 's'; };
+    tick(); stageTimer = setInterval(tick, 1000);
+  }
+}
+/* ONE OWNER FOR THE TRANSCRIPT BOX. Every line the captain reads goes through
+   here, so a long one always starts at its own first line and always knows
+   whether it has more below. Written in eleven places before this, each with its
+   own idea of what to reset. */
+function showHeard(text, dim){
+  heard.classList.toggle('interim', !!dim);
+  heard.textContent = text;
+  heard.scrollTop = 0;
+  markMore();
+}
+function markMore(){
+  const more = heard.scrollHeight > heard.clientHeight + 1 &&
+               heard.scrollTop + heard.clientHeight < heard.scrollHeight - 1;
+  heard.classList.toggle('more', more);
+}
+heard.addEventListener('scroll', markMore);
+addEventListener('resize', markMore);
+
+// Said, not shown: a failure the captain has to notice is a failure that gets
+// missed. The line goes to the transcript, the strip and the log together.
+function sayTrouble(word, detail){
+  setStage('trouble', { word: word, sub: word });
+  showHeard(detail);
+  logAdd(detail, 'warn');
+}
+
+/* ------------------------------------------------------------------
+   THE WARM MODEL FIRST.
+
+   The captain's dictation app is already running and holds its model
+   resident. Letting IT do the listening is the whole difference between
+   about three seconds and about fifteen: a one-shot engine process
+   loads the 1.7B model every single time, measured at 10.8s to 14.8s of
+   load in front of 3.0s of transcription, three runs of one clip. So
+   the microphone button asks that instance to listen, and this page
+   records for itself only when no instance is running to record
+   instead.
+
+   Two ways the words come back and the page takes whichever arrives
+   first: the app hands them to firstmate when it has been set to, and
+   otherwise it types them wherever the cursor is - which is why the
+   message box is focused before a capture starts. When neither happens,
+   the page says so and names the one setting that fixes it.
+   ------------------------------------------------------------------ */
+let speech = { warm:false, handsOver:false, setup:'' };
+let capture = 'off';                 // 'off' | 'engine' | 'here'
+let awaitingWords = false, wordsTimer = null, wordsStarted = 0, typedSettle = null;
+// Is the button held RIGHT NOW. Every step below that continues after an await
+// checks it, because the captain can let go while a request is still in flight -
+// and a start that lands after the release would leave the microphone open with
+// nothing left to close it.
+let pressed = false;
+const WORDS_WAIT_MS = 45000;
+
+function setLive(on){
+  talk.classList.toggle('live', on);
+  talk.setAttribute('aria-pressed', on ? 'true' : 'false');
+  dockLine.classList.toggle('live', on);
+  dockHint.textContent = on ? 'Release when you have finished'
+                            : 'Hold right Alt and speak, or hold the microphone';
+}
+
+async function talkStart(){
+  if (capture !== 'off' || awaitingWords) return;
+  pressed = true;
+  // Asked again when the answer was no. The dictation app is often started AFTER
+  // this page, and a page that decided once at load would keep taking the slow
+  // road for the rest of the day.
+  if (!speech.warm){
+    try{
+      const h = await api('/api/health');
+      if (h && h.speech){
+        speech.warm = !!h.speech.warm;
+        speech.handsOver = !!h.speech.handsOver;
+        speech.setup = h.speech.setup || '';
+      }
+    }catch(e){ /* the fleet poll owns saying the bridge is unreachable */ }
+    // Let go while that was in flight, so there is nothing left to start.
+    if (!pressed){ setStage('idle'); return; }
+  }
+  if (speech.warm){
+    capture = 'engine';
+    setLive(true); setStage('listening');
+    showHeard('');
+    typedEl.focus();
+    let r = null;
+    try { r = await api('/api/listen',{method:'POST',body:JSON.stringify({action:'toggle'})}); }
+    catch(e){ r = null; }
+    if (r && r.ok){
+      speech.handsOver = !!r.handsOver;
+      speech.setup = r.setup || '';
+      // Let go before the request landed: the release that should have stopped
+      // this has already been and gone, so stop it here instead.
+      if (!pressed) await talkStop();
+      return;
+    }
+    // Refused, and it says why rather than falling silent. Recording here still
+    // works, so the button is not a dead end - it is just the slow way.
+    capture = 'off'; setLive(false);
+    if (!pressed){ setStage('idle'); return; }
+    await recordHere((r && r.error) || 'your dictation app did not answer');
+    return;
+  }
+  await recordHere('');
+}
+
+async function talkStop(){
+  pressed = false;
+  if (capture === 'engine'){
+    capture = 'off';
+    setLive(false); setStage('hearing');
+    try { await api('/api/listen',{method:'POST',body:JSON.stringify({action:'toggle'})}); }
+    catch(e){ /* the words may still arrive; the wait below reports either way */ }
+    waitForWords();
+    return;
+  }
+  if (capture === 'here'){
+    // Released before the microphone finished opening - which is most of a
+    // second the first time, because that is when the browser asks. Recorded as
+    // a cancellation for recordHere to act on, rather than ignored: ignoring it
+    // left the microphone open with nothing able to close it.
+    if (!listening) return;
+    capture = 'off'; await micOff();
+  }
+}
+
+function stopWaiting(){
+  awaitingWords = false;
+  if (wordsTimer){ clearInterval(wordsTimer); wordsTimer = null; }
+  if (typedSettle){ clearTimeout(typedSettle); typedSettle = null; }
+  typedEl.removeEventListener('input', onTypedWhileWaiting);
+}
+
+// The fallback channel: an app that has not been told to hand the words over
+// types them instead, and the message box is where they land. It arrives as one
+// burst, so a short quiet spell after the last keystroke is the end of it.
+function onTypedWhileWaiting(){
+  if (typedSettle) clearTimeout(typedSettle);
+  typedSettle = setTimeout(()=>{
+    const said = typedEl.value.trim();
+    if (!said) return;
+    typedEl.value = ''; sendBtn.disabled = true;
+    wordsArrived(said);
+  }, 700);
+}
+
+function waitForWords(){
+  awaitingWords = true;
+  wordsStarted = Date.now();
+  typedEl.addEventListener('input', onTypedWhileWaiting);
+  // Polled fast, because this is the wait the captain is actually sitting
+  // through. It reads one line of state, not the fleet, so asking often is
+  // cheap; the fleet keeps its own cadence.
+  wordsTimer = setInterval(async ()=>{
+    // staleToken() has already said something more useful and more specific.
+    if (staleShown){ stopWaiting(); return; }
+    if (Date.now() - wordsStarted > WORDS_WAIT_MS){
+      stopWaiting();
+      sayTrouble('The words did not arrive',
+        speech.handsOver
+          ? 'Your dictation app did not send anything back. Say it again, or type it.'
+          : ('Your dictation app did not hand the words over. ' + (speech.setup || '')));
+      focusMessage();
+      return;
+    }
+    try{
+      const r = await api('/api/heard');
+      if (r && r.ok && r.text){ stopWaiting(); wordsArrived(r.text); }
+    }catch(e){ /* the fleet poll owns "the bridge is unreachable"; do not double up */ }
+  }, 400);
+}
+
+// ONE OWNER for a dictated line, whichever way it came in: the hook, the typing
+// fallback, or the fleet poll picking up a phrase dictated with the captain's own
+// key while this page never asked for it.
+function wordsArrived(said){
+  stopWaiting();
+  showHeard(said);
+  respond(said);
+}
+
+// The slow way, kept for a machine with nothing warm to use: record here and
+// send the clip. Fifteen seconds beats refusing to listen.
+async function recordHere(reason){
   if(listening) return;
+  capture='here';
   try{
     if(!actx){
       actx=new (window.AudioContext||window.webkitAudioContext)();
@@ -648,29 +974,24 @@ async function micOn(){
       window.__fmSrc.connect(ana); data=new Uint8Array(ana.frequencyBinCount);
     }
     if(actx.state==='suspended') await actx.resume();
+    if(!pressed){ capture='off'; setLive(false); setStage('idle'); return; }
     collectPcm(window.__fmSrc);
     listening=true;
-    talk.classList.add('live'); talk.setAttribute('aria-pressed','true');
-    dockLine.classList.add('live');
-    coreSub.textContent='Receiving'; coreState.textContent='Listening';
-    dockHint.textContent='Release to send';
-    heard.textContent=''; heard.classList.add('interim');
+    setLive(true); setStage('listening');
+    showHeard(reason ? (reason + ', so this is the slow way round.') : '', true);
     // No browser recognizer. The local model does the transcription now, so the
     // audio never leaves this machine and the accuracy is the model's rather
     // than the browser's.
     pump();
   }catch(e){
-    heard.classList.remove('interim');
-    heard.textContent='No microphone, or permission refused. Typing still works.';
-    coreSub.textContent='Mic unavailable';
+    capture='off'; setLive(false);
+    sayTrouble('No microphone','No microphone, or permission refused. Typing still works.');
   }
 }
 async function micOff(){
   if(!listening) return;
   listening=false; target=0; bins.fill(0);
-  talk.classList.remove('live'); talk.setAttribute('aria-pressed','false');
-  dockLine.classList.remove('live');
-  dockHint.textContent='Hold the microphone, or hold Space';
+  setLive(false);
 
   // Detached before the buffer is read, so a late callback cannot append to a
   // clip that has already been sent.
@@ -680,13 +1001,12 @@ async function micOff(){
 
   const wav = buildWav(chunks, rate, 16000);
   if (!wav || wav.size < 2000) {
-    coreState.textContent='Core active'; coreSub.textContent='Standing by';
-    heard.textContent='That was too short to hear.';
+    sayTrouble('Too short to hear','That was too short to hear.');
     focusMessage(); return;
   }
 
-  coreState.textContent='Transcribing'; coreSub.textContent='Working';
-  heard.textContent='…';
+  setStage('hearing');
+  showHeard('');
   try{
     const r = await fetch('/api/transcribe', {
       method:'POST',
@@ -695,15 +1015,13 @@ async function micOff(){
     });
     if (r.status === 401) { staleToken(); return; }
     const j = await r.json();
-    if (j.ok && j.text) { heard.textContent = j.text; respond(j.text); }
+    if (j.ok && j.text) { wordsArrived(j.text); }
     else {
-      coreState.textContent='Core active'; coreSub.textContent='Standing by';
-      heard.textContent = j.error || 'Nothing was heard.';
+      sayTrouble('Nothing was heard', j.error || 'Nothing was heard in that.');
       focusMessage();
     }
   }catch(e){
-    coreState.textContent='Core active'; coreSub.textContent='Standing by';
-    heard.textContent='Could not reach the bridge to transcribe that.';
+    sayTrouble('Could not turn that into words','The bridge could not be reached to turn that into words.');
     focusMessage();
   }
 }
@@ -717,29 +1035,10 @@ function pump(){
   requestAnimationFrame(pump);
 }
 
-const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-let rec=null;
-function recOn(){
-  if(!SR) return;
-  rec=new SR(); rec.continuous=true; rec.interimResults=true; rec.lang='en-US';
-  rec.onresult=e=>{
-    let txt='';
-    for(let i=e.resultIndex;i<e.results.length;i++) txt+=e.results[i][0].transcript;
-    heard.textContent=txt;
-    heard.classList.toggle('interim',!e.results[e.results.length-1].isFinal);
-  };
-  rec.onerror=()=>{};
-  try{rec.start()}catch(_){}
-}
-function recOff(){
-  if(!rec) return;
-  try{rec.stop()}catch(_){}
-  const said=heard.textContent.trim();
-  heard.classList.remove('interim');
-  if(said) respond(said);
-  else heard.textContent='Hold the button, or press and hold Space';
-  rec=null;
-}
+/* The browser's own recognizer used to live here and is gone rather than kept as
+   a fallback. It shipped audio to a third party, which is the exact question
+   decision `web-ui-voice-listening` exists to settle, and nothing called it any
+   more - both dictation paths now run on this machine. */
 function speak(txt){
   if(!window.speechSynthesis) return;
   const u=new SpeechSynthesisUtterance(txt);
@@ -778,7 +1077,7 @@ function staleToken(){
   if (dot) dot.classList.add('amber');
   const bs = document.getElementById('bridgeState');
   if (bs) bs.textContent = 'Reopen needed';
-  heard.textContent = 'This tab is from an earlier run. Reopen the page from the terminal link, or start it again.';
+  showHeard('This tab is from an earlier run. Reopen the page from the link firstmate printed, or start it again.');
 }
 
 let awaitingReply = false;
@@ -788,45 +1087,43 @@ async function respond(said){
   // while the first answer was still coming.
   awaitingReply = true;
   logAdd(said,'hi');
-  coreState.textContent='Thinking';
-  coreSub.textContent='Working';
-  heard.textContent='…';
+  setStage('thinking');
   try{
     const res = await api('/api/say',{method:'POST',body:JSON.stringify({text:said})});
     if(res.ok && res.reply){
-      coreState.textContent='Speaking';
-      heard.textContent=res.reply;
+      setStage('answered');
+      // showHeard puts a long answer at ITS first line rather than wherever the
+      // last one was left scrolled to, and marks it when there is more below.
+      showHeard(res.reply);
       logAdd(res.reply,'');
       speak(res.reply);
-      setTimeout(()=>{coreState.textContent='Core active';coreSub.textContent='Standing by';},2200);
+      setTimeout(()=>{ if(!awaitingReply && !awaitingWords) setStage('idle'); },2200);
     } else {
-      coreState.textContent='Core active';
-      coreSub.textContent='Not connected';
-      heard.textContent = res.error || 'No answer came back.';
-      logAdd(res.error||'no answer','warn');
+      sayTrouble('No answer came back', res.error || 'No answer came back.');
     }
     // Focus returns so the next dictation lands here without a click.
     focusMessage();
   }catch(e){
-    coreState.textContent='Core active';
-    coreSub.textContent='Bridge unreachable';
-    heard.textContent='The bridge is not reachable. Is fm-bridge.ps1 still running?';
-    logAdd('bridge unreachable','warn');
+    sayTrouble('Not reachable','The bridge is not reachable. Is it still running?');
   }
   awaitingReply = false;
   refreshFleet();
 }
 
-talk.addEventListener('mousedown',micOn);
-talk.addEventListener('touchstart',e=>{e.preventDefault();micOn()},{passive:false});
-['mouseup','mouseleave','touchend'].forEach(ev=>talk.addEventListener(ev,micOff));
+// talkStop is reached by three events on purpose and fires once: the capture
+// state is cleared before the stop is sent, so a mouseup followed by a mouseleave
+// cannot send a second toggle - which, to an app whose flag is a toggle, would
+// start recording again.
+talk.addEventListener('mousedown',talkStart);
+talk.addEventListener('touchstart',e=>{e.preventDefault();talkStart()},{passive:false});
+['mouseup','mouseleave','touchend'].forEach(ev=>talk.addEventListener(ev,talkStop));
 addEventListener('keydown',e=>{
-  if(e.code==='Space'&&!e.repeat&&document.activeElement.id!=='typed'){e.preventDefault();micOn()}});
-addEventListener('keyup',e=>{if(e.code==='Space')micOff()});
+  if(e.code==='Space'&&!e.repeat&&document.activeElement.id!=='typed'){e.preventDefault();talkStart()}});
+addEventListener('keyup',e=>{if(e.code==='Space')talkStop()});
 function sendTyped(){
   const v = typedEl.value.trim();
   if(!v) return;
-  heard.textContent = v;
+  showHeard(v);
   typedEl.value = '';
   sendBtn.disabled = true;
   respond(v);
@@ -943,10 +1240,7 @@ async function refreshFleet(){
     // A line dictated straight into the speech engine, transcribed by its warm
     // model and handed over here. Asked exactly as if it had been typed, so the
     // captain can dictate from anywhere and watch the answer appear.
-    if(f.dictated && !awaitingReply){
-      heard.textContent = f.dictated;
-      respond(f.dictated);
-    }
+    if(f.dictated && !awaitingReply){ wordsArrived(f.dictated); }
     paintTasks(f.tasks||[], f.house||[]);
     paintDecisions(f.decisions||[]);
     // The bridge has been sending this all along and the page threw it away, so
@@ -1000,6 +1294,14 @@ let fleetTimer = null;
 async function bootCheck(){
   try{
     const h = await api('/api/health');
+    // What dictation can do on THIS machine, asked once rather than discovered
+    // by trying the fast path and guessing why it failed.
+    if(h.speech){
+      speech.warm = !!h.speech.warm;
+      speech.handsOver = !!h.speech.handsOver;
+      speech.setup = h.speech.setup || '';
+      if(!speech.warm && h.speech.installed){ dockHint.textContent = 'Hold the microphone, or hold Space'; }
+    }
     if(h.configured){ startFleet(); return; }
     setupPath.value = h.suggested || '';
     firstRun.style.display = 'grid';
@@ -1010,7 +1312,7 @@ async function bootCheck(){
     // the generic message must not overwrite it. "Not reachable" sends the
     // captain to restart a bridge that is running perfectly well.
     if (staleShown) return;
-    heard.textContent='The bridge is not reachable. Start it with: firstmate';
+    showHeard('Firstmate is not reachable from this page. Start it again.');
   }
 }
 
@@ -1036,7 +1338,7 @@ async function doSetup(){
     if(r.ok){
       startFleet();
       const line = 'Workspace ready at ' + r.home + '.';
-      heard.textContent = line;
+      showHeard(line);
       logAdd(line,'hi');
       speak(line);
     } else {
@@ -1098,18 +1400,18 @@ document.getElementById('whoBtn').addEventListener('click', async ()=>{
     if(r.ok){
       document.getElementById('whoName').textContent = r.captain.toUpperCase();
       const line = 'From now on I will call you ' + r.captain + '.';
-      heard.textContent = line;
+      showHeard(line);
       logAdd(line,'hi');
       speak(line);
     } else {
-      heard.textContent = r.error || 'That name will not work.';
+      showHeard(r.error || 'That name will not work.');
     }
-  }catch(e){ heard.textContent='Could not reach the bridge to change the name.'; }
+  }catch(e){ showHeard('Firstmate could not be reached to change that.'); }
 });
 
 if(!TOKEN){
-  heard.textContent='Opened without a key. Start it with bin/fm-bridge.ps1 so the page can reach firstmate.';
-  logAdd('no token in the URL — the page cannot reach the engine','warn');
+  sayTrouble('Opened without a key',
+    'This page was opened without its key, so it cannot reach firstmate. Open the link firstmate printed when it started.');
 }
 
 setInterval(()=>{

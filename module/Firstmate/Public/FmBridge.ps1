@@ -113,7 +113,7 @@ function Send-FmBridgeTurn {
     )
 
     if ($null -eq $Session -or $Session.Process.HasExited) {
-        return [pscustomobject]@{ Ok = $false; Reply = ''; Error = 'the firstmate session is not running' }
+        return [pscustomobject]@{ Ok = $false; Reply = ''; Error = 'firstmate is not running here, so nothing is listening' }
     }
 
     # NO pre-drain. The obvious guard - Peek() the stream and discard whatever is
@@ -141,7 +141,7 @@ function Send-FmBridgeTurn {
         $Session.Process.StandardInput.WriteLine($json)
         $Session.Process.StandardInput.Flush()
     } catch {
-        return [pscustomobject]@{ Ok = $false; Reply = ''; Error = "could not reach the session: $($_.Exception.Message)" }
+        return [pscustomobject]@{ Ok = $false; Reply = ''; Error = "could not reach firstmate: $($_.Exception.Message)" }
     }
 
     $deadline = [datetime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -216,12 +216,12 @@ function Send-FmBridgeTurn {
     if (-not $resynced) {
         return [pscustomobject]@{
             Ok = $false; Reply = ''
-            Error = 'the session lost sync and was not answered; restart the bridge'
+            Error = 'firstmate lost its place in the conversation and did not answer; start it again'
             Desynced = $true
         }
     }
     if ($partial) {
-        return [pscustomobject]@{ Ok = $true; Reply = $partial; Error = 'the turn was still going when the wait ran out' }
+        return [pscustomobject]@{ Ok = $true; Reply = $partial; Error = 'the answer was still coming when the wait ran out' }
     }
     [pscustomobject]@{ Ok = $false; Reply = ''; Error = 'no answer within the wait' }
 }
@@ -414,6 +414,172 @@ function Get-FmSpeechEngine {
     ''
 }
 
+function Get-FmSpeechEngineStatus {
+    <#
+        .SYNOPSIS
+        What the local speech engine can do for us right now: installed,
+        running, and willing to hand its words over.
+
+        .DESCRIPTION
+        WHY THIS IS SEPARATE FROM Get-FmSpeechEngine. Installed and USABLE are
+        different facts, and the gap between them is the entire cost of
+        dictation. Measured on the captain's laptop, three runs of one 5.35s
+        clip through `--transcribe-file`:
+
+            run 1  wall 19.31s   model load 14802ms   transcribe 3.31s
+            run 2  wall 15.00s   model load 10910ms   transcribe 3.02s
+            run 3  wall 14.80s   model load 10852ms   transcribe 2.97s
+
+        Every one of those loads a model the engine's OWN running instance
+        already holds - and only that instance can transcribe with it. Isolated
+        in one process that loads once and transcribes the same clip three times:
+        load 8686ms against transcribe 3009ms, 2635ms, 2495ms. The load is the
+        whole difference, and a warm model does not pay it.
+
+        So the fast path is not a better one-shot; it is to stop making one, let
+        the running instance do the work, and receive the words afterwards.
+
+        Three answers, kept apart because the caller acts differently on each:
+
+        - Installed: there is an engine on this machine at all.
+        - Running: an instance is UP, which is what makes a warm model
+          reachable. Nothing here starts one - see Invoke-FmSpeechCapture.
+        - HandsOver: that instance is set to hand the words to firstmate when
+          it finishes, rather than typing them wherever the cursor happens to
+          be. This READS the captain's own setting and never writes it;
+          `bin/fm-dictate.ps1` states the one step they change by hand.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        # The engine's settings file. A parameter so a test can supply one,
+        # defaulted to where the installed engine actually keeps it.
+        [string]$SettingsPath = (Join-Path $env:APPDATA 'com.pais.handy\settings_store.json'),
+        # The file the captain points the engine at. Named by the caller that
+        # knows where this checkout is, so the instruction below can be acted on
+        # rather than merely understood.
+        [string]$HookPath = ''
+    )
+
+    $engine = Get-FmSpeechEngine
+    if (-not $engine) {
+        return [pscustomobject]@{
+            Installed = $false; EnginePath = ''; Running = $false; HandsOver = $false
+            Detail    = 'no dictation app is installed on this machine'
+            Setup     = ''
+        }
+    }
+
+    # Matched on the engine's own file name rather than a literal, so an engine
+    # found on PATH under another name is still recognised as running.
+    $procName = [System.IO.Path]::GetFileNameWithoutExtension($engine)
+    $running = [bool]@(Get-Process -Name $procName -ErrorAction SilentlyContinue).Count
+
+    $handsOver = $false
+    if (Test-Path -LiteralPath $SettingsPath -PathType Leaf) {
+        try {
+            $store = [System.IO.File]::ReadAllText($SettingsPath) | ConvertFrom-Json
+            $method = [string](Get-FmJsonValue -InputObject $store -Path 'settings.paste_method')
+            $hookFile = [string](Get-FmJsonValue -InputObject $store -Path 'settings.external_script_path')
+            # Both halves, because either one alone does nothing: the method
+            # chooses the hook and the path says what it runs.
+            $handsOver = ($method -eq 'external_script') -and ($hookFile -match 'fm-dictate')
+        } catch {
+            # An unreadable settings file is reported as not wired, never as
+            # wired: the caller uses this to decide whether to promise the
+            # captain their words will arrive.
+            Write-Debug "could not read the speech engine's settings: $($_.Exception.Message)"
+        }
+    }
+
+    $detail =
+    if (-not $running) { 'your dictation app is not running, so its model is not loaded' }
+    elseif ($handsOver) { 'your dictation app is running and hands what it hears straight to firstmate' }
+    else { 'your dictation app is running and types what it hears wherever the cursor is' }
+
+    $setup = ''
+    if (-not $handsOver) {
+        $setup = 'In your dictation app''s settings, set the paste method to "external script"'
+        if ($HookPath) { $setup += " and point it at $HookPath" }
+        $setup += '.'
+    }
+
+    [pscustomobject]@{
+        Installed  = $true
+        EnginePath = $engine
+        Running    = $running
+        HandsOver  = $handsOver
+        Detail     = $detail
+        Setup      = $setup
+    }
+}
+
+function Invoke-FmSpeechCapture {
+    <#
+        .SYNOPSIS
+        Ask the RUNNING speech engine to start, stop or drop a capture.
+
+        .DESCRIPTION
+        This is the whole fast path. The engine's own CLI sends the request to
+        the instance that is already up, which records with the model it already
+        holds. Measured from its log: 176ms from the flag to a live microphone,
+        and when a load IS needed the instance starts it as recording begins -
+        so it runs while the captain is still speaking instead of after they
+        stop. `--transcribe-file` can only do the opposite.
+
+        IT REFUSES RATHER THAN STARTING AN INSTANCE. Running the engine binary
+        when nothing is up launches the whole app and loads a second copy of the
+        model, which is the 10.8s-to-14.8s cost this function exists to avoid;
+        answering "not now" is the honest result.
+
+        TOGGLE IS THE ENGINE'S OWN SHAPE. One flag starts and stops, so the
+        CALLER owns which edge it is on - a stray second stop would begin a new
+        recording. `Cancel` drops a capture without transcribing it.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [ValidateSet('Toggle', 'Cancel')][string]$Action = 'Toggle',
+        [int]$TimeoutSeconds = 5
+    )
+
+    $status = Get-FmSpeechEngineStatus
+    if (-not $status.Installed -or -not $status.Running) {
+        return [pscustomobject]@{ Ok = $false; Action = $Action; Error = $status.Detail }
+    }
+
+    $flag = if ($Action -eq 'Cancel') { '--cancel' } else { '--toggle-transcription' }
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $status.EnginePath
+    $psi.ArgumentList.Add($flag)
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+
+    try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $proc.Kill($true) } catch { Write-Debug 'the request process had already gone' }
+            return [pscustomobject]@{ Ok = $false; Action = $Action
+                Error = 'your dictation app did not answer in time'
+            }
+        }
+        if ($proc.ExitCode -ne 0) {
+            $why = ($proc.StandardError.ReadToEnd()).Trim()
+            if (-not $why) { $why = "it stopped with code $($proc.ExitCode)" }
+            return [pscustomobject]@{ Ok = $false; Action = $Action; Error = $why }
+        }
+    } catch {
+        return [pscustomobject]@{ Ok = $false; Action = $Action
+            Error = "could not reach your dictation app: $($_.Exception.Message)"
+        }
+    }
+
+    [pscustomobject]@{ Ok = $true; Action = $Action; Error = '' }
+}
+
 function Convert-FmSpeechToText {
     <#
         .SYNOPSIS
@@ -423,6 +589,14 @@ function Convert-FmSpeechToText {
         Returns the transcript, or an empty string with a reason. It never
         throws: this sits on the path between the captain speaking and firstmate
         answering, and a thrown error there would lose what they said.
+
+        THIS IS THE SLOW PATH AND IT IS KEPT ON PURPOSE. A one-shot engine
+        process loads the model from cold every single time - 10.8s to 14.8s in
+        front of 3.0s of transcription, measured three times on one clip - so
+        the bridge reaches for Invoke-FmSpeechCapture first and only records a
+        WAV itself when no engine instance is running to record instead. On a
+        machine with nothing warm to use, fifteen seconds beats refusing to
+        listen.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -433,7 +607,7 @@ function Convert-FmSpeechToText {
 
     $engine = Get-FmSpeechEngine
     if (-not $engine) {
-        return [pscustomobject]@{ Ok = $false; Text = ''; Error = 'no local speech engine is installed' }
+        return [pscustomobject]@{ Ok = $false; Text = ''; Error = 'no dictation app is installed on this machine' }
     }
     if (-not (Test-Path -LiteralPath $WavPath -PathType Leaf)) {
         return [pscustomobject]@{ Ok = $false; Text = ''; Error = 'the recording did not arrive' }
@@ -454,10 +628,10 @@ function Convert-FmSpeechToText {
         $null = $proc.StandardError.ReadToEnd()
         if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
             try { $proc.Kill($true) } catch { Write-Debug 'engine already gone' }
-            return [pscustomobject]@{ Ok = $false; Text = ''; Error = 'the speech engine did not finish in time' }
+            return [pscustomobject]@{ Ok = $false; Text = ''; Error = 'your dictation app did not finish in time' }
         }
     } catch {
-        return [pscustomobject]@{ Ok = $false; Text = ''; Error = "could not run the speech engine: $($_.Exception.Message)" }
+        return [pscustomobject]@{ Ok = $false; Text = ''; Error = "could not run your dictation app: $($_.Exception.Message)" }
     }
 
     # The engine prints a diagnostics line and then `text: <transcript>`. Only

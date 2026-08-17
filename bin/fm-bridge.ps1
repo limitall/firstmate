@@ -28,7 +28,9 @@ ROUTES
     GET  /              the UI
     GET  /api/fleet     work under way, open decisions, recent activity
     POST /api/say       one captain turn -> firstmate's reply
-    GET  /api/health    is the engine up
+    GET  /api/health    is the engine up, and what dictation can do right now
+    POST /api/listen    start, stop or drop a capture on the WARM speech engine
+    GET  /api/heard     a dictated line waiting to be asked, if one has landed
 
 SECURITY. Binds 127.0.0.1 only, so nothing off this machine can reach it. There
 IS a write path now - /api/say drives a session that can change code - so it is
@@ -64,6 +66,10 @@ $ErrorActionPreference = 'Stop'
 
 $root  = Split-Path -Parent $PSScriptRoot
 $uiDir = Join-Path $root 'ui'
+# The file the captain points their dictation app at. Named from here because
+# this is the process that knows where this checkout is; the module owns what the
+# setting MEANS and bin/fm-dictate.ps1 owns why it is a .cmd.
+$hookPath = Join-Path $PSScriptRoot 'fm-dictate.cmd'
 
 # FIRST RUN. When this machine has never been told where the workspace goes, the
 # bridge starts WITHOUT an engine and the browser asks. The captain should not
@@ -147,6 +153,14 @@ $launchUrl = "$prefix#t=$token"
 $tokenFile = Get-FmBridgeTokenPath
 try { [System.IO.File]::WriteAllText($tokenFile, $token, [System.Text.UTF8Encoding]::new($false)) }
 catch { [Console]::Error.WriteLine('fm-bridge: could not leave a key for the dictation hook') }
+
+# Said once, on the way up, because it is the difference between dictation that
+# takes three seconds and dictation that takes fifteen - and the one step is the
+# captain's to make. Printed rather than applied: this process does not touch
+# another application's settings.
+$speechAtStart = Get-FmSpeechEngineStatus -HookPath $hookPath
+[Console]::Out.WriteLine("fm-bridge: dictation - $($speechAtStart.Detail)")
+if ($speechAtStart.Setup) { [Console]::Out.WriteLine("fm-bridge: to make it faster - $($speechAtStart.Setup)") }
 if (-not $NoLaunch) { Start-Process $launchUrl }
 
 $types = @{ '.html'='text/html; charset=utf-8'; '.css'='text/css; charset=utf-8'
@@ -190,6 +204,7 @@ try {
                 }
 
                 if ($path -eq '/api/health') {
+                    $speech = Get-FmSpeechEngineStatus -HookPath $hookPath
                     Write-Json -Response $res -Object @{
                         ok         = $true
                         configured = $configured
@@ -198,7 +213,65 @@ try {
                         captain    = $captainName
                         suggested  = (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'firstmate')
                         session    = $(if ($session) { $session.SessionId } else { '' })
+                        # What dictation can do on this machine right now. The
+                        # page chooses its path from this rather than trying the
+                        # fast one and guessing why it failed.
+                        speech     = @{
+                            installed = $speech.Installed
+                            warm      = ($speech.Installed -and $speech.Running)
+                            handsOver = $speech.HandsOver
+                            detail    = $speech.Detail
+                            setup     = $speech.Setup
+                        }
                     }
+                    continue
+                }
+
+                if ($path -eq '/api/listen') {
+                    # THE FAST PATH. The engine instance the captain already has
+                    # running holds the model resident, so this asks IT to record
+                    # and transcribe instead of loading a second copy per phrase.
+                    # module/Firstmate/Public/FmBridge.ps1 carries the numbers.
+                    if ($req.HttpMethod -ne 'POST') {
+                        Write-Json -Response $res -Object @{ error = 'POST only' } -Status 405
+                        continue
+                    }
+                    $listenBody = ''
+                    $lr = [System.IO.StreamReader]::new($req.InputStream, [System.Text.Encoding]::UTF8)
+                    try { $listenBody = $lr.ReadToEnd() } finally { $lr.Dispose() }
+                    $wantAction = 'Toggle'
+                    try {
+                        $asked = [string]($listenBody | ConvertFrom-Json).action
+                        if ($asked -eq 'cancel') { $wantAction = 'Cancel' }
+                    } catch { $wantAction = 'Toggle' }
+
+                    # A capture that is starting clears any line left over from a
+                    # previous one, so an old transcript can never be picked up
+                    # as the answer to what is being said now.
+                    if ($wantAction -eq 'Toggle') { $script:pendingDictation = '' }
+
+                    $capture = Invoke-FmSpeechCapture -Action $wantAction
+                    $state = Get-FmSpeechEngineStatus -HookPath $hookPath
+                    if (-not $capture.Ok) {
+                        [Console]::Error.WriteLine("fm-bridge: dictation not started - $($capture.Error)")
+                    }
+                    Write-Json -Response $res -Object @{
+                        ok        = $capture.Ok
+                        error     = $capture.Error
+                        handsOver = $state.HandsOver
+                        setup     = $state.Setup
+                    }
+                    continue
+                }
+
+                if ($path -eq '/api/heard') {
+                    # Polled only while a capture is in flight, so it stays as
+                    # cheap as it looks - the fleet read is the expensive one and
+                    # it keeps its own four-second-ish cadence. Handed over once,
+                    # same rule as /api/fleet.
+                    $waiting = $script:pendingDictation
+                    $script:pendingDictation = ''
+                    Write-Json -Response $res -Object @{ ok = $true; text = $waiting }
                     continue
                 }
 
@@ -335,6 +408,12 @@ try {
                     # leaves the machine. The page sends a 16 kHz mono WAV it
                     # built itself, which is exactly what the local engine wants -
                     # no conversion step and no ffmpeg dependency.
+                    #
+                    # THE FALLBACK, not the path taken when anything better is
+                    # available: a one-shot engine process loads the model from
+                    # cold, which measured 10.8s to 14.8s on top of 3.0s of
+                    # transcription. The page asks /api/listen first and only
+                    # records a WAV itself when no engine instance is running.
                     if ($req.HttpMethod -ne 'POST') {
                         Write-Json -Response $res -Object @{ error = 'POST only' } -Status 405
                         continue
@@ -379,7 +458,7 @@ try {
                     if ($null -eq $session -or $session.Process.HasExited) {
                         Write-Json -Response $res -Object @{
                             ok = $false
-                            error = 'the firstmate session is not running, so nothing is listening'
+                            error = 'firstmate is not running here, so nothing is listening'
                         } -Status 503
                         continue
                     }

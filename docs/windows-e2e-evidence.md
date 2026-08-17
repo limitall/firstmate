@@ -4450,3 +4450,237 @@ during this task and this path picked it up with no change.
   of this task that rests on targeted re-runs rather than on a clean whole run, so
   whoever lands this should take that run themselves - it is now expected to pass,
   since the only real failure any attempt found has an owner and a fix.
+
+## 30. The bridge screen: a reply that destroyed the panel, dictation that took fifteen seconds, and a screen that said nothing - `PROVEN (Windows 11)`
+
+Task: three faults the captain hit on `ui/bridge.html` and the dictation path,
+on `fm/ui-voice` over `df6494d`.
+Run in a disposable worktree on the captain's Windows 11 laptop on 2026-08-17,
+against a real Chrome (`chrome-devtools-axi`) and the captain's own installed
+dictation app.
+
+The screen was driven rather than reasoned about: a bridge on a scratch
+workspace, a real browser, and `getBoundingClientRect` for every claim about
+where something sits.
+Nothing was changed on the captain's machine - the one setting the fast path
+wants is named below and deliberately left for them.
+
+### 30.1 The long reply, measured before and after
+
+The defect reproduces only in the real sequence, which is why reading the CSS
+found nothing: the radar is sized in pixels when the page loads, an arriving
+reply is not a resize event, and nothing ever told the canvas its row had
+shrunk.
+An 85-word reply at 1366x768, before:
+
+```
+radar canvas   top 18px, bottom 511px   (493px tall, in a 408px row)
+radar wrap     top 78px, bottom 486px   -> 59px out through the top of the panel
+CORE ACTIVE    top 521px, bottom 546px  -> inside the transcript, which starts at 521px
+overlapLabel   true
+```
+
+The caption was drawn over the reply's first line and the radar over the header.
+The same page, same window, same reply, after:
+
+```
+radar canvas   top 92px, bottom 417px   (325px tall)   radarInsideWrap true
+CORE ACTIVE    top 427px, bottom 452px                 labelInsideWrap  true
+transcript     top 521px, bottom 657px                 overlapLabel     false
+```
+
+A 220-word reply then stops growing and scrolls instead: box height 220px,
+content 349px, `overflow-y:auto`, radar still 241px and inside its row, and the
+last line fades rather than being cut in half.
+
+Checked at seven window sizes with the same reply, all with `overlapLabel false`,
+`radarInsideWrap true`, everything inside the panel, and no horizontal document
+overflow:
+
+```
+1024x700  radar 238px      1290x720  radar 258px      1300x800  radar 303px
+1366x768  radar 325px      1600x1000 radar 538px      1920x1080 radar 618px
+1366x600  radar 113px  (the floor is small on purpose - a floor the row cannot keep IS the defect)
+```
+
+One measuring note, because it cost a wrong reading here first: a synchronous
+measurement in the same task as the text change sees the box BEFORE the radar has
+been told, since a `ResizeObserver` callback runs after layout rather than during
+it.
+It runs before paint, so no frame is ever painted at the old size - every number
+above is read a frame later, which is what the captain actually sees.
+
+A long unbroken string was tested deliberately, since that is the case
+`max-width` alone does not answer:
+
+```
+before   document scrollWidth 1790 against a 1366 window   (424px of the page pushed off-screen)
+after    document scrollWidth 1366 against a 1366 window   transcript scrollWidth == clientWidth == 513
+```
+
+The fixture was a 481-character line carrying a PR URL with a long anchor, a
+Windows path, and 180 unbroken characters.
+
+### 30.2 Dictation: the fifteen seconds, and where they went
+
+The slow path is `Convert-FmSpeechToText`, which starts a one-shot engine
+process per utterance.
+Three runs of one 5.35s clip, wall clock from PowerShell beside the engine's own
+log:
+
+```
+run 1  wall 19.31s   model load 14802ms   transcribe 3.31s   unload 613ms
+run 2  wall 15.00s   model load 10910ms   transcribe 3.02s   unload 642ms
+run 3  wall 14.80s   model load 10852ms   transcribe 2.97s   unload 601ms
+```
+
+Every run transcribed the clip correctly, and every run spent three quarters of
+its time loading a model the captain's own running instance already holds.
+
+The fast path asks that instance instead.
+Measured, from its log:
+
+```
+Invoke-FmSpeechCapture -Action Toggle   ->  exit 0 in 172ms
+                                            "TranscribeAction::start called for binding: transcribe"
+                                            "Microphone stream initialized in 125.454ms"
+                                            "Starting to load model" AT RECORDING START, not after it
+Invoke-FmSpeechCapture -Action Cancel   ->  exit 0 in 190ms, "returned to idle state"
+```
+
+So the transcription itself is the only cost left.
+Isolated exactly, one process that loads once and transcribes the same clip three
+times (`--transcribe-file <clip> --repeat 3 --json`):
+
+```
+load_ms 8686        transcribe_ms [3009, 2635, 2495]     rtf 2.14
+```
+
+That is the whole shape of the fix in one line: the 8.7s-to-14.8s load is what a
+warm model does not pay, and 2.5s-3.0s is what is left.
+The engine's own resident runs agree - 5.55s for 17.52s of audio, no load line
+before it - and when a load IS needed it now overlaps the captain speaking rather
+than following it.
+Against 14.8s-19.3s per phrase, that is item 2.
+
+The return channel was proven end to end, page included:
+
+```
+bin/fm-dictate.cmd -Port 7455  <- "how many tasks are under way and is anything waiting on me" on stdin
+  -> exit 0, printed nothing (delivered rather than echoed back)
+  -> bridge console: heard: how many tasks are under way and is anything waiting on me
+  -> the page picked it up on its 400ms wait, showed it, logged it, and asked it
+  -> with no session behind it: "No answer came back" / "firstmate is not running here, so nothing is listening"
+```
+
+### 30.3 The one manual step, and why it is a `.cmd`
+
+The engine spawns its hook as a process, and Windows cannot execute a `.ps1`
+that way.
+Measured, both directions:
+
+```
+Process.Start(bin/fm-dictate.ps1)  ->  "The specified executable is not a valid application for this OS platform"
+Process.Start(bin/fm-dictate.cmd)  ->  exit 0, transcript on stdin      -> delivered
+Process.Start(bin/fm-dictate.cmd)  ->  exit 0, transcript as argv[1]    -> delivered
+```
+
+Hence `bin/fm-dictate.cmd`, one line in front of the script.
+The step the captain makes by hand, in their dictation app's own settings:
+
+```
+paste method          external script
+external script path  <checkout>\bin\fm-dictate.cmd
+```
+
+Their current setting is `paste_method: direct` with no script path, read and
+reported rather than changed.
+The bridge prints both the state and the step on startup, and the page says the
+same thing when the words do not arrive.
+
+### 30.4 The screen now says what it is doing
+
+Driven with the real engine from the page, at 1366x768:
+
+```
+mic pressed   strip "LISTENING 3s", red pip and red dock, caption LISTENING / SPEAK NOW,
+              hint "RELEASE WHEN YOU HAVE FINISHED"   (a real capture: the engine opened the microphone)
+released      strip "TURNING THAT INTO WORDS 4s", cyan pip, caption WORKING
+words land    strip ANSWERED, the line in the transcript and in Activity
+nothing came  strip "THE WORDS DID NOT ARRIVE", amber pip, and the reason plus the one
+              setting to change, in the transcript AND in Activity
+```
+
+The counter is elapsed seconds, not a percentage: nothing on this path knows a
+percentage, and inventing one would be the same lie as the silence it replaces.
+
+### 30.5 What was NOT proven here
+
+- **The engine calling the hook itself.** Proving it means setting
+  `paste_method` on the captain's machine, which this task was told not to do.
+  What IS proven: the hook runs when spawned exactly as the engine spawns one,
+  it delivers to the bridge, and the page acts on what arrives - the last inch is
+  the setting.
+- **A warm transcription of real speech in one pass.** The microphone cannot be
+  spoken into from here, and the engine mutes output while recording, so a clip
+  cannot be played into it either - so the warm numbers above are the engine's
+  own log lines, and the cold numbers are wall clock on this machine.
+- **The page has no Pester coverage and deliberately gets none.** A test that
+  read the stylesheet would assert implementation source rather than behaviour,
+  which `CONTRIBUTING.md` forbids - so the browser run above is the evidence,
+  and `tests/FmBridge.Tests.ps1` covers the two new speech seams and their
+  refusals.
+- **A live capture is not exercised by the suite.** `Invoke-FmSpeechCapture`
+  with a running engine opens the captain's microphone; only its refusals are
+  tested.
+- **One footprint this testing DID leave**, recorded rather than tidied away:
+  driving a real capture from the page opens the captain's microphone, and the
+  engine saves each recording into its own history. One 3-second clip of a silent
+  room (`handy-1786980118.wav`, 20:51 local) is in there, and the app's own
+  five-item retention evicted its oldest entry to fit it. Every capture in this
+  work was dropped with `--cancel` before transcription, so nothing was typed
+  anywhere and no transcript of it exists; the file is left for the app to prune
+  rather than reached into another application's store to delete.
+- **Also observed, not fixed:** `ui/bridge.html` carries two NUL bytes (offsets
+  54043 and 54052, inside the Activity dedup key), which is why `rg` and `grep`
+  skip the file entirely and report it as binary - it predates this task, it does
+  not affect the page, and `git diff` still renders it as text.
+
+### 30.6 The checks, on this branch, after the change
+
+On this branch rebased onto `df6494d`, which is what will be merged:
+
+```
+Invoke-Pester -Path ./tests
+  44 files   Tests Passed: 1992, Failed: 0, Skipped: 25   (1326.33s)
+
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+  0 findings   (46s)
+```
+
+`main` moved twice while this was being measured, so the same change was measured
+green on all three bases it sat on: 1932 passed over `7aa1af5`, 1934 over
+`87f71e0`, and 1992 here - the growth is other lanes' tests arriving, not this
+one's.
+Each of those was one whole-directory process, and the 44 files were additionally
+run as smaller `Invoke-Pester` processes on the last two bases, agreeing exactly
+with the whole run each time.
+`tests/FmBridge.Tests.ps1` is 42 of those tests and passes against
+`df6494d`'s new dangling-preposition rule in `ConvertTo-FmBridgePlainText`, which
+lands in the same function this branch touches.
+
+Three things about those runs should be said rather than left to be inferred.
+They were made in a checkout whose `CLAUDE.md` and `.claude/skills` had already
+been materialized, so they are not measuring an unrepaired Windows clone: a first
+run in a fresh worktree fails the instruction-surface tests until
+`tests/FmInstall.Tests.ps1` repairs them, and those repairs are local to the host
+and are deliberately not committed.
+The suite must also be run in a process whose PARENT is still alive -
+`Get-FmParentProcessId -Id $PID` legitimately finds nothing when the launcher has
+exited, so a detached run whose launcher returned immediately fails one identity
+test for a reason that is not a defect.
+And a split into smaller processes is weaker evidence than one whole-directory
+run, not stronger - Pester shares one process per run, so a split hides exactly
+the cross-file environment leak `CONTRIBUTING.md` warns about.
+It is recorded because it corroborates the single run, never as a substitute for
+it.

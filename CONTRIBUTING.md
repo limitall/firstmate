@@ -329,6 +329,29 @@ directory with no instructions and no hooks, and nothing said so.
   a checkout that has every command and no identity is reported, not discovered
   by the captain noticing the tone.
 
+## Seeing the browser screen
+
+`ui/bridge.html` is the one surface here with no Pester coverage, and that is on
+purpose: a test that read its stylesheet would assert implementation source,
+which the rules above forbid. So a change to it is proven by running it, and the
+evidence goes in `docs/windows-e2e-evidence.md`.
+
+- Serve it with `bin/fm-bridge.ps1 -NoEngine -NoLaunch -Port <n>` against a
+  scratch workspace (a directory with `state/`, plus `.fm-workspace` and
+  `.fm-home` in the checkout - both gitignored), and drive it with
+  `chrome-devtools-axi`. The page needs the token the script prints, in the URL
+  fragment.
+- **Measure, do not look.** Claims about what overlaps what come from
+  `getBoundingClientRect` and `document.documentElement.scrollWidth`, at several
+  window sizes. A screenshot shows the defect; the numbers are what pin it.
+- **Changing only the URL fragment does not reload the page.** A new run mints a
+  new token, so re-opening `.../#t=<new>` in the same tab leaves the OLD page
+  running and quietly measures the code you just replaced. Reload explicitly.
+- The layout hazard this file keeps hitting is the same one twice: a child that
+  will not shrink. `min-width:0` plus `max-width` for a flex row, `minmax(0,1fr)`
+  for a grid track, and a canvas sized in pixels must be re-measured from its
+  container - an arriving reply is not a resize event.
+
 ## Module foundation
 
 `docs/foundation.md` is the contract every area builds on: home resolution
