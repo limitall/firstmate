@@ -394,6 +394,17 @@ evidence goes in `docs/windows-e2e-evidence.md`.
   path before stopping anything. A `pwsh` whose command line merely CONTAINS
   `fm-bridge` is usually an agent's own tool call, which is the same false
   positive `Get-FmBridgeHouseWork` documents - and killing it kills yourself.
+- **The session is not confined to the scratch workspace either.** A `.meta`
+  copied in to make the fleet look real names the captain's own checkout, so a
+  session started without `-NoEngine` can read it and reach the scripts there.
+  That is a standing hazard on a home whose voice is switched on, which is what
+  `FM_VOICE_OFF` guards - it is NOT what made the noise in the incidents above.
+  That was diagnosed as the session by the lane it happened to, and measured as
+  the page by the next one; `docs/windows-e2e-evidence.md` 35.5 records the
+  correction. Gate the page, and still do not start the engine.
+- **The reply path needs no session to verify.** `Test-FmBridgeGrounded` and
+  `Protect-FmBridgeReply` take a reply and a reading and answer whether the one
+  can be substantiated by the other, so a fabrication is provable at a prompt.
 - **Measure, do not look.** Claims about what overlaps what come from
   `getBoundingClientRect` and `document.documentElement.scrollWidth`, at several
   window sizes. A screenshot shows the defect; the numbers are what pin it.
@@ -428,6 +439,25 @@ evidence goes in `docs/windows-e2e-evidence.md`.
   so the session could close it and came back as "the carrier question". Job
   names belong there because the panel prints them; handles and ids do not.
 
+- **A number on that screen comes from something real, or it does not appear.**
+  Blank, or the words "not measured", is the correct outcome when no source
+  exists; a plausible figure that was never measured is the defect this screen
+  has already shipped twice. The progress rows set the standard - a job that
+  declared no percentage shows "not said" against a hatched bar, never a zero.
+  Wiring a placeholder to something approximate so it moves convincingly is the
+  same defect wearing a better disguise.
+- **The reading grounds the answer; the gate is what makes it true.** Handing the
+  session the panel's own reading stops it answering from a narrower view, but it
+  cannot stop it answering from a WIDER one: the screen named "the payment
+  tests", a phrase this repository carries only as placeholder text, gave it a
+  percentage and recommended halting real work for it. So every reply is checked
+  against that same reading before it ships. `FmBridgeGround.ps1` states the
+  contract in full; the short version is that a name may come only from the
+  records or from the captain's own words, and a name the records do not carry
+  may be mentioned but never given a state, a percentage, or a recommended
+  action. If you find yourself adding a rule to the prompt to stop the screen
+  saying something, the check belongs in the courier instead - a prompt is a
+  request, exactly as the translator note above says.
 The whole suite takes about three quarters of an hour here, and it must run from
 a parent that OUTLIVES it. An orphaned run fails
 `Get-FmParentProcessId.finds a parent for this process` and nothing else, because

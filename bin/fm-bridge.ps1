@@ -27,7 +27,10 @@ implementation of the operating contract.
 ROUTES
     GET  /              the UI
     GET  /api/fleet     work under way, open decisions, recent activity
-    POST /api/say       one captain turn -> firstmate's reply, read and spoken
+    POST /api/say       one captain turn -> firstmate's reply, read and spoken,
+                        both gated against the records and returned with the
+                        snapshot they were gated against, so the reply, the voice
+                        and the panel are one read
     GET  /api/health    is the engine up, what dictation can do, how it listens
     POST /api/listen    start, stop or drop a capture on the WARM speech engine
     POST /api/listen-mode  hold to talk, or leave the microphone open
@@ -418,6 +421,9 @@ try {
                         # `tasks` so the screen never counts housekeeping as work
                         # on the captain's code.
                         house     = @($fleet.House)
+                        # Real, or the panel says it is not measured. Nothing on this
+                        # surface ships a figure that was never measured.
+                        capacity  = $fleet.Capacity
                         at        = $fleet.At
                     }
                     continue
@@ -559,6 +565,7 @@ try {
                     # so the reply cannot describe a fleet the panel is not
                     # showing. New-FmBridgeTurnPrompt carries the whole argument.
                     $fleet = Get-FmBridgeFleet -HomePath $home_
+                    $ground = Get-FmBridgeGround -Fleet $fleet
                     $canAct = Test-FmBridgeSessionCanAct -HomePath $home_ -SessionProcessId $session.Process.Id
                     # A name change set since the last turn rides along with this
                     # one, so it takes effect in THIS conversation rather than at
@@ -588,6 +595,47 @@ try {
                     $reply = Remove-FmBridgeRepetition -Text $split.Written
                     $replyError = ConvertTo-FmBridgePlainText -Text $turn.Error -Prose -Keep $names
 
+                    # AND THE SECOND GUARANTEE, on what the first one produced.
+                    # The translator settles the WORDS; this settles the FACTS,
+                    # and the screen needed both: it once named work that does
+                    # not exist, in faultless plain English, and recommended
+                    # halting real work to make room for it.
+                    #
+                    # LAST, deliberately. It reads the exact text that is about
+                    # to ship rather than a draft two rewrites earlier, and both
+                    # sides of the comparison are then in one vocabulary, since
+                    # the reading's own notes came through this same translator.
+                    # The replacement needs no translating for the same reason -
+                    # it is built out of those already-translated fields.
+                    # BOTH CHANNELS, because there are two now. The spoken line
+                    # is a SECOND sentence the session wrote, not a rendering of
+                    # the written one, so gating only what is on screen would let
+                    # the invention out through the speaker while the screen was
+                    # clean - the same fabrication, arriving where the captain
+                    # cannot re-read it and check.
+                    $spoken = $split.Spoken
+                    if ($turn.Ok -and $reply) {
+                        $checked = Protect-FmBridgeReply -Text $reply -Ground $ground -Asked $text
+                        if (-not $checked.Grounded) {
+                            [Console]::Error.WriteLine('fm-bridge: reply held back - ' +
+                                ($checked.Unsubstantiated -join '; '))
+                            # Cleared rather than replaced: the page speaks the
+                            # written reply when there is no spoken line, so the
+                            # captain hears the answer that went to the screen
+                            # instead of a summary of one that did not.
+                            $spoken = ''
+                        }
+                        $reply = $checked.Reply
+                    }
+                    if ($spoken) {
+                        $checkedSpoken = Protect-FmBridgeReply -Text $spoken -Ground $ground -Asked $text
+                        if (-not $checkedSpoken.Grounded) {
+                            [Console]::Error.WriteLine('fm-bridge: spoken line held back - ' +
+                                ($checkedSpoken.Unsubstantiated -join '; '))
+                            $spoken = ''
+                        }
+                    }
+
                     # NOTHING IS APPENDED HERE, and the deleted append is worth a
                     # line because it caused the defect it was meant to prevent.
                     # A sentence about what this screen cannot do used to be
@@ -598,12 +646,23 @@ try {
                     # The route now travels in the prompt instead, and the reply
                     # the session writes is the whole reply.
                     if ($reply) { [Console]::Out.WriteLine("firstmate: $reply") }
-                    if ($split.Spoken) { [Console]::Out.WriteLine("  spoken: $($split.Spoken)") }
+                    if ($spoken) { [Console]::Out.WriteLine("  spoken: $spoken") }
                     Write-Json -Response $res -Object @{
-                        ok     = $turn.Ok
-                        reply  = $reply
-                        spoken = $split.Spoken
-                        error  = $replyError
+                        ok        = $turn.Ok
+                        reply     = $reply
+                        spoken    = $spoken
+                        error     = $replyError
+                        # The snapshot this answer was gated against, so the page
+                        # repaints from the very same read rather than polling for
+                        # a later one that may have moved on.
+                        tasks     = @($fleet.Tasks)
+                        decisions = @($fleet.Decisions)
+                        activity  = @($fleet.Activity)
+                        house     = @($fleet.House)
+                        # Real, or the panel says it is not measured. Nothing on
+                        # this surface ships a figure that was never measured.
+                        capacity  = $fleet.Capacity
+                        at        = $fleet.At
                     }
                     continue
                 }
@@ -651,4 +710,3 @@ try {
     if ($session) { Stop-FmBridgeSession -Session $session -Confirm:$false }
     [Console]::Out.WriteLine('fm-bridge: stopped')
 }
-

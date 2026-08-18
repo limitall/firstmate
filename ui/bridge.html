@@ -147,6 +147,12 @@ body::before{
     text-transform:uppercase;margin-bottom:3px}
 .stat .v{font-size:16px;color:#DFF6FF;letter-spacing:.06em}
 .stat .v small{font-size:9px;color:var(--txt-dim);margin-left:3px;letter-spacing:.14em}
+/* "not measured" is a state, not a value, so it is set like the progress rows'
+   own "not said" rather than styled to look like a reading. */
+.stat .v.none{font-size:8.5px;letter-spacing:.18em;color:var(--txt-faint);
+    text-transform:uppercase}
+/* One window measured and not the other must not leave a half-width panel. */
+.stats:has(.stat:only-child){grid-template-columns:1fr}
 
 /* ---------------- log ---------------- */
 .logline{display:flex;gap:10px;padding:3px 0;font-size:10px;line-height:1.6}
@@ -158,6 +164,11 @@ body::before{
    the two are never read as one voice. */
 .logline.work span{color:var(--txt)}
 .logline.work time{color:var(--cy);opacity:.7}
+/* A line whose time nothing recorded. Held to the same width as a real stamp so
+   the column stays a column, and dimmed so it never reads as one. */
+.logline time.unknown{color:var(--txt-faint);opacity:.45;
+    width:calc(8ch + .12em);text-align:center}
+.logline.work time.unknown{color:var(--txt-faint)}
 
 /* ---------------- decisions ---------------- */
 .dec{padding-bottom:12px;margin-bottom:12px;border-bottom:1px solid var(--edge-soft)}
@@ -501,8 +512,12 @@ canvas#wave{display:block;height:26px;opacity:.9;width:100%;max-width:620px;flex
     <div class="readouts">
       <div class="ro"><div class="k">Bridge</div>
         <div class="v"><span class="dot" id="dot"></span><span id="bridgeState">Online</span></div></div>
-      <div class="ro"><div class="k">Under way</div><div class="v" id="roTasks">4</div></div>
-      <div class="ro"><div class="k">Waiting on you</div><div class="v" id="roDec">4</div></div>
+      <!-- Both start empty, not at 4. A count typed into the markup is a
+           measurement of nothing, and it was on screen for the whole first
+           second of every page load - long enough to be read, and read as
+           fact. They fill in from the records or they stay blank. -->
+      <div class="ro"><div class="k">Under way</div><div class="v" id="roTasks">&mdash;</div></div>
+      <div class="ro"><div class="k">Waiting on you</div><div class="v" id="roDec">&mdash;</div></div>
       <div class="ro"><div class="k">Local time</div><div class="v" id="clock">--:--:--</div></div>
     </div>
     <button class="who" id="whoBtn" type="button" title="Click to change what firstmate calls you">
@@ -516,16 +531,23 @@ canvas#wave{display:block;height:26px;opacity:.9;width:100%;max-width:620px;flex
     <!-- ---------- LEFT ---------- -->
     <div class="col left">
       <section class="pnl" style="flex:none">
-        <div class="ph"><h2>Capacity</h2><span class="tag">This week</span></div>
-        <div class="stats">
-          <div class="stat"><div class="k">Week left</div><div class="v">79<small>%</small></div></div>
-          <div class="stat"><div class="k">Session</div><div class="v">82<small>%</small></div></div>
-        </div>
-        <div class="met">
-          <div class="lbl"><span>Suite</span><b>1730 pass</b></div>
-          <div class="track"><i style="width:100%"></i></div>
-          <p class="sub">0 failed &middot; 25 not run</p>
-        </div>
+        <div class="ph"><h2>Capacity</h2><span class="tag">Measured</span></div>
+        <!-- EVERY FIGURE THAT USED TO BE HERE WAS TYPED IN. "Week left 79%",
+             "Session 82%" and "Suite 1730 pass" read the same in every
+             screenshot the captain sent, hours apart, while the real numbers
+             moved - and the assistant then read them off this panel and
+             repeated them back as measurements.
+
+             The two capacity windows now come from `quota-axi`, which reports
+             the provider's real five-hour and seven-day windows, and they say
+             "not measured" when that read fails rather than showing anything.
+
+             The suite figures are GONE rather than wired, because nothing on
+             this machine keeps a durable record of the last run: the only way
+             to know is to run the suite, and a panel must not do that. An
+             absent number is honest; an approximate one made to look measured
+             is the defect this whole screen is being fixed for. -->
+        <div class="stats" id="capacity"></div>
       </section>
 
       <section class="pnl">
@@ -1630,6 +1652,12 @@ async function respond(said){
   setStage('thinking');
   try{
     const res = await api('/api/say',{method:'POST',body:JSON.stringify({text:said})});
+    // BEFORE the answer is shown, not after. The reply was gated against the
+    // snapshot it arrives with, so painting that snapshot first means the panel
+    // the captain glances at is already showing the numbers the sentence beside
+    // it was checked against. Repainting afterwards from a fresh poll is what
+    // would let the two drift apart in the moment the captain is comparing them.
+    if(res.tasks){ paintFleet(res); }
     if(res.ok && res.reply){
       setStage('answered');
       // showHeard puts a long answer at ITS first line rather than wherever the
@@ -1781,13 +1809,79 @@ function paintLog(){
   }
   LOG.forEach(([tm,msg,cls])=>{
     const l=document.createElement('div'); l.className='logline '+(cls||'');
-    l.innerHTML='<time>['+esc(tm)+']</time><span>'+esc(msg)+'</span>';
+    // An empty bracket pair is worse than no bracket: it reads as a clock that
+    // failed rather than as a line whose time was never recorded. A worker's
+    // record carries one write time and not one per line, so most of these
+    // genuinely have no time and say so by not claiming one.
+    l.innerHTML=(tm?'<time>['+esc(tm)+']</time>':'<time class="unknown">&mdash;</time>')+
+      '<span>'+esc(msg)+'</span>';
     logEl.appendChild(l);
   });
 }
 function logAdd(msg,cls){
   LOG.unshift([new Date().toTimeString().slice(0,8),msg,cls||'']);
   if(LOG.length>40) LOG.pop();
+  paintLog();
+}
+
+/* The same standard the progress rows already set: a figure that was measured,
+   or the words that say it was not. Never a number standing in for one. */
+function paintCapacity(c){
+  const el=document.getElementById('capacity');
+  if(!el) return;
+  const windows = (c && c.Measured && c.Windows) ? c.Windows : [];
+  if(!windows.length){
+    el.innerHTML='<div class="stat"><div class="k">Allowance</div>'+
+      '<div class="v none">not measured</div></div>';
+    return;
+  }
+  el.innerHTML = windows.map(w=>'<div class="stat"><div class="k">'+esc(w.Name)+'</div>'+
+    '<div class="v">'+esc(String(w.Percent))+'<small>%</small></div></div>').join('');
+}
+
+/* PAINTED FROM A SNAPSHOT, NOT FROM A FETCH, and that split is load-bearing.
+   An answer comes back gated against one read of the durable records and
+   CARRIES that read with it, so the panel beside it is repainted from the very
+   same numbers rather than from whatever a later poll happens to find. The
+   reply and the panel can then disagree only if the records changed - and they
+   did not, because there was one read. */
+function paintFleet(f){
+  paintCapacity(f.capacity);
+  paintTasks(f.tasks||[], f.house||[]);
+  paintDecisions(f.decisions||[]);
+  // The bridge has been sending this all along and the page threw it away, so
+  // Activity sat empty while there was plenty to show. Seeded once from the
+  // durable records; everything after arrives through logAdd as it happens.
+  // MERGED EVERY POLL, NOT SEEDED ONCE. This used to fill the panel on the
+  // first fetch and never touch it again, so a worker's progress after that
+  // moment never appeared: Activity was live only for the captain's own
+  // messages, and stone dead for the work it is named after. Anything already
+  // shown is skipped by its own identity, so a repeated fetch of the same
+  // events cannot duplicate a line.
+  if(f.activity && f.activity.length){
+    const fresh=[];
+    f.activity.forEach(a=>{
+      // Identified by Order, not by the time. Only the newest line of a
+      // record HAS a time now - the earlier ones happened at moments nothing
+      // here can know - so a time is no longer an identity, and using it as
+      // one would collapse several untimed lines into a single row.
+      // The fallback's two separators used to be literal NUL bytes, which is
+      // why every text tool called this page binary and refused to search it.
+      const key=a.Order||(a.Task+' '+a.At+' '+a.Text);
+      if(SEEN.has(key)) return;
+      SEEN.add(key);
+      fresh.push([a.At||'', a.Task.replace(/[-_]+/g,' ')+': '+a.Text, 'work']);
+    });
+    // The server sends newest first and LOG is newest-first too, so the batch
+    // is replayed oldest-first to land in the right order at the top.
+    fresh.reverse().forEach(entry=>{
+      LOG.unshift(entry);
+      if(LOG.length>40) LOG.pop();
+    });
+  }
+  // Painted unconditionally. Guarding this on there being something to show
+  // is what left the panel blank rather than saying so: with no activity the
+  // seed was skipped, and skipping the seed skipped the paint with it.
   paintLog();
 }
 
@@ -1806,36 +1900,7 @@ async function refreshFleet(){
     // model and handed over here. Asked exactly as if it had been typed, so the
     // captain can dictate from anywhere and watch the answer appear.
     if(f.dictated && !awaitingReply){ wordsArrived(f.dictated); }
-    paintTasks(f.tasks||[], f.house||[]);
-    paintDecisions(f.decisions||[]);
-    // The bridge has been sending this all along and the page threw it away, so
-    // Activity sat empty while there was plenty to show. Seeded once from the
-    // durable records; everything after arrives through logAdd as it happens.
-    // MERGED EVERY POLL, NOT SEEDED ONCE. This used to fill the panel on the
-    // first fetch and never touch it again, so a worker's progress after that
-    // moment never appeared: Activity was live only for the captain's own
-    // messages, and stone dead for the work it is named after. Anything already
-    // shown is skipped by its own identity, so a repeated fetch of the same
-    // events cannot duplicate a line.
-    if(f.activity && f.activity.length){
-      const fresh=[];
-      f.activity.forEach(a=>{
-        const key=a.Task+' '+a.At+' '+a.Text;
-        if(SEEN.has(key)) return;
-        SEEN.add(key);
-        fresh.push([a.At, a.Task.replace(/[-_]+/g,' ')+': '+a.Text, 'work']);
-      });
-      // The server sends newest first and LOG is newest-first too, so the batch
-      // is replayed oldest-first to land in the right order at the top.
-      fresh.reverse().forEach(entry=>{
-        LOG.unshift(entry);
-        if(LOG.length>40) LOG.pop();
-      });
-    }
-    // Painted unconditionally. Guarding this on there being something to show
-    // is what left the panel blank rather than saying so: with no activity the
-    // seed was skipped, and skipping the seed skipped the paint with it.
-    paintLog();
+    paintFleet(f);
     const dot=document.getElementById('dot');
     const bs=document.getElementById('bridgeState');
     // "Ready", not "Listening". The dock now says in plain words whether the

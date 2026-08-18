@@ -189,6 +189,95 @@ Describe 'Get-FmBridgeHouseWork' {
     }
 }
 
+Describe 'a kept name, however the screen spells it' {
+
+    # THE PANEL AND THE RECORD SPELL IT DIFFERENTLY, and only one spelling was
+    # protected. `-Keep` masked the id literally, so `lock-identity` survived and
+    # "Lock identity" - which is exactly what the panel prints, hyphens replaced
+    # by spaces - did not: it reached the captain as "the controls identity"
+    # beside a row reading LOCK IDENTITY. That is the disagreement this rule
+    # exists to end, surviving in the spelling the panel itself uses.
+    It 'keeps a name the panel is showing, in every spelling of it' -ForEach @(
+        @{ Said = 'Lock identity is at 75%.' }
+        @{ Said = 'lock-identity is at 75%.' }
+        @{ Said = 'LOCK IDENTITY is at 75%.' }
+        @{ Said = 'lock_identity is at 75%.' }
+    ) {
+        $out = ConvertTo-FmBridgePlainText -Text $Said -Prose -Keep @('lock-identity')
+        $out | Should -Not -Match '(?i)controls'
+        $out | Should -Match '(?i)lock[-_ ]identity'
+    }
+
+    # And the word on its own is still machinery, or the rule would launder every
+    # forbidden term that happens to appear inside some job's name.
+    It 'still translates the same word when it is not part of a name' {
+        ConvertTo-FmBridgePlainText -Text 'The lock is held by another process.' -Prose -Keep @('lock-identity') |
+            Should -Not -Match '(?i)\block\b'
+    }
+}
+
+Describe 'Get-FmBridgeCapacity' {
+
+    # "Week left 79%" and "Session 82%" were typed into the page and had read
+    # identically in every screenshot the captain sent, hours apart, while the
+    # real numbers moved. The rule they set afterwards is the whole of this
+    # Describe: a number either came from something real, or it does not appear.
+    It 'never gives a figure when nothing could measure one' {
+        Mock -CommandName Get-Command -MockWith { $null } -ModuleName Firstmate `
+            -ParameterFilter { $Name -eq 'quota-axi' }
+        $c = Get-FmBridgeCapacity -MaxAgeSeconds 0
+        $c.Measured | Should -BeFalse
+        @($c.Windows).Count | Should -Be 0
+        # Not "0%", not a last-known value, not an estimate. The words that say
+        # there is nothing to show.
+        $c.Detail | Should -Match '(?i)not measured'
+    }
+
+    # The listener serves one request at a time, so an unbounded read here would
+    # freeze the panel, the reply path and the dictation pickup together. A tool
+    # that never returns has to become "not measured", not a hung screen.
+    It 'says it did not measure rather than waiting forever' {
+        Mock -CommandName Invoke-FmChildProcess -ModuleName Firstmate -MockWith {
+            [pscustomobject]@{ Ok = $false; ExitCode = -1; StdOut = ''
+                StdErr = 'timed out'; Combined = ''; TimedOut = $true
+            }
+        }
+        $c = Get-FmBridgeCapacity -MaxAgeSeconds 0
+        $c.Measured | Should -BeFalse
+        @($c.Windows).Count | Should -Be 0
+        Should -Invoke Invoke-FmChildProcess -ModuleName Firstmate -Times 1 -Exactly
+    }
+
+    It 'says it did not measure rather than guessing when the tool will not run' {
+        # A real path that is not a quota tool, so the call fails the way a
+        # broken install fails rather than by the command being absent.
+        $fake = Join-Path ([IO.Path]::GetTempPath()) ('fm-no-quota-' + [guid]::NewGuid().ToString('N') + '.cmd')
+        Set-Content -LiteralPath $fake -Value '@echo not json at all' -NoNewline
+        try {
+            Mock -CommandName Get-Command -ModuleName Firstmate `
+                -ParameterFilter { $Name -eq 'quota-axi' } `
+                -MockWith { [pscustomobject]@{ Source = $fake } }
+            $c = Get-FmBridgeCapacity -MaxAgeSeconds 0
+            $c.Measured | Should -BeFalse
+            @($c.Windows).Count | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $fake -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Whatever it reports has to be usable as a reading: a name the panel can
+    # print and a whole number between nought and a hundred.
+    It 'reports a figure only in the form a reading takes' {
+        foreach ($w in @((Get-FmBridgeCapacity).Windows)) {
+            $w.Name | Should -Not -BeNullOrEmpty
+            $w.Name | Should -Not -Match '(?i)five_hour|seven_day|quota|axi'
+            $w.Percent | Should -BeOfType [int]
+            $w.Percent | Should -BeGreaterOrEqual 0
+            $w.Percent | Should -BeLessOrEqual 100
+        }
+    }
+}
+
 Describe 'Get-FmSpeechEngineStatus' {
 
     BeforeAll {
@@ -331,6 +420,71 @@ Describe 'Invoke-FmSpeechCapture' {
     It 'never says machinery to the captain when it refuses' {
         Mock -CommandName Get-FmSpeechEngine -MockWith { '' } -ModuleName Firstmate
         (Invoke-FmSpeechCapture).Error | Should -Not -Match '(?i)\.exe|\.ps1|handy|toggle-transcription|exit code'
+    }
+}
+
+Describe 'Get-FmBridgeFleet' {
+
+    BeforeAll {
+        $script:FleetHome = Join-Path ([IO.Path]::GetTempPath()) ("fm-fleet-" + [guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path (Join-Path $script:FleetHome 'state') -Force
+        $state = Join-Path $script:FleetHome 'state'
+        Set-Content -LiteralPath (Join-Path $state 'fire-drill.meta') -Value 'kind=ship'
+        Set-Content -LiteralPath (Join-Path $state 'fire-drill.status') -Value @(
+            'working: [10%] first thing'
+            'working: [40%] second thing'
+            'working: [70%] third thing'
+        )
+        Set-Content -LiteralPath (Join-Path $state 'no-figure.meta') -Value 'kind=ship'
+        Set-Content -LiteralPath (Join-Path $state 'no-figure.status') -Value 'working: getting on with it'
+    }
+
+    AfterAll { Remove-Item -LiteralPath $script:FleetHome -Recurse -Force -ErrorAction SilentlyContinue }
+
+    # THE RECORD HAS ONE WRITE TIME, NOT ONE PER LINE. Stamping all of the last
+    # four lines with the file's write time told the captain that four things
+    # happened at one moment; three of them happened at times nothing here can
+    # know. A borrowed timestamp is an invented measurement in the same way a
+    # borrowed percentage is.
+    It 'gives a time only to the line whose time it knows' {
+        $activity = @((Get-FmBridgeFleet -HomePath $script:FleetHome).Activity |
+                Where-Object { $_.Task -eq 'fire-drill' })
+        $activity.Count | Should -Be 3
+        @($activity | Where-Object { $_.At }).Count | Should -Be 1
+        # And it is the newest line that has it, not whichever one sorted first.
+        $activity[0].Text | Should -Match 'third thing'
+        $activity[0].At | Should -Match '^\d{2}:\d{2}:\d{2}$'
+    }
+
+    It 'still orders a line that has no time' {
+        $activity = @((Get-FmBridgeFleet -HomePath $script:FleetHome).Activity |
+                Where-Object { $_.Task -eq 'fire-drill' })
+        $activity[1].Text | Should -Match 'second thing'
+        $activity[2].Text | Should -Match 'first thing'
+    }
+
+    # Every line needs an identity of its own now that most of them share the
+    # empty string for a time, or the page folds them into one row.
+    It 'gives every line an identity that is not its time' {
+        $activity = @((Get-FmBridgeFleet -HomePath $script:FleetHome).Activity)
+        $orders = @($activity.Order)
+        @($orders | Select-Object -Unique).Count | Should -Be $orders.Count
+        foreach ($o in $orders) { $o | Should -Not -BeNullOrEmpty }
+    }
+
+    # The standard the captain named for every other figure on the screen: a
+    # task that declared no percentage reports null, never a plausible zero.
+    It 'reports no figure rather than a zero when none was claimed' {
+        $task = @((Get-FmBridgeFleet -HomePath $script:FleetHome).Tasks |
+                Where-Object { $_.Id -eq 'no-figure' })[0]
+        $task.Percent | Should -BeNullOrEmpty
+        $task.Percent | Should -Not -Be 0
+    }
+
+    It 'carries the capacity read alongside the work, measured or not' {
+        $c = (Get-FmBridgeFleet -HomePath $script:FleetHome).Capacity
+        $c | Should -Not -BeNullOrEmpty
+        $c.Measured | Should -BeOfType [bool]
     }
 }
 

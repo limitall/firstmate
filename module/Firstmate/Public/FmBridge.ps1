@@ -863,7 +863,18 @@ function ConvertTo-FmBridgePlainText {
     # The longest name first, so a job called `lock` cannot mask half of a job
     # called `lock-identity` and leave the rest to be translated.
     foreach ($name in (@($Keep | Where-Object { $_ }) | Sort-Object -Property Length -Descending)) {
-        foreach ($match in [regex]::Matches($whole, [regex]::Escape($name), 'IgnoreCase')) {
+        # HOWEVER THE NAME IS SPELT, because the two halves of the screen spell
+        # it differently: the record says `lock-identity`, the panel prints
+        # "LOCK IDENTITY" with the hyphens replaced, and the session writes
+        # whichever it likes. Matching the id literally protected only the first,
+        # so "Lock identity is at 75%" still reached the captain as "the controls
+        # identity is at 75%" beside a row reading LOCK IDENTITY - the same
+        # disagreement this rule exists to end, surviving in the spelling the
+        # panel itself uses.
+        $spelt = (@($name -split '[-_\s]+' | Where-Object { $_ } |
+                    ForEach-Object { [regex]::Escape($_) }) -join '[-_\s]+')
+        if (-not $spelt) { continue }
+        foreach ($match in [regex]::Matches($whole, "(?i)(?<![A-Za-z0-9])$spelt(?![A-Za-z0-9])")) {
             # The matched text, not the name as given: the session may have
             # written it in its own case and that is what the captain is reading.
             if (-not $preserved.Contains($match.Value)) { $preserved.Add($match.Value) }
@@ -1669,13 +1680,32 @@ function Get-FmBridgeFleet {
                         }
                     }
 
-                    foreach ($l in ($lines | Select-Object -Last 4)) {
-                        $plain = ConvertTo-FmBridgePlainText -Text ([string]$l) -Keep $id
+                    # ONLY THE NEWEST LINE HAS A KNOWN TIME. The record carries
+                    # no per-line timestamp; the file's write time is when the
+                    # LAST line landed and nothing else. Stamping all four with
+                    # it - which this did - told the captain that four things
+                    # happened at one moment, when three of them happened at
+                    # times nothing here can know. An earlier line therefore
+                    # carries no time rather than a borrowed one.
+                    $written = (Get-Item -LiteralPath $statusPath).LastWriteTime.ToString('HH:mm:ss')
+                    $recent = @($lines | Select-Object -Last 4)
+                    for ($i = 0; $i -lt $recent.Count; $i++) {
+                        # -Keep $id so the job's own name survives the
+                        # translation and the captain can match the line to the
+                        # row beside it.
+                        $plain = ConvertTo-FmBridgePlainText -Text ([string]$recent[$i]) -Keep $id
                         if (-not $plain) { continue }
                         $activity += [pscustomobject]@{
-                            Task = $id
-                            Text = $plain
-                            At   = (Get-Item -LiteralPath $statusPath).LastWriteTime.ToString('HH:mm:ss')
+                            Task  = $id
+                            Text  = $plain
+                            At    = $(if ($i -eq $recent.Count - 1) { $written } else { '' })
+                            # What the display cannot show but the ordering still
+                            # needs. A line with no time still has a place: last
+                            # write first, then newest line first inside that
+                            # task. Doubles as the page's identity for a line,
+                            # which can no longer be the time now that three
+                            # lines out of four have none.
+                            Order = '{0}{1:00}.{2}' -f $written, $i, $id
                         }
                     }
                 }
@@ -1693,8 +1723,9 @@ function Get-FmBridgeFleet {
     [pscustomobject]@{
         Tasks     = @($tasks | Sort-Object Id)
         Decisions = @($decisions)
-        Activity  = @($activity | Sort-Object At -Descending | Select-Object -First 24)
+        Activity  = @($activity | Sort-Object Order -Descending | Select-Object -First 24)
         House     = @(Get-FmBridgeHouseWork)
+        Capacity  = (Get-FmBridgeCapacity)
         At        = (Get-Date).ToString('HH:mm:ss')
     }
 }
@@ -1792,10 +1823,37 @@ function New-FmBridgeTurnPrompt {
         $lines.Add('waiting on the captain: nothing')
     }
 
+    # THE ALLOWANCE, ONLY WHEN IT WAS MEASURED. The panel prints these two, so a
+    # reply must be able to state them - and must not be able to state them when
+    # nothing measured them, which is the whole of the defect they came from.
+    $capacity = @()
+    if ($Fleet.PSObject.Properties['Capacity'] -and $Fleet.Capacity -and $Fleet.Capacity.Measured) {
+        $capacity = @($Fleet.Capacity.Windows)
+    }
+    if ($capacity.Count) {
+        $lines.Add('allowance left: ' +
+            (($capacity | ForEach-Object { "$($_.Name.ToLowerInvariant()) $($_.Percent)%" }) -join ', '))
+    } else {
+        $lines.Add('allowance left: not measured - give no figure for it')
+    }
+
     $lines.Add('')
     $lines.Add('You are the one voice of this screen. Answer from the reading above: never say nothing')
     $lines.Add('is under way when it lists work, and never give a count or a percentage that differs')
     $lines.Add('from it. If you have not looked yourself, the reading above is the answer.')
+    # AND NOTHING OUTSIDE IT EXISTS. Agreeing with the reading is not the same as
+    # being confined to it: the screen once named "the payment tests", a phrase
+    # that appears in this repository only as placeholder text in a doc and a
+    # fixture, gave it a percentage, and recommended halting real work to make
+    # room for it. Test-FmBridgeGrounded is the guarantee, exactly as the
+    # translator is the guarantee for the vocabulary; this is the request.
+    $lines.Add('Nothing outside this reading exists. A name you have read in a file, or remember from')
+    $lines.Add('somewhere else, is not work: if it is not listed above, say plainly that there is no')
+    $lines.Add('such work rather than reporting on it.')
+    # The addendum's rule, after the capacity figures on this screen turned out
+    # to be literals the session was reading off the page and repeating back.
+    $lines.Add('Give no figure of any kind that is not above - no test counts, no capacity, no timings.')
+    $lines.Add('A number read off the screen or out of a file is not a measurement.')
     # Observed in a headed browser: asked for plain sentences, the session
     # described the jobs by position - "one is at 75 percent, another at 25" -
     # which the captain then has to match to the panel by arithmetic. Agreeing
@@ -1832,6 +1890,117 @@ function New-FmBridgeTurnPrompt {
     $lines.Add($Text)
 
     $lines -join "`n"
+}
+
+function Get-FmBridgeCapacity {
+    <#
+        .SYNOPSIS
+        How much of the captain's provider allowance is left, measured.
+
+        .DESCRIPTION
+        THE PANEL USED TO SAY 79% AND 82%, AND HAD SAID SO SINCE IT WAS BUILT.
+        They were literals typed into the page: identical in every screenshot the
+        captain sent, hours apart, while the real numbers moved. Worse than
+        wrong - the assistant then read them off the screen and repeated them
+        back as measurements.
+
+        So this reads `quota-axi`, which is one of firstmate's own installed
+        tools and reports the provider's real five-hour and seven-day windows.
+        A figure appears only when that read succeeded.
+
+        NOT MEASURED IS AN ANSWER, and it is the one this gives whenever the tool
+        is absent, fails, or returns something it does not understand. The rule
+        the captain set is that a number either comes from something real or does
+        not appear at all, so there is no fallback figure here and no last-known
+        value dressed up as current.
+
+        WHY IT IS CACHED. The read costs about 2.7 seconds - measured - and the
+        page polls every two. Without a cache the panel would spend more time
+        waiting on this than on everything else together. The windows it reports
+        are five hours and seven days long, so a value a few minutes old is the
+        same value; the cache is short enough to stay true and long enough that
+        the stall is rare.
+
+        AND BOUNDED, because the listener serves one request at a time. A tool
+        that hung here would freeze the panel, the reply path and the dictation
+        pickup at once, and a screen that stops updating reads as "nothing is
+        happening" - which is the failure this area exists to end.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([int]$MaxAgeSeconds = 300)
+
+    # Declared before it is read, because Set-StrictMode makes an unset script
+    # variable an error rather than an empty one - and the first call is always
+    # the one that has never set it.
+    if (-not (Get-Variable -Name FmBridgeCapacityAt -Scope Script -ErrorAction SilentlyContinue)) {
+        $script:FmBridgeCapacityAt = [datetime]::MinValue
+        $script:FmBridgeCapacityCache = $null
+    }
+    if ($script:FmBridgeCapacityAt -gt [datetime]::MinValue -and $script:FmBridgeCapacityCache -and
+        ([datetime]::UtcNow - $script:FmBridgeCapacityAt).TotalSeconds -lt $MaxAgeSeconds) {
+        return $script:FmBridgeCapacityCache
+    }
+
+    $unmeasured = [pscustomobject]@{
+        Measured = $false
+        Detail   = 'not measured'
+        Windows  = @()
+    }
+
+    # FIRST MATCH ONLY. An npm global install leaves two entries on PATH here -
+    # `quota-axi.cmd` and the extensionless shell shim beside it - and taking the
+    # collection whole turns $quota.Source into two paths joined by a space,
+    # which is not a program. PATH order puts the .cmd first, which is the one
+    # Windows can actually run.
+    $quota = Get-Command quota-axi -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $quota) {
+        $script:FmBridgeCapacityCache = $unmeasured
+        $script:FmBridgeCapacityAt = [datetime]::UtcNow
+        return $unmeasured
+    }
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    try {
+        # BOUNDED, because this runs inside the request the whole screen is
+        # waiting on. The listener serves one request at a time, so a tool that
+        # hung would freeze the panel, the reply path and the dictation pickup
+        # together - and a screen that stops updating is read as "nothing is
+        # happening", which is the failure this whole area exists to end.
+        $ran = Invoke-FmChildProcess -FilePath $quota.Source -TimeoutSeconds 20 `
+            -ArgumentList @('--provider', 'claude', '--json')
+        if (-not $ran.Ok) { throw "quota read failed: $($ran.StdErr)" }
+        $data = $ran.StdOut | ConvertFrom-Json
+        foreach ($provider in @($data.providers)) {
+            foreach ($w in @($provider.windows)) {
+                # Only the two the panel has room for, and only by the id the
+                # tool guarantees - a label is display text and may be reworded.
+                $name = switch ([string]$w.id) {
+                    'five_hour' { 'Session' }
+                    'seven_day' { 'Week left' }
+                    default { '' }
+                }
+                if (-not $name) { continue }
+                if ($null -eq $w.percentRemaining) { continue }
+                $rows.Add([pscustomobject]@{ Name = $name; Percent = [int]$w.percentRemaining })
+            }
+        }
+    } catch {
+        # A tool that will not run or will not parse is a thing not measured, and
+        # that is what the panel is told. Never a guess, never the last figure.
+        Write-Debug "capacity not read: $($_.Exception.Message)"
+        $rows.Clear()
+    }
+
+    $result = if ($rows.Count) {
+        [pscustomobject]@{ Measured = $true; Detail = ''; Windows = $rows.ToArray() }
+    } else {
+        $unmeasured
+    }
+    $script:FmBridgeCapacityCache = $result
+    $script:FmBridgeCapacityAt = [datetime]::UtcNow
+    $result
 }
 
 function Get-FmBridgeHouseWork {
