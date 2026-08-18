@@ -8,7 +8,8 @@ Set-StrictMode -Version Latest
 # check ever looked.
 #
 # SCOPE, STATED HONESTLY. This covers the translation seam, the vocabulary
-# table, and the two speech-engine seams the fast dictation path is built on.
+# table, the reading the assistant answers from, the repetition guard, and the
+# two speech-engine seams the fast dictation path is built on.
 # The HTTP surface - the token guard, the Origin check, the turn resync - is
 # proven by hand against a live bridge and is NOT covered here; those need a
 # running listener and a live engine. Neither is the page's own layout: it is
@@ -16,6 +17,12 @@ Set-StrictMode -Version Latest
 # docs/windows-e2e-evidence.md, because a test that reads the stylesheet would
 # assert source bytes rather than behaviour. Those gaps are real and are
 # recorded rather than papered over.
+#
+# WHAT A TEST HERE CANNOT PROVE, and section 33 of that same evidence file says
+# so plainly: that the panel and the reply agree is a property of a live screen
+# with real work on it, not of a function. These tests pin the pieces - the
+# reading carries what the panel shows, the translator leaves no machinery
+# behind, a repeat is said once - and the browser run is what proves the screen.
 #
 # ONE THING IS DELIBERATELY NOT TESTED: a real capture. Invoke-FmSpeechCapture
 # with a live engine opens the captain's microphone, and a suite that does that
@@ -33,12 +40,24 @@ Describe 'ConvertTo-FmBridgePlainText' {
 
     # AGENTS.md section 9 forbids these reaching the captain. The list is the
     # contract; a word added there belongs here the same day.
+    #
+    # THE SECOND GROUP IS WHAT A SESSION SAYS ABOUT ITSELF, and it is here
+    # because all of it reached the captain in one reply: a process number, the
+    # controls, "read-only", three internal verbs, and their own local copy
+    # having unsaved edits.
+    #
+    # MATCHED ON WORD BOUNDARIES, not as substrings. "blocker" contains "lock"
+    # and is a captain noun section 9 explicitly keeps, so a substring test would
+    # forbid the plain English the same section requires.
     BeforeAll {
         $script:Banned = @(
             'worktree', 'checkout', 'crewmate', 'secondmate', 'teardown', 'harness',
             'herdr', 'treehouse', 'orca', 'cmux', 'watcher', 'heartbeat', 'stale',
             'needs-decision', 'ask-user', 'yolo', 'no-mistakes', 'local-only',
-            'direct-PR', 'wedged', 'backend', 'adapter', 'fail-closed', 'fails closed'
+            'direct-PR', 'wedged', 'backend', 'adapter', 'fail-closed', 'fails closed',
+            'lock', 'locks', 'read-only', 'pid', 'process id', 'uncommitted',
+            'dispatch', 'dispatched', 'dispatching', 'steer', 'steering',
+            'merge', 'merged', 'merging'
         )
     }
 
@@ -54,7 +73,7 @@ Describe 'ConvertTo-FmBridgePlainText' {
     ) {
         $out = ConvertTo-FmBridgePlainText -Text $Line
         foreach ($word in $script:Banned) {
-            $out | Should -Not -Match ([regex]::Escape($word)) -Because "section 9 forbids '$word' reaching the captain, and '$Line' produced '$out'"
+            $out | Should -Not -Match ('\b' + [regex]::Escape($word) + '\b') -Because "section 9 forbids '$word' reaching the captain, and '$Line' produced '$out'"
         }
     }
 
@@ -344,5 +363,557 @@ Describe 'Get-FmBridgeVocabulary' {
                 $rule.Plain | Should -Not -Match ([regex]::Escape($word)) -Because "'$($rule.Plain)' still carries '$word'"
             }
         }
+    }
+}
+
+Describe 'ConvertTo-FmBridgePlainText -Prose' {
+
+    # THE REPLY THAT PUT THIS FILE'S SECOND HALF HERE. Copied from the screen,
+    # beside a panel that was at that moment listing three jobs with live
+    # percentages. Every internal term in AGENTS.md section 9's list that a
+    # session reaches for when it describes its own limits is in these two
+    # sentences, and all of it reached the captain because the reply was the one
+    # surface that never went through the translator.
+    BeforeAll {
+        $script:Leak = @'
+Captain, nothing is under way - no active work, an empty queue, and no held or
+blocked items. This session opened read-only: another firstmate session (pid
+25876) holds the fleet lock, so I can't dispatch, steer, or merge from here.
+Your checkout has uncommitted changes.
+'@
+    }
+
+    It 'leaves no process number, no lock and no read-only on screen' {
+        $out = ConvertTo-FmBridgePlainText -Text $script:Leak -Prose
+        foreach ($word in @('read-only', 'lock', 'pid', '25876', 'dispatch', 'steer', 'merge', 'checkout', 'uncommitted')) {
+            $out | Should -Not -Match ('\b' + [regex]::Escape($word) + '\b') -Because "the captain saw '$word' and it produced '$out'"
+        }
+    }
+
+    # A translation that eats the answer is the failure the panel path already
+    # learned: the captain can ask what a word meant, but not what a blank box
+    # meant.
+    It 'still says something, rather than deleting the answer' {
+        (ConvertTo-FmBridgePlainText -Text $script:Leak -Prose).Length | Should -BeGreaterThan 60
+    }
+
+    # A reply is paragraphs, bullets and blank lines; a status line is one line
+    # with a label on it. Flattening the first into the second is what a single
+    # shared rule set would have done, so the shape is pinned.
+    It 'keeps the shape of an answer rather than flattening it to one line' {
+        $answer = @'
+Two things are running.
+
+- the sign-in fix, at 40%
+- the payment tests, at 10%
+
+Neither needs you yet.
+'@
+        $out = ConvertTo-FmBridgePlainText -Text $answer -Prose
+        @($out -split "`n").Count | Should -BeGreaterThan 4
+        $out | Should -Match '(?m)^- the sign-in fix'
+        $out | Should -Match '(?m)^$'
+    }
+
+    It 'keeps a nested bullet indented under its parent' {
+        $out = ConvertTo-FmBridgePlainText -Text "- the fix`n    - and its test" -Prose
+        $out | Should -Match '(?m)^    - and its test'
+    }
+
+    # The panel path is the one this seam already shipped, and a reply-shaped
+    # change must not move it a character.
+    It 'leaves the status-line path exactly as it was' -ForEach @(
+        @{ Line = 'done: PR ready in worktree fm/tg-build'; Want = 'PR ready in local copy' }
+        @{ Line = 'blocked: crewmate wedged, teardown refused'; Want = 'Worker stuck, cleanup refused' }
+    ) {
+        ConvertTo-FmBridgePlainText -Text $Line | Should -Be $Want
+    }
+
+    # An assistant quoting a worker's line back at the captain is the same leak
+    # by a longer route, so the known state words go in prose too - but only
+    # those. A sentence that merely ends a clause in a colon must survive.
+    It 'strips a quoted state label without eating an ordinary sentence' {
+        ConvertTo-FmBridgePlainText -Text 'blocked: the card provider is refusing' -Prose |
+            Should -Be 'the card provider is refusing'
+        ConvertTo-FmBridgePlainText -Text 'here is where it stands: two jobs are running' -Prose |
+            Should -Be 'here is where it stands: two jobs are running'
+    }
+
+    It 'never damages a link in an answer either' {
+        $out = ConvertTo-FmBridgePlainText -Text "It is ready to review:`nhttps://github.com/o/r/pull/3" -Prose
+        $out | Should -BeLike '*https://github.com/o/r/pull/3*'
+    }
+
+    It 'survives an empty answer without inventing text' -ForEach @(
+        @{ Line = '' }, @{ Line = '   ' }, @{ Line = "`n`n" }
+    ) {
+        ConvertTo-FmBridgePlainText -Text $Line -Prose | Should -Be ''
+    }
+}
+
+Describe 'Remove-FmBridgeRepetition' {
+
+    # THE EIGHT MESSAGES. One internal event re-fired while nothing could be done
+    # about it, the session was continued after each one, and every near-identical
+    # answer landed on the captain's screen. A screen that repeats itself while
+    # nothing changes trains them to stop reading it.
+    It 'says a repeated point once' {
+        $stack = @'
+Captain, the guard is firing again and nothing has changed since the last time.
+Captain, the guard is firing again and nothing has changed since last time.
+Captain, the guard is firing again, and nothing has changed since the last time.
+Captain the guard is firing again and nothing has changed since the last time
+'@
+        $out = Remove-FmBridgeRepetition -Text $stack
+        @($out -split "`n" | Where-Object { $_ }).Count | Should -Be 1
+        $out | Should -Match 'firing again'
+    }
+
+    # The cure must not be worse than the disease: two lines about the same task
+    # are not the same line, and cutting the second loses the captain real work.
+    It 'keeps two different lines about the same job' {
+        $out = Remove-FmBridgeRepetition -Text "The sign-in fix is at 40 percent.`nThe payment tests have not started."
+        @($out -split "`n" | Where-Object { $_ }).Count | Should -Be 2
+    }
+
+    It 'keeps a list whose items only share their shape' {
+        $list = "- the sign-in fix passed its checks`n- the payment tests passed their checks`n- the search work passed its checks"
+        @((Remove-FmBridgeRepetition -Text $list) -split "`n" | Where-Object { $_ }).Count | Should -Be 3
+    }
+
+    # Adjacency is what separates stammering from an argument that returns to a
+    # theme, so a repeat three paragraphs later is left alone unless it is word
+    # for word the same.
+    It 'leaves a developed answer alone' {
+        $answer = "Two jobs are running.`nThe first is the sign-in fix at 40 percent.`nThe second has not started.`nNeither of the two jobs needs you yet."
+        @((Remove-FmBridgeRepetition -Text $answer) -split "`n" | Where-Object { $_ }).Count | Should -Be 4
+    }
+
+    # A NUMBER IS OFTEN THE ONLY DIFFERENCE, and the first cut normalised digits
+    # away: "Step 1 complete." and "Step 2 complete." became one line, and the
+    # captain lost a step of a real answer to a rule meant to remove a stammer.
+    It 'keeps two lines that differ only by a number' {
+        $out = Remove-FmBridgeRepetition -Text "Step 1 complete.`nStep 2 complete.`nStep 3 complete."
+        @($out -split "`n" | Where-Object { $_ }).Count | Should -Be 3
+    }
+
+    It 'survives an empty answer' -ForEach @(
+        @{ Line = '' }, @{ Line = '   ' }
+    ) {
+        Remove-FmBridgeRepetition -Text $Line | Should -Be ''
+    }
+}
+
+Describe 'Test-FmBridgeSessionCanAct' {
+
+    BeforeAll {
+        $script:CanActHome = Join-Path $TestDrive 'home'
+        New-Item -ItemType Directory -Path (Join-Path $script:CanActHome 'state') -Force | Out-Null
+    }
+
+    It 'says no when nothing holds this home' {
+        Test-FmBridgeSessionCanAct -HomePath $script:CanActHome -SessionProcessId 4242 | Should -BeFalse
+    }
+
+    It 'says no when it was given no session at all' {
+        Test-FmBridgeSessionCanAct -HomePath $script:CanActHome | Should -BeFalse
+    }
+
+    It 'says yes only when the session this bridge hosts is the holder' {
+        Mock -CommandName Get-FmSessionLockStatus -ModuleName Firstmate -MockWith {
+            [pscustomobject]@{ State = 'held'; ProcessId = 4242; Text = '' }
+        }
+        Test-FmBridgeSessionCanAct -HomePath $script:CanActHome -SessionProcessId 4242 | Should -BeTrue
+        Test-FmBridgeSessionCanAct -HomePath $script:CanActHome -SessionProcessId 25876 | Should -BeFalse
+    }
+
+    # Promising the captain an action this cannot deliver is worse than
+    # understating what it can do, so anything it could not read counts as no.
+    It 'says no rather than guessing when it cannot read who holds this home' {
+        Mock -CommandName Get-FmSessionLockStatus -ModuleName Firstmate -MockWith { throw 'unreadable' }
+        Test-FmBridgeSessionCanAct -HomePath $script:CanActHome -SessionProcessId 4242 | Should -BeFalse
+    }
+}
+
+Describe 'Get-FmBridgeRoute' {
+
+    # THE CAPTAIN THREW OUT THE SENTENCE THIS REPLACES. What used to be here was
+    # a limitation stated plainly - "I can see the work but cannot start or stop
+    # anything from here" - and their ruling was that a system worth talking to
+    # never says that at all; it gives the way to get the thing done. A softer
+    # phrasing of the same confession would have been the same mistake.
+    It 'says nothing at all when the screen can act' {
+        Get-FmBridgeRoute -CanAct $true | Should -Be ''
+    }
+
+    It 'gives a route, never a refusal' {
+        $route = Get-FmBridgeRoute -CanAct $false
+        $route | Should -Match '(?i)firstmate window'
+        $route | Should -Not -Match "(?i)\bcan(?:not|n't)\b"
+        $route | Should -Not -Match '(?i)\bunable\b'
+        $route | Should -Not -Match '(?i)\bsorry\b'
+    }
+
+    It 'keeps machinery out of the route as well' {
+        $route = Get-FmBridgeRoute -CanAct $false
+        foreach ($word in @('lock', 'read-only', 'pid', 'dispatch', 'merge', 'checkout', 'worktree')) {
+            $route | Should -Not -Match ('\b' + [regex]::Escape($word) + '\b')
+        }
+    }
+}
+
+Describe 'New-FmBridgeTurnPrompt' {
+
+    # The panel's own object, built the way Get-FmBridgeFleet builds it, because
+    # the whole point of this seam is that both halves of the screen are two
+    # renderings of ONE reading rather than two reads that agree by convention.
+    BeforeAll {
+        $script:Reading = [pscustomobject]@{
+            At        = '14:22:05'
+            Tasks     = @(
+                [pscustomobject]@{ Id = 'ui-readonly'; Percent = 40; State = 'working'; Note = 'Reproduced the two answers' }
+                [pscustomobject]@{ Id = 'tg-route'; Percent = 10; State = 'working'; Note = 'Reading the route' }
+                [pscustomobject]@{ Id = 'lock-identity'; Percent = $null; State = 'working'; Note = 'Started' }
+            )
+            Decisions = @([pscustomobject]@{ Task = 'tg-route'; Key = 'carrier'; Question = 'Which provider should the test use?' })
+            Activity  = @()
+            House     = @([pscustomobject]@{ Name = 'This screen'; Detail = 'ready' })
+        }
+    }
+
+    # THE CONTRADICTION, PINNED. Three jobs on the panel and "nothing is under
+    # way" in the reply beside it, at the same moment, both honest. The reply can
+    # only disagree with the panel if it is answering from something else, so it
+    # is handed the panel's reading and told that is the answer.
+    It 'carries every job the panel is showing, with the panel percentage' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'what is happening?' -Fleet $script:Reading
+        foreach ($t in $script:Reading.Tasks) { $prompt | Should -Match ([regex]::Escape($t.Id)) }
+        $prompt | Should -Match '40%'
+        $prompt | Should -Match '10%'
+        $prompt | Should -Match 'under way \(3\)'
+    }
+
+    It 'says a job claimed no percentage rather than calling it zero' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'and?' -Fleet $script:Reading
+        $prompt | Should -Match 'no percentage given'
+        $prompt | Should -Not -Match 'lock-identity: 0%'
+    }
+
+    It 'forbids the answer the captain actually got' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'what is happening?' -Fleet $script:Reading
+        $prompt | Should -Match 'never say nothing'
+        $prompt | Should -Match 'never give a count or a percentage that differs'
+    }
+
+    It 'carries the captain question and puts it last, after the reading' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'is the sign-in fix done?' -Fleet $script:Reading
+        $prompt | Should -Match ([regex]::Escape('is the sign-in fix done?'))
+        ($prompt.LastIndexOf('is the sign-in fix done?')) |
+            Should -BeGreaterThan ($prompt.IndexOf('under way'))
+    }
+
+    # DO NOT SEND WHAT THE CAPTAIN MUST NOT READ. The reading used to carry each
+    # decision's record handle so the session could close it, and the session
+    # said "still held up on the carrier question" straight back to the captain -
+    # `carrier` being the handle, a word on no panel and in no vocabulary.
+    # Anything in this prompt can end up in the answer.
+    It 'carries the question but never the record handle behind it' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'answer it' -Fleet $script:Reading
+        $prompt | Should -Match 'Which provider should the test use\?'
+        $prompt | Should -Match 'tg-route'
+        $prompt | Should -Not -Match 'carrier'
+        $prompt | Should -Not -Match 'key='
+    }
+
+    It 'names an empty fleet as empty rather than leaving it unsaid' {
+        $empty = [pscustomobject]@{ At = '09:00:00'; Tasks = @(); Decisions = @(); Activity = @(); House = @() }
+        $prompt = New-FmBridgeTurnPrompt -Text 'anything?' -Fleet $empty
+        $prompt | Should -Match 'under way: nothing'
+        $prompt | Should -Match 'waiting on the captain: nothing'
+    }
+
+    # The limit is the bridge's sentence, said once by the bridge. The session is
+    # told to leave it alone, because the session repeating it every time the
+    # same event re-fired is what stacked eight messages on the screen.
+    It 'asks for the names the panel shows, so the captain can match the two' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'what is happening?' -Fleet $script:Reading
+        $prompt | Should -Match '(?i)by the name the reading gives it'
+    }
+
+    It 'asks for plain sentences, because the screen shows text and the voice reads it' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'what is happening?' -Fleet $script:Reading
+        $prompt | Should -Match '(?i)No markdown'
+    }
+
+    It 'carries a change of address along with the turn' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'hello' -Fleet $script:Reading -Address 'skipper'
+        $prompt | Should -Match "Address me as 'skipper'"
+    }
+}
+
+Describe 'ConvertTo-FmBridgePlainText -Keep' {
+
+    # CAUGHT IN THE BROWSER, and by the cure rather than the disease. With the
+    # panel row reading LOCK IDENTITY, the reply beside it called the same job
+    # "controls-identity" - the vocabulary had translated a word inside a job's
+    # own NAME. That is this whole seam's defect, two halves of one screen
+    # disagreeing about one thing, reintroduced by the fix for it.
+    It 'never translates a word inside a name the screen is showing' {
+        $said = 'lock-identity is at 90% and the merge-tool work has not started.'
+        $out = ConvertTo-FmBridgePlainText -Text $said -Prose -Keep @('lock-identity', 'merge-tool')
+        $out | Should -Match 'lock-identity'
+        $out | Should -Match 'merge-tool'
+    }
+
+    It 'still translates the same word when it is the session own, not a name' {
+        ConvertTo-FmBridgePlainText -Text 'another session holds the lock' -Prose -Keep @('lock-identity') |
+            Should -Not -Match '\block\b'
+    }
+
+    # A job called `lock` must not mask half of a job called `lock-identity` and
+    # leave "-identity" behind to be translated on its own.
+    It 'protects the longer name first' {
+        $out = ConvertTo-FmBridgePlainText -Text 'lock-identity and lock are both running' -Prose -Keep @('lock', 'lock-identity')
+        $out | Should -Match 'lock-identity'
+    }
+
+    It 'keeps a name the session wrote in its own case' {
+        ConvertTo-FmBridgePlainText -Text 'LOCK-IDENTITY is at 90%' -Prose -Keep @('lock-identity') |
+            Should -Match 'LOCK-IDENTITY'
+    }
+
+    # The panel translates a worker's note, and that note names its own job.
+    It 'leaves a job name alone in the note the panel paints' {
+        ConvertTo-FmBridgePlainText -Text 'working: [45%] starting on the checks for lock-identity' -Keep 'lock-identity' |
+            Should -Be 'Starting on the checks for lock-identity'
+    }
+
+    It 'behaves exactly as before when it is given no names' {
+        ConvertTo-FmBridgePlainText -Text 'done: PR ready in worktree fm/tg-build' -Keep @() |
+            Should -Be 'PR ready in local copy'
+    }
+}
+
+Describe 'Get-FmBridgeVocabulary, and the rule below it' {
+
+    # THE TRAP THIS PINS. The dangling-preposition rule at the end of
+    # ConvertTo-FmBridgePlainText exists to tidy up after a REMOVAL, and it
+    # cannot tell a leftover from a word the table meant. So a plain word ending
+    # in one of those prepositions gets its own tail eaten: "merge" translated to
+    # "bring the work in" turned "it was merged." into "it was brought."
+    It 'never ends a plain word in a preposition the translator strips' {
+        $stripped = 'in', 'on', 'at', 'to', 'from', 'into', 'under', 'via', 'see'
+        foreach ($rule in (Get-FmBridgeVocabulary)) {
+            $last = @($rule.Plain -split '\s+')[-1]
+            $last | Should -Not -BeIn $stripped -Because "'$($rule.Plain)' would lose its last word to the tidy-up rule"
+        }
+    }
+
+    # The same trap, driven through the function rather than read off the table,
+    # because the table is only half the contract.
+    It 'leaves a translated sentence whole when it ends on the translated word' -ForEach @(
+        @{ Line = 'done: it was merged' }
+        @{ Line = 'working: waiting to merge' }
+        @{ Line = 'blocked: cannot dispatch' }
+    ) {
+        $out = ConvertTo-FmBridgePlainText -Text $Line
+        $out | Should -Not -Match '\b(?:brought|bring|start|land)\s*$'
+        $out.Length | Should -BeGreaterThan 8
+    }
+}
+
+Describe 'the reply never answers with a limitation' {
+
+    # The captain's ruling, as a check on the instruction the session is given:
+    # a limitation is never the reply, softened or otherwise, and the route is
+    # what goes in its place.
+    BeforeAll {
+        $script:EmptyFleet = [pscustomobject]@{ At = '09:00:00'; Tasks = @(); Decisions = @(); Activity = @(); House = @() }
+    }
+
+    It 'tells the session to answer with the route instead' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'start the payment tests' -Fleet $script:EmptyFleet -CanAct $false
+        $prompt | Should -Match '(?i)NEVER answer with something you cannot do'
+        $prompt | Should -Match '(?i)answer with how it gets done'
+        $prompt | Should -Match '(?i)say what IS'
+    }
+
+    # "can you do it yourself? yes or no" came back as "No." on screen -
+    # responsive to the letter, and still a limitation standing alone as the
+    # whole reply. A yes-or-no is the captain asking for brevity, not for a dead
+    # end.
+    It 'holds the rule even when the captain asks for a yes or a no' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'can you do it yourself? yes or no.' -Fleet $script:EmptyFleet -CanAct $false
+        $prompt | Should -Match '(?i)even when the captain asks for a yes or a no'
+        $prompt | Should -Match '(?i)bare no'
+    }
+
+    It 'carries the real route, not a polite deferral' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'start the payment tests' -Fleet $script:EmptyFleet -CanAct $false
+        $prompt | Should -Match ([regex]::Escape((Get-FmBridgeRoute -CanAct $false)))
+    }
+
+    It 'leaves the route out entirely when the screen can act' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'start the payment tests' -Fleet $script:EmptyFleet -CanAct $true
+        $prompt | Should -Not -Match '(?i)firstmate window the captain'
+    }
+
+    # The append that produced the same statement twice in one reply is gone, so
+    # nothing but the session writes the reply. This pins that: the entry point
+    # must not be putting a canned sentence under the answer again.
+    It 'has no canned sentence left to append under an answer' {
+        $entry = Join-Path (Split-Path -Parent $PSScriptRoot) 'bin/fm-bridge.ps1'
+        $loaded = @(Get-Command -Name 'Get-FmBridgeStandingNote' -ErrorAction SilentlyContinue)
+        $loaded.Count | Should -Be 0 -Because 'the standing note was replaced by a route in the prompt'
+        Test-Path -LiteralPath $entry | Should -BeTrue
+    }
+}
+
+Describe 'Remove-FmBridgeRepetition, within one breath' {
+
+    # THE CAPTAIN'S SECOND POINT, from their screen: one reply, one paragraph,
+    # the same statement twice in slightly different words. A line-by-line pass
+    # could not see it, because both sentences were on one line.
+    It 'says a point once when it was made twice in the same paragraph' {
+        $said = 'Three are under way. I can see this work but cannot start or stop any of it from here. I can see the work but cannot start or stop anything from here.'
+        $out = Remove-FmBridgeRepetition -Text $said
+        ([regex]::Matches($out, '(?i)cannot start or stop')).Count | Should -Be 1
+        $out | Should -Match 'Three are under way'
+    }
+
+    It 'keeps a sentence that only shares a subject with the one before it' {
+        $said = 'The sign-in fix is at 40 percent. The payment tests have not started yet.'
+        $out = Remove-FmBridgeRepetition -Text $said
+        $out | Should -Match 'sign-in fix'
+        $out | Should -Match 'payment tests'
+    }
+
+    It 'puts the sentences back on the line they came from' {
+        $said = "First line here. Still the first line.`nSecond line here."
+        $out = Remove-FmBridgeRepetition -Text $said
+        @($out -split "`n").Count | Should -Be 2
+    }
+}
+
+Describe 'ConvertTo-FmBridgePlainText -Prose, on markdown' {
+
+    # The page sets a reply as TEXT and the voice reads it aloud, so markdown
+    # arrives as literal asterisks in both. Seen on screen, in a headed browser:
+    # "- **lock-identity** - 75%, working".
+    It 'leaves no emphasis markers on a screen that cannot render them' {
+        $out = ConvertTo-FmBridgePlainText -Text "- **lock-identity** - 75%, working`n- __tg-route__ - 25%" -Prose -Keep @('lock-identity', 'tg-route')
+        $out | Should -Not -Match '\*'
+        $out | Should -Not -Match '__'
+        $out | Should -Match 'lock-identity'
+        $out | Should -Match 'tg-route'
+    }
+
+    It 'drops a heading marker but keeps the heading' {
+        ConvertTo-FmBridgePlainText -Text '## Where things stand' -Prose | Should -Be 'Where things stand'
+    }
+
+    # A bullet reads as a list either way, and the shape of an answer is worth
+    # keeping - the emphasis markers are the part that cannot render.
+    It 'keeps the bullet itself' {
+        ConvertTo-FmBridgePlainText -Text '- the sign-in fix is ready' -Prose | Should -Match '^- the sign-in fix'
+    }
+}
+
+Describe 'ConvertTo-FmBridgePlainText, when the removal takes the subject' {
+
+    # THE CAPTAIN ASKED WHY THE WORK SUMMARIES READ AS NONSENSE, and checking
+    # each panel line against the record it came from turned up two kinds. Three
+    # of the lines they cited were faithful - the evidence run's own worker wrote
+    # them ungrammatically and this function only removed the label. These are
+    # the other kind, and they are real: a removal at the HEAD of a line takes
+    # the sentence's subject with it and leaves a fragment.
+    #
+    # A summary mangled into nonsense is worse than one carrying a little jargon:
+    # jargon can be decoded, nonsense cannot, and the captain cannot tell a
+    # mangled note from a worker that wrote nonsense.
+    It 'leaves a noun where the name was, rather than a headless fragment' -ForEach @(
+        @{ Line = 'working: [90%] FmLock.Tests.ps1 is through'; Want = 'That file is through' }
+        @{ Line = 'working: [10%] tests/FmBridge.Tests.ps1 needs another case'; Want = 'That file needs another case' }
+        @{ Line = 'working: [40%] fm/fix-signin is rebased'; Want = 'That branch is rebased' }
+    ) {
+        ConvertTo-FmBridgePlainText -Text $Line | Should -Be $Want
+    }
+
+    # "report at <path>" reads as a finished report when the path ends the line
+    # and as a subject when the sentence carries on. One answer for both produced
+    # "Report ready is ready".
+    It 'reads a report path as a subject when the sentence carries on' {
+        ConvertTo-FmBridgePlainText -Text 'done: report at docs/windows-e2e-evidence.md is ready' |
+            Should -Be 'The report is ready'
+    }
+
+    It 'still reads a report path that ends the line as a finished report' {
+        ConvertTo-FmBridgePlainText -Text 'done: report at data/scouts/auth.md' |
+            Should -Be 'Report ready'
+    }
+
+    # A line that is nothing but a path has no sentence worth saving, so the
+    # placeholder must not invent one.
+    It 'does not invent a sentence for a line that was only a path' {
+        ConvertTo-FmBridgePlainText -Text 'done: docs/foundation.md' | Should -Be ''
+    }
+
+    # A name in the MIDDLE of a line was never the problem, and giving it a
+    # placeholder would add noise where the sentence already reads.
+    It 'leaves a name mid-sentence removed rather than replaced' {
+        ConvertTo-FmBridgePlainText -Text 'done: PR ready in worktree fm/tg-build' |
+            Should -Be 'PR ready in local copy'
+    }
+}
+
+Describe 'Test-FmBridgeVoiceAllowed' {
+
+    # CAPTAIN IMPACT, AND THE REASON THIS FUNCTION EXISTS. The browser page called
+    # speech synthesis on every reply, unconditionally. Copies of it driven for a
+    # check have no window on screen, so the captain's machine spoke aloud twice
+    # with no browser they could find and nothing to silence. AGENTS.md section 9
+    # is explicit: the voice channel is off until config/voice exists, and nothing
+    # calls it by itself.
+    BeforeAll {
+        $script:VoiceHome = Join-Path $TestDrive 'voicehome'
+        New-Item -ItemType Directory -Path (Join-Path $script:VoiceHome 'config') -Force | Out-Null
+    }
+
+    It 'is silent in a home that never switched the voice on' {
+        Test-FmBridgeVoiceAllowed -HomePath $script:VoiceHome | Should -BeFalse
+    }
+
+    It 'speaks only once the captain has switched it on' {
+        $gate = Join-Path (Join-Path $script:VoiceHome 'config') 'voice'
+        try {
+            Set-Content -LiteralPath $gate -Value '' -NoNewline -Encoding utf8
+            Test-FmBridgeVoiceAllowed -HomePath $script:VoiceHome | Should -BeTrue
+        } finally {
+            Remove-Item -LiteralPath $gate -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # A lone `off` in the file is the documented way to keep the channel present
+    # but quiet, and this must honour it rather than treating the file's mere
+    # existence as consent.
+    It 'stays silent when the file is there but says off' {
+        $gate = Join-Path (Join-Path $script:VoiceHome 'config') 'voice'
+        try {
+            Set-Content -LiteralPath $gate -Value 'off' -Encoding utf8
+            Test-FmBridgeVoiceAllowed -HomePath $script:VoiceHome | Should -BeFalse
+        } finally {
+            Remove-Item -LiteralPath $gate -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Being wrong towards silence is a quiet screen; being wrong the other way is
+    # the defect this exists for, on a machine whose owner cannot find the source.
+    It 'stays silent rather than guessing when it cannot read the gate' {
+        Mock -CommandName Get-FmVoiceConfig -ModuleName Firstmate -MockWith { throw 'unreadable' }
+        Test-FmBridgeVoiceAllowed -HomePath $script:VoiceHome | Should -BeFalse
+    }
+
+    It 'stays silent when asked about a home that does not exist' {
+        Test-FmBridgeVoiceAllowed -HomePath (Join-Path $TestDrive 'no-such-home') | Should -BeFalse
     }
 }

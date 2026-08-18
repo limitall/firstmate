@@ -32,6 +32,16 @@ ROUTES
     POST /api/listen    start, stop or drop a capture on the WARM speech engine
     GET  /api/heard     a dictated line waiting to be asked, if one has landed
 
+ONE VOICE, NOT TWO. /api/say and /api/fleet answer the same question - what is
+happening - so they answer it from ONE read of the durable records, taken here
+and handed to both. The session used to answer from its own view of this home,
+which is narrower than the panel's whenever it could not open the home, and the
+captain got a panel listing three jobs beside a reply saying nothing was under
+way. Both were honest, which is precisely why it was unusable.
+New-FmBridgeTurnPrompt carries the whole argument. Every reply also leaves
+through ConvertTo-FmBridgePlainText, so what the session says and what the panel
+says obey one vocabulary rather than agreeing by habit.
+
 SECURITY. Binds 127.0.0.1 only, so nothing off this machine can reach it. There
 IS a write path now - /api/say drives a session that can change code - so it is
 guarded: a per-run token every request must carry, and an Origin check, because
@@ -213,6 +223,11 @@ try {
                         captain    = $captainName
                         suggested  = (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'firstmate')
                         session    = $(if ($session) { $session.SessionId } else { '' })
+                        # Whether this page may speak out loud. Off unless the
+                        # captain switched the voice channel on, because the page
+                        # used to speak every reply unconditionally and did it on
+                        # their machine with no window open to silence.
+                        voice      = (Test-FmBridgeVoiceAllowed -HomePath $home_)
                         # What dictation can do on this machine right now. The
                         # page chooses its path from this rather than trying the
                         # fast one and guessing why it failed.
@@ -319,6 +334,11 @@ try {
                         ok        = $true
                         engine    = ($null -ne $session -and -not $session.Process.HasExited)
                         captain   = $captainName
+                        # Re-read every poll rather than once at boot: the
+                        # captain may switch the voice on or off while the page
+                        # is open, and a page that learned "on" at startup would
+                        # keep talking after they turned it off.
+                        voice     = (Test-FmBridgeVoiceAllowed -HomePath $home_)
                         # A line dictated straight into the engine, waiting for
                         # the page to pick it up and ask it. Handed over once.
                         dictated  = $handOver
@@ -464,20 +484,49 @@ try {
                     }
 
                     [Console]::Out.WriteLine("$captainName`: $text")
+
+                    # ONE READING, RENDERED TWICE. This is the same call the
+                    # panel is painting from, made once and used for both halves,
+                    # so the reply cannot describe a fleet the panel is not
+                    # showing. New-FmBridgeTurnPrompt carries the whole argument.
+                    $fleet = Get-FmBridgeFleet -HomePath $home_
+                    $canAct = Test-FmBridgeSessionCanAct -HomePath $home_ -SessionProcessId $session.Process.Id
                     # A name change set since the last turn rides along with this
                     # one, so it takes effect in THIS conversation rather than at
                     # the next restart - and without its own blocking round trip.
-                    $send = $text
-                    if ($script:pendingAddress) {
-                        $send = "[Address me as '$($script:pendingAddress)' from now on, in every reply.]`n`n$text"
-                        $script:pendingAddress = $null
-                    }
+                    $send = New-FmBridgeTurnPrompt -Text $text -Fleet $fleet -CanAct $canAct -Address $script:pendingAddress
+                    $script:pendingAddress = $null
+
                     $turn = Send-FmBridgeTurn -Session $session -Text $send
-                    if ($turn.Reply) { [Console]::Out.WriteLine("firstmate: $($turn.Reply)") }
+
+                    # THE WAY OUT IS THE GUARANTEE. Asking the session for plain
+                    # words is a request it can miss; these two are the contract.
+                    # Translated first, then de-stammered, so two lines the
+                    # translation made identical collapse as well.
+                    #
+                    # The job names go in as -Keep because a name the panel is
+                    # SHOWING must survive the translation intact: caught in the
+                    # browser, a row reading LOCK IDENTITY sat beside a reply
+                    # calling the same job "controls-identity".
+                    $names = @($fleet.Tasks | ForEach-Object { $_.Id })
+                    $reply = ConvertTo-FmBridgePlainText -Text $turn.Reply -Prose -Keep $names
+                    $reply = Remove-FmBridgeRepetition -Text $reply
+                    $replyError = ConvertTo-FmBridgePlainText -Text $turn.Error -Prose -Keep $names
+
+                    # NOTHING IS APPENDED HERE, and the deleted append is worth a
+                    # line because it caused the defect it was meant to prevent.
+                    # A sentence about what this screen cannot do used to be
+                    # added under the answer; the session, told the same fact,
+                    # had already said it in its own words, and the captain read
+                    # the same statement twice in one reply. A canned line under
+                    # a written answer cannot know what the answer already says.
+                    # The route now travels in the prompt instead, and the reply
+                    # the session writes is the whole reply.
+                    if ($reply) { [Console]::Out.WriteLine("firstmate: $reply") }
                     Write-Json -Response $res -Object @{
                         ok    = $turn.Ok
-                        reply = $turn.Reply
-                        error = $turn.Error
+                        reply = $reply
+                        error = $replyError
                     }
                     continue
                 }

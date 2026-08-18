@@ -670,6 +670,15 @@ function Get-FmBridgeVocabulary {
         PRODUCT NAMES ARE MACHINERY TOO. The runtime and worktree tools are named
         in status lines constantly and mean nothing outside this repository, so
         they are folded into the same "tool" noun as the rest.
+
+        THE SESSION'S OWN ARRANGEMENT IS MACHINERY, and it is the half that leaked
+        first. This table was built against what a WORKER writes into a status
+        line, so it had every word a worker uses and none of the words a session
+        uses about itself. Observed on screen, in one reply: a process number, the
+        lock, "read-only", "dispatch, steer, or merge", and the captain's own
+        checkout having uncommitted changes. None of that is the captain's
+        business and all of it reached them, so the words a session reaches for
+        when it describes its own limits are in the table now too.
     #>
     [CmdletBinding()]
     [OutputType([object[]])]
@@ -684,6 +693,12 @@ function Get-FmBridgeVocabulary {
         [pscustomobject]@{ Pattern = '\bwake\s+queue\b'; Plain = 'notifications' }
         [pscustomobject]@{ Pattern = '\bfail[\s-]closed\b|\bfails\s+closed\b|\bfail\s+loudly\b'; Plain = 'stops safely' }
         [pscustomobject]@{ Pattern = '\bfail[\s-]open\b|\bfails\s+open\b'; Plain = 'continues without that check' }
+        [pscustomobject]@{ Pattern = '\buncommitted\s+changes\b'; Plain = 'unsaved edits' }
+        # The article is eaten with the noun on purpose: translating `lock` alone
+        # leaves "holds the the controls" wherever it was written naturally.
+        [pscustomobject]@{ Pattern = '\b(?:the\s+)?(?:fleet|session|home|file)\s+locks?\b'; Plain = 'the controls' }
+        [pscustomobject]@{ Pattern = '\b(?:the\s+)?locks?\b'; Plain = 'the controls' }
+        [pscustomobject]@{ Pattern = '\bread[\s-]only\b'; Plain = 'watching only' }
 
         # Places.
         [pscustomobject]@{ Pattern = '\bworktrees?\b|\bcheckouts?\b'; Plain = 'local copy' }
@@ -692,6 +707,27 @@ function Get-FmBridgeVocabulary {
         [pscustomobject]@{ Pattern = '\bcrewmates?\b'; Plain = 'worker' }
         [pscustomobject]@{ Pattern = '\bsecondmates?\b'; Plain = 'second mate' }
         [pscustomobject]@{ Pattern = '\bbriefs?\b'; Plain = 'instructions' }
+
+        # What a session says it can and cannot do. Inflected separately rather
+        # than as one stem, because "I can't dispatch" and "dispatching the
+        # worker" want different English and a single noun makes one of them
+        # ungrammatical.
+        [pscustomobject]@{ Pattern = '\bdispatching\b'; Plain = 'starting work' }
+        [pscustomobject]@{ Pattern = '\bdispatched\b'; Plain = 'started' }
+        [pscustomobject]@{ Pattern = '\bdispatch(?:es)?\b'; Plain = 'start work' }
+        [pscustomobject]@{ Pattern = '\bsteering\b'; Plain = 'redirecting' }
+        [pscustomobject]@{ Pattern = '\bsteers\b'; Plain = 'redirects' }
+        [pscustomobject]@{ Pattern = '\bsteer(?:ed)?\b'; Plain = 'redirect' }
+        # NO PLAIN WORD MAY END IN A PREPOSITION THIS FILE STRIPS. "bring the
+        # work in" was the first try, and the dangling-preposition rule below -
+        # written to tidy up after a REMOVAL - then ate the "in" it had just been
+        # handed: "it was brought in." became "it was brought." The rule cannot
+        # tell a leftover from a word this table meant, so the table stays clear
+        # of them. `Get-FmBridgeVocabulary` has a test that pins this.
+        [pscustomobject]@{ Pattern = '\bmerging\b'; Plain = 'landing the work' }
+        [pscustomobject]@{ Pattern = '\bmerged\b'; Plain = 'landed' }
+        [pscustomobject]@{ Pattern = '\bmerges\b'; Plain = 'lands the work' }
+        [pscustomobject]@{ Pattern = '\bmerge\b'; Plain = 'land the work' }
 
         # Lifecycle.
         [pscustomobject]@{ Pattern = '\bteardowns?\b'; Plain = 'cleanup' }
@@ -761,59 +797,434 @@ function ConvertTo-FmBridgePlainText {
         a mangled link is not a cosmetic defect, it is the one thing on screen the
         captain needed to tap. So URLs are masked out first and put back last,
         untouched.
+
+        THE REPLY IS A SURFACE TOO, and it was the one surface this never saw.
+        Every panel on the page went through here; the answer beside them did
+        not, so the assistant put a process number, the controls, "read-only" and
+        "dispatch, steer, or merge" on the same screen the panels had just been
+        scrubbed for. `-Prose` is that missing call, and it is the SAME
+        translator rather than a second one: one vocabulary, one set of removals,
+        one place to add a word.
+
+        WHAT `-Prose` CHANGES, AND WHY ONLY THAT. A status line is one line with
+        a label on the front; a reply is paragraphs, bullets and blank lines. So
+        prose is translated line by line with the line's own indentation put
+        back, and the three cosmetics that only make sense on a status line are
+        skipped: the free-form `word:` prefix strip would eat the start of an
+        ordinary sentence, the leading-dash trim would eat a bullet, and forcing
+        a capital would shout at every wrapped line. The label strip still runs
+        in prose for the KNOWN state words, because an assistant quoting
+        `blocked: ...` back at the captain is the same leak by another route.
+
+        A NAME THE SCREEN IS SHOWING IS NEVER MACHINERY, and `-Keep` is that
+        rule. Caught in the browser, one screen, same moment: the panel row read
+        LOCK IDENTITY and the reply beside it called the same job
+        "controls-identity", because the vocabulary translated `lock` inside a
+        job's own name. That is the exact defect this whole seam exists to end -
+        two halves of one screen disagreeing about one thing - reintroduced by
+        the cure. So the caller passes the names the screen is displaying and
+        they are masked and restored untouched, on the same principle as a URL:
+        this translates the words a session CHOSE, never a name it was given.
     #>
     [CmdletBinding()]
     [OutputType([string])]
-    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [switch]$Prose,
+        # Names the screen is showing - job names, and anything else the captain
+        # reads in one panel and must recognise in the other.
+        [string[]]$Keep = @()
+    )
 
     if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
-    $s = $Text
 
+    # MASKED OVER THE WHOLE TEXT, BEFORE ANYTHING IS SPLIT. A URL never spans a
+    # line, so doing this once is the same as doing it per line - and it has to
+    # happen before the process-number pass below, which would otherwise take
+    # `pid` out of a path that happened to contain it.
     $fence = ([char]1).ToString()
-    $urls = [System.Collections.Generic.List[string]]::new()
-    foreach ($match in [regex]::Matches($s, 'https?://\S+')) {
-        if (-not $urls.Contains($match.Value)) { $urls.Add($match.Value) }
+    $whole = $Text
+    $preserved = [System.Collections.Generic.List[string]]::new()
+    foreach ($match in [regex]::Matches($whole, 'https?://\S+')) {
+        if (-not $preserved.Contains($match.Value)) { $preserved.Add($match.Value) }
     }
-    for ($i = 0; $i -lt $urls.Count; $i++) {
-        $s = $s.Replace($urls[$i], "$fence$i$fence")
+    # The longest name first, so a job called `lock` cannot mask half of a job
+    # called `lock-identity` and leave the rest to be translated.
+    foreach ($name in (@($Keep | Where-Object { $_ }) | Sort-Object -Property Length -Descending)) {
+        foreach ($match in [regex]::Matches($whole, [regex]::Escape($name), 'IgnoreCase')) {
+            # The matched text, not the name as given: the session may have
+            # written it in its own case and that is what the captain is reading.
+            if (-not $preserved.Contains($match.Value)) { $preserved.Add($match.Value) }
+        }
     }
-
-    $s = $s -replace '^\s*[a-z-]+\s*:\s*', ''          # the state prefix
-    $s = $s -replace '\[\s*\d{1,3}\s*%\s*\]\s*', ''     # a percentage prefix
-    $s = $s -replace '\[key=[^\]]+\]\s*', ''            # a decision key
-    $s = $s -replace '\breport at \S+', 'report ready'  # a path to a report
-    $s = $s -replace '\bat (?:data|state|docs|module|bin|tests)/\S+', ''
-    $s = $s -replace '\b(?:data|state|docs|module|bin|tests|ui)/[^\s,;]+', ''
-    $s = $s -replace '\bin branch \S+', ''              # a branch name
-    $s = $s -replace '\bfm/[^\s,;]+', ''
-    $s = $s -replace '\b[A-Za-z0-9_.-]+\.(?:md|ps1|json|yml)\b(?:\s+\d+(?:-\d+)?)?', ''
-    # The machinery pairs a status line carries verbatim. Named rather than
-    # matched as any `word=value`, because a worker's own note may legitimately
-    # contain one and eating that would lose meaning rather than jargon.
-    $s = $s -replace '\b(?:harness|backend|runtime|adapter|window|worktree|project|model|effort|kind|mode|yolo|tasktmp|endpoint_task_id|treehouse_lease_id)=\S+', ''
-
-    foreach ($rule in (Get-FmBridgeVocabulary)) {
-        $s = [regex]::Replace($s, $rule.Pattern, $rule.Plain, 'IgnoreCase')
+    for ($i = 0; $i -lt $preserved.Count; $i++) {
+        $whole = $whole.Replace($preserved[$i], "$fence$i$fence")
     }
 
-    # LAST OF THE REMOVALS, AFTER THE VOCABULARY, and the order is the point: a
-    # stripped token leaves the word that introduced it dangling, and every pass
-    # above can leave one behind. "Writing the test in fm/fix-signin" became
-    # "writing the test in" - visibly broken English rather than merely terse, on a
-    # phone, where the captain cannot go and look at what was meant. Only a
-    # preposition at the very end or immediately before punctuation goes; anything
-    # with a word after it still has its object.
-    $s = $s -replace '\s+(?:in|on|at|to|from|into|under|via|see)\s*([,;.])', '$1'
-    $s = $s -replace '\s+(?:in|on|at|to|from|into|under|via|see)\s*$', ''
-    $s = $s -replace '\s{2,}', ' '
-    $s = $s -replace '\s+([,;.])', '$1'
-    $s = $s.Trim().Trim('-', ';', ',').Trim()
+    # A process number, which has no plain word to become - the captain has no
+    # use for one and nothing to do with it. Removed rather than translated, and
+    # the parenthesised form goes with its brackets so the sentence does not
+    # close on an empty pair.
+    #
+    # BEFORE THE SPLIT, and that is not tidiness. The reply that shipped this
+    # wrapped mid-term - "(pid\n25876)" - so a per-line pass took the word `pid`
+    # and left the number sitting in the captain's brackets, which is the digit
+    # they were never meant to see with the label that explained it gone. `\s`
+    # crosses a line break; a line-by-line pass cannot.
+    $whole = $whole -replace '\s*\(\s*(?:pid|process\s*id)s?\s*[:#]?\s*\d+\s*\)', ''
+    $whole = $whole -replace '\b(?:pid|process\s*id)s?\s*[:#]?\s*\d+\b', ''
+    $whole = $whole -replace '\b(?:pid|process\s*id)s?\b', ''
 
-    if ($s) { $s = $s.Substring(0, 1).ToUpper() + $s.Substring(1) }
-    for ($i = 0; $i -lt $urls.Count; $i++) {
-        $s = $s.Replace("$fence$i$fence", $urls[$i])
+    # A status line stays ONE blob, exactly as before. Only prose is split, so
+    # nothing about the panel path changes shape here.
+    $inputLines = if ($Prose) { @($whole -split '\r?\n') } else { @($whole) }
+    $out = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($rawLine in $inputLines) {
+        if ([string]::IsNullOrWhiteSpace($rawLine)) { $out.Add(''); continue }
+
+        # Indentation carries meaning in prose - a nested bullet under a parent -
+        # and the whitespace collapse below would flatten it. Held aside and put
+        # back, the same trick the URLs get.
+        $indent = ''
+        $s = $rawLine
+        if ($Prose -and $s -match '^(\s+)') { $indent = $Matches[1]; $s = $s.Substring($indent.Length) }
+
+        if ($Prose) {
+            # Named states only. The status line's `[a-z-]+:` would take "note:",
+            # "example:" and the first word of any sentence that happens to end
+            # in a colon with it.
+            $s = $s -replace '^\s*(?:working|blocked|paused|done|failed|needs-decision|resolved|signal|check|stale|heartbeat)\s*:\s*', ''
+            # THE PAGE SHOWS TEXT, NOT MARKDOWN, AND THE VOICE READS IT ALOUD.
+            # Seen on screen: "- **lock-identity** - 75%, working", asterisks and
+            # all, because a reply is set as text rather than parsed. Emphasis
+            # markers and heading hashes are noise on the panel and worse than
+            # noise spoken, so they go. The bullet itself stays - it reads as a
+            # list either way.
+            $s = $s -replace '\*\*([^*]+)\*\*', '$1'
+            $s = $s -replace '__([^_]+)__', '$1'
+            $s = $s -replace '^\s*#{1,6}\s+', ''
+        } else {
+            $s = $s -replace '^\s*[a-z-]+\s*:\s*', ''      # the state prefix
+        }
+        $s = $s -replace '\[\s*\d{1,3}\s*%\s*\]\s*', ''     # a percentage prefix
+        $s = $s -replace '\[key=[^\]]+\]\s*', ''            # a decision key
+
+        # A REMOVAL AT THE HEAD OF A LINE TAKES THE SUBJECT WITH IT, and the
+        # rules below cannot tell that from taking a stray token. Measured
+        # against the records that produced them:
+        #
+        #     FmLock.Tests.ps1 is through          -> Is through
+        #     tests/FmBridge.Tests.ps1 needs a case -> Needs another case
+        #
+        # A summary mangled into nonsense is worse than one carrying a little
+        # jargon: jargon can be decoded and nonsense cannot, and the captain
+        # cannot tell a mangled note from a worker that wrote nonsense. So a
+        # name at the head leaves a noun behind rather than a hole. Only at the
+        # head, and only when a sentence follows - a line that is nothing but a
+        # path has no sentence worth saving and still goes.
+        $s = $s -replace '^\s*(?:[A-Za-z0-9_.-]+\.(?:md|ps1|json|yml)|(?:data|state|docs|module|bin|tests|ui)/[^\s,;]+)(?:\s+\d+(?:-\d+)?)?\s+', 'that file '
+        $s = $s -replace '^\s*fm/[^\s,;]+\s+', 'that branch '
+
+        # "report at <path>" reads as a finished report when the path ENDS the
+        # line, and as a subject when the sentence carries on. Answering both
+        # with "report ready" produced "Report ready is ready".
+        $s = $s -replace '\breport at \S+$', 'report ready'
+        $s = $s -replace '\breport at \S+', 'the report'
+        $s = $s -replace '\bat (?:data|state|docs|module|bin|tests)/\S+', ''
+        $s = $s -replace '\b(?:data|state|docs|module|bin|tests|ui)/[^\s,;]+', ''
+        $s = $s -replace '\bin branch \S+', ''              # a branch name
+        $s = $s -replace '\bfm/[^\s,;]+', ''
+        $s = $s -replace '\b[A-Za-z0-9_.-]+\.(?:md|ps1|json|yml)\b(?:\s+\d+(?:-\d+)?)?', ''
+        # The machinery pairs a status line carries verbatim. Named rather than
+        # matched as any `word=value`, because a worker's own note may legitimately
+        # contain one and eating that would lose meaning rather than jargon.
+        $s = $s -replace '\b(?:harness|backend|runtime|adapter|window|worktree|project|model|effort|kind|mode|yolo|tasktmp|endpoint_task_id|treehouse_lease_id)=\S+', ''
+
+        foreach ($rule in (Get-FmBridgeVocabulary)) {
+            $s = [regex]::Replace($s, $rule.Pattern, $rule.Plain, 'IgnoreCase')
+        }
+
+        # LAST OF THE REMOVALS, AFTER THE VOCABULARY, and the order is the point: a
+        # stripped token leaves the word that introduced it dangling, and every pass
+        # above can leave one behind. "Writing the test in fm/fix-signin" became
+        # "writing the test in" - visibly broken English rather than merely terse, on a
+        # phone, where the captain cannot go and look at what was meant. Only a
+        # preposition at the very end or immediately before punctuation goes; anything
+        # with a word after it still has its object.
+        $s = $s -replace '\s+(?:in|on|at|to|from|into|under|via|see)\s*([,;.])', '$1'
+        $s = $s -replace '\s+(?:in|on|at|to|from|into|under|via|see)\s*$', ''
+        $s = $s -replace '\s{2,}', ' '
+        $s = $s -replace '\s+([,;.])', '$1'
+        if ($Prose) {
+            $s = $s.TrimEnd()
+        } else {
+            $s = $s.Trim().Trim('-', ';', ',').Trim()
+            if ($s) { $s = $s.Substring(0, 1).ToUpper() + $s.Substring(1) }
+        }
+
+        for ($i = 0; $i -lt $preserved.Count; $i++) {
+            $s = $s.Replace("$fence$i$fence", $preserved[$i])
+        }
+        $out.Add("$indent$s")
     }
-    $s
+
+    if (-not $Prose) { return $out[0] }
+
+    # A line the translation emptied leaves a hole where a sentence was, and
+    # three blank lines in a row read as the answer having been cut off. Runs
+    # are closed up to one.
+    (($out -join "`n") -replace '(?:[ \t]*\n){3,}', "`n`n").Trim()
+}
+
+function Remove-FmBridgeRepetition {
+    <#
+        .SYNOPSIS
+        Collapse a reply that says the same thing several times over.
+
+        .DESCRIPTION
+        WHAT THIS IS FOR. An internal mechanism that keeps firing does not get to
+        keep talking. Observed: a supervision event re-fired while the session
+        could do nothing about it, the session was continued after each one, and
+        the eight near-identical answers that produced arrived as a single reply
+        and stacked up on the captain's screen - "the guard is firing again",
+        "same guard, same answer", "nothing has changed". A screen that repeats
+        itself while nothing changes trains the captain to stop reading it, which
+        costs far more than the one message it was trying to deliver.
+
+        WHY THE REPLY AND NOT THE EVENT. The event belongs to supervision, which
+        is shared with every terminal session and is not this seam's to change.
+        What IS this seam's is the boundary: whatever the session produced, only
+        one voice reaches the captain, and it does not stammer.
+
+        TWO RULES, AND ONLY TWO. A piece whose normalised form has already been
+        said is dropped wherever it appears. A piece that is a near-repeat of the
+        one before it is dropped as well, measured as shared-word overlap - the
+        eight messages differed by a word or two each, so exact matching alone
+        would have let all eight through.
+
+        ADJACENT ONLY, for the near-repeat rule. A long answer that returns to a
+        theme three paragraphs later is developing an argument, not stammering,
+        and cutting that would lose the captain real content. Adjacency is what
+        separates the two, and it is the conservative reading: this drops less
+        than it could rather than more.
+
+        THE PIECE IS A SENTENCE, NOT A LINE, and that is the captain's finding.
+        A line-by-line pass is blind to the shape they actually hit, which was
+        one paragraph saying one thing twice in a row:
+
+            ... I can see this work but cannot start or stop any of it from here.
+            I can see the work but cannot start or stop anything from here.
+
+        Line structure is still preserved - sentences are put back on the line
+        they came from, and a line left with nothing goes - so an answer keeps
+        its paragraphs and its bullets.
+
+        WHERE THE THRESHOLD CAME FROM. That observed pair shares eleven of the
+        seventeen distinct words between them, which is 0.65, so a rule set at
+        0.7 watched it go past. It is calibrated on the real duplicate rather
+        than on a round number, and every list and stepped answer in this file's
+        tests sits below 0.35 - there is a wide gap between the two, not a fine
+        line being walked.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Returns a shortened copy of a string; what it removes is duplicate text, not anything on the machine.')]
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        # Shared-word overlap above which an adjacent sentence is the same
+        # sentence said again. See WHERE THE THRESHOLD CAME FROM above.
+        [ValidateRange(0.0, 1.0)][double]$Similarity = 0.6
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+
+    $kept = [System.Collections.Generic.List[string]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    $previousWords = $null
+
+    foreach ($line in ($Text -split '\r?\n')) {
+        if ([string]::IsNullOrWhiteSpace($line)) { $kept.Add(''); continue }
+
+        # Split so a terminator stays with the sentence it ends, because a
+        # sentence put back without its full stop reads as a truncation.
+        $survivors = [System.Collections.Generic.List[string]]::new()
+        foreach ($piece in [regex]::Split($line, '(?<=[.!?])\s+')) {
+            if ([string]::IsNullOrWhiteSpace($piece)) { continue }
+
+            # Punctuation and case differ between two sayings of one thing, so
+            # neither counts towards whether it IS one thing.
+            #
+            # DIGITS DO COUNT, and dropping them was a real over-collapse: "Step
+            # 1 complete." and "Step 2 complete." normalise to the same words
+            # once the numbers go, and the second - a different step, real
+            # content the captain needs - disappeared. A number is often the
+            # only thing that distinguishes two pieces of an answer. The
+            # near-repeat rule below is what absorbs small wording differences;
+            # this one stays literal.
+            $normal = ((($piece.ToLowerInvariant() -replace '[^a-z0-9 ]', ' ') -replace '\s{2,}', ' ')).Trim()
+            if (-not $normal) { $survivors.Add($piece.Trim()); continue }
+
+            if (-not $seen.Add($normal)) { continue }
+
+            $words = [System.Collections.Generic.HashSet[string]]::new([string[]]($normal -split ' '))
+            if ($null -ne $previousWords -and $words.Count -and $previousWords.Count) {
+                $shared = [System.Collections.Generic.HashSet[string]]::new($words)
+                $shared.IntersectWith($previousWords)
+                $union = [System.Collections.Generic.HashSet[string]]::new($words)
+                $union.UnionWith($previousWords)
+                if (($shared.Count / [double]$union.Count) -ge $Similarity) { continue }
+            }
+
+            $previousWords = $words
+            $survivors.Add($piece.Trim())
+        }
+
+        # A line whose every sentence was a repeat had nothing of its own left
+        # to say, so it goes rather than leaving a blank where a paragraph was.
+        if (-not $survivors.Count) { continue }
+
+        # The line's own indentation survives with it - a nested bullet under a
+        # parent means something, and rebuilding from the trimmed pieces alone
+        # would flatten it.
+        $indent = if ($line -match '^(\s+)') { $Matches[1] } else { '' }
+        $kept.Add($indent + ($survivors -join ' '))
+    }
+
+    (($kept -join "`n") -replace '(?:[ \t]*\n){3,}', "`n`n").Trim()
+}
+
+function Test-FmBridgeSessionCanAct {
+    <#
+        .SYNOPSIS
+        Can the session this bridge hosts change anything, or only look?
+
+        .DESCRIPTION
+        Asked by the bridge, never by the session, and that is the point. The
+        session's own answer to this question is what leaked the arrangement onto
+        the captain's screen in the first place - a process number, who held
+        what, and a verb list of what it could not do. The bridge knows the same
+        fact from one comparison and can say it in one sentence of English.
+
+        THE COMPARISON. This home is held by exactly one live session at a time,
+        and the holder is recorded. The hosted session can act when the holder is
+        the hosted session; anything else - held elsewhere, not held, unreadable -
+        means it can look and nothing more. Unreadable counts as cannot, because
+        promising the captain an action this cannot deliver is the worse mistake.
+
+        NOT A LOCK CHANGE. This reads the same record `Invoke-FmLock -Status`
+        reads and writes nothing; how the record is taken, broken or renewed is
+        untouched.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$HomePath,
+        [int]$SessionProcessId = 0
+    )
+
+    if ($SessionProcessId -le 0) { return $false }
+    $status = $null
+    try { $status = Get-FmSessionLockStatus -StatePath (Join-Path $HomePath 'state') }
+    catch {
+        Write-Debug "bridge: could not read who holds this home - $($_.Exception.Message)"
+        return $false
+    }
+    if ($null -eq $status -or $status.State -ne 'held') { return $false }
+    if ($null -eq $status.ProcessId) { return $false }
+    return ([int]$status.ProcessId -eq $SessionProcessId)
+}
+
+function Test-FmBridgeVoiceAllowed {
+    <#
+        .SYNOPSIS
+        May this screen speak out loud, or must it stay silent?
+
+        .DESCRIPTION
+        THIS EXISTS BECAUSE THE SCREEN SPOKE ON THE CAPTAIN'S MACHINE WITH NO
+        WINDOW OPEN. `ui/bridge.html` called the browser's speech synthesis on
+        every reply, unconditionally, and a page driven for a check runs in a
+        browser with nothing on screen to find or silence - so three copies of it
+        talked out of a machine whose owner could see no browser at all.
+
+        IT IS THE CONTRACT, NOT A PREFERENCE. `AGENTS.md` section 9: the voice
+        channel "is off until the captain creates `config/voice`, and nothing
+        calls it by itself". A page that speaks by itself, through a channel that
+        was never switched on, is that rule broken by the one surface loud enough
+        to be noticed across a room.
+
+        THE GATE HAS ONE OWNER and it is not this function. `Get-FmVoiceConfig`
+        reads `config/voice` and decides; this asks it on the browser's behalf,
+        the same way Test-FmBridgeSessionCanAct asks the lock reader rather than
+        parsing the record itself. A second gate would be a second thing to
+        forget.
+
+        SILENT WHEN IT CANNOT TELL. Anything unreadable, missing, or thrown
+        counts as off, because being wrong in that direction is a quiet screen
+        and being wrong in the other is this defect again.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([string]$HomePath = '')
+
+    try {
+        $settings = if ($HomePath) { Get-FmVoiceConfig -HomePath $HomePath } else { Get-FmVoiceConfig }
+    } catch {
+        Write-Debug "bridge: could not read whether the voice is on - $($_.Exception.Message)"
+        return $false
+    }
+    if ($null -eq $settings) { return $false }
+    return [bool]$settings.Enabled
+}
+
+function Get-FmBridgeRoute {
+    <#
+        .SYNOPSIS
+        How a thing the captain asked for actually gets done from this screen.
+
+        .DESCRIPTION
+        THE CAPTAIN THREW OUT THE SENTENCE THIS REPLACES, and they were right.
+        What used to sit here was one honest line - "I can see the work but
+        cannot start or stop anything from here" - and their answer to it was
+        that a system worth talking to never says that at all:
+
+            > as smart AI system it never should say this line instead it
+            > should give the solution of that or way to do that
+
+        A limitation is an explanation of this system's own arrangement wearing
+        the clothes of an answer. The captain did not ask how the screen is put
+        together. They asked for something, and they get either the thing or the
+        route to it.
+
+        SO THIS RETURNS A ROUTE, NEVER A REFUSAL. Softening the confession would
+        have been the same mistake with better manners, and deleting it and
+        saying nothing would have left the captain asking twice. What the screen
+        owes them is the next step, in their own words.
+
+        WHAT THE ROUTE ACTUALLY IS, and it is a real one rather than a polite
+        deferral: starting, stopping and steering work happens in the captain's
+        own firstmate window, which is open on this machine whenever this screen
+        is the one that cannot do it - that is the same fact, read from the other
+        side. So the route names that window and offers to say exactly what to
+        ask for there.
+
+        RETURNED TO THE SESSION, NOT TO THE SCREEN. This is guidance in the turn
+        prompt; the session writes the actual sentence, in the captain's
+        language, shaped to what they asked. A canned line appended underneath
+        an answer is what produced the same statement twice in one reply.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][bool]$CanAct)
+
+    if ($CanAct) { return '' }
+    @(
+        'Starting, stopping and steering work happens in the firstmate window the captain'
+        'already has open on this machine, not here. That is the route, and it is the only'
+        'thing you may say about it: name what they should ask for there, or offer to write'
+        'it out for them, and carry on with everything you CAN do from here.'
+    ) -join "`n"
 }
 
 function Get-FmBridgeFleet {
@@ -850,7 +1261,7 @@ function Get-FmBridgeFleet {
                 if ($lines.Count) {
                     $last = [string]$lines[-1]
                     if ($last -match '^\s*([a-z-]+)\s*:') { $st = $Matches[1] }
-                    $note = ConvertTo-FmBridgePlainText -Text $last
+                    $note = ConvertTo-FmBridgePlainText -Text $last -Keep $id
 
                     if ($st -eq 'done') {
                         $percent = 100
@@ -874,7 +1285,7 @@ function Get-FmBridgeFleet {
                             $decisions += [pscustomobject]@{
                                 Task     = $id
                                 Key      = $key
-                                Question = ConvertTo-FmBridgePlainText -Text $body
+                                Question = ConvertTo-FmBridgePlainText -Text $body -Keep $id
                             }
                         } elseif ($s -match '^\s*resolved\s*:') {
                             $key = if ($s -match '\[key=([^\]]+)\]') { $Matches[1] } else { 'default' }
@@ -883,7 +1294,7 @@ function Get-FmBridgeFleet {
                     }
 
                     foreach ($l in ($lines | Select-Object -Last 4)) {
-                        $plain = ConvertTo-FmBridgePlainText -Text ([string]$l)
+                        $plain = ConvertTo-FmBridgePlainText -Text ([string]$l) -Keep $id
                         if (-not $plain) { continue }
                         $activity += [pscustomobject]@{
                             Task = $id
@@ -910,6 +1321,141 @@ function Get-FmBridgeFleet {
         House     = @(Get-FmBridgeHouseWork)
         At        = (Get-Date).ToString('HH:mm:ss')
     }
+}
+
+function New-FmBridgeTurnPrompt {
+    <#
+        .SYNOPSIS
+        One captain turn, with the reading the panel beside it is painting.
+
+        .DESCRIPTION
+        THE DEFECT THIS ENDS. One screen, one moment, two answers to one
+        question: the panel listed three jobs with live percentages while the
+        reply beside it said nothing was under way and then explained, in
+        machinery, why it could not see any. Both halves were being honest. The
+        panel reads the durable records; the assistant was answering from its own
+        much narrower view of this home, which it had not been able to open. A
+        screen arguing with itself destroys trust in both halves at once, and the
+        captain has no way to tell which half to believe.
+
+        THE FIX IS ONE READING, RENDERED TWICE. Not two read paths that agree by
+        convention - two renderings of the SAME object, taken at the same instant
+        by the same call. `Get-FmBridgeFleet` is already the panel's source; this
+        hands that very reading to the session with the captain's words, so the
+        answer is drawn from what is on screen rather than from a second look
+        that could differ in timing, in parsing, or in what it was allowed to
+        see. Drift is not discouraged here, it is unavailable.
+
+        WHY NOT SIMPLY FORBID THE SESSION FROM SPEAKING ABOUT THE FLEET. It was
+        the other honest option and it is worse. The captain talks to this screen
+        precisely to ask what is happening; an assistant that must answer "I
+        cannot say" to the main question is a worse screen than one that can
+        answer it, and the two halves would still disagree the moment the captain
+        read the panel and the reply together.
+
+        WHAT GOES IN IS WHAT THE PANEL SHOWS, AND NO MORE. The job names are
+        here because the panel prints them and the captain must be able to match
+        a reply to a row. A decision's record handle is NOT, and used to be: the
+        session repeated it back as "the carrier question", which names a thing
+        the captain has never seen. Anything in this prompt can end up in the
+        answer, so the rule is not "send it and ask for discretion" - it is do
+        not send what the captain must not read.
+
+        NOT A SUBSTITUTE FOR THE TRANSLATOR. Asking the model for plain words is
+        a request; `ConvertTo-FmBridgePlainText -Prose` on the way out is the
+        guarantee. Both, because a request is not a contract.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Composes an in-memory string from a reading it was handed and changes nothing.')]
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory)]$Fleet,
+        [bool]$CanAct = $true,
+        # A change of address made since the last turn, carried along rather than
+        # given a blocking round trip of its own.
+        [string]$Address = ''
+    )
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add('[THE SCREEN BESIDE YOUR REPLY, read at ' + [string]$Fleet.At + ' from the durable records.')
+    $lines.Add('This is what the captain can see right now, so it is what you are answering from.')
+
+    $tasks = @($Fleet.Tasks)
+    if ($tasks.Count) {
+        $lines.Add("under way ($($tasks.Count)):")
+        foreach ($t in $tasks) {
+            $shown = if ($null -eq $t.Percent) { 'no percentage given' } else { "$($t.Percent)%" }
+            $note = if ($t.Note) { " - $($t.Note)" } else { '' }
+            $lines.Add("  $($t.Id): $shown, $($t.State)$note")
+        }
+    } else {
+        $lines.Add('under way: nothing on the captain projects')
+    }
+
+    $house = @($Fleet.House)
+    if ($house.Count) {
+        $lines.Add('on this machine: ' + (($house | ForEach-Object { "$($_.Name) ($($_.Detail))" }) -join '; '))
+    }
+
+    $decisions = @($Fleet.Decisions)
+    if ($decisions.Count) {
+        $lines.Add("waiting on the captain ($($decisions.Count)):")
+        # NO RECORD HANDLE HERE, and it was in this line until the browser
+        # showed why. The reading used to carry each decision's exact key so the
+        # session could close it; the session then told the captain that
+        # tg-route was "still held up on the carrier question" - `carrier` being
+        # the handle, a word that means nothing to them and is not on any panel.
+        # Asking the model to hold a secret is not a design. The session reads
+        # the record for the handle at the moment it actually writes to it,
+        # which is the only moment it needs one, so it is never carrying a word
+        # it must remember not to say.
+        foreach ($d in $decisions) { $lines.Add("  $($d.Task): $($d.Question)") }
+    } else {
+        $lines.Add('waiting on the captain: nothing')
+    }
+
+    $lines.Add('')
+    $lines.Add('You are the one voice of this screen. Answer from the reading above: never say nothing')
+    $lines.Add('is under way when it lists work, and never give a count or a percentage that differs')
+    $lines.Add('from it. If you have not looked yourself, the reading above is the answer.')
+    # Observed in a headed browser: asked for plain sentences, the session
+    # described the jobs by position - "one is at 75 percent, another at 25" -
+    # which the captain then has to match to the panel by arithmetic. Agreeing
+    # with the panel is worth little if the captain cannot see that it agrees.
+    $lines.Add('Call each piece of work by the name the reading gives it, so the captain can match')
+    $lines.Add('what you say to the row beside it.')
+    # NEVER A LIMITATION AS THE ANSWER. The captain's own ruling on the sentence
+    # that used to go here: a system worth talking to gives the solution or the
+    # way to do it, never a confession about itself. Get-FmBridgeRoute owns the
+    # route; this only insists it is what gets said.
+    $lines.Add('NEVER answer with something you cannot do. Not as the reply, not as a closing line,')
+    $lines.Add('not softened. If the captain asks for something this screen does not do directly,')
+    $lines.Add('answer with how it gets done - the next step, or what you will do about it - and')
+    $lines.Add('then do everything about it you can. If there is no route at all, say what IS')
+    $lines.Add('possible instead.')
+    # "can you do it yourself? yes or no" came back as "No." - responsive, and
+    # still a limitation standing alone as the whole reply. A yes-or-no is the
+    # captain asking for brevity, not for a dead end.
+    $lines.Add('This holds even when the captain asks for a yes or a no: answer them, and put the')
+    $lines.Add('next step in the same breath rather than leaving a bare no on the screen.')
+    $route = Get-FmBridgeRoute -CanAct $CanAct
+    if ($route) { $lines.Add($route) }
+    $lines.Add('Never describe how this screen is arranged and never name anything internal: no process')
+    $lines.Add('numbers, no lock, no read-only, no dispatch, steer or merge, no checkout, no uncommitted')
+    $lines.Add('changes, no file or branch names. Say nothing twice: not the same point in two')
+    $lines.Add('sentences, and not a line you have already sent in this conversation.')
+    # The page sets a reply as text and the voice reads it aloud, so markdown
+    # arrives as literal asterisks in both.
+    $lines.Add('Answer in plain sentences. No markdown, no bold, no headings.]')
+    if ($Address) {
+        $lines.Add("[Address me as '$Address' from now on, in every reply.]")
+    }
+    $lines.Add('')
+    $lines.Add($Text)
+
+    $lines -join "`n"
 }
 
 function Get-FmBridgeHouseWork {

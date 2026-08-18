@@ -358,11 +358,24 @@ purpose: a test that read its stylesheet would assert implementation source,
 which the rules above forbid. So a change to it is proven by running it, and the
 evidence goes in `docs/windows-e2e-evidence.md`.
 
-- Serve it with `bin/fm-bridge.ps1 -NoEngine -NoLaunch -Port <n>` against a
-  scratch workspace (a directory with `state/`, plus `.fm-workspace` and
-  `.fm-home` in the checkout - both gitignored), and drive it with
-  `chrome-devtools-axi`. The page needs the token the script prints, in the URL
-  fragment.
+- **Do not serve the page to check something, and do not open a browser at it.**
+  This is the captain's standing rule after their machine spoke at them, twice,
+  with several copies at once and no window they could find to silence - see
+  `docs/windows-e2e-evidence.md` section 33.11. The page now asks
+  `Test-FmBridgeVoiceAllowed` before it speaks, and that repair does not reopen
+  the door: `-NoEngine` stops the session, not the page.
+- **Verify over HTTP instead.** `Invoke-RestMethod` against `/api/fleet` with the
+  `X-Fm-Token` header reads the very object the panel paints, so what the panel
+  will show is assertable with nothing rendering. Layout, and how a reply looks
+  once it lands, are the things HTTP cannot answer - ask the captain and let them
+  arrange it rather than starting a screen.
+- Clean up what you start, and check by worktree rather than by name. A
+  force-killed bridge skips its own exit path and leaves the dictation key behind
+  at `Get-FmBridgeTokenPath`; browsers driven headless outlive the session that
+  opened them; and several lanes share this machine, so match on the worktree
+  path before stopping anything. A `pwsh` whose command line merely CONTAINS
+  `fm-bridge` is usually an agent's own tool call, which is the same false
+  positive `Get-FmBridgeHouseWork` documents - and killing it kills yourself.
 - **Measure, do not look.** Claims about what overlaps what come from
   `getBoundingClientRect` and `document.documentElement.scrollWidth`, at several
   window sizes. A screenshot shows the defect; the numbers are what pin it.
@@ -373,6 +386,39 @@ evidence goes in `docs/windows-e2e-evidence.md`.
   will not shrink. `min-width:0` plus `max-width` for a flex row, `minmax(0,1fr)`
   for a grid track, and a canvas sized in pixels must be re-measured from its
   container - an arriving reply is not a resize event.
+- **Everything the screen shows leaves through `ConvertTo-FmBridgePlainText`** -
+  a panel line in its default form, a whole reply with `-Prose`. It is one
+  translator on purpose, so a term that leaked is fixed by adding a word to
+  `Get-FmBridgeVocabulary`, never by a second pass somewhere else. Names the
+  screen is displaying go in as `-Keep`, or the vocabulary translates a word
+  inside a job's own name and the two halves stop agreeing about what it is
+  called.
+- **The panel and the reply answer the same question, so they answer from one
+  read.** `/api/say` calls `Get-FmBridgeFleet` once and hands that object to the
+  session through `New-FmBridgeTurnPrompt`; the panel paints the same object. A
+  second read path for the session would drift, and the screen contradicting
+  itself is the worst thing it can do.
+- **A limitation is never the reply.** The captain's ruling, after one shipped:
+  a screen worth talking to gives the way to get the thing done, never a
+  confession about its own arrangement, and a softer phrasing of the same
+  confession is the same mistake. `Get-FmBridgeRoute` owns the route that goes in
+  its place. Nothing is ever appended under the session's answer either - a fixed
+  line cannot know what the answer above it already says, and the one that used
+  to be there made the screen state the same point twice in one reply.
+- **Do not send the session what the captain must not read.** Anything in the
+  turn prompt can come back out in the answer: a decision's record handle went in
+  so the session could close it and came back as "the carrier question". Job
+  names belong there because the panel prints them; handles and ids do not.
+
+The whole suite takes about three quarters of an hour here, and it must run from
+a parent that OUTLIVES it. An orphaned run fails
+`Get-FmParentProcessId.finds a parent for this process` and nothing else, because
+.NET's `Process.Parent` resolves only a live parent - that failure is the
+launcher, not the tree, and it costs an hour to rediscover. A run backgrounded by
+an agent harness tends to be killed long before the end instead. What works is a
+keeper: one process that runs no tests itself, starts the suite as its child, and
+waits for it. `docs/windows-e2e-evidence.md` section 33.10 has the probe and both
+failure shapes.
 
 ## Module foundation
 

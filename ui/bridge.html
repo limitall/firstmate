@@ -1039,7 +1039,19 @@ function pump(){
    a fallback. It shipped audio to a third party, which is the exact question
    decision `web-ui-voice-listening` exists to settle, and nothing called it any
    more - both dictation paths now run on this machine. */
+// OFF UNLESS THE CAPTAIN SWITCHED IT ON. Set from the bridge, which reads the
+// same config/voice gate bin/fm-say.ps1 obeys, and re-read on every fleet poll so
+// turning it off takes effect while the page is open. Starts false on purpose: a
+// page that has not heard from the bridge yet must not speak.
+let voiceAllowed = false;
 function speak(txt){
+  // THIS PAGE SPOKE ON THE CAPTAIN'S MACHINE WITH NO WINDOW OPEN. It used to say
+  // every reply out loud unconditionally, so copies driven for a check - which
+  // have no visible window at all - talked out of a machine whose owner could
+  // find nothing to silence. AGENTS.md section 9: the voice channel is off until
+  // config/voice exists, and nothing calls it by itself. This page was calling
+  // it by itself.
+  if(!voiceAllowed) return;
   if(!window.speechSynthesis) return;
   const u=new SpeechSynthesisUtterance(txt);
   u.rate=1.02; u.pitch=.95;
@@ -1104,7 +1116,12 @@ async function respond(said){
     // Focus returns so the next dictation lands here without a click.
     focusMessage();
   }catch(e){
-    sayTrouble('Not reachable','The bridge is not reachable. Is it still running?');
+    // staleToken() has already said something more useful and more specific,
+    // and this generic line would overwrite it - hit while testing this seam:
+    // an old tab answered "The bridge is not reachable" about a bridge that was
+    // running perfectly well, which sends the captain to restart the one thing
+    // that was not broken. bootCheck already guards this; respond did not.
+    if (!staleShown) sayTrouble('Not reachable','The bridge is not reachable. Is it still running?');
   }
   awaitingReply = false;
   refreshFleet();
@@ -1197,8 +1214,15 @@ function paintDecisions(ds){
         '<div class="opts"><button type="button">Answer by voice</button></div>';
       // Answering routes back through the SAME turn path as speech, so the
       // decision's lifecycle stays owned by firstmate rather than by this page.
+      //
+      // NO HANDLE IN THE CAPTAIN'S OWN SENTENCE. This used to prefill the raw
+      // record key and id - "Answer the open decision merge-strategy on task
+      // fm-ui-readonly" - which put two internal identifiers into the box the
+      // captain then types their answer into and reads back. Firstmate is handed
+      // the exact key with every turn now, so the sentence only needs to say
+      // which piece of work it is about, in the same words the row above it uses.
       el.querySelector('button').addEventListener('click',()=>{
-        const q='Answer the open decision '+d.Key+' on task '+d.Task+': ';
+        const q='About the question on '+String(d.Task).replace(/[-_]+/g,' ')+': ';
         document.getElementById('typed').value=q;
         document.getElementById('typed').focus();
       });
@@ -1237,6 +1261,9 @@ async function refreshFleet(){
     // The address is whatever this home is configured to use - bin/fm-name.ps1
     // owns it - so the page shows the captain's own word rather than a literal.
     if(f.captain){ document.getElementById('whoName').textContent = f.captain.toUpperCase(); }
+    // Re-read every poll, so switching the voice off silences an open page
+    // rather than waiting for a reload.
+    voiceAllowed = !!f.voice;
     // A line dictated straight into the speech engine, transcribed by its warm
     // model and handed over here. Asked exactly as if it had been typed, so the
     // captain can dictate from anywhere and watch the answer appear.
@@ -1296,6 +1323,7 @@ async function bootCheck(){
     const h = await api('/api/health');
     // What dictation can do on THIS machine, asked once rather than discovered
     // by trying the fast path and guessing why it failed.
+    voiceAllowed = !!h.voice;
     if(h.speech){
       speech.warm = !!h.speech.warm;
       speech.handsOver = !!h.speech.handsOver;

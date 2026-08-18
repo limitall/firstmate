@@ -5197,3 +5197,478 @@ sweep repeated there at 0 findings.
 - The reading against a torn-down or crashed endpoint on Windows. It returns
   `unknown` by construction there, and the tests cover that branch, but no
   crashed worker was observed during this task.
+
+## 33. The screen that argued with itself - `PROVEN (Windows 11)`
+
+Task: the browser screen showed the captain two contradictory answers to one
+question, in machinery, over and over.
+Run in a disposable worktree on the captain's Windows 11 laptop on 2026-08-18,
+on `fm/ui-readonly` over `835bc53`, against a real headed Chrome driven by
+`chrome-devtools-axi` and a real hosted session.
+
+The captain read an in-progress version of this work on their own screen partway
+through and sent an addendum that changed its shape.
+Section 33.6 onward is that second half, and it overrides the first where the two
+disagree.
+
+Nothing on the captain's own workspace was touched: the whole run used a scratch
+workspace under the session's temporary directory, pointed at by this worktree's
+own `.fm-workspace`, which is gitignored and per-machine.
+
+### 33.1 What the captain saw
+
+One screen, one moment.
+The left panel listed three jobs with live percentages.
+The reply beside it said:
+
+```
+Captain, nothing is under way - no active work, an empty queue, and no held or
+blocked items... this session opened read-only: another firstmate session (pid
+25876) holds the lock, so I can't dispatch, steer, or merge from here.
+```
+
+Both halves were honest, which is precisely why it was unusable.
+The panel reads the durable records.
+The reply came from the session the bridge hosts, which had a much narrower view
+of that home and answered from it.
+Three faults in one reply: the two halves disagreed, the reply explained the
+internal arrangement in machinery, and the same event re-fired and produced eight
+near-identical messages in a row.
+
+### 33.2 The design that was chosen, and the one that was not
+
+The honest alternative was to forbid the hosted session from speaking about the
+fleet at all - the panel owns what is happening, the assistant owns conversation.
+That was rejected: the captain talks to this screen precisely to ask what is
+happening, and an assistant that must answer "I cannot say" to the main question
+is a worse screen than the one it replaces.
+It also does not actually fix the contradiction - the captain still reads the
+panel and the reply together.
+
+What shipped is **one reading, rendered twice**.
+`Get-FmBridgeFleet` was already the panel's source; `/api/say` now makes that
+same call once per turn and hands the result to the session with the captain's
+words, so the reply is drawn from the object the panel is painting rather than
+from a second look that could differ in timing, in parsing, or in what it was
+allowed to see.
+Two read paths that agree by convention would drift; two renderings of one object
+cannot.
+
+Two guarantees sit on top, and they are code rather than requests:
+
+- every reply leaves through `ConvertTo-FmBridgePlainText -Prose`, the same
+  translator the panels already used, extended rather than duplicated;
+- `Remove-FmBridgeRepetition` collapses a reply that says one thing twice.
+
+### 33.3 The contradiction, closed, with three jobs genuinely running
+
+Three real worker processes, each doing real work in this checkout and reporting
+its own percentage into its durable record, plus one open decision.
+The panel and the reply, read out of the live page in the same call, with the
+panel read immediately before the turn and immediately after it:
+
+```
+panel before   LOCK IDENTITY 75%   TG ROUTE 25%   UI READONLY 55%
+panel after    LOCK IDENTITY 75%   TG ROUTE 25%   UI READONLY 55%
+header         UNDER WAY 3   WAITING ON YOU 1
+
+reply          "Three jobs are moving right now. lock-identity is at 75 percent
+                and has just finished reading the tests. ui-readonly is at 55
+                percent, having worked through the bin. tg-route is at 25
+                percent, done with the docs, and it is waiting on you: it needs
+                to know which provider the test should use."
+```
+
+Same three names, same three percentages, same count, same decision.
+
+**One bounded property, stated rather than hidden.**
+The reading is taken when the turn is sent, and a turn takes tens of seconds, so
+a job whose percentage moves during it leaves the reply quoting the older number
+beside a panel showing the newer one.
+Measured on an earlier run, while the workers were still climbing:
+
+```
+reading at turn   lock-identity 45%   tg-route 10%   ui-readonly 40%
+panel ~30s later  lock-identity 60%   tg-route 25%   ui-readonly 55%
+```
+
+The names, the count and the open decision were identical throughout; only the
+numbers had moved on.
+That is an answer describing the moment it was asked, which the activity log
+timestamps, and it is a different thing from the defect this section is about -
+the panel listing three jobs while the reply said none existed.
+It is recorded here rather than papered over.
+
+### 33.4 The cure reintroduced the disease, and the browser caught it twice
+
+Both of these are the same defect arriving through the fix for it, and neither
+would have been found by reading the code.
+
+**A job's own name, translated.**
+The panel row read `LOCK IDENTITY` and the reply beside it called the same job
+`controls-identity`:
+
+```
+reply   "Three things are moving right now: the controls-identity at 90%,
+         ui-readonly at 55%, and tg-route at 25% ..."
+```
+
+The vocabulary had translated `lock` inside a job's own name.
+That observation is also the proof that the translator is genuinely on the live
+reply path: no model produces the string "the controls-identity" - it is exactly
+what the `lock -> the controls` rule makes of `lock-identity`, article and all.
+The rule that closed it is `-Keep`: a name the screen is showing is masked and
+restored untouched, on the same principle as a URL.
+
+**A record handle, repeated back.**
+The reading carried each open decision's exact key so the session could close it,
+and the session told the captain that tg-route was "still held up on the carrier
+question" - `carrier` being the handle, a word on no panel and in no vocabulary.
+Asking a model to hold a secret is not a design, so the handle is simply not sent
+any more; the session reads the record for it at the moment it writes to it,
+which is the only moment it needs one.
+
+### 33.5 The machinery, swept
+
+Every reply and every panel line on screen at the end of the run, with the job
+names masked out first because a name the panel prints is not machinery:
+
+```
+lock, locks, read-only, read only, pid, process id, uncommitted, dispatch,
+steer, merge, checkout, worktree, crewmate, teardown, harness, carrier, key=,
+session, unable   ->   no internal term on screen
+```
+
+The translator is what makes that a guarantee rather than a hope, and the suite
+drives the captain's exact leaked reply through it:
+
+```
+in    Captain, nothing is under way - ... This session opened read-only: another
+      firstmate session (pid 25876) holds the fleet lock, so I can't dispatch,
+      steer, or merge from here. Your checkout has uncommitted changes.
+out   Captain, nothing is under way - ... This session opened watching only:
+      another firstmate session holds the controls, so I can't start work,
+      redirect, or land the work from here. Your local copy has unsaved edits.
+```
+
+One trap the table walked into on the way, worth recording because nothing on
+screen would have shown it: `merge` was first translated to "bring the work in",
+and the dangling-preposition tidy-up at the end of the same function - which
+exists to clean up after a REMOVAL and cannot tell a leftover from a word the
+table meant - then ate the "in" it had just been handed.
+"It was merged." became "It was brought."
+The plain words are now clear of those prepositions and `Get-FmBridgeVocabulary`
+has a test that keeps them so.
+
+### 33.6 The captain's addendum: a limitation is never the reply
+
+Their words, on seeing the in-progress version:
+
+> it also say "I can see the work but cannot start or stop anything from here"
+> this is wrong as smart AI system it never should say this line instead it
+> should give the solution of that or way to do that
+
+They are right, and the sentence they threw out was mine.
+A limitation is an explanation of this system's own arrangement wearing the
+clothes of an answer; the captain did not ask how the screen is put together.
+Softening it would have been the same mistake with better manners, and deleting
+it and saying nothing would have left them asking twice.
+
+So the bridge no longer appends anything.
+`Get-FmBridgeStandingNote` is gone and `Get-FmBridgeRoute` is in its place, and
+it returns a route rather than a refusal: starting, stopping and steering work
+happens in the firstmate window the captain already has open on this machine,
+which is the same fact read from the side that has an action on it.
+The session is told, in the turn prompt, never to answer with something it cannot
+do - not as the reply, not as a closing line, not softened - and to give the next
+step instead.
+
+Asked to do exactly the thing this screen has no hands for:
+
+```
+captain   stop lock-identity right now and start the payment tests instead.
+firstmate Halting lock-identity at its 75 percent and putting the payment tests
+          in its place is a call you make in the firstmate window on this machine
+          - ask there to stop lock-identity and to begin the payment tests, and I
+          will write that request out for you word for word if it helps. From
+          here I will keep watching ... Once the payment tests appear I will
+          report them by name alongside the rest.
+```
+
+The route, the offer, and what it will do about it.
+No confession anywhere in it.
+
+One more turn was needed to finish the rule, and it is the case a prompt written
+in good faith misses.
+Asked point blank, with the form of the answer constrained:
+
+```
+captain   can you do it yourself? yes or no.
+firstmate No.
+```
+
+Responsive to the letter, and still a limitation standing alone as the whole
+reply - a bare no on a screen, which is exactly what the captain threw out.
+A yes-or-no is them asking for brevity, not for a dead end, so the instruction
+now says so outright.
+The same question, after:
+
+```
+firstmate No - starting, stopping and redirecting work isn't something this
+          screen does; that happens in the firstmate window you already have open
+          on this machine. Ask for it there, or I'll write out the exact wording
+          for you to paste. Meanwhile, here's where things stand: lock-identity is
+          at 75 percent ... Tell me the provider and I'll draft that answer for
+          you to hand over.
+```
+
+### 33.7 It said the same thing twice in one breath
+
+Also from the addendum, off the captain's screen, inside a single reply:
+
+```
+...I can see this work but cannot start or stop any of it from here.
+I can see the work but cannot start or stop anything from here.
+```
+
+The cause, precisely: the session had been told the same fact and said it in its
+own words at the end of its answer, and the bridge then appended its canned
+sentence underneath.
+A fixed line added under a written answer cannot know what that answer already
+says.
+Deleting the append removes the cause outright, and 32.6 is why it was deleted
+anyway.
+
+The guard behind it was widened as well, because the shape the captain hit was
+invisible to it: `Remove-FmBridgeRepetition` compared whole LINES, and both of
+those sentences were on one.
+It now compares sentences, putting them back on the line they came from.
+The threshold moved from 0.7 to 0.6 for a measured reason rather than a hunch -
+that observed pair shares eleven of the seventeen distinct words between them,
+0.65, so a rule at 0.7 watched it go past.
+Every list and stepped answer in the suite sits below 0.35, so there is a wide
+gap between the two rather than a fine line being walked.
+
+### 33.8 The mangled work summaries: half a defect, precisely
+
+The addendum asked why the panel read as nonsense, citing four rows.
+Checking each against the record it came from separates them into two kinds.
+
+**Three of the four are faithful, and the fault is this evidence run's own
+scaffolding.**
+The worker script written to give the browser something real to show wrote its
+notes ungrammatically:
+
+```
+record   working: [75%] the tests is read
+panel    The tests is read
+```
+
+The translator removed the state label and the percentage and changed nothing
+else.
+A real worker writing that sentence would see the same on screen, correctly.
+The scaffolding now writes "finished reading the tests" and the panel reads
+`Finished reading the tests`.
+
+**The check did turn up a real defect of exactly the shape they suspected**,
+which the earlier screenshot in this section shows as three rows all reading
+`Is through`.
+A removal at the HEAD of a line takes the sentence's subject with it:
+
+```
+record   working: [90%] FmLock.Tests.ps1 is through          panel   Is through
+record   working: [10%] tests/FmBridge.Tests.ps1 needs a case panel   Needs a case
+record   working: [40%] fm/fix-signin is rebased              panel   Is rebased
+record   done: report at docs/windows-e2e-evidence.md is ready
+                                                    panel   Report ready is ready
+```
+
+A name at the head now leaves a noun behind rather than a hole, and the
+report-path rule tells apart a path that ENDS the line from one the sentence
+carries on past:
+
+```
+That file is through          That file needs another case
+That branch is rebased        The report is ready
+```
+
+A name mid-sentence is still removed rather than replaced - it was never the
+problem, and a placeholder there would add noise to a sentence that already
+reads.
+
+### 33.9 Two smaller things fixed in the same pass
+
+The decision panel's "Answer by voice" button used to prefill the captain's own
+message box with `Answer the open decision <key> on task <id>: `, putting two
+internal identifiers into the box they then read and type into.
+It now reads `About the question on tg route: `.
+
+A stale key made the reply box say the bridge was not reachable, about a bridge
+that was running perfectly well - hit while driving this seam, after the bridge
+was restarted under a tab that still held the old key.
+`bootCheck` already guarded that; `respond` did not, and now does.
+
+Markdown reached the screen as literal asterisks - `- **lock-identity** - 75%,
+working` - because the page sets a reply as text rather than parsing it, and the
+voice reads the same string aloud.
+Emphasis and heading markers are now stripped in prose, and the turn prompt asks
+for plain sentences; the bullet itself is kept, since it reads as a list either
+way.
+
+### 33.10 One failure that was the launcher, not the tree - and how to not repeat it
+
+Recorded because it looks exactly like a regression and is not one, and because
+the next person to run this suite in the background will hit it.
+
+Running the whole suite as a process detached from a launcher that then exits
+fails one assertion, twenty minutes in:
+
+```
+[-] Get-FmParentProcessId.finds a parent for this process
+    Expected the actual value to be greater than 1, but got $null.
+```
+
+Diagnosed rather than assumed.
+`Get-FmParentProcessId` reads .NET's `Process.Parent`, which resolves only a LIVE
+parent - it cannot safely identify a pid that has been recycled - so an orphaned
+process has no parent to find.
+A probe pinned it both ways:
+
+```
+detached, launcher still alive   parent -> 12345
+detached, launcher exited        parent -> (nothing), while Win32_Process
+                                 still reports the dead pid
+```
+
+So the test is asserting something true of every normal run and false of an
+orphaned one, and the tree is untouched: the same file passes in a run whose
+launcher stays alive, and the twenty-three other files in the orphaned run
+passed with it.
+
+**The rule this leaves:** run `Invoke-Pester -Path ./tests` from a parent that
+outlives it.
+This is an environmental constraint on the runner, not a defect in
+`Get-FmParentProcessId`, whose null is the correct answer to "who is my parent"
+when the parent is gone.
+
+Which is narrower than it sounds, because the suite takes about three quarters of
+an hour and the two obvious ways to give it that time both fail:
+
+```
+harness background run   killed at ~10 minutes, 17 of 45 files, 0 failures
+plain detached run       orphaned, 24 of 45 files, that one assertion fails
+```
+
+What works is a keeper: a process that runs no tests itself, starts the suite as
+its child, and waits for it.
+The keeper being orphaned costs nothing, and the suite has a living parent for
+its whole run.
+
+### 33.11 The screen spoke on the captain's machine, and that is my defect
+
+Reported by the captain as impact, twice, with three copies talking at once:
+
+> your test copies of the screen have been SPEAKING ALOUD on the captain's
+> machine twice now, with no browser open and no way for them to find or silence
+> it
+
+Everything of mine was stopped first - the screens, their hosted sessions, the
+browsers behind them, and the stale key a force-kill leaves on disk.
+One bridge on this machine was left alone deliberately: it belongs to another
+lane's worktree, and killing another lane's live work is not a repair.
+
+**What was actually making the noise, checked rather than guessed.**
+Not firstmate's voice channel: `config/voice` exists in no home on this machine,
+so `bin/fm-say.ps1` and `bin/fm-ask.ps1` were gated off throughout.
+It was the page.
+`ui/bridge.html` called the browser's own speech synthesis on every reply,
+unconditionally:
+
+```
+respond()  ->  speak(res.reply)  ->  speechSynthesis.speak(...)
+```
+
+A page driven for a check runs in a browser with nothing on screen, so the sound
+comes out of a machine whose owner can see no browser to close and no control to
+mute - and one bridge per check meant several talking over each other.
+
+**It is the contract, not a preference.** `AGENTS.md` section 9: the voice
+channel "is off until the captain creates `config/voice`, and nothing calls it by
+itself".
+This page was calling it by itself, on the one surface loud enough to be heard
+across a room.
+
+So the page now asks before it speaks.
+`Test-FmBridgeVoiceAllowed` puts the question to `Get-FmVoiceConfig`, which is
+the gate's owner, and the bridge serves the answer on `/api/health` and again on
+every `/api/fleet` poll so switching the voice off silences a page that is
+already open.
+`speak()` starts from `false` and returns early unless the captain has switched
+it on.
+
+**One test failure worth keeping.** The first cut called a function name I had
+assumed rather than checked, and the "silent when it cannot tell" catch swallowed
+the `CommandNotFound` - so three of the five tests passed for the wrong reason,
+all of them the ones expecting silence.
+The single test that asserts the voice DOES turn on is what caught it.
+A guard that fails safe hides its own breakage from every test that only checks
+the safe direction.
+
+**Operating rule for this surface, and it is the captain's, not a preference.**
+Do not start a screen that serves a page, and do not open a browser at one.
+`-NoEngine` was my own first answer and it is not enough: it stops the session,
+not the page, and the page is what the captain hears.
+The gate above is a repair to the product, not a licence to go on driving it.
+
+Verify over HTTP, against the API, with nothing rendering:
+
+```
+Invoke-RestMethod -Uri http://127.0.0.1:<port>/api/fleet -Headers @{ 'X-Fm-Token' = $token }
+```
+
+That reads the same object the panel paints, which is precisely the point of this
+section - one reading behind both halves - so an assertion about what the panel
+shows can be made without a browser existing.
+What HTTP cannot answer is layout and what a reply looks like on screen; those
+need a person to look, so ask the captain and let them arrange it.
+Their machine is not a test rig.
+
+### 33.12 The suite and the analyzer, on this branch
+
+```
+Invoke-Pester -Path ./tests
+  2167 passed, 0 failed, 25 skipped   (33m11s, 46 files, one process)
+```
+
+Measured on this branch rebased onto `a0a1243`, which is the tree that will
+merge.
+`tests/FmAnalyzer.Tests.ps1` is inside that run, so the repo-wide
+`Invoke-ScriptAnalyzer` sweep at every severity is clean as part of it.
+`tests/FmBridge.Tests.ps1` is 109 of those tests, against 42 before this work.
+
+Run under the keeper of section 33.10, which is what let it finish at all.
+Three earlier whole-suite runs bracket that number and are worth keeping,
+because each moved for a stated reason rather than on its own:
+
+```
+2125 passed / 0 failed   before the voice gate, over 835bc53
+2130 passed / 0 failed   after it - the five tests the gate brought
+2167 passed / 0 failed   rebased onto a0a1243, which brought 37 tests of its own
+```
+
+**One failure on the way, and it was the rebase rather than the tree.**
+Checking out main's one-line `AGENTS.md` edit broke the Windows hardlink
+`CLAUDE.md` holds to it, so the mirror read `conflict`:
+
+```
+[-] this checkout's own instruction surface.is healthy
+    Expected collection @('link', 'mirror') to contain 'conflict'
+
+AGENTS.md 56982 bytes 16:27      CLAUDE.md 56735 bytes 10:25
+```
+
+That is the hazard `CONTRIBUTING.md` already documents, with the repair it
+already names - delete `CLAUDE.md`, run setup, which re-links it.
+Worth recording anyway, because a rebase is a likelier way to hit it than the
+editor the note describes, and the failure names the surface rather than the
+rebase that broke it.
