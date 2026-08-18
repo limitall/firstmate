@@ -62,6 +62,8 @@ The lock directory holds the same files bash readers already `cat`: `pid`,
 `fm-home`, `pid-identity`, `role`, `watcher-path`. bash's own release and
 stale-recovery paths handle the non-symlink directory form, so the two
 implementations interoperate on one machine - verified in both directions.
+The foundation's locks add one child bash does not read, `pid-identity.<pid>`,
+and change none of those files' bytes; `docs/foundation.md` owns why.
 `Remove-FmLockPath` also follows and cleans up a bash symlink lock and its
 private owner directory when evicting a dead holder.
 

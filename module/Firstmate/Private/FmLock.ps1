@@ -26,7 +26,12 @@
       OS lets exactly one creator win and raises IOException for everyone else.
       The layout otherwise matches bash (pid, pid-identity, fm-home, role,
       watcher-path children), so a Linux firstmate inspecting the home still
-      recognizes what it sees.
+      recognizes what it sees. One child is this port's own and bash does not
+      read it: pid-identity.<pid>, the pid-reuse guard's record NAMED BY THE
+      PROCESS IT DESCRIBES. Every file bash does read keeps its bytes, exactly
+      as state/.lock keeps its one-line contract while its guard rides in a
+      state/.lock.identity sidecar. Get-FmLockInfo owns why the guard cannot be
+      read from the unkeyed sidecar.
 
       Breaking a stale lock is likewise atomic without a separate steal lock:
       the breaker RENAMES the dead holder's pid file to a name unique to itself.
@@ -106,6 +111,22 @@ function Read-FmLockSidecar {
     $trimmed = $value.Trim()
     if ($trimmed) { return $trimmed }
     return $null
+}
+
+# Name of the identity record for one process id, inside a lock directory.
+#
+# THE PID IS IN THE NAME BECAUSE THAT IS WHAT MAKES THE PAIRING PROVABLE. The
+# unkeyed 'pid-identity' sidecar has one name for every holder in turn, so
+# reading it answers "the identity of whoever last wrote it", which is not the
+# same question as "the identity of the process the pid file names" - and the
+# two answers differ exactly when a lock changes hands, which under contention
+# is constantly. A record named after its own process can only ever have been
+# written by a process with that id, so the pid and the identity come from one
+# observation by construction rather than by winning a race.
+function Get-FmLockIdentityName {
+    [OutputType([string])]
+    param([Parameter(Mandatory)][object]$ProcessId)
+    return "pid-identity.$ProcessId"
 }
 
 function Get-FmLockInfo {
@@ -235,7 +256,41 @@ function Get-FmLockInfo {
     # recorded identity, which the liveness check below already treats as
     # "cannot prove anything" and resolves to plain liveness - held, never
     # stealable. Failing quiet in that direction is the safe one.
-    $info.Identity = Read-FmLockSidecar -Path (Join-Path $full 'pid-identity')
+    #
+    # THE IDENTITY COMES FROM THE RECORD THIS PID NAMED AFTER ITSELF, AND THAT
+    # IS THE OTHER HALF OF THE CORRECTNESS. Reading 'pid' and then reading the
+    # unkeyed 'pid-identity' is two observations of a lock that can change hands
+    # between them, so the identity compared could belong to a DIFFERENT holder
+    # than the pid it was compared against - and a mismatch is reported stale,
+    # with a process id in it, so the break's guard passes and a live holder is
+    # evicted. Measured under contention with the eviction captured:
+    # docs/windows-e2e-evidence.md section 28.4.
+    #
+    # Re-reading cannot fix that - pid, identity, pid can return the same pair
+    # through an A-B-A handover - so the pairing is made structural instead, and
+    # it rests on two properties of the pid-keyed record:
+    #
+    #   published BEFORE the claim, so there is no instant at which the pid file
+    #   names a holder whose record has not been written yet;
+    #
+    #   RETAINED FOR AS LONG AS THAT PROCESS LIVES - not removed on release, not
+    #   removed by a break - so a read of it cannot come back empty just because
+    #   the holder let go between this function's two reads. It describes a
+    #   PROCESS, not a claim. Only Clear-FmLockResidue removes one, and only once
+    #   its process is gone.
+    #
+    # Together those make the answer independent of when this read happens: a
+    # record named .<pid> can only have been written by a process holding that
+    # id, and it is there whenever that process is.
+    $info.Identity = Read-FmLockSidecar -Path (Join-Path $full (Get-FmLockIdentityName -ProcessId $info.ProcessId))
+    if ($null -eq $info.Identity) {
+        # No pid-keyed record at all. That is what a claim written by bash, or by
+        # the version of this code before the keyed record existed, looks like -
+        # the unkeyed sidecar is the only identity such a record carries, so it
+        # is read and an old record keeps its pid-reuse guard instead of becoming
+        # a holder nothing can ever prove stale.
+        $info.Identity = Read-FmLockSidecar -Path (Join-Path $full 'pid-identity')
+    }
     # Not $home: PowerShell's $HOME is read-only and assigning to it fails.
     $info.Home = Read-FmLockSidecar -Path (Join-Path $full 'fm-home')
     $info.Role = Read-FmLockSidecar -Path (Join-Path $full 'role')
@@ -268,23 +323,58 @@ function Remove-FmLockChildFile {
     }
 }
 
-function Clear-FmLockBreakResidue {
+function Clear-FmLockResidue {
     <#
         .SYNOPSIS
-        Remove pid.stale.* files left by a breaker that died mid-recovery.
+        Sweep what a lock outlives: pid.stale.* from a breaker that died
+        mid-recovery, and pid-identity.<pid> records whose process is gone.
 
         .DESCRIPTION
         Called only by the process that currently holds the lock, so it can never
         race a live breaker. Anything younger than the grace is left alone.
+
+        THIS IS THE ONLY THING THAT REMOVES AN IDENTITY RECORD, and it removes
+        one only when that process is gone - which is what lets every reader
+        treat the record as present for as long as its process is (see
+        Get-FmLockInfo). An identity record whose process is still ALIVE is never
+        swept, whether it holds the lock, is waiting for it, or has released it
+        and may take it again.
+
+        Nothing's correctness depends on the sweep RUNNING: a record left behind
+        by a dead process is only ever consulted while the pid file names that
+        same id, and then it is the honest answer - that holder is gone.
     #>
     param([Parameter(Mandatory)][string]$LockPath)
-    try {
-        $residue = [System.IO.Directory]::GetFiles($LockPath, 'pid.stale.*')
-    } catch {
-        return
+    $grace = Get-FmLockStaleAfterSeconds
+    $residue = @()
+    try { $residue = [System.IO.Directory]::GetFiles($LockPath, 'pid.stale.*') } catch {
+        Write-Verbose "firstmate: could not enumerate break residue under $LockPath"
     }
     foreach ($file in $residue) {
-        if ((Get-FmPathAge -Path $file) -lt (Get-FmLockStaleAfterSeconds)) { continue }
+        if ((Get-FmPathAge -Path $file) -lt $grace) { continue }
+        try { [System.IO.File]::Delete($file) } catch { Write-Verbose "firstmate: could not sweep $file" }
+    }
+
+    $orphans = @()
+    try { $orphans = [System.IO.Directory]::GetFiles($LockPath, 'pid-identity.*') } catch {
+        Write-Verbose "firstmate: could not enumerate identity records under $LockPath"
+        return
+    }
+    $prefix = 'pid-identity.'
+    foreach ($file in $orphans) {
+        # A Windows search pattern ending in '.*' also matches a name with NO
+        # extension, so this enumeration returns the unkeyed 'pid-identity'
+        # sidecar as well. Deleting that would take the guard off every record
+        # written by bash or by the previous version of this code.
+        $name = [System.IO.Path]::GetFileName($file)
+        if (-not $name.StartsWith($prefix, [System.StringComparison]::Ordinal)) { continue }
+        $owner = $name.Substring($prefix.Length)
+        if (-not (Test-FmProcessId -Id $owner)) { continue }
+        if ([int]$owner -eq $PID) { continue }
+        # Age first because it is the cheaper test, and because a record younger
+        # than the grace belongs to a claim that may still be in flight.
+        if ((Get-FmPathAge -Path $file) -lt $grace) { continue }
+        if (Test-FmProcessAlive -Id $owner) { continue }
         try { [System.IO.File]::Delete($file) } catch { Write-Verbose "firstmate: could not sweep $file" }
     }
 }
@@ -346,6 +436,11 @@ function Invoke-FmLockBreak {
     try { $current = Read-FmStateFile -Path $pidFile } catch { $current = $null }
     if ($null -eq $current -or $current.Trim() -ne $expected) { return $false }
 
+    # The dead holder's pid-keyed identity record is left alone, like the release
+    # path leaves its own: a break that loses its after-check puts the pid file
+    # back, and having removed the live holder's identity record on the way past
+    # would have taken the pid-reuse guard off a lock that still has one.
+    # Clear-FmLockResidue sweeps it once that process is gone.
     Remove-FmLockChildFile -LockPath $LockPath -Name ($script:FmLockChildNames | Where-Object { $_ -ne 'pid' })
 
     $ticks = [datetime]::UtcNow.Ticks
@@ -434,10 +529,33 @@ function Request-FmLock {
     New-FmDirectory -Path $full
     $pidFile = Join-Path $full 'pid'
     $identity = Get-FmProcessIdentity -Id $PID
+    $identityValue = if ($identity) { $identity } else { '' }
+    $identityRecord = Join-Path $full (Get-FmLockIdentityName -ProcessId $PID)
     $recovered = $null
 
     for ($attempt = 0; $attempt -le $MaxBreakAttempts; $attempt++) {
         $claimed = $false
+
+        # PUBLISHED BEFORE THE CLAIM, AND THAT ORDER IS THE CORRECTNESS. The pid
+        # file is the lock: the instant it names this process, an inspection may
+        # read it and go looking for that pid's identity record. Publishing after
+        # winning would leave a window where the pid file names a live holder
+        # whose record is not there yet, and an inspection falling back in that
+        # window reads the UNKEYED sidecar - whatever the previous holder left
+        # behind, which is the exact mis-pairing this record exists to remove.
+        #
+        # ONLY WHEN THE LOCK LOOKS FREE, because CreateNew can only win then, and
+        # because publishing over an existing claim would be actively wrong: a
+        # lock recorded by a DEAD process whose id this process has since been
+        # given would gain a matching, live identity record and read as held by
+        # us for ever. Nothing else recovers it either - it names our own pid, so
+        # the guard would have proved a lock stale and then removed the proof.
+        $published = $false
+        if (-not [System.IO.File]::Exists($pidFile)) {
+            Write-FmStateFile -Path $identityRecord -Content $identityValue
+            $published = $true
+        }
+
         try {
             $stream = [System.IO.File]::Open(
                 $pidFile,
@@ -463,7 +581,17 @@ function Request-FmLock {
             # something outside this module removed our claim - report the lock
             # as unavailable and touch NOTHING, because whatever is in there now
             # may be a live holder's.
-            $identityValue = if ($identity) { $identity } else { '' }
+            # The pre-claim publication above is skipped when the pid file was
+            # there a moment earlier; winning anyway means its holder released in
+            # between, so publish now rather than hold a lock whose identity
+            # record is missing. The window that leaves is inert: the releasing
+            # holder removes the unkeyed sidecar BEFORE the pid file, so an
+            # inspection landing in it has no identity to mis-pair and falls back
+            # to plain liveness, which is held.
+            if (-not $published) { Write-FmStateFile -Path $identityRecord -Content $identityValue }
+            # The unkeyed sidecar stays, byte for byte, because it is one of the
+            # files a bash reader cats. It is no longer what this port's own
+            # pid-reuse guard reads - see Get-FmLockInfo.
             Write-FmStateFile -Path (Join-Path $full 'pid-identity') -Content $identityValue
             if ($PSBoundParameters.ContainsKey('HomePath') -and $HomePath) {
                 Write-FmStateFile -Path (Join-Path $full 'fm-home') -Content $HomePath
@@ -486,7 +614,7 @@ function Request-FmLock {
                 return $null
             }
 
-            Clear-FmLockBreakResidue -LockPath $full
+            Clear-FmLockResidue -LockPath $full
             $lock = [pscustomobject]@{
                 PSTypeName         = 'Firstmate.Lock'
                 Path               = $full
@@ -623,7 +751,15 @@ function Unlock-FmLock {
             return $false
         }
 
-        Clear-FmLockBreakResidue -LockPath $full
+        Clear-FmLockResidue -LockPath $full
+        # THE PID-KEYED IDENTITY RECORD IS NOT REMOVED HERE, and that is
+        # deliberate - see Get-FmLockInfo. It describes this PROCESS, not this
+        # claim, so it outlives the release and Clear-FmLockResidue sweeps it
+        # once the process is gone. Removing it here reopened the very defect
+        # this record closes: an inspection that read the pid file just before
+        # the release then found no record for that pid, fell back to the
+        # unkeyed sidecar - by then the NEXT holder's - and mis-paired again.
+        # Measured, with the eviction reproduced: section 28.7.
         Remove-FmLockChildFile -LockPath $full -Name ($script:FmLockChildNames | Where-Object { $_ -ne 'pid' })
         try { [System.IO.File]::Delete($pidFile) } catch { Write-Verbose "firstmate: could not remove $pidFile" }
         $null = $script:FmHeldLocks.Remove($key)

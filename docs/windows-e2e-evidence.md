@@ -2183,13 +2183,28 @@ a separate defect; what is closed is the question of whose they are.
   **SETTLED - see section 28.** It was the lock, not the test: reproduced
   deliberately under contention, traced to a stale verdict that named nobody
   breaking a live holder's claim, and fixed.
-- **The lock still evicts a live holder on a torn identity read** (section 28.4).
+- **The lock evicted a live holder on a torn identity read** (section 28.4).
   A second, distinct mechanism found while settling the one above: `pid` and
-  `pid-identity` are read as separate operations, so the pid-reuse guard can
+  `pid-identity` were read as separate operations, so the pid-reuse guard could
   compare one holder's pid against another holder's identity and report a live
-  holder stale. Traced with the eviction captured. Not fixed there, because every
-  sound fix changes the lock record's layout or its staleness mechanism, which is
-  a cross-platform compatibility decision rather than an implementation one.
+  holder stale. Traced with the eviction captured.
+  **SETTLED - see section 28.7.** The lock record gained a pid-keyed identity
+  child, published before the claim and retained while its process lives; every
+  file bash reads keeps its bytes.
+- **Two whole-suite flakes, attributed but not fixed** (section 28.8).
+  `FmWatch`'s terminal wait ends early because a FileSystemWatcher event queued
+  by one notifier outlives it and is picked up by the next - reproduced 10 times
+  in 40 with no lock code in the path. `FmJobCustody`'s real-custody test found
+  its own just-added child missing from the job once, in a file that references
+  no lock function and that passes 7 of 7 alone. Both are other areas' files.
+- **The SESSION lock reports the same tear** (section 28.7, last subsection).
+  `Get-FmSessionLockStatus` reads `state/.lock` and then `state/.lock.identity`,
+  and `Request-FmSessionLock` writes them in that order, so a reporter reading
+  between those two writes calls a live session's lock stale. Found by reading
+  the code while fixing 28.4, not reproduced. Confined to reporting - every
+  writer holds `state/.lock.acquire` for both writes - so it is reported rather
+  than fixed, because the fix is a second on-disk shape decision on a file whose
+  one-line bash contract `docs/foundation.md` states.
 - **`tests/FmInstall.Tests.ps1` repairs the checkout it runs in** (section 21.6),
   which dirties a fresh Windows worktree mid-suite and leaves it needing
   `--force` to tear down. The install area's file, so it is reported here.
@@ -4169,6 +4184,9 @@ Two live-holder evictions remain in that total, both in one run, and they are 28
 
 ### 28.4 A SECOND defect, reported not fixed: a torn pid/identity read
 
+**FIXED - see section 28.7**, which took the layout decision this section says it could not.
+The diagnosis below is left exactly as it was traced, because it is what the fix was built from.
+
 The evictions that survive the fix have a different mechanism, and it is reported here rather than fixed because the brief for this work scopes out redesigning the locking approach - which every sound fix for it requires.
 
 `Get-FmLockInfo` reads the `pid` file and then reads the `pid-identity` sidecar as a separate operation.
@@ -4198,6 +4216,7 @@ The last is the strongest and is the recommended direction, but choosing it is a
 It still can: an eviction that lands earlier in the victim's critical section loses its write.
 
 **Why the concurrent-increment test was not tightened to catch it.** Asserting that every release succeeded would make that test catch an eviction directly, rather than only when one happens to lose a write - but it would then fail intermittently while 28.4 is open, and a red suite is not an acceptable way to hold a finding. That assertion belongs with the fix for 28.4.
+That assertion landed with it: section 28.7.
 
 ### 28.5 Suite and analyzer, on the rebased tree
 
@@ -4220,6 +4239,167 @@ An instrumented run showed a worker throwing `this process already holds the loc
 That was **not** the lock.
 It was a bug in the throwaway instrumentation: `(try { ... } catch { ... })` is not a valid PowerShell expression, so the diagnostic line raised `The term 'try' is not recognized` and aborted `Unlock-FmLock` before it cleared its held-lock table entry.
 Useful anyway - the diagnostic only runs on the release-refused path, so its failure is independent proof that 24792's release WAS refused, which is the victim half of 28.4.
+
+
+### 28.7 The torn pid/identity read, fixed - `PROVEN (Windows 11)`
+
+28.4 reported this one rather than fixing it, because every sound fix changed the lock record's layout and that was a decision above that task.
+This is the fix, with that decision taken: **the lock record gains a child**, stated in full below, and a record written by the old code still reads correctly.
+
+Run on 2026-08-18 on the same laptop as the rest of section 28 - Windows 11 Pro 26200, 12 cores, PowerShell 7.6.4 - on `fm/lock-identity`.
+Every number below was measured over `835bc53`; the branch was then rebased onto `caa511d`, which `main` had advanced to, and the lock, module-assembly, analyzer and contract suites were re-run there.
+
+#### It does not reproduce by chance, so the window was opened on purpose
+
+At exactly 28.1's scale and load - 6 worker processes x 100 iterations, 14 CPU-spinning `pwsh` processes - the code as 28.4 left it, unmodified, lost nothing across **4800 increments in 8 runs: 0 lost, 0 evictions, 0 duplicate reads**.
+That is not the defect being absent.
+The window is two adjacent statements inside `Get-FmLockInfo`, and 28.4's own `INFO-DEAD` and `BREAK-OK` trace lines are proof that the runs which caught it had that function instrumented - which is what held the window open long enough to be entered.
+
+So it is opened deliberately here, and identically on both sides.
+The same three insertions go into a throwaway copy of the tree BEFORE the fix and a throwaway copy AFTER it: log what the pid read observed, hold 1ms, log what the identity read observed together with the identity actually observed for that pid, and log every break that succeeded.
+Nothing else differs between the two runs, and neither copy is what ships.
+
+| | Increments | Mis-paired comparisons | Breaks that succeeded | Live holders evicted | Increments lost |
+| --- | --- | --- | --- | --- | --- |
+| Before the fix | 2400 (4 runs) | 74 | 2 | 2 | 0 |
+| After the fix | 4800 (8 runs) | **0** | **0** | **0** | **0** |
+
+A mis-paired comparison is counted from the trace rather than inferred: an inspection whose recorded identity differs from the identity observed for the pid it read, while that pid is ALIVE.
+That is the defect itself, and it is what went to zero - the evictions are its consequence.
+
+#### The eviction, captured again
+
+One breaker's trace, before the fix, with the mis-pairing provable from within the same file.
+Two tenths of a second earlier the same inspector read the same holder and agreed with itself:
+
+```
+34204 05:35:01.4024365 INFO-ID rec=[38056] recorded=[windows-starttime=639226280617915325 name=pwsh]
+                                            observed=[windows-starttime=639226280617915325 name=pwsh] plainAlive=True
+34204 05:35:01.5260384 INFO-PID rec=[38056]
+34204 05:35:01.5944894 INFO-ID rec=[38056] recorded=[windows-starttime=639226280620459884 name=pwsh]
+                                            observed=[windows-starttime=639226280617915325 name=pwsh] plainAlive=True
+34204 05:35:01.9229645 BREAK-OK rec=[38056]
+```
+
+The recorded token in the second reading belongs to a different worker.
+`plainAlive=True` says 38056 was alive and holding the lock, and the victim's own log line is the other half:
+
+```
+i=12 pid=38056 read=54 unlock=False
+```
+
+#### The fix: an identity record named after the process it describes
+
+Two things had to be true at once, and neither is a timing argument.
+
+- **`pid-identity.<pid>` is published BEFORE the claim.**
+  The pid file is the lock, so the instant it names a process an inspection may go looking for that process's identity, and publishing after winning leaves a window where the holder is live and its record is not there yet.
+  It is published only when the lock looks free, because `CreateNew` can only win then.
+  Publishing over an existing claim would be actively wrong: a lock recorded by a DEAD process whose id this process has since been given would gain a matching live record, read as held by us for ever, and be recoverable by nobody.
+- **The record is RETAINED for as long as its process lives.**
+  It describes a process, not a claim: release does not remove it, a break does not remove it, and only `Clear-FmLockResidue` does, once that process is gone.
+
+Together those make the answer independent of WHEN the read happens, which is what re-reading could never do: a record named `.<pid>` can only have been written by a process holding that id, and it is there whenever that process is.
+`pid`, `pid-identity`, `fm-home`, `role` and `watcher-path` keep their bytes, so a bash reader `cat`ting the lock sees exactly what it saw before; the new child is one bash does not read, exactly as `state/.lock.identity` already is.
+
+#### Retention is load-bearing, and that was measured, not reasoned
+
+The first version of this fix removed the keyed record on release, which looked tidy and was wrong.
+Measured at the same scale with the same instrumentation: **2400 increments, 16 mis-paired comparisons, 2 live holders evicted and 1 increment genuinely lost** - the last of those the first lost increment any run in section 28 has produced since 28.3.
+
+The mechanism is one step removed from the original.
+An inspection read the pid file just before that holder released, then found no record for that pid - the release had just deleted it - and fell back to the unkeyed sidecar, which by then belonged to the NEXT holder.
+A fallback that exists for old records had become reachable by new ones.
+Retention closes it: the record cannot go missing while its process is alive, so the fallback is reachable only by a claim that never had one.
+
+#### What a record written by the old code does now
+
+A claim carrying only `pid` and the unkeyed `pid-identity` - what the previous version wrote, and what bash writes - is read from that sidecar, exactly as before.
+It reads as the holder it names, and it keeps its pid-reuse guard: `recovers a lock whose process id was recycled by an unrelated process` stages precisely that shape and still recovers.
+An old record is never read as "no holder", and never as stale for lacking the new child.
+
+#### The coverage, and it was confirmed by backing the change out
+
+Four tests were added and one was tightened.
+With `module/Firstmate/Private/FmLock.ps1` reverted to `835bc53` and the tests left as they are, three of the four fail and the rest of the file's 50 tests pass:
+
+```
+[-] does not evict a live holder over an identity that belongs to a different one
+    Expected: 'held'   But was: 'stale'
+[-] still proves a recycled process id stale from the record that names it
+    Expected: 'stale'  But was: 'held'
+[-] sweeps an identity record whose process is gone and keeps one whose process is alive
+    CommandNotFoundException: The term 'Clear-FmLockResidue' is not recognized
+```
+
+The first two are the fix stated as a pair: give the unkeyed sidecar and the pid-keyed record DIFFERENT values and the lock must follow the keyed one, whichever way round the disagreement points.
+That is the property, and either half alone could be passed by accident.
+The fourth test - `reads a lock claimed before the pid-keyed record existed` - passes both with and without the fix on purpose: it is the backward-compatibility guard, and a guard that only holds after a change is not one.
+
+`never lets two processes increment a counter at once` is the tightened one.
+It now asserts that **every release succeeded**, which is the only trace an evicted holder leaves, and it takes the lock directly rather than through `Invoke-FmWithLock` so that result is visible.
+28.4 held that assertion back because it would have failed intermittently while this defect was open.
+It does not fail with the fix backed out either - 36 increments is far too few to enter the window, which is the whole reason 28.1 had to build a bigger harness - so it is a standing guard rather than back-out coverage, and it is recorded as such.
+
+#### What is NOT fixed here
+
+One window survives, narrowed to something compound rather than removed.
+A process that wins a claim without having published - the pid file existed when it looked, its holder released, and `CreateNew` then won - holds the lock for the few microseconds until the claimed branch publishes.
+An inspection landing exactly there falls back to the unkeyed sidecar, which the releasing holder deletes BEFORE the pid file, so it finds nothing and answers held.
+Evicting anyone through that door needs the previous holder's sidecar delete to have FAILED as well, and it was not observed in any run above.
+
+#### A third instance, reported not fixed: the SESSION lock reports the same tear
+
+`state/.lock` carries its pid-reuse guard in a `state/.lock.identity` sidecar, and the same two-read pattern is there: `Get-FmSessionLockStatus` reads the lock file and then reads the sidecar.
+`Request-FmSessionLock` writes them in that order too - lock file first, identity second - so a reporter reading between those two writes sees the NEW session's pid beside the PREVIOUS session's identity, and prints `lock: stale (pid N dead or not a harness)` for a session that is alive and holds the home.
+
+Reading the code rather than reproducing it, this one is confined to REPORTING, which is why it is left alone here rather than counted with the defect above.
+Every writer of `state/.lock` holds `state/.lock.acquire` for both writes, so the two acquirers that could act on a wrong verdict cannot interleave; `Unlock-FmSessionLock` is the one writer outside that mutex and it only DELETES, which tears into "identity missing" - the fail-safe direction, read as held.
+Fixing it means giving the session lock the same pid-keyed record, which is a second on-disk shape decision on a file whose one-line bash contract is stated in `docs/foundation.md`, and this task's brief scopes that out.
+
+### 28.8 Suite and analyzer, and two flakes attributed on the way past
+
+```
+Invoke-Pester -Path ./tests
+  RUN1  2058 passed  9 failed  25 skipped      (45 files, 2326s)
+  RUN2  2066 passed  1 failed  25 skipped      (45 files, 2378s)
+  RUN3  2066 passed  1 failed  25 skipped      (45 files, 4751s)
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+  0 findings, run inside the suite by tests/FmAnalyzer.Tests.ps1 and green in all three
+```
+
+On the rebased tree - `main` had advanced to `caa511d`, which lands a new area - `FmLock`, `FmModuleAssembly`, `FmAnalyzer`, `FmContract` and `FmInstall` together are **222 passed, 0 failed**.
+That run needed one worktree repair first, and it is the one `CONTRIBUTING.md` already names: the rebase updated `AGENTS.md` while this worktree's `CLAUDE.md` hardlink was already broken by `FmInstall.Tests.ps1` (section 22.6), leaving `Get-FmInstructionSurface` reporting `MirrorState: conflict`.
+Setup will not overwrite either side of a conflict, by design, so the repair is the documented one - delete `CLAUDE.md` and re-link it to `AGENTS.md`. No tracked content changed; `CLAUDE.md` is marked skip-worktree.
+
+`tests/FmLock.Tests.ps1` is **53 of 53 in every run**, and no run failed the same test twice.
+Three whole-suite runs produced three different failure sets, none of them in the lock area and none of them the same one twice - which is the shape of a suite with load-dependent flakes in it, not of a regression.
+Each is attributed below rather than waved at, and neither is fixed here: they are other areas' files and this brief scopes them out.
+
+**Run 1's 9** are the fresh-worktree clone artifact sections 22.5 and 22.6 already own, unchanged: `FmContract`'s own-instruction-surface trio plus six `FmInstall`/`Invoke-FmDoctor` tests reading the same surface, repaired mid-run by `FmInstall.Tests.ps1` itself.
+That is why there is a second run at all.
+
+**Run 2's 1** is `FmWatch` / `Terminal wait` / `still waits the full interval when nothing happens`, and it is a queued event outliving its notifier.
+
+`Wait-FmWatchInterval` returned `$true` after 70ms, so an event was already queued when the wait began.
+The FileSystemWatcher is registered with `Register-ObjectEvent` and no `-Action`, so its events sit on the session event queue; `Wait-FmWatchInterval` drains that queue only on the path where it returns early, and `Stop-FmWatchFileNotifier` unregisters the subscribers without purging what is already queued.
+An event arriving after that drain and before the dispose therefore outlives its notifier and ends the NEXT notifier's first wait, whatever directory that one is watching.
+
+Reproduced with no lock code anywhere in the path - the probe calls only `Start-FmWatchFileNotifier`, `Set-FmFileTextLf`, `Wait-FmWatchInterval` and `Stop-FmWatchFileNotifier`, in the order those two adjacent tests call them, under the same 14-process CPU load:
+
+```
+iter 4: RETURNED EARLY after 19ms - a queued event outlived its notifier
+iter 5: RETURNED EARLY after 17ms - a queued event outlived its notifier
+...
+10 of 40 iterations ended the wait early
+```
+
+`tests/FmWatch.Tests.ps1` alone passed 55 tests five times running on this tree, which is why this only shows up in a whole-suite run: the load is what lets the late event land after the drain.
+The fix belongs with the notifier - purge the queued events for those source identifiers when stopping it, or drain them when starting - plus a test that fails without it.
+
+**Run 3's 1** is `FmJobCustody` / `real job-object custody` / `terminates every process in the job and proves the job is empty`, failing on its `Should -Be 'processes'` with `empty`: the `cmd.exe /c pause` child it had just added to the job was not in the job when the job was queried.
+`module/Firstmate/Private/FmJobCustody.ps1` contains no reference to any lock function, so nothing this work changed is on that path, and `tests/FmJobCustody.Tests.ps1` alone passed 7 of 7 four times running.
+Recorded for the bounded-execution area's owner with no diagnosis offered beyond that, because none was earned here.
 
 ---
 

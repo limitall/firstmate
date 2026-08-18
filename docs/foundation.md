@@ -103,6 +103,7 @@ section 2). Enforced by `FmState.ps1` and asserted on raw bytes in
 | Waiting for a lock | waits forever | waits for a timeout, then throws naming the holder | an unattended agent blocked forever is indistinguishable from a wedge |
 | Appending a line | `>>`, atomic through the kernel's `O_APPEND` | serialized on a sibling lock | .NET's `FileMode.Append` seeks to end at open and writes at the offset it recorded, so concurrent appenders overwrite each other |
 | Process identity | `/proc/<pid>/stat` field 22 | the same on Linux; the absolute FILETIME behind `StartTime` on Windows | the token must read the same to the process itself and to an observer |
+| Where a lock's pid-reuse guard reads its identity | the `pid-identity` sidecar | a `pid-identity.<pid>` record published before the claim, with the unkeyed sidecar still written for bash and no longer read here | one name per holder in turn means reading it answers "whoever wrote it last", not "the process the pid file names"; the two differ whenever a lock changes hands, and the mismatch evicted live holders (`docs/windows-e2e-evidence.md` section 28.4) |
 
 ## Running the tests and the analyzer
 

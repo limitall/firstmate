@@ -30,16 +30,27 @@ BeforeAll {
 
     # A lock directory whose recorded holder is whatever the caller says, used to
     # stage dead holders, recycled ids and half-written claims.
+    #
+    # -Identity writes the unkeyed pid-identity sidecar, which is the whole
+    # record shape the version before the pid-keyed identity record wrote, and
+    # the shape bash writes. -KeyedIdentity writes pid-identity.<holder>, the
+    # record this code publishes now and reads the guard from. Both shapes must
+    # read correctly, so tests name the one they mean - and a test that gives the
+    # two DIFFERENT values is asking which of them decides.
     function Write-LockHolder {
         param(
             [Parameter(Mandatory)][string]$Path,
             [Parameter(Mandatory)][AllowEmptyString()][string]$HolderPid,
-            [string]$Identity
+            [string]$Identity,
+            [string]$KeyedIdentity
         )
         $null = New-Item -ItemType Directory -Path $Path -Force
         [System.IO.File]::WriteAllText((Join-Path $Path 'pid'), "$HolderPid`n")
         if ($PSBoundParameters.ContainsKey('Identity')) {
             [System.IO.File]::WriteAllText((Join-Path $Path 'pid-identity'), "$Identity`n")
+        }
+        if ($PSBoundParameters.ContainsKey('KeyedIdentity')) {
+            [System.IO.File]::WriteAllText((Join-Path $Path "pid-identity.$HolderPid"), "$KeyedIdentity`n")
         }
     }
 }
@@ -246,7 +257,11 @@ Describe 'Stale-holder recovery' {
             # Exactly what an exhausted retry against a delete-pending file
             # raises by the time it reaches this caller.
             Mock Read-FmStateFile {
-                if ($Path -like '*pid-identity' -or $Path -like '*fm-home' -or
+                # '*pid-identity*' covers the pid-keyed identity record as well
+                # as the unkeyed sidecar: the property under test is that EVERY
+                # sidecar read failing still reaches a verdict, so a new sidecar
+                # name has to be inside the staged failure, not outside it.
+                if ($Path -like '*pid-identity*' -or $Path -like '*fm-home' -or
                     $Path -like '*role' -or $Path -like '*watcher-path') {
                     throw [System.IO.IOException]::new(
                         "firstmate: read state file failed after 12 attempts on '$Path': access denied")
@@ -431,6 +446,122 @@ Describe 'Stale-holder recovery' {
             } finally { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
         }
     }
+
+    It 'does not evict a live holder over an identity that belongs to a different one' {
+        # THE DEFECT THIS PINS, traced with the eviction captured in
+        # docs/windows-e2e-evidence.md section 28.4.
+        #
+        # The pid file and the unkeyed pid-identity sidecar were read as two
+        # separate operations, and a lock changes hands between them constantly
+        # under contention - so the identity compared could belong to a DIFFERENT
+        # holder than the pid it was compared against. That mismatch is reported
+        # stale, and unlike the verdicts section 28.2 fixed it carries a real
+        # process id, so the break's guard passes and the eviction succeeds. The
+        # victim finds out only when its own release quietly returns false.
+        #
+        # Staged as the state that read produces rather than by timing: an
+        # unkeyed sidecar naming someone other than the pid file's holder. A
+        # failed sidecar delete during release leaves exactly the same state on
+        # disk, so this is not only a model of the race.
+        InModuleScope Firstmate {
+            $path = Join-Path ([System.IO.Path]::GetTempPath()) ("torn-" + [guid]::NewGuid().ToString('N'))
+            $live = Request-FmLock -Path $path
+            try {
+                $live | Should -Not -BeNullOrEmpty
+                [System.IO.File]::WriteAllText((Join-Path $path 'pid-identity'), "proc-starttime=1 name=ghost`n")
+
+                $info = Get-FmLockInfo -Path $path
+                $info.State | Should -Be 'held' -Because 'the holder is alive and its own identity record says so'
+                $info.ProcessId | Should -Be $PID
+
+                # The whole point: nobody else can now take a lock this process
+                # still holds.
+                $script:FmHeldLocks.Remove((Get-FmLockKey -Path $path)) | Out-Null
+                $thief = Request-FmLock -Path $path
+                if ($thief) { $null = Unlock-FmLock -Lock $thief -Confirm:$false }
+                $thief | Should -BeNullOrEmpty -Because 'two processes must never hold one lock'
+            } finally {
+                $script:FmHeldLocks[(Get-FmLockKey -Path $path)] = $live
+                $null = Unlock-FmLock -Lock $live -Confirm:$false
+                Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    It 'still proves a recycled process id stale from the record that names it' {
+        # The other side of the same change, and the reason the guard exists at
+        # all: a dead holder's id handed to an unrelated live process must not
+        # read as a live holder, or the home stays locked by a ghost for ever.
+        #
+        # The mirror image of the test above, so the pair says which record
+        # decides. There the unkeyed sidecar named a stranger and the holder had
+        # to survive; here the unkeyed sidecar names the live process and the
+        # PID-KEYED record names a stranger, and the lock still has to read
+        # stale - the guard moved to the keyed record, it was not removed.
+        $path = Get-LockPath
+        Write-LockHolder -Path $path -HolderPid $PID `
+            -Identity (Get-FmProcessIdentity -Id $PID) -KeyedIdentity 'proc-starttime=1 name=ghost'
+        (Get-FmLockInfo -Path $path).State | Should -Be 'stale'
+        $lock = Request-FmLock -Path $path
+        try { $lock | Should -Not -BeNullOrEmpty } finally { $null = Unlock-FmLock -Lock $lock }
+    }
+
+    It 'reads a lock claimed before the pid-keyed record existed' {
+        # Backward compatibility, stated as behaviour: a claim written by the
+        # previous version of this code - or by bash, which never writes one -
+        # carries only the unkeyed sidecar. It must still read as the holder it
+        # names - never as "no holder", and never as stale for lacking the new
+        # record. It must also still keep its pid-reuse guard, which is what
+        # 'recovers a lock whose process id was recycled by an unrelated
+        # process' stages, in this same old shape.
+        $path = Get-LockPath
+        Write-LockHolder -Path $path -HolderPid $PID -Identity (Get-FmProcessIdentity -Id $PID)
+        [System.IO.File]::Exists((Join-Path $path "pid-identity.$PID")) |
+            Should -BeFalse -Because 'this is the shape the previous version wrote'
+
+        $info = Get-FmLockInfo -Path $path
+        $info.State | Should -Be 'held' -Because 'an old record names a holder, and that holder is alive'
+        $info.ProcessId | Should -Be $PID
+        $info.Identity | Should -Be (Get-FmProcessIdentity -Id $PID)
+        Request-FmLock -Path $path | Should -BeNullOrEmpty
+    }
+
+    It 'sweeps an identity record whose process is gone and keeps one whose process is alive' {
+        # Hygiene, and one line of it is load-bearing: a Windows search pattern
+        # ending in '.*' also matches a name with NO extension, so a sweep of
+        # pid-identity.* reaches the unkeyed sidecar. Deleting that would take
+        # the guard off every record written by bash or by the previous version.
+        InModuleScope Firstmate {
+            $path = Join-Path ([System.IO.Path]::GetTempPath()) ("sweep-" + [guid]::NewGuid().ToString('N'))
+            $null = New-Item -ItemType Directory -Path $path -Force
+            $alive = Start-Process -FilePath 'pwsh' -PassThru -WindowStyle Hidden -ArgumentList @(
+                '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 60')
+            try {
+                $deadPid = 2147483600
+                $names = @('pid-identity', "pid-identity.$deadPid", "pid-identity.$($alive.Id)")
+                foreach ($name in $names) {
+                    $file = Join-Path $path $name
+                    [System.IO.File]::WriteAllText($file, "proc-starttime=1 name=ghost`n")
+                    # Older than the grace, so nothing is spared for being fresh.
+                    [System.IO.File]::SetLastWriteTimeUtc($file, [datetime]::UtcNow.AddSeconds(-60))
+                }
+
+                Clear-FmLockResidue -LockPath $path
+
+                [System.IO.File]::Exists((Join-Path $path "pid-identity.$deadPid")) |
+                    Should -BeFalse -Because 'its process is gone, so nothing will ever consult it again'
+                [System.IO.File]::Exists((Join-Path $path "pid-identity.$($alive.Id)")) |
+                    Should -BeTrue -Because 'it may belong to a claimer that is about to win'
+                [System.IO.File]::Exists((Join-Path $path 'pid-identity')) |
+                    Should -BeTrue -Because 'the unkeyed sidecar is the only identity an old record carries'
+            } finally {
+                try { Stop-Process -Id $alive.Id -Force -ErrorAction Stop } catch {
+                    Write-Verbose "test cleanup: could not stop the live helper - $($_.Exception.Message)"
+                }
+                Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
 }
 
 Describe 'Release safety' {
@@ -496,10 +627,19 @@ Describe 'Lock path contracts' {
 }
 
 Describe 'One holder, proven with real processes' {
-    It 'never lets two processes increment a counter at once' {
+    It 'never lets two processes increment a counter at once, and never loses a holder its lock' {
         # The honest test of mutual exclusion: each worker reads, pauses, and
         # writes back under the lock. Without exclusion the counter loses
         # increments; with it, the total is exact.
+        #
+        # AND EVERY RELEASE MUST SUCCEED. Unlock-FmLock refuses to touch a pid
+        # file that no longer names this process and returns false, which is the
+        # only trace an evicted holder leaves - the counter notices only when the
+        # eviction happens to land before that holder's write. Section 28.4 held
+        # this assertion back because it would have failed intermittently while
+        # the torn pid/identity read was open; it lands with that fix, and it is
+        # why the workers here take the lock directly instead of through
+        # Invoke-FmWithLock, whose own Describe covers it.
         $lockPath = Get-LockPath
         $counter = Join-Path $script:TempRoot ('counter-' + [guid]::NewGuid().ToString('N'))
         Write-FmStateFile -Path $counter -Content '0'
@@ -510,12 +650,16 @@ Describe 'One holder, proven with real processes' {
             Start-Job -ArgumentList $script:ModulePath, $lockPath, $counter, $perWorker -ScriptBlock {
                 param($ModulePath, $LockPath, $Counter, $Count)
                 Import-Module $ModulePath -Force
-                $counterPath = $Counter
                 for ($i = 1; $i -le $Count; $i++) {
-                    Invoke-FmWithLock -Path $LockPath -TimeoutSeconds 120 -ScriptBlock {
-                        $value = [int](Read-FmStateFile -Path $counterPath).Trim()
+                    $lock = Wait-FmLock -Path $LockPath -TimeoutSeconds 120
+                    try {
+                        $value = [int](Read-FmStateFile -Path $Counter).Trim()
                         Start-Sleep -Milliseconds 5
-                        Write-FmStateFile -Path $counterPath -Content ([string]($value + 1))
+                        Write-FmStateFile -Path $Counter -Content ([string]($value + 1))
+                    } finally {
+                        if (-not (Unlock-FmLock -Lock $lock)) {
+                            throw "iteration $i released a lock that no longer named process ${PID}: it was taken off a live holder"
+                        }
                     }
                 }
             }
@@ -533,6 +677,12 @@ Describe 'One holder, proven with real processes' {
         $workerErrors = @($jobs | ForEach-Object { $_.ChildJobs[0].Error } |
             ForEach-Object { [string]$_ })
         $jobs | Remove-Job -Force
+        # Read the evictions out of the errors FIRST: they are the one kind of
+        # worker error that IS a mutual-exclusion defect, and reporting them as
+        # "a worker threw, so it never made an increment" is how this stayed
+        # invisible for as long as it did.
+        $evicted = @($workerErrors | Where-Object { $_ -like '*taken off a live holder*' })
+        $evicted | Should -BeNullOrEmpty -Because 'a live holder must keep its lock for the whole critical section'
         $unfinished | Should -BeNullOrEmpty -Because 'every worker must finish before the counter is judged'
         $workerErrors | Should -BeNullOrEmpty -Because 'a worker that threw did not lose an increment, it never made one'
 
