@@ -63,6 +63,21 @@ section 2 lists the state-file formats).
 - Mark anything provable only on Windows with a `# WINDOWS-UNVERIFIED:` comment
   and a one-line reason. Where behaviour must differ by platform, branch on
   `$IsWindows`; the Linux path is a development convenience, not the product.
+- **Never start a screen that serves a page, and never point a browser at one.**
+  This is the captain's rule, not a preference. Test bridges left running by
+  workers spoke aloud on their machine twice, and "no browser was open" was
+  literally true: the pages were being driven HEADLESS, so there was a live page
+  talking with no window anywhere to close. `-NoEngine` does not help - it stops
+  the session, not the page, and the page is what speaks. Verify over HTTP
+  instead; layout and how a reply looks once it lands are the only things HTTP
+  cannot answer, and those go to the captain. The page itself is now silent
+  unless `config/bridge-voice` says otherwise, and the bridge sets
+  `FM_VOICE_OFF` for its whole process tree so a home with `config/voice` on
+  cannot speak out of a process the page never reaches - but neither of those is
+  a licence to start driving screens again. The same rule is why
+  `tests/FmVoice.Tests.ps1` never switches a voice ON to prove a guard: a suite
+  that does makes a noise on the captain's machine every time the guard
+  regresses.
 
 ## Layout
 
@@ -201,7 +216,10 @@ module any other way.
   captain's explicit word for a merge or a delete, and why the four functions
   that touch System.Speech are the only ones the suite has to mock - plus the
   blind spot that mocking creates, which has already cost one defect a green
-  suite could not see.
+  suite could not see. It also owns how written text is prepared for an engine
+  (`ConvertTo-FmSpokenText`, one owner for both speaking paths) and why
+  `FM_VOICE_OFF` outranks `config/voice` for a process whose parent owns the
+  speaking.
 - `docs/windows-quickstart.md` - the captain-facing path. Keep it short and keep
   it true: it is the only doc written for someone who has not read the others.
 - **`docs/windows-e2e-evidence.md` - what has actually been executed, and

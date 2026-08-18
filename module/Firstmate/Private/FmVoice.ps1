@@ -16,6 +16,49 @@
 # a missing audio device must not end a turn, so every seam answers with a
 # verdict object rather than an error and every engine call is wrapped.
 
+function Test-FmVoiceSuppressed {
+    <#
+        .SYNOPSIS
+        Is this process forbidden to make a sound?
+
+        .DESCRIPTION
+        `FM_VOICE_OFF` is set by a parent that owns the speaking for its
+        children, and the only one that does today is the browser bridge.
+
+        WHAT IT GUARDS. The bridge hosts a real firstmate session, which reads
+        the same `AGENTS.md` and therefore knows `bin/fm-say.ps1` exists. On a
+        home where the captain has created `config/voice`, that session would
+        speak out of a process the page has no connection to and no way to
+        interrupt - and the captain's only remedy would be to have the bridge
+        killed, which is the one outcome an operating surface may never require.
+
+        HONEST ABOUT WHAT THIS DID NOT FIX. A screen that spoke at the captain
+        with no browser in sight was blamed on exactly that path first, and the
+        blame was wrong: `config/voice` exists in no home on this machine, so
+        this channel was already silent. It was the page, driven headless. See
+        `docs/windows-e2e-evidence.md` section 34.1. This gate stays because the
+        hazard is real on a home that HAS turned the voice on, not because it
+        was the cure.
+
+        A word in the session's instructions is not enough for that, because a
+        model that has been asked not to do something can still do it. This is
+        the part that cannot be talked out of: with the variable set, the voice
+        channel answers 'suppressed' and never reaches an engine.
+
+        It is inherited, so everything the bridge starts is covered too, and it
+        is an environment variable rather than a config file because it is a
+        property of THIS PROCESS TREE - a firstmate session in a terminal on the
+        same home still speaks, exactly as `config/voice` says it should.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+
+    $flag = [Environment]::GetEnvironmentVariable('FM_VOICE_OFF')
+    if ([string]::IsNullOrWhiteSpace($flag)) { return $false }
+    $flag.Trim() -notin @('0', 'false', 'off', 'no')
+}
+
 function Get-FmVoiceMaxLength {
     <#
         .SYNOPSIS
@@ -44,12 +87,18 @@ function Get-FmVoiceSpeechText {
         was cut off or the news simply ended there. An over-long message is cut
         at a word boundary where one is near enough, and always ends with a
         spoken marker saying so.
+
+        PREPARED BEFORE IT IS BOUND, by ConvertTo-FmSpokenText, which owns what
+        a symbol sounds like. Both orders were possible and only one is right:
+        the bound has to be measured on the characters that are actually SPOKEN,
+        or a reply whose length is mostly markup gets cut for being long and
+        then has the markup taken out anyway.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Message)
 
-    $text = ($Message -replace '\s+', ' ').Trim()
+    $text = ((ConvertTo-FmSpokenText -Text $Message) -replace '\s+', ' ').Trim()
     $max = Get-FmVoiceMaxLength
     if ($text.Length -le $max) {
         return [pscustomobject]@{ Text = $text; Truncated = $false }

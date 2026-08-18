@@ -71,6 +71,64 @@ uses, for one concrete reason: a voice name contains spaces
 ("Microsoft Hazel Desktop"), so the space-separated form
 `config/secondmate-harness` uses cannot carry one.
 
+## Prepared for speaking, not for reading
+
+Everything firstmate writes is written for a SCREEN.
+`**bold**` for emphasis, `-` for a bullet, backslashes in a path, and an
+`https://` URL in full because section 9 requires one.
+Handed to a speech engine unchanged, every one of those is pronounced, and the
+captain reported exactly that: a voice reading punctuation aloud, naming `##`
+and `**`.
+
+`ConvertTo-FmSpokenText` is the one owner of what a symbol sounds like, and both
+speaking paths go through it - `Get-FmVoiceSpeechText` for `fm-say` and
+`fm-ask`, and `Split-FmBridgeReply` for the browser screen - so a character can
+never be silenced on one surface and pronounced on the other.
+It removes markup, drops a symbol that carries no meaning aloud, and says the
+rest the way a person says it: `&` is "and", `1366x768` is "1366 by 768", a URL
+is "a link on github dot com", and a path is its own leaf name.
+It is not a summariser: it changes how the words are spelt for an engine, never
+which words they are.
+
+The bound runs AFTER the preparation, not before.
+The other order measures a reply's length in characters that were never going to
+be spoken, cuts it for being long, and then removes the markup that made it long.
+
+`docs/windows-e2e-evidence.md` section 34 carries the measurement this was
+written against: the same reply synthesized by the same voice and transcribed
+back by the local recognizer, before and after.
+
+## Silence when the parent owns the speaking
+
+`FM_VOICE_OFF` outranks `config/voice`, and `Test-FmVoiceSuppressed` is the gate.
+The browser bridge hosts a real firstmate session, which reads the same
+`AGENTS.md` and therefore knows `bin/fm-say.ps1` exists.
+On a home whose captain has created `config/voice`, that session would speak out
+of a process the page has no connection to, leaving them nothing to stop it with
+but killing the bridge.
+
+**What this did NOT fix, stated plainly.**
+A screen that spoke at the captain with no browser in sight was blamed on this
+path first, and the blame was wrong: `config/voice` exists in no home on that
+machine, so the channel was already silent.
+It was the page's own `speechSynthesis`, driven headless.
+`docs/windows-e2e-evidence.md` section 34.1 carries the check.
+The gate stays because the hazard it names is real on a home that HAS turned the
+voice on, not because it was the cure.
+
+An instruction in the session's prompt is not enough for that, because a model
+asked not to do something can still do it.
+With the variable set, `Invoke-FmSay` answers `suppressed` and never reaches an
+engine.
+`fm-ask` is covered by the same gate without a second one: it asks its question
+through `Invoke-FmSay` and returns `unspoken` without opening the microphone
+when that question was not spoken, which is the rule this file already states in
+"Off by default".
+It is inherited, so everything that session starts is covered too, and it is an
+environment variable rather than a config file because it is a property of one
+PROCESS TREE: a firstmate session in a terminal on the same home still speaks,
+exactly as `config/voice` says it should.
+
 ## A closed grammar, and a floor under it
 
 `fm-ask` builds its grammar from the options the caller supplies, so the
@@ -205,7 +263,10 @@ body here, run it. The suite cannot.
   translation contract has to be applied to every message that would be spoken.
 - **A wake word.** Nothing here listens until it is asked to, and each listen is
   one bounded window opened by one call.
-- **A message filter.** What is passed is what is spoken. The translation
-  contract binds the caller, because only the caller knows the outcome it is
-  describing; a filter here could only mangle a message it does not understand.
-  The script's help says so where a caller will read it.
+- **A message rewriter.** WHAT is said is still the caller's to decide, because
+  only the caller knows the outcome it is describing, and section 9's
+  translation contract binds it there.
+  HOW it is spelt for an engine is not the caller's problem and is no longer
+  left to them - see "Prepared for speaking, not for reading" above.
+  The line between the two is that nothing is ever dropped for meaning: a word
+  the caller wrote is a word the captain hears.

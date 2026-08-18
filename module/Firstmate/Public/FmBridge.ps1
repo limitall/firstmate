@@ -54,6 +54,9 @@ function New-FmBridgeSession {
         # The bridge's whole point is that the captain never has to approve a
         # tool call from a terminal they are not looking at.
         '--dangerously-skip-permissions'
+        # ONCE, not per turn. This screen speaks as well as prints, and the two
+        # need different sentences; Get-FmBridgeSpeechContract owns why.
+        '--append-system-prompt', (Get-FmBridgeSpeechContract)
     )
     if ($Model) { $launchArgs += @('--model', $Model) }
 
@@ -67,6 +70,15 @@ function New-FmBridgeSession {
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    # THE SESSION MAY NOT SPEAK. It reads the same AGENTS.md as any other
+    # firstmate and therefore knows bin/fm-say.ps1 exists, so on a home whose
+    # captain has created config/voice it would talk out of a process this page
+    # cannot reach - leaving them nothing to stop it with but killing the
+    # bridge. Speaking on this surface belongs to the page, which stops existing
+    # when the captain closes it. Test-FmVoiceSuppressed is the gate, and its
+    # help is honest about what this did and did not cause; the variable is
+    # inherited, so anything this session starts is covered too.
+    $psi.Environment['FM_VOICE_OFF'] = '1'
 
     $proc = [System.Diagnostics.Process]::new()
     $proc.StartInfo = $psi
@@ -1154,11 +1166,29 @@ function Test-FmBridgeVoiceAllowed {
         was never switched on, is that rule broken by the one surface loud enough
         to be noticed across a room.
 
-        THE GATE HAS ONE OWNER and it is not this function. `Get-FmVoiceConfig`
-        reads `config/voice` and decides; this asks it on the browser's behalf,
-        the same way Test-FmBridgeSessionCanAct asks the lock reader rather than
-        parsing the record itself. A second gate would be a second thing to
-        forget.
+        THE GATE HAS ONE OWNER and it is not this function. `Get-FmBridgeVoice`
+        reads `config/bridge-voice` and decides; this asks it on the browser's
+        behalf, the same way Test-FmBridgeSessionCanAct asks the lock reader
+        rather than parsing the record itself. A second gate would be a second
+        thing to forget.
+
+        WHY THAT FILE AND NOT `config/voice`, WHICH THIS FIRST USED. Two things
+        the captain asked for outright: a mute they can see and press on the
+        screen, and one that survives a restart - "where is setting on screen",
+        and then "a visible mute the captain controls, effective at once,
+        remembered". `config/voice` cannot be that. It has no control on the
+        page, and it is the switch for the MACHINE's voice: pressing a button on
+        the screen would have turned `bin/fm-say.ps1` on for the whole home, and
+        silencing the screen would have silenced a supervision alert the captain
+        never asked to lose. So the page gets its own one-word file, written by
+        the toggle beside the dock, and the two channels stay separate exactly as
+        `docs/voice-windows.md` describes them.
+
+        WHAT DID NOT CHANGE is the rule this function was written for: OFF is the
+        default, absence means off, and nothing here speaks because a page
+        happened to load. `AGENTS.md` section 9's "off until the captain turns it
+        on" is satisfied by a switch that starts off and takes a deliberate press
+        - not by which file records the press.
 
         SILENT WHEN IT CANNOT TELL. Anything unreadable, missing, or thrown
         counts as off, because being wrong in that direction is a quiet screen
@@ -1169,13 +1199,12 @@ function Test-FmBridgeVoiceAllowed {
     param([string]$HomePath = '')
 
     try {
-        $settings = if ($HomePath) { Get-FmVoiceConfig -HomePath $HomePath } else { Get-FmVoiceConfig }
+        $state = if ($HomePath) { Get-FmBridgeVoice -HomePath $HomePath } else { Get-FmBridgeVoice }
     } catch {
-        Write-Debug "bridge: could not read whether the voice is on - $($_.Exception.Message)"
+        Write-Debug "bridge: could not read whether the screen may speak - $($_.Exception.Message)"
         return $false
     }
-    if ($null -eq $settings) { return $false }
-    return [bool]$settings.Enabled
+    return ($state -eq 'on')
 }
 
 function Get-FmBridgeRoute {
@@ -1225,6 +1254,353 @@ function Get-FmBridgeRoute {
         'thing you may say about it: name what they should ask for there, or offer to write'
         'it out for them, and carry on with everything you CAN do from here.'
     ) -join "`n"
+}
+
+function Split-FmBridgeReply {
+    <#
+        .SYNOPSIS
+        One turn's answer, split into what is READ and what is SPOKEN.
+
+        .DESCRIPTION
+        THE SAME TEXT CANNOT BE BOTH. A reply written for the screen is long,
+        dense, and front-loads its qualifications, because the captain can go
+        back over it. Spoken, that is a paragraph they cannot re-read, arriving
+        at the speed the engine chooses. `AGENTS.md` section 9 already says the
+        spoken channel binds harder for exactly that reason, and the biggest
+        lever on how mechanical this screen sounds is simply not to speak the
+        thing that was written for reading.
+
+        So the session is asked to end its reply with one `SPOKEN:` line - see
+        Get-FmBridgeSpeechContract, which is the instruction it is given - and
+        this takes that line as the spoken form and removes it from the written
+        one. The captain never sees the marker and never hears the essay.
+
+        WHEN THERE IS NO MARKER the answer is DERIVED rather than refused: an
+        older session, a resumed one, or a turn that simply forgot still has to
+        be speakable. The derivation is the honest one available without a model
+        - the opening sentences, prepared for speech and bounded - and it is
+        strictly better than reading the whole reply aloud.
+
+        Everything spoken goes through ConvertTo-FmSpokenText whichever route it
+        took, INCLUDING a marker the session wrote itself: a model asked for
+        plain words still reaches for a path or a bold phrase, and one owner for
+        "what is spoken" is worth more than trusting the instruction.
+
+        .PARAMETER Reply
+        The turn's raw text, as the session emitted it.
+
+        .EXAMPLE
+        Split-FmBridgeReply -Reply "Four are running.`nSPOKEN: Four jobs, nothing waiting."
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Reply,
+        # Names the panel is SHOWING, passed straight to the translator so a job
+        # id survives it intact. Same argument, same reason, as the caller's.
+        [string[]]$Keep = @()
+    )
+
+    $result = [pscustomobject]@{ Written = ''; Spoken = ''; Marked = $false }
+    if ([string]::IsNullOrWhiteSpace($Reply)) { return $result }
+
+    $text = $Reply -replace "`r`n", "`n" -replace "`r", "`n"
+    $marked = ''
+    $kept = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in ($text -split "`n")) {
+        # The LAST marker wins. A session that restates it has changed its mind,
+        # and the correction is the line the captain would expect to hear.
+        if ($line -match '^\s*(?:\*\*)?SPOKEN(?:\*\*)?\s*:\s*(.*)$') { $marked = $Matches[1].Trim(); continue }
+        $kept.Add($line)
+    }
+
+    # THE MARKER COMES OFF BEFORE THE TRANSLATOR RUNS. ConvertTo-FmBridgePlainText
+    # strips a leading `word:` state prefix and its match is case-insensitive, so
+    # a translated reply would have lost the very line that says what to speak.
+    $written = ConvertTo-FmBridgePlainText -Text (($kept -join "`n").Trim()) -Prose -Keep $Keep
+
+    # AND THE SPOKEN HALF IS TRANSLATED TOO, harder than the written one is.
+    # AGENTS.md section 9 says so outright, because the captain cannot re-read a
+    # spoken sentence to work out what a word meant. The order is translate then
+    # prepare: the translation puts plain English in, and the preparation has the
+    # last word on how the symbols in it are pronounced.
+    $candidate = if ($marked) { ConvertTo-FmBridgePlainText -Text $marked -Prose -Keep $Keep } else { Get-FmSpokenLead -Text $written }
+    $bounded = Get-FmVoiceSpeechText -Message $candidate
+
+    [pscustomobject]@{
+        Written = $written
+        Spoken  = $bounded.Text
+        Marked  = [bool]$marked
+    }
+}
+
+function Get-FmSpokenLead {
+    <#
+        .SYNOPSIS
+        The opening of a written answer, as much of it as is worth hearing.
+
+        .DESCRIPTION
+        The fallback for a reply that carries no spoken form of its own. It
+        cannot reorder an answer to lead with the point - only the session that
+        wrote it can do that - so it takes the sentences the answer opens with
+        and stops at the first full stop past a comfortable length.
+
+        Two sentences, not one: a single sentence often lands mid-thought
+        ("Two things went wrong.") and leaves the captain with the fact that
+        there is news and none of the news.
+
+        .PARAMETER Text
+        The written answer.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    $prepared = ConvertTo-FmSpokenText -Text $Text
+    if (-not $prepared) { return '' }
+
+    $sentences = [regex]::Split($prepared, '(?<=[.!?])\s+')
+    $lead = ''
+    $taken = 0
+    foreach ($sentence in $sentences) {
+        if ($taken -ge 2) { break }
+        $next = if ($lead) { "$lead $sentence" } else { $sentence }
+        # Past the bound the engine would cut it anyway, and a cut sentence is
+        # worse than one fewer sentence.
+        if ($taken -ge 1 -and $next.Length -gt (Get-FmVoiceMaxLength)) { break }
+        $lead = $next
+        $taken++
+    }
+    $lead
+}
+
+function Get-FmBridgeSpeechContract {
+    <#
+        .SYNOPSIS
+        The instruction the hosted session is started with, so its answers can
+        be heard as well as read.
+
+        .DESCRIPTION
+        Appended to the session's system prompt ONCE at start rather than
+        prepended to every turn, because it is a standing property of this
+        channel and paying for it per message would be paying for it forever.
+
+        It states the WIRE FORMAT and nothing else. What a spoken message may
+        say is `AGENTS.md` section 9's, and this points at it rather than
+        restating it - two copies of that rule would drift the moment one was
+        edited.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    @(
+        'You are answering on the bridge screen, where the captain READS your reply and HEARS it at the same time.'
+        'End every reply with one final line beginning "SPOKEN:" holding the same answer said out loud.'
+        'That line is the only part spoken, so it is one or two sentences, under 200 characters, the answer first, and it obeys AGENTS.md section 9 more strictly than the written reply does: no markup, no file paths, no URLs, no internal vocabulary.'
+        'Everything above that line is what is read, and it keeps the full substance the captain needs - never shorten the written answer to make the spoken one easier.'
+        'Never run bin/fm-say.ps1 or bin/fm-ask.ps1 here: the screen decides whether anyone is listening, and it is already refused for this session.'
+    ) -join ' '
+}
+
+function Get-FmListenMode {
+    <#
+        .SYNOPSIS
+        How the microphone listens on this home: 'push' or 'continuous'.
+
+        .DESCRIPTION
+        `config/listen-mode` holds one word, in the same shape as the rest of
+        `config/` - see `AGENTS.md` section 2.
+
+        PUSH IS THE DEFAULT AND IT IS THE DEFAULT ON EVERY FAILURE. Absent,
+        unreadable, or holding a word this does not recognise all answer 'push'.
+        The two modes are not equally safe: continuous holds the microphone open
+        with nobody's hand on it, and arriving there by way of a typo is not a
+        thing this may do.
+
+        .PARAMETER HomePath
+        Which home to read. Defaults to this session's.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([string]$HomePath)
+
+    $homeArgs = @{}
+    if ($PSBoundParameters.ContainsKey('HomePath') -and $HomePath) { $homeArgs['HomePath'] = $HomePath }
+    Get-FmBridgeChoice -Name 'listen-mode' -Allowed @('push', 'continuous') -Default 'push' @homeArgs
+}
+
+function Set-FmListenMode {
+    <#
+        .SYNOPSIS
+        Record how the microphone listens. Returns a verdict; never throws.
+
+        .DESCRIPTION
+        Written to `config/listen-mode` so the choice survives a reload of the
+        page AND a restart of the bridge - a setting that resets is not a
+        setting. An unrecognised mode is REFUSED rather than written, because
+        the reader treats anything it does not know as push and the captain
+        would be left with a screen that says continuous and a microphone that
+        is not.
+
+        .PARAMETER Mode
+        'push' or 'continuous'.
+
+        .PARAMETER HomePath
+        Which home to write. Defaults to this session's.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Mode,
+        [string]$HomePath
+    )
+
+    $homeArgs = @{}
+    if ($PSBoundParameters.ContainsKey('HomePath') -and $HomePath) { $homeArgs['HomePath'] = $HomePath }
+
+    if (-not $PSCmdlet.ShouldProcess('config/listen-mode', "set the listening mode to $Mode")) {
+        return [pscustomobject]@{ Ok = $true; Mode = (Get-FmListenMode @homeArgs); Error = '' }
+    }
+    $set = Set-FmBridgeChoice -Name 'listen-mode' -Value $Mode -Allowed @('push', 'continuous') @homeArgs
+    if (-not $set.Ok) {
+        # The mode reported back is the one still in force, not the one asked
+        # for: a page that shows what it wanted rather than what happened is how
+        # a refused save becomes a setting the captain believes they made.
+        return [pscustomobject]@{
+            Ok    = $false
+            Mode  = (Get-FmListenMode @homeArgs)
+            Error = $set.Error
+        }
+    }
+    [pscustomobject]@{ Ok = $true; Mode = $set.Value; Error = '' }
+}
+
+function Get-FmBridgeVoice {
+    <#
+        .SYNOPSIS
+        Does the browser screen speak its answers: 'on' or 'off'.
+
+        .DESCRIPTION
+        `config/bridge-voice`, one word, in the same shape as the rest of
+        `config/`.
+
+        OFF IS THE DEFAULT, AND IT IS THE DEFAULT BECAUSE OF WHAT HAPPENED.
+        This page spoke at the captain twice with no browser anywhere they could
+        see - it was being driven HEADLESS for checks, so the window they would
+        have closed did not exist - and the only thing that stopped it was the
+        processes behind it being killed. There was no switch in front of
+        `speechSynthesis` at all. A surface that can make noise starts silent
+        after that, and it starts silent for the same reason `AGENTS.md`
+        section 9 has the machine's own voice off until `config/voice` is
+        created: a machine that talks without being asked is a defect, not a
+        feature with a good default. One click on the screen turns it on, and
+        the choice is kept.
+
+        SEPARATE FROM config/voice ON PURPOSE. That file governs the machine's
+        own voice, for `bin/fm-say.ps1` and `bin/fm-ask.ps1` on a home with no
+        browser anywhere near it. This one governs a page, which stops existing
+        the moment the captain closes it. Two channels, two switches, and the
+        bridge's hosted session is refused the first one outright - see
+        Test-FmVoiceSuppressed.
+
+        .PARAMETER HomePath
+        Which home to read. Defaults to this session's.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([string]$HomePath)
+
+    $homeArgs = @{}
+    if ($PSBoundParameters.ContainsKey('HomePath') -and $HomePath) { $homeArgs['HomePath'] = $HomePath }
+    Get-FmBridgeChoice -Name 'bridge-voice' -Allowed @('on', 'off') -Default 'off' @homeArgs
+}
+
+function Set-FmBridgeVoice {
+    <#
+        .SYNOPSIS
+        Record whether the browser screen speaks. Returns a verdict.
+
+        .PARAMETER State
+        'on' or 'off'.
+
+        .PARAMETER HomePath
+        Which home to write. Defaults to this session's.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$State,
+        [string]$HomePath
+    )
+
+    $homeArgs = @{}
+    if ($PSBoundParameters.ContainsKey('HomePath') -and $HomePath) { $homeArgs['HomePath'] = $HomePath }
+
+    if (-not $PSCmdlet.ShouldProcess('config/bridge-voice', "turn the screen's voice $State")) {
+        return [pscustomobject]@{ Ok = $true; State = (Get-FmBridgeVoice @homeArgs); Error = '' }
+    }
+    $set = Set-FmBridgeChoice -Name 'bridge-voice' -Value $State -Allowed @('on', 'off') @homeArgs
+    if (-not $set.Ok) {
+        return [pscustomobject]@{
+            Ok    = $false
+            State = (Get-FmBridgeVoice @homeArgs)
+            Error = $set.Error
+        }
+    }
+    [pscustomobject]@{ Ok = $true; State = $set.Value; Error = '' }
+}
+
+function Get-FmStableCheckout {
+    <#
+        .SYNOPSIS
+        The checkout a captain-facing instruction may name: this one, or the
+        primary one when this is a disposable copy.
+
+        .DESCRIPTION
+        THE BRIDGE TELLS THE CAPTAIN TO POINT THEIR DICTATION APP AT A FILE, and
+        that instruction is only worth giving if the file is still there
+        tomorrow. Run from a worker's isolated copy the obvious answer -
+        `$PSScriptRoot` - names a directory that is deleted when that piece of
+        work finishes, and the captain would have configured their app to point
+        at nothing. Observed on the captain's own screen.
+
+        A linked git worktree knows where its primary checkout is: its own git
+        directory sits under the common one, and the common one's parent is the
+        durable copy. That is the answer used, and only when the file the
+        instruction names is actually there.
+
+        Anything unreadable answers with the checkout it was given. A guess that
+        names a directory which does not exist would be worse than a path that
+        is merely short-lived.
+
+        .PARAMETER Root
+        The running checkout.
+
+        .PARAMETER RequiredFile
+        A path, relative to a checkout, that the answer must contain. Without it
+        this would happily name a primary checkout that has been moved away.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Root,
+        [string]$RequiredFile = ''
+    )
+
+    if ([string]::IsNullOrEmpty($Root)) { return '' }
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return $Root }
+
+    $gitDir = Get-FmGitOutput -Directory $Root -Arguments @('rev-parse', '--absolute-git-dir')
+    $commonDir = Get-FmGitOutput -Directory $Root -Arguments @('rev-parse', '--path-format=absolute', '--git-common-dir')
+    if (-not $gitDir -or -not $commonDir) { return $Root }
+    # Equal means this IS the primary checkout, which is already the answer.
+    if (Test-FmPathEqual -Left $gitDir -Right $commonDir) { return $Root }
+
+    $primary = Split-Path -Parent $commonDir
+    if (-not $primary -or -not (Test-Path -LiteralPath $primary -PathType Container)) { return $Root }
+    if ($RequiredFile -and -not (Test-Path -LiteralPath (Join-Path $primary $RequiredFile) -PathType Leaf)) { return $Root }
+    $primary
 }
 
 function Get-FmBridgeFleet {

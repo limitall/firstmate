@@ -872,8 +872,16 @@ Describe 'Test-FmBridgeVoiceAllowed' {
     # speech synthesis on every reply, unconditionally. Copies of it driven for a
     # check have no window on screen, so the captain's machine spoke aloud twice
     # with no browser they could find and nothing to silence. AGENTS.md section 9
-    # is explicit: the voice channel is off until config/voice exists, and nothing
-    # calls it by itself.
+    # is explicit: the voice channel is off until the captain turns it on, and
+    # nothing calls it by itself.
+    #
+    # THE FILE THIS READS CHANGED, and the properties below did not. It first
+    # asked config/voice, which is the MACHINE's voice for fm-say and fm-ask and
+    # has no control on the screen; the captain asked twice for a mute they can
+    # see and press, so the page now owns config/bridge-voice and the two
+    # channels stay separate. Off by default, absence means off, and a file that
+    # says off is off - the same three assertions, against the switch the captain
+    # can actually reach.
     BeforeAll {
         $script:VoiceHome = Join-Path $TestDrive 'voicehome'
         New-Item -ItemType Directory -Path (Join-Path $script:VoiceHome 'config') -Force | Out-Null
@@ -884,22 +892,21 @@ Describe 'Test-FmBridgeVoiceAllowed' {
     }
 
     It 'speaks only once the captain has switched it on' {
-        $gate = Join-Path (Join-Path $script:VoiceHome 'config') 'voice'
+        $gate = Join-Path (Join-Path $script:VoiceHome 'config') 'bridge-voice'
         try {
-            Set-Content -LiteralPath $gate -Value '' -NoNewline -Encoding utf8
+            $null = Set-FmBridgeVoice -State 'on' -HomePath $script:VoiceHome
             Test-FmBridgeVoiceAllowed -HomePath $script:VoiceHome | Should -BeTrue
         } finally {
             Remove-Item -LiteralPath $gate -Force -ErrorAction SilentlyContinue
         }
     }
 
-    # A lone `off` in the file is the documented way to keep the channel present
-    # but quiet, and this must honour it rather than treating the file's mere
-    # existence as consent.
+    # Switching it back off must silence an open screen, not merely stop the next
+    # one, so the stored word is read rather than the file's mere existence.
     It 'stays silent when the file is there but says off' {
-        $gate = Join-Path (Join-Path $script:VoiceHome 'config') 'voice'
+        $gate = Join-Path (Join-Path $script:VoiceHome 'config') 'bridge-voice'
         try {
-            Set-Content -LiteralPath $gate -Value 'off' -Encoding utf8
+            $null = Set-FmBridgeVoice -State 'off' -HomePath $script:VoiceHome
             Test-FmBridgeVoiceAllowed -HomePath $script:VoiceHome | Should -BeFalse
         } finally {
             Remove-Item -LiteralPath $gate -Force -ErrorAction SilentlyContinue
@@ -909,11 +916,305 @@ Describe 'Test-FmBridgeVoiceAllowed' {
     # Being wrong towards silence is a quiet screen; being wrong the other way is
     # the defect this exists for, on a machine whose owner cannot find the source.
     It 'stays silent rather than guessing when it cannot read the gate' {
-        Mock -CommandName Get-FmVoiceConfig -ModuleName Firstmate -MockWith { throw 'unreadable' }
+        Mock -CommandName Get-FmBridgeVoice -ModuleName Firstmate -MockWith { throw 'unreadable' }
         Test-FmBridgeVoiceAllowed -HomePath $script:VoiceHome | Should -BeFalse
     }
 
     It 'stays silent when asked about a home that does not exist' {
         Test-FmBridgeVoiceAllowed -HomePath (Join-Path $TestDrive 'no-such-home') | Should -BeFalse
+    }
+}
+
+# ---------------------------------------------------------------------------
+# THE SPOKEN CHANNEL. The captain reported this screen sounding like "a robot
+# without a brain" and named `##` and `**` being read out; then reported it
+# still speaking with no browser they could see, which turned out to be a page
+# driven headless. Everything below is the part of that which is ordinary text
+# and file work, and it is tested here rather than left to a listen-and-see.
+# ---------------------------------------------------------------------------
+
+Describe 'ConvertTo-FmSpokenText' {
+
+    # Every character an engine will happily pronounce out of text that was
+    # written for a screen. The list is the contract.
+    It 'leaves no markup or bare symbol in the result' {
+        $written = @"
+## Migration complete
+
+**Two things** worth naming, and a ``code span``:
+
+- The reporting view was pinned for ~90 seconds.
+- Older rows carried local time - the import normalises them now.
+
+| Window | Radar |
+|--------|-------|
+| 1366x768 | 442px |
+
+Log: C:\Users\ADMIN\firstmate-win\state\run-2026-08-18.log
+Diff: https://github.example.com/fleet/pull/1284/files
+"@
+        $spoken = ConvertTo-FmSpokenText -Text $written
+        foreach ($mark in '#', '*', '_', '`', '|', '\', '<', '>', '[', ']', '{', '}', '~', '^', '=') {
+            $spoken.Contains($mark) | Should -BeFalse -Because "'$mark' has no spoken form and an engine will say its name"
+        }
+        $spoken | Should -Not -Match 'https?:'
+    }
+
+    It 'keeps the words the markup was wrapped around' {
+        $spoken = ConvertTo-FmSpokenText -Text '**Screen test passed** and the `checks` are green.'
+        $spoken | Should -BeLike '*Screen test passed*'
+        $spoken | Should -BeLike '*checks*'
+    }
+
+    # A path read out in full is the single most mechanical thing on this screen:
+    # measured, a recognizer listening to the old output heard
+    # "c: users admin firstmate state voicequality status".
+    It 'says a path as its own name and nothing above it' {
+        $spoken = ConvertTo-FmSpokenText -Text 'The log is at C:\Users\ADMIN\firstmate-win\state\voice-quality.status now.'
+        $spoken | Should -BeLike '*voice quality dot status*'
+        $spoken | Should -Not -BeLike '*Users*'
+        $spoken | Should -Not -BeLike '*ADMIN*'
+    }
+
+    It 'says a slash path the same way' {
+        (ConvertTo-FmSpokenText -Text 'See docs/windows-e2e-evidence.md for that.') |
+            Should -BeLike '*windows e2e evidence dot md*'
+        (ConvertTo-FmSpokenText -Text 'Run bin/fm-say.ps1 twice.') | Should -BeLike '*fm say dot ps1*'
+    }
+
+    # The other half of the same measurement: "https: double forward slash
+    # github. com forward slash anthropic forward slash claude dash code".
+    It 'says a URL as a link on a host' {
+        $spoken = ConvertTo-FmSpokenText -Text 'Diff at https://github.com/anthropics/claude-code/pull/12.'
+        $spoken | Should -BeLike '*a link on github dot com*'
+        $spoken | Should -Not -BeLike '*slash*'
+    }
+
+    # The sentence AFTER a URL used to run straight on from it, because the
+    # trailing full stop was eaten as part of the address.
+    It 'leaves the full stop that ended the sentence, not the address' {
+        (ConvertTo-FmSpokenText -Text 'Diff at https://example.com/x. Radar is fine.') |
+            Should -BeLike '*dot com. Radar is fine.'
+    }
+
+    It 'is not fooled into reading and/or as a path' {
+        (ConvertTo-FmSpokenText -Text 'Pick one and/or the other.') | Should -Be 'Pick one and or the other.'
+    }
+
+    It 'says the symbols that do mean something aloud' {
+        (ConvertTo-FmSpokenText -Text 'A & B, 100% done, 1366x768, 442px, cost + tax, a -> b') |
+            Should -Be 'A and B, 100 percent done, 1366 by 768, 442 pixels, cost plus tax, a to b.'
+    }
+
+    It 'drops a fenced code block whole' {
+        $fenced = "It worked.`n`n" + '```powershell' + "`nGet-Thing -Force`n" + '```'
+        (ConvertTo-FmSpokenText -Text $fenced) | Should -Be 'It worked.'
+    }
+
+    # A list read as one clause is the other half of sounding mechanical, so
+    # each item ends as a sentence - and ONLY an item does. A soft-wrapped line
+    # is not a sentence boundary and must not be given one.
+    It 'ends a bullet as a sentence and a wrapped line as neither' {
+        (ConvertTo-FmSpokenText -Text "- one`n- two") | Should -Be 'one. two.'
+        (ConvertTo-FmSpokenText -Text "two   lines`nof news") | Should -Be 'two lines of news.'
+    }
+
+    # Measured on a real reply: "Path: voice quality dot status" ran straight
+    # into "URL: a link on github dot com" with no pause at all.
+    It 'separates two statements that only a line break divided' {
+        (ConvertTo-FmSpokenText -Text "Path: run.log`nURL: https://example.com/a") |
+            Should -BeLike '*run dot log. URL*'
+    }
+
+    It 'answers empty for empty, and never throws on one' {
+        (ConvertTo-FmSpokenText -Text '') | Should -Be ''
+        (ConvertTo-FmSpokenText -Text "   `n  ") | Should -Be ''
+    }
+
+    It 'ends with a full stop so the engine finishes the sentence' {
+        (ConvertTo-FmSpokenText -Text 'Nothing is waiting on you') | Should -BeLike '*you.'
+    }
+}
+
+Describe 'Split-FmBridgeReply' {
+
+    It 'takes the marked line as the spoken form and keeps it off the screen' {
+        $split = Split-FmBridgeReply -Reply "Four are running.`n`nSPOKEN: Four jobs, nothing waiting."
+        $split.Marked | Should -BeTrue
+        $split.Spoken | Should -Be 'Four jobs, nothing waiting.'
+        $split.Written | Should -Be 'Four are running.'
+        $split.Written | Should -Not -BeLike '*SPOKEN*'
+    }
+
+    # THE MARKER MUST SURVIVE UNTIL IT IS READ. The translator strips a leading
+    # `word:` state prefix and its match is case-insensitive, so a reply
+    # translated before it was split would have lost the line naming what to say
+    # and fallen back to a derived lead every time.
+    It 'reads the marker before the translator could eat it' {
+        $split = Split-FmBridgeReply -Reply "done: the fix is ready`nSPOKEN: The fix is ready for review."
+        $split.Marked | Should -BeTrue
+        $split.Spoken | Should -Be 'The fix is ready for review.'
+    }
+
+    # Both halves go through the panel's translator, and the spoken one obeys it
+    # harder - AGENTS.md section 9 - because the captain cannot re-read a spoken
+    # sentence to work out what a word meant.
+    It 'translates what is read and what is said, not just what is read' {
+        $split = Split-FmBridgeReply -Reply "done: PR ready in worktree fm/x`nSPOKEN: The crewmate finished in its worktree."
+        $split.Written | Should -Not -Match '\bworktree\b'
+        $split.Spoken | Should -Not -Match '\bworktree\b'
+        $split.Spoken | Should -Not -Match '\bcrewmate\b'
+    }
+
+    It 'prepares the marked line too, because a model still reaches for a path' {
+        $split = Split-FmBridgeReply -Reply "Done.`nSPOKEN: **Done** - see C:\logs\run-1.log"
+        $split.Spoken | Should -Be 'Done, see run 1 dot log.'
+    }
+
+    It 'takes the last marker when a reply carries two' {
+        (Split-FmBridgeReply -Reply "x`nSPOKEN: first`nSPOKEN: second").Spoken | Should -Be 'second.'
+    }
+
+    # An older session, a resumed one, or a turn that simply forgot still has to
+    # be speakable - and reading the whole reply aloud is the thing being fixed.
+    It 'derives a spoken form when the reply carries no marker' {
+        $split = Split-FmBridgeReply -Reply "**Migration complete.** The checks are green.`n`n- one`n- two"
+        $split.Marked | Should -BeFalse
+        $split.Spoken | Should -Be 'Migration complete. The checks are green.'
+        $split.Written | Should -BeLike '*Migration complete*'
+    }
+
+    It 'bounds a derived form to what can be heard at one hearing' {
+        $long = 'This sentence is quite long and says a great deal about very little indeed. ' * 6
+        $split = Split-FmBridgeReply -Reply $long
+        # Get-FmVoiceMaxLength owns the number and is internal, so this asserts
+        # the outcome it exists for: short enough to hold in your head at first
+        # hearing, rather than a paragraph read at you.
+        $split.Spoken.Length | Should -BeLessOrEqual 220
+    }
+
+    It 'answers empty for an empty turn' {
+        $split = Split-FmBridgeReply -Reply ''
+        $split.Written | Should -Be ''
+        $split.Spoken | Should -Be ''
+    }
+}
+
+Describe 'Get-FmBridgeSpeechContract' {
+
+    It 'asks for the marker Split-FmBridgeReply reads' {
+        Get-FmBridgeSpeechContract | Should -BeLike '*SPOKEN:*'
+    }
+
+    # One owner: what a spoken message may SAY is AGENTS.md section 9's rule,
+    # and two copies of it would drift the moment one was edited.
+    It 'points at the rule rather than restating it' {
+        Get-FmBridgeSpeechContract | Should -BeLike '*section 9*'
+    }
+
+    # The soft half of the guard over the machine's own voice.
+    It 'tells the session the machine voice is not its to use' {
+        Get-FmBridgeSpeechContract | Should -BeLike '*fm-say*'
+    }
+}
+
+Describe 'the bridge screen settings' {
+
+    BeforeEach {
+        $script:SettingsHome = Join-Path ([IO.Path]::GetTempPath()) ("fm-bridge-cfg-" + [guid]::NewGuid().ToString('N').Substring(0, 10))
+        $null = New-Item -ItemType Directory -Path (Join-Path $script:SettingsHome 'config') -Force
+    }
+    AfterEach {
+        if (Test-Path -LiteralPath $script:SettingsHome) {
+            Remove-Item -LiteralPath $script:SettingsHome -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # PUSH AND OFF ARE NOT ARBITRARY DEFAULTS. One holds the microphone shut
+    # until a hand is on it; the other keeps the machine quiet until it is
+    # asked. Both are the state the captain has to opt OUT of.
+    It 'defaults to push to talk with no file at all' {
+        Get-FmListenMode -HomePath $script:SettingsHome | Should -Be 'push'
+    }
+
+    It 'defaults to a silent screen with no file at all' {
+        Get-FmBridgeVoice -HomePath $script:SettingsHome | Should -Be 'off'
+    }
+
+    It 'remembers the mode the captain chose' {
+        (Set-FmListenMode -Mode 'continuous' -HomePath $script:SettingsHome).Ok | Should -BeTrue
+        Get-FmListenMode -HomePath $script:SettingsHome | Should -Be 'continuous'
+    }
+
+    It 'remembers that the screen was told to speak' {
+        (Set-FmBridgeVoice -State 'on' -HomePath $script:SettingsHome).Ok | Should -BeTrue
+        Get-FmBridgeVoice -HomePath $script:SettingsHome | Should -Be 'on'
+    }
+
+    It 'writes the file the shared contract requires: no BOM, LF only' {
+        $null = Set-FmListenMode -Mode 'continuous' -HomePath $script:SettingsHome
+        $bytes = [IO.File]::ReadAllBytes((Join-Path $script:SettingsHome 'config/listen-mode'))
+        $bytes[0] | Should -Not -Be 0xEF
+        $bytes | Should -Not -Contain 13
+        $bytes[-1] | Should -Be 10
+    }
+
+    # A word the reader does not know is treated as the safe default, so writing
+    # it would leave the screen saying one thing and the machine doing another.
+    It 'refuses a mode it does not know rather than recording it' {
+        $verdict = Set-FmListenMode -Mode 'always' -HomePath $script:SettingsHome
+        $verdict.Ok | Should -BeFalse
+        $verdict.Error | Should -Not -BeNullOrEmpty
+        $verdict.Mode | Should -Be 'push'
+        Test-Path -LiteralPath (Join-Path $script:SettingsHome 'config/listen-mode') | Should -BeFalse
+    }
+
+    It 'refuses a voice setting it does not know rather than recording it' {
+        $verdict = Set-FmBridgeVoice -State 'maybe' -HomePath $script:SettingsHome
+        $verdict.Ok | Should -BeFalse
+        $verdict.State | Should -Be 'off'
+    }
+
+    It 'reads a damaged file as the safe default, never as the other one' {
+        Set-Content -LiteralPath (Join-Path $script:SettingsHome 'config/listen-mode') -Value 'contnuous'
+        Set-Content -LiteralPath (Join-Path $script:SettingsHome 'config/bridge-voice') -Value 'oon'
+        Get-FmListenMode -HomePath $script:SettingsHome | Should -Be 'push'
+        Get-FmBridgeVoice -HomePath $script:SettingsHome | Should -Be 'off'
+    }
+
+    It 'allows the comments and blank lines every other config file allows' {
+        Set-Content -LiteralPath (Join-Path $script:SettingsHome 'config/listen-mode') `
+            -Value "# how the microphone listens`n`ncontinuous"
+        Get-FmListenMode -HomePath $script:SettingsHome | Should -Be 'continuous'
+    }
+}
+
+Describe 'Get-FmStableCheckout' {
+
+    # The bridge told the captain to point their dictation app at a file inside a
+    # WORKER's copy of the checkout - a directory deleted when that work
+    # finishes. Observed on their screen.
+    It 'names a checkout that carries the file the instruction is about' {
+        $answer = Get-FmStableCheckout -Root $script:Root -RequiredFile 'bin/fm-dictate.cmd'
+        $answer | Should -Not -BeNullOrEmpty
+        Test-Path -LiteralPath (Join-Path $answer 'bin/fm-dictate.cmd') | Should -BeTrue
+    }
+
+    # A guess at a directory that does not exist is worse than a path that is
+    # merely short-lived, so the required file has to actually be there.
+    It 'keeps the checkout it was given when the file it needs is not there' {
+        Get-FmStableCheckout -Root $script:Root -RequiredFile 'bin/no-such-thing.cmd' |
+            Should -Be $script:Root
+    }
+
+    It 'answers instead of throwing for a path that is not a checkout at all' {
+        $notARepo = Join-Path ([IO.Path]::GetTempPath()) ("fm-not-a-repo-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $null = New-Item -ItemType Directory -Path $notARepo -Force
+        try { Get-FmStableCheckout -Root $notARepo | Should -Be $notARepo }
+        finally { Remove-Item -LiteralPath $notARepo -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'answers empty for empty rather than guessing' {
+        Get-FmStableCheckout -Root '' | Should -Be ''
     }
 }

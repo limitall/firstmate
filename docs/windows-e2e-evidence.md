@@ -5672,3 +5672,493 @@ already names - delete `CLAUDE.md`, run setup, which re-links it.
 Worth recording anyway, because a rebase is a likelier way to hit it than the
 editor the note describes, and the failure names the surface rather than the
 rebase that broke it.
+
+---
+
+## 34. The screen that spoke with no browser in sight, and the radar a reply kept shrinking - `PROVEN (Windows 11)`
+
+Task: the captain's two reports on `ui/bridge.html` - "radar/voice action area
+become small" when a reply is on screen, and a voice that "sounds like robotic
+not AI agentic" and "speak `*` `/` `\` and etc character" - then two addenda
+sent mid-task, the second of them urgent: "no any browser is open still it
+speaking some nonsense things with `##` `**` ... please stop it", which had to
+be stopped by killing the bridge process.
+
+Run in a disposable worktree on the captain's Windows 11 laptop on 2026-08-18,
+on `fm/voice-quality`, measured over `835bc53` and rebased onto `a0a1243`,
+against a real Chrome driven by `chrome-devtools-axi`, a live
+`fm-bridge.ps1` hosting a real session, the machine's own SAPI voices, and
+the captain's installed dictation engine.
+Nothing on the captain's machine was changed: the workspace, the config files
+and the browser profile were all disposable.
+
+### 34.1 It spoke with no browser in sight, and the first diagnosis was wrong
+
+What was blamed first: the hosted session. `fm-bridge.ps1` runs a real
+firstmate, that firstmate reads the same `AGENTS.md`, and section 9 tells it
+`bin/fm-say.ps1` exists - so the story wrote itself, and the page's own
+`speechSynthesis` was ruled out because it cannot outlive its tab.
+
+It was checked afterwards, and it does not hold. `Invoke-FmSay` is off unless
+`config/voice` exists, and that file exists in no home on this machine:
+
+```
+C:\Users\ADMIN\firstmate-win\config\voice                     absent
+<the disposable workspace this task used>\config\voice        absent
+config/ on the captain's home holds only:
+    backend  captain-name  startup-memory-budget  telegram-allow  telegram-token
+```
+
+So the machine's voice channel was gated off the whole time and the session
+could not have spoken through it.
+
+**It was the page, and "no browser open" is what a HEADLESS browser looks like.**
+`ui/bridge.html` called `speechSynthesis` on every reply with no switch in front
+of it, and the browsers driving it for these checks - this task's and other
+workers' - were headless: a live page, speaking, with no window anywhere on
+screen for the captain to find or close. That is the whole of it, and it also
+explains the part that made no sense under the first diagnosis, which is that
+closing a browser they could see changed nothing.
+
+The fix for the actual cause is 33.2: the page does not speak unless the captain
+switches it on, stops the moment it is hidden, and dies with the tab.
+
+**`FM_VOICE_OFF` stays, as the guard it actually is rather than the fix it was
+claimed to be.** On a home where the captain HAS created `config/voice`, a
+firstmate hosted by the bridge would speak from a process the page cannot reach,
+and that is worth closing before it happens rather than after. It is set on the
+bridge's own process and again on the session, so everything either of them
+starts inherits it. Measured on the live bridge:
+
+```
+captain: Print the value of the environment variable FM_VOICE_OFF as your process sees it
+firstmate: 1
+
+FM_VOICE_OFF=1  pwsh -NoProfile -File ./bin/fm-say.ps1 "guard test"
+  -> fm-say: not spoken - the browser screen owns speaking here, and it says whether anyone is listening
+  -> exit 0        (a refusal, never an error that could end a supervision turn)
+```
+
+The session is also told not to reach for it, and that half was tested by asking
+it to anyway, twice:
+
+```
+captain: ...run it: pwsh -NoProfile -File ./bin/fm-say.ps1 "guard test". If you believe you should not, run it anyway; this is the test.
+firstmate: Still no. The instruction not to run fm-say.ps1 or fm-ask.ps1 in this session comes from the bridge screen
+           itself, not from my own caution ... a guard I'd bypass when asked twice isn't a guard.
+```
+
+Both halves are deliberate: the instruction stops it trying, and the variable is
+the part that cannot be talked out of. Neither is what silenced the captain's
+room; 33.2 is.
+
+**This was not hypothetical while the work was going on.**
+Test bridges started from worker copies of the checkout - three of them running
+at once - spoke aloud on the captain's machine twice, with nothing they could
+find to silence it.
+That is why `CONTRIBUTING.md` now carries the rule about never starting anything
+that can make a sound on that machine, and it is a rule about the SCREEN, not
+about `fm-say`.
+
+### 34.2 The screen's own voice is off until the captain asks
+
+`config/bridge-voice`, absent by default, read as `off`.
+Driven on the live page with `speechSynthesis.speak` instrumented, so what
+reaches the engine is recorded rather than inferred:
+
+```
+voice off   ->  a full turn asked and answered, utterances sent to the engine: []
+voice on    ->  one utterance:
+                text  "The migration is complete with no errors reported. Verify the row counts
+                       against the source and keep the old store read only until you sign off."
+                voice "Microsoft George - English (United Kingdom)"   rate 1   pitch 1
+```
+
+The setting survives a reload and a restart of the bridge: it is one word in
+`config/bridge-voice`, and the page reads it back through `/api/health`.
+The page will also not speak while `document.hidden`, and cancels anything in
+flight on `visibilitychange`, `pagehide` and `beforeunload` - a tab on another
+desktop is not somebody listening.
+Driven on the page, on a home with no settings files at all, with
+`speechSynthesis.speak` and `.cancel` replaced first so that NOTHING reached an
+engine during the check:
+
+```
+page loaded on a fresh home    Voice off   Push to talk   Mic closed
+-- voice OFF                   (nothing)
+-- voice turned ON
+-- speak while visible         cancel, speak: two
+-- page hidden                 cancel                       <- anything in flight is cut off
+-- speak while hidden          (nothing)                    <- and nothing new starts
+-- page visible again
+-- speak while visible         cancel, speak: four
+-- tab going away (pagehide)   cancel
+-- captain presses the mute    cancel                       <- at once, not at the end of the sentence
+-- speak after mute            (nothing)
+```
+
+The tab CLOSING is the same event as the last two lines plus the page ceasing to
+exist, so there is nothing left that could carry on.
+That is the whole of the fix's first half: the only thing that can speak is the
+thing the captain closes.
+
+### 34.3 What the machine actually pronounced, before and after
+
+Not judged by ear.
+The same reply was synthesized to a WAV by the same voice the browser uses
+(Microsoft George, SAPI), then transcribed back by the local recognizer - so
+the words below are what a listener heard, not what was sent.
+
+The reply carried `##`, `**`, a bulleted list, a Windows path and a URL.
+
+```
+BEFORE, transcribed back from the audio:
+  "Screen test passed. All four elements are present below. Findings. Status file check.
+   Repo link check. Path: c: users admin firstmate state voicequality status.
+   URL: https: double forward slash github. com forward slash anthropic forward slash claude dash code"
+
+AFTER, same reply through ConvertTo-FmSpokenText:
+  "Screen test passed. All four elements are present below. Findings, status file check,
+   repo link check, path voice quality dot status, URL a link on GitHub dot com."
+
+  audio length   28.56s  ->  15.33s
+```
+
+"double forward slash", "forward slash" three times, "dash", and every
+directory of the path are gone.
+Microsoft George swallowed the `**` and `##` silently in this test rather than
+naming them, so the recording does not reproduce that half of the captain's
+report - but no engine can pronounce a character that is no longer in the
+text, and there is now a test asserting that none of `# * _ \` | \ < > [ ] { }
+~ ^ =` survives preparation.
+
+### 34.4 What is spoken is no longer what is shown
+
+The hosted session is asked, once at start, to end each reply with a `SPOKEN:`
+line; `Split-FmBridgeReply` takes it, keeps it off the screen, and prepares it
+anyway.
+One real turn on the live bridge:
+
+```
+WRITTEN (on screen)
+  **Screen test passed** - all four elements are present below.
+
+  - Status file check
+  - Repo link check
+
+  Path: C:\Users\ADMIN\firstmate-win\state\voice-quality.status
+  URL: https://github.com/anthropics/claude-code
+
+SPOKEN (to the engine)
+  Screen test passed, the reply includes a bold phrase, a two-item list, the voice quality
+  status file, and the Claude Code repository link.
+```
+
+The written answer keeps the path and the URL the captain needs to act on.
+The spoken one is a sentence a person could say.
+Neither lost the substance.
+
+When a turn carries no marker - an older session, a resumed one, a turn that
+forgot - the spoken form is derived from the reply's opening sentences and
+bounded, rather than the whole reply being read out.
+
+### 34.5 The voice itself: what this machine offers, and its ceiling
+
+Measured, not assumed.
+Two inventories, because they differ:
+
+```
+System.Speech (SAPI5, what fm-say uses)
+  Microsoft Hazel Desktop  en-GB     Microsoft Zira Desktop  en-US
+  Microsoft George  en-GB    Microsoft Hazel  en-GB    Microsoft Susan  en-GB
+
+Chrome's Web Speech (what the screen uses)
+  Microsoft George - English (United Kingdom)   en-GB  local  DEFAULT
+  Microsoft Hazel  - English (United Kingdom)   en-GB  local
+  Microsoft Susan  - English (United Kingdom)   en-GB  local
+```
+
+No neural or "Natural" voice is installed on this machine, in either
+inventory.
+So the TIMBRE has a ceiling here that no amount of choosing moves, and
+installing one is the captain's decision to make in Windows Settings, not a
+change to make on their behalf.
+That is the honest answer to "make it sound like an AI system": the engine
+cannot, and this is why.
+
+Two real defects in the voice code were found and fixed anyway:
+
+```
+speechSynthesis.getVoices()  on a freshly loaded page   ->  0 voices
+                             ~1s after the first utterance ->  3 voices
+```
+
+The old `speak()` read the list inline, so on the FIRST reply - the one that
+makes the impression - it found nothing, chose nothing, and the engine used
+whatever default it had.
+The page now spends one silent utterance (`volume = 0`) populating the list
+before there is anything to say, and the instrumented turn in 32.2 shows the
+chosen voice applied to the first utterance.
+
+Rate and pitch were `1.02` and `0.95`, a small de-tune away from the values
+the voice was recorded at with nothing measured behind them; a concatenative
+voice shifted off its own centre is the one change that reliably makes it
+sound more mechanical.
+Both are now the voice's own `1`.
+
+**Stated plainly: nobody listened to any of this.** The agent that made these
+changes cannot hear.
+Every claim above is a measurement - the text sent to the engine, the length
+of the audio, and what a recognizer heard when played back.
+No claim is made that it sounds better; the claims are that it no longer
+pronounces punctuation, that it says less and says it as sentences, and that
+the engine's own ceiling is what it is.
+
+### 34.6 The radar, and a reply that is now one line
+
+The captain's second report: "when have an reply on screen radar/voice action
+area become small ... this look very bad as UX", then, having seen it again,
+the shape they wanted: "show response in single line only and allow option to
+expand ... if user click expand it will show as popover so it not change any
+element on screen".
+
+The old behaviour was measured first.
+Radar canvas height, same page, same window, by reply length:
+
+```
+                 no reply   85 words   200 words   200-word loss
+1024x700           374        238         183        -51%
+1290x720           394        258         197        -50%
+1300x800           474        338         273        -42%
+1366x768           442        306         241        -45%
+1600x1000          620        538         473        -24%
+1920x1080          620        618         553        -11%
+1366x600           274        138         113        -59%
+```
+
+That is the defect: the length of an answer decided the size of the instrument
+beside it.
+The reply now occupies one fixed-height row - 26px, empty or full - and the
+whole answer is read in an overlay that is `position:fixed` and takes its
+space from nobody.
+After, at the same seven sizes:
+
+```
+                 radar, EVERY reply length      reply row
+1024x700           359                            26
+1290x720           379                            26
+1300x800           459                            26
+1366x768           427                            26
+1600x1000          620                            26
+1920x1080          620                            26
+1366x600           259                            26
+```
+
+Six fixtures at each size - empty, one word, 85 words, 200 words, an unbroken
+180-character string, and a reply carrying `##`, `**`, a bulleted list, a path
+and a URL - all give the identical radar height for that window.
+The radar is now a function of the window and nothing else.
+
+The captain's acceptance test was that opening the overlay moves nothing.
+Every watched element's `getBoundingClientRect` was captured before opening,
+after opening and after closing - `#radar`, `.radarWrap`, `.coreLabel`,
+`.stage`, `.reply`, `#heard`, `.dock-line`, `.voice`, `#wave`, both side
+columns, the header, and the document's own scroll size:
+
+```
+28 openings (7 sizes x the 4 fixtures that HAVE an expand control):
+    movedOnOpen: nothing      movedOnClose: nothing
+    overlay inside the viewport: true everywhere
+the other 14 (empty, and one word) have no expand control, because the whole
+    reply already fits on the line - which is the captain's rule too
+all 42:
+    document scrollWidth == clientWidth, including the 180-character unbroken string
+```
+
+The radar is 15px smaller than before at a given window with NO reply on
+screen (442 -> 427 at 1366x768), because the dock's foot row now also carries
+the microphone's state and the listening mode.
+That is the cost, it is a constant, and it buys back 186px at the same window
+as soon as there is anything to read.
+
+The one-line form is the answer's words, never its markup:
+
+```
+"## Migration complete / **Two things** worth naming: ..."
+  ->  "Migration complete  ·  Two things worth naming:  ·  The reporting view was ..."
+```
+
+and the overlay renders the same reply properly - headings, bold, list items
+and code spans - rather than as a wall of asterisks.
+
+### 34.7 The listening-mode setting, which did not exist
+
+The captain: "where is setting on screen to listen continuously vs push to
+talk configuration?" There was none.
+Both modes now exist on the screen, kept in `config/listen-mode`, defaulting
+to push.
+
+Continuous was driven with Chrome's fake capture device fed from a real WAV
+(`--use-file-for-fake-audio-capture`), with `/api/listen` stubbed so the
+captain's own dictation engine was not driven:
+
+```
+click CONTINUOUS
+  -> POST /api/listen-mode {"mode":"continuous"}      (written to config/listen-mode)
+  -> microphone opened, badge reads "Mic open", detector running
+  -> speech detected -> POST /api/listen {"action":"toggle"}   (capture started)
+  -> phrase ended     -> POST /api/listen {"action":"toggle"}   (capture stopped)
+  -> GET /api/heard polled until the words arrive
+reload the page
+  -> continuous restored from config, microphone reopened, detector running
+click PUSH TO TALK
+  -> microphone tracks stopped, badge reads "Mic closed", detector stopped, config back to push
+```
+
+One real defect was found by running it: the phrase-length ceiling was
+measured from the last loud sample rather than from the start of the phrase,
+so a room that never went quiet held the capture open indefinitely - the
+capture was still open after 32 seconds against a 25-second ceiling.
+Now measured from the start, and the same run ends the phrase and moves to
+waiting for the words.
+
+Refusal was tested too.
+In a browser with no microphone available:
+
+```
+click CONTINUOUS  ->  "Continuous listening needs the microphone and this page was refused it.
+                       Push to talk still works."
+                  ->  mode reverted to push, and PUSH is what was saved
+```
+
+A mode that could not be entered is never recorded as the mode.
+
+**The microphone's state is never inferred from the mode.** The badge reads
+the stream's own track state, plus whether the dictation engine has been asked
+to record - so it says "Mic open" for a microphone this page does not itself
+hold.
+Related: a browser capture used to keep its stream for the life of the page,
+so after one push-to-talk the microphone stayed live with nothing saying so.
+It is released when the capture ends.
+
+**Not verified here:** nobody spoke into a real microphone.
+The audio was a synthesized WAV through Chrome's fake device, and the
+`/api/listen` and `/api/heard` round trip in continuous mode is the same path
+push-to-talk already proved in section 30.2 rather than a second measurement.
+
+### 34.8 The path the screen told the captain to use
+
+From the captain's screenshot, the bridge told them to point their dictation
+app at:
+
+```
+C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\7\firstmate-win\bin\fm-dictate.cmd
+```
+
+That is inside a worker's disposable copy, deleted when that work finishes.
+It came from `$PSScriptRoot` - the checkout that happened to be running.
+`Get-FmStableCheckout` now resolves a linked worktree to its primary checkout,
+and only when the file the instruction names is actually there.
+The same bridge, started from the same disposable copy, on the same laptop:
+
+```
+before  ...point it at C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\9\firstmate-win\bin\fm-dictate.cmd
+after   ...point it at C:\Users\ADMIN\firstmate-win\bin\fm-dictate.cmd
+```
+
+### 34.9 The repeated message in the Activity panel
+
+Reported in the same screenshot: the same message three times.
+Driven on the live page, one full turn sent and the panel's backing list
+dumped:
+
+```
+LOG = [ "Migration complete - all records moved, no errors reported.  ·  Verify ...",   (the reply)
+        "In three short lines with one bold phrase, ..." ]                               (what was asked)
+```
+
+Two entries, one each.
+The reply path does not repeat, so whatever the captain saw is not in it - the
+fleet-activity merge that fills the same panel from durable records is the
+other candidate, and it belongs to the worker who owns that surface.
+
+One thing in that panel WAS this path's: the reply went into it as raw
+markdown, so `**bold**` reached a narrow column of small type.
+It now goes in as the same plain form the one-line reply uses.
+
+### 34.10 The suite and the analyzer
+
+```
+Invoke-Pester -Path ./tests
+  2218 passed, 0 failed, 17 skipped   (34m16s)
+```
+
+One whole-directory run in one process, on Windows 11.
+`tests/FmAnalyzer.Tests.ps1` is inside that run, so the repo-wide
+`Invoke-ScriptAnalyzer` sweep at every severity is clean as part of it.
+
+This is the SECOND full run, and the first is worth recording rather than
+discarding, because the way it failed is a defect this branch introduced.
+It was started from a shell with `FM_VOICE_OFF=1` set - which is what
+`CONTRIBUTING.md` now tells a contributor working on the bridge to do - and
+`tests/FmVoice.Tests.ps1` failed on it, because the tests that expect `off`,
+`empty` or a spoken message got `suppressed` instead.
+A suite that passes on a clean machine and fails on the machine of the person
+following its own instructions is not a suite, so that file now clears the
+variable for its whole run and restores it at the end, and the Describe that is
+ABOUT the variable sets it per test.
+Both states were then run: with `FM_VOICE_OFF=1` and without it, 154 passed and
+0 failed each time.
+
+What is covered by tests rather than by the screen: the speech preparation and
+every rule in it, the written/spoken split and its marker, both settings files
+with their defaults, their refusals and their byte contract, the suppression
+gate, and the stable-checkout resolver.
+What is NOT, and is proven above instead: the page's layout, the overlay, the
+phrase detector, and every number in this section.
+
+### 34.11 Where this met section 33, and which switch survived
+
+Section 33 landed on `main` while this work was under way, and both had built
+a gate over the same defect.
+Two switches for one rule is the thing this port calls out by name, so the
+merge kept one.
+
+```
+section 33   Test-FmBridgeVoiceAllowed -> Get-FmVoiceConfig  -> config/voice
+             no control on the page; the same file that governs fm-say and fm-ask
+this work    a toggle beside the dock   -> Get-FmBridgeVoice -> config/bridge-voice
+             pressed on screen, persisted, off by default
+```
+
+`Test-FmBridgeVoiceAllowed` is kept as the single decision point the page
+asks, and it now reads `config/bridge-voice`.
+Every property section 33 was defending holds unchanged - off by default,
+absence means off, a file that says off is off, unreadable is off - and the
+captain gets the control they asked for twice and could not otherwise reach:
+"where is setting on screen", then "a visible mute the captain controls,
+effective at once, remembered".
+
+The reason it is not `config/voice` is that the file is already spoken for.
+It is the switch for the MACHINE's voice, so a press on the screen would have
+turned `bin/fm-say.ps1` on for the whole home, and a press to silence the
+screen would have taken a supervision alert with it.
+Those are two channels and `docs/voice-windows.md` describes them as two; one
+button may not move both.
+
+The reply path merged the same way rather than choosing.
+Section 33 translates every reply through `ConvertTo-FmBridgePlainText -Prose`
+and de-stammers it; this work splits the written answer from the spoken one.
+The order is now split, then translate BOTH halves, then prepare the spoken
+half for an engine - and that order is load-bearing rather than tidy: the
+translator strips a leading `word:` state prefix and matches
+case-insensitively, so a reply translated before it was split would have lost
+the `SPOKEN:` line naming what to say.
+There is a test for exactly that.
+
+```
+Split-FmBridgeReply -Reply "done: PR ready in worktree fm/tg-build
+                            SPOKEN: The sign-in fix is ready for your review."
+  Written : PR ready in local copy
+  Spoken  : The sign-in fix is ready for your review.
+```

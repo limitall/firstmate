@@ -24,10 +24,22 @@ BeforeAll {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
 
+    # CLEARED FOR THIS WHOLE FILE, and restored at the end. FM_VOICE_OFF
+    # silences the voice channel for a process tree, and CONTRIBUTING.md tells
+    # contributors to set it in their own shell while working on the bridge - so
+    # without this, every test here that expects 'off', 'empty' or a spoken
+    # message fails on their machine and passes on a clean one. The one Describe
+    # that is ABOUT the variable sets it per test and puts it back.
+    $script:VoiceOffAtStart = $env:FM_VOICE_OFF
+    Remove-Item Env:FM_VOICE_OFF -ErrorAction SilentlyContinue
+
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     $script:ModuleRoot = Join-Path $script:RepoRoot 'module' 'Firstmate'
     . (Join-Path $script:ModuleRoot 'Private' 'FmPaths.ps1')
     . (Join-Path $script:ModuleRoot 'Private' 'FmVoice.ps1')
+    # Get-FmVoiceSpeechText prepares before it bounds, and the preparation lives
+    # here. Without this file the bound would run over text nothing had cleaned.
+    . (Join-Path $script:ModuleRoot 'Public' 'ConvertTo-FmSpokenText.ps1')
     . (Join-Path $script:ModuleRoot 'Public' 'Invoke-FmSay.ps1')
     . (Join-Path $script:ModuleRoot 'Public' 'Invoke-FmAsk.ps1')
 
@@ -94,6 +106,13 @@ BeforeAll {
     $script:AskScript = Join-Path $script:RepoRoot 'bin' 'fm-ask.ps1'
 }
 
+# Restores what the file's own BeforeAll cleared, because Pester containers share
+# one process and a variable left changed here decides another file's behaviour.
+AfterAll {
+    if ($null -eq $script:VoiceOffAtStart) { Remove-Item Env:FM_VOICE_OFF -ErrorAction SilentlyContinue }
+    else { $env:FM_VOICE_OFF = $script:VoiceOffAtStart }
+}
+
 Describe 'the voice is off until the captain turns it on' {
     BeforeEach {
         Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
@@ -111,7 +130,7 @@ Describe 'the voice is off until the captain turns it on' {
         $said = Invoke-FmSay -Message 'hello captain' -FirstmateHome (New-VoiceHome -ConfigLine @())
         $said.Spoken | Should -BeTrue
         $said.Reason | Should -Be 'spoken'
-        Should -Invoke Invoke-FmSpeechRequest -Times 1 -Exactly -ParameterFilter { $Text -eq 'hello captain' }
+        Should -Invoke Invoke-FmSpeechRequest -Times 1 -Exactly -ParameterFilter { $Text -eq 'hello captain.' }
     }
 
     It 'stays silent for a config/voice that says off, keeping the voice choice' {
@@ -127,6 +146,83 @@ Describe 'the voice is off until the captain turns it on' {
         $said.Spoken | Should -BeFalse
         $said.Reason | Should -Be 'empty'
         Should -Invoke Invoke-FmSpeechRequest -Times 0 -Exactly
+    }
+}
+
+# WHAT THIS GUARDS. The browser bridge hosts a real firstmate session, which
+# reads the same AGENTS.md and therefore knows fm-say.ps1 exists. On a home whose
+# captain has created config/voice, it would speak out of a process the page
+# cannot reach. The session is now started with FM_VOICE_OFF set, and this is the
+# gate that variable opens. It is NOT what silenced the screen that spoke at the
+# captain - that was the page's own speechSynthesis, and this home had no
+# config/voice at all; docs/windows-e2e-evidence.md section 34.1 has the check.
+Describe 'a process whose parent owns the speaking' {
+    BeforeAll {
+        # Saved and restored, because Pester containers share one process and a
+        # variable left set here would silence every suite that runs after.
+        $script:VoiceOffBefore = $env:FM_VOICE_OFF
+    }
+    AfterAll {
+        if ($null -eq $script:VoiceOffBefore) { Remove-Item Env:FM_VOICE_OFF -ErrorAction SilentlyContinue }
+        else { $env:FM_VOICE_OFF = $script:VoiceOffBefore }
+    }
+    BeforeEach {
+        Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
+        Mock Invoke-FmSpeechRequest { [pscustomobject]@{ Spoken = $true; Reason = 'spoken' } }
+    }
+    AfterEach { Remove-Item Env:FM_VOICE_OFF -ErrorAction SilentlyContinue }
+
+    It 'never reaches an engine, whatever config/voice says' {
+        $env:FM_VOICE_OFF = '1'
+        $said = Invoke-FmSay -Message 'hello captain' -FirstmateHome (New-VoiceHome -ConfigLine @())
+        $said.Spoken | Should -BeFalse
+        $said.Reason | Should -Be 'suppressed'
+        Should -Invoke Invoke-FmSpeechRequest -Times 0 -Exactly
+    }
+
+    It 'still speaks when the variable says the opposite' {
+        foreach ($value in '0', 'false', 'off', 'no', '') {
+            $env:FM_VOICE_OFF = $value
+            (Invoke-FmSay -Message 'hello captain' -FirstmateHome (New-VoiceHome -ConfigLine @())).Spoken |
+                Should -BeTrue -Because "'$value' is not a request for silence"
+        }
+    }
+
+    It 'speaks again once the variable is gone' {
+        $env:FM_VOICE_OFF = '1'
+        $null = Invoke-FmSay -Message 'hello captain' -FirstmateHome (New-VoiceHome -ConfigLine @())
+        Remove-Item Env:FM_VOICE_OFF
+        (Invoke-FmSay -Message 'hello captain' -FirstmateHome (New-VoiceHome -ConfigLine @())).Reason |
+            Should -Be 'spoken'
+    }
+}
+
+# The captain named `##` and `**` being read out. Nothing reaches an engine
+# through this path without being prepared first; ConvertTo-FmSpokenText owns
+# what preparing means, and tests/FmBridge.Tests.ps1 owns the rules themselves.
+Describe 'what fm-say hands the engine' {
+    BeforeEach {
+        Mock Get-FmInstalledSpeechVoice { $script:InstalledVoices }
+        Mock Invoke-FmSpeechRequest { [pscustomobject]@{ Spoken = $true; Reason = 'spoken' } }
+    }
+
+    It 'strips the markup before the engine ever sees it' {
+        $null = Invoke-FmSay -Message '**Done** - see `C:\logs\run-1.log`' `
+            -FirstmateHome (New-VoiceHome -ConfigLine @())
+        Should -Invoke Invoke-FmSpeechRequest -Times 1 -Exactly -ParameterFilter {
+            $Text -eq 'Done, see run 1 dot log.'
+        }
+    }
+
+    # The bound is measured on the characters that are actually SPOKEN. The
+    # other order would cut a reply for being long and then remove the markup
+    # that made it long.
+    It 'measures its length after the markup has gone, not before' {
+        $padding = '**' * 60
+        $message = "The payments fix is ready for your review. $padding"
+        $bounded = Get-FmVoiceSpeechText -Message $message
+        $bounded.Truncated | Should -BeFalse
+        $bounded.Text | Should -Be 'The payments fix is ready for your review.'
     }
 }
 
@@ -261,13 +357,16 @@ Describe 'the utterance bound' {
     }
 
     It 'speaks a short message exactly as given' {
+        # The full stop is added by the preparation this now delegates to: a
+        # sentence handed to an engine without a terminator is read with the
+        # flat, unfinished cadence of a line that was cut off.
         $bounded = Get-FmVoiceSpeechText -Message 'the payments fix is ready for your review'
         $bounded.Truncated | Should -BeFalse
-        $bounded.Text | Should -Be 'the payments fix is ready for your review'
+        $bounded.Text | Should -Be 'the payments fix is ready for your review.'
     }
 
     It 'collapses newlines and runs of whitespace, which are unspeakable anyway' {
-        (Get-FmVoiceSpeechText -Message "two   lines`nof news").Text | Should -Be 'two lines of news'
+        (Get-FmVoiceSpeechText -Message "two   lines`nof news").Text | Should -Be 'two lines of news.'
     }
 
     It 'truncates an over-long message audibly, at a word boundary' {
@@ -368,6 +467,26 @@ Describe 'bin/fm-say.ps1' {
         $run.ExitCode | Should -Be 0
         $run.StdErr | Should -Match 'not spoken'
         $run.StdErr | Should -Match 'config/voice'
+    }
+
+    # THE GATE, THROUGH A REAL CHILD PROCESS, which is the shape that actually
+    # failed: the browser bridge starts one, and it spoke to a closed browser.
+    # The home's voice is left OFF here on purpose - a suite that switches the
+    # voice ON to prove a guard is a suite that makes a noise on the captain's
+    # machine every time the guard regresses. What is asserted is the REASON,
+    # which is 'suppressed' only if the gate ran before the config was read.
+    It 'says nothing when its parent owns the speaking, and says which' {
+        $before = $env:FM_VOICE_OFF
+        try {
+            $env:FM_VOICE_OFF = '1'
+            $run = Invoke-Say -CliArgs @('hello', 'captain') -FmHome (New-VoiceHome)
+            $run.ExitCode | Should -Be 0
+            $run.StdErr | Should -Match 'not spoken'
+            $run.StdErr | Should -Match 'browser screen owns speaking'
+        } finally {
+            if ($null -eq $before) { Remove-Item Env:FM_VOICE_OFF -ErrorAction SilentlyContinue }
+            else { $env:FM_VOICE_OFF = $before }
+        }
     }
 
     It 'prints what config/voice got wrong, and still exits 0' {

@@ -27,9 +27,11 @@ implementation of the operating contract.
 ROUTES
     GET  /              the UI
     GET  /api/fleet     work under way, open decisions, recent activity
-    POST /api/say       one captain turn -> firstmate's reply
-    GET  /api/health    is the engine up, and what dictation can do right now
+    POST /api/say       one captain turn -> firstmate's reply, read and spoken
+    GET  /api/health    is the engine up, what dictation can do, how it listens
     POST /api/listen    start, stop or drop a capture on the WARM speech engine
+    POST /api/listen-mode  hold to talk, or leave the microphone open
+    POST /api/voice     whether the screen speaks its answers. Off by default
     GET  /api/heard     a dictated line waiting to be asked, if one has landed
 
 ONE VOICE, NOT TWO. /api/say and /api/fleet answer the same question - what is
@@ -41,6 +43,14 @@ way. Both were honest, which is precisely why it was unusable.
 New-FmBridgeTurnPrompt carries the whole argument. Every reply also leaves
 through ConvertTo-FmBridgePlainText, so what the session says and what the panel
 says obey one vocabulary rather than agreeing by habit.
+
+SPEAKING BELONGS TO THE PAGE, AND ONLY TO THE PAGE, AND IT IS OFF BY DEFAULT.
+This page spoke at the captain twice with no browser they could see, because it
+was being driven headless: a live page with no window to close. There is now a
+mute on the screen, `config/bridge-voice`, absent meaning off. The hosted
+session is separately refused the machine's own voice (FM_VOICE_OFF) so that a
+home which HAS turned `config/voice` on cannot talk out of a process the page
+never reaches.
 
 SECURITY. Binds 127.0.0.1 only, so nothing off this machine can reach it. There
 IS a write path now - /api/say drives a session that can change code - so it is
@@ -74,12 +84,27 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'fm-module-load.ps1') -RequiredCommand 'Get-FmCaptainName'
 
+# NOTHING THIS PROCESS STARTS MAY SPEAK ON THE MACHINE. Set here, on the whole
+# tree, rather than only on the hosted session: this bridge starts hooks and
+# child commands by more than one route, and it was a child that once carried on
+# talking to a closed browser with nothing the captain could reach to stop it.
+# Speaking on this surface belongs to the page, which stops existing when they
+# close it. Test-FmVoiceSuppressed is the gate; New-FmBridgeSession sets it on
+# the session explicitly as well, so neither depends on the other.
+$env:FM_VOICE_OFF = '1'
+
 $root  = Split-Path -Parent $PSScriptRoot
 $uiDir = Join-Path $root 'ui'
 # The file the captain points their dictation app at. Named from here because
 # this is the process that knows where this checkout is; the module owns what the
 # setting MEANS and bin/fm-dictate.ps1 owns why it is a .cmd.
-$hookPath = Join-Path $PSScriptRoot 'fm-dictate.cmd'
+#
+# NOT $PSScriptRoot. Run from a worker's disposable copy of the checkout, that
+# names a directory which is deleted when the work finishes - and the captain,
+# who was told to point their dictation app at it, would be left pointing at
+# nothing. Observed on their screen. Get-FmStableCheckout owns the answer.
+$hookRoot = Get-FmStableCheckout -Root $root -RequiredFile 'bin/fm-dictate.cmd'
+$hookPath = Join-Path (Join-Path $hookRoot 'bin') 'fm-dictate.cmd'
 
 # FIRST RUN. When this machine has never been told where the workspace goes, the
 # bridge starts WITHOUT an engine and the browser asks. The captain should not
@@ -224,7 +249,7 @@ try {
                         suggested  = (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'firstmate')
                         session    = $(if ($session) { $session.SessionId } else { '' })
                         # Whether this page may speak out loud. Off unless the
-                        # captain switched the voice channel on, because the page
+                        # captain pressed the mute on the screen, because the page
                         # used to speak every reply unconditionally and did it on
                         # their machine with no window open to silence.
                         voice      = (Test-FmBridgeVoiceAllowed -HomePath $home_)
@@ -238,7 +263,51 @@ try {
                             detail    = $speech.Detail
                             setup     = $speech.Setup
                         }
+                        # Read from the home every time rather than captured at
+                        # start: the captain can change it from the page, and a
+                        # reload has to come back to what they chose.
+                        listenMode = (Get-FmListenMode)
                     }
+                    continue
+                }
+
+                if ($path -eq '/api/voice') {
+                    if ($req.HttpMethod -ne 'POST') {
+                        Write-Json -Response $res -Object @{ error = 'POST only' } -Status 405
+                        continue
+                    }
+                    $voiceBody = ''
+                    $vr = [System.IO.StreamReader]::new($req.InputStream, [System.Text.Encoding]::UTF8)
+                    try { $voiceBody = $vr.ReadToEnd() } finally { $vr.Dispose() }
+                    $wantVoice = ''
+                    try { $wantVoice = [string]($voiceBody | ConvertFrom-Json).state } catch { $wantVoice = '' }
+                    $setVoice = Set-FmBridgeVoice -State $wantVoice
+                    if ($setVoice.Ok) { [Console]::Out.WriteLine("fm-bridge: the screen's voice is now $($setVoice.State)") }
+                    Write-Json -Response $res -Object @{
+                        ok    = $setVoice.Ok
+                        state = $setVoice.State
+                        error = $setVoice.Error
+                    } -Status $(if ($setVoice.Ok) { 200 } else { 400 })
+                    continue
+                }
+
+                if ($path -eq '/api/listen-mode') {
+                    if ($req.HttpMethod -ne 'POST') {
+                        Write-Json -Response $res -Object @{ error = 'POST only' } -Status 405
+                        continue
+                    }
+                    $modeBody = ''
+                    $mr = [System.IO.StreamReader]::new($req.InputStream, [System.Text.Encoding]::UTF8)
+                    try { $modeBody = $mr.ReadToEnd() } finally { $mr.Dispose() }
+                    $wantMode = ''
+                    try { $wantMode = [string]($modeBody | ConvertFrom-Json).mode } catch { $wantMode = '' }
+                    $set = Set-FmListenMode -Mode $wantMode
+                    if ($set.Ok) { [Console]::Out.WriteLine("fm-bridge: listening mode is now $($set.Mode)") }
+                    Write-Json -Response $res -Object @{
+                        ok    = $set.Ok
+                        mode  = $set.Mode
+                        error = $set.Error
+                    } -Status $(if ($set.Ok) { 200 } else { 400 })
                     continue
                 }
 
@@ -508,9 +577,15 @@ try {
                     # SHOWING must survive the translation intact: caught in the
                     # browser, a row reading LOCK IDENTITY sat beside a reply
                     # calling the same job "controls-identity".
+                    #
+                    # SPLIT BEFORE TRANSLATED, and Split-FmBridgeReply does both
+                    # in that order. What is read and what is SAID are two
+                    # different sentences, and the marker carrying the second one
+                    # would be eaten by the translator's state-prefix rule if it
+                    # were still in the text when that rule ran.
                     $names = @($fleet.Tasks | ForEach-Object { $_.Id })
-                    $reply = ConvertTo-FmBridgePlainText -Text $turn.Reply -Prose -Keep $names
-                    $reply = Remove-FmBridgeRepetition -Text $reply
+                    $split = Split-FmBridgeReply -Reply $turn.Reply -Keep $names
+                    $reply = Remove-FmBridgeRepetition -Text $split.Written
                     $replyError = ConvertTo-FmBridgePlainText -Text $turn.Error -Prose -Keep $names
 
                     # NOTHING IS APPENDED HERE, and the deleted append is worth a
@@ -523,10 +598,12 @@ try {
                     # The route now travels in the prompt instead, and the reply
                     # the session writes is the whole reply.
                     if ($reply) { [Console]::Out.WriteLine("firstmate: $reply") }
+                    if ($split.Spoken) { [Console]::Out.WriteLine("  spoken: $($split.Spoken)") }
                     Write-Json -Response $res -Object @{
-                        ok    = $turn.Ok
-                        reply = $reply
-                        error = $replyError
+                        ok     = $turn.Ok
+                        reply  = $reply
+                        spoken = $split.Spoken
+                        error  = $replyError
                     }
                     continue
                 }

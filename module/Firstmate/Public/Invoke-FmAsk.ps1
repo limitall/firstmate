@@ -35,9 +35,10 @@ unplugged.
 THE MICROPHONE IS NEVER OPENED UNLESS THE CAPTAIN TURNED THE VOICE ON, and never
 for a question that was not actually spoken. `config/voice` is the whole switch,
 the same one `fm-say` reads; with the voice off this returns `off` having
-listened to nothing. And when the question could not be spoken - no engine, or
-the utterance outran its deadline - this returns `unspoken` rather than listening
-for the answer to a question nobody was asked.
+listened to nothing. And when the question could not be spoken - no engine, the
+utterance outran its deadline, or this process's parent owns the speaking
+(`FM_VOICE_OFF`) - this returns `unspoken` rather than listening for the answer
+to a question nobody was asked.
 
 .PARAMETER Question
 What to ask, in the captain's nouns. `AGENTS.md` section 9's translation contract

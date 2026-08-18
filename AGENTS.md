@@ -86,6 +86,8 @@ config/backlog-backend  backlog backend override; LOCAL, gitignored; "manual" fo
 config/startup-memory-budget  per-home startup-memory budget; LOCAL, gitignored, materialized by locked bootstrap
 config/autolaunch      opt-in startup command and grace window for `bin/fm-autolaunch.ps1`; LOCAL, gitignored; absent = off
 config/voice           opt-in voice channel for `bin/fm-say.ps1` and `bin/fm-ask.ps1`, with the voice name, rate and answer confidence; LOCAL, gitignored; absent = off, and the microphone is never opened
+config/bridge-voice    opt-in spoken replies on the browser screen, "on" or "off"; LOCAL, gitignored; absent = off, and the screen is the only thing that speaks there
+config/listen-mode     how the browser screen's microphone listens, "push" or "continuous"; LOCAL, gitignored; absent = push, so the microphone opens only while held
 config/telegram-token config/telegram-allow  opt-in private channel to the captain for `bin/fm-tell.ps1`, `bin/fm-tg-poll.ps1` and `bin/fm-tg-route.ps1`: the bot token, and the numeric Telegram user id(s) allowed to command it and be told things; LOCAL, gitignored; either absent = off (section 14).
                        Optional `config/telegram-authority` may narrow that channel to reporting only and can never widen it.
 data/                personal fleet records; LOCAL, gitignored as a whole

@@ -93,6 +93,7 @@ if ($said.Spoken) { exit 0 }
 # supervision turn.
 $why = switch ($said.Reason) {
     'off' { 'the voice is off (create config/voice to turn it on)' }
+    'suppressed' { 'the browser screen owns speaking here, and it says whether anyone is listening' }
     'empty' { 'there was nothing to say' }
     'timeout' { "the utterance did not finish within $TimeoutSeconds seconds" }
     default { 'no speech engine or audio device is available' }

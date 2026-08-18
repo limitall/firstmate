@@ -42,7 +42,7 @@ speak asynchronously and this is how long the caller is willing to be delayed;
 past it, the utterance is cancelled and the result reports `timeout`.
 
 .OUTPUTS
-[pscustomobject] with Spoken, Reason (spoken, off, empty, unavailable, timeout),
+[pscustomobject] with Spoken, Reason (spoken, off, suppressed, empty, unavailable, timeout),
 Text (what was actually spoken), Truncated, Voice ('' means the engine default),
 Rate, and Warning.
 
@@ -81,6 +81,15 @@ function Invoke-FmSay {
     }
 
     try {
+        # BEFORE THE CONFIG, because this outranks it. A process whose parent
+        # owns the speaking - the browser bridge - may not reach an engine
+        # whatever this home's config/voice says. Test-FmVoiceSuppressed carries
+        # what that cost when it was missing.
+        if (Test-FmVoiceSuppressed) {
+            $result.Reason = 'suppressed'
+            return $result
+        }
+
         $configArgs = @{}
         if ($FirstmateHome) { $configArgs['HomePath'] = $FirstmateHome }
         $config = Get-FmVoiceConfig @configArgs
