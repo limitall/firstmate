@@ -355,6 +355,9 @@ function Invoke-FmWedgeTimerCheck {
     if ($n -ge $Settings.WedgeDemandInspectCount) {
         $reason = "stale: $Window (idle ${age}s, possible wedge, escalation $n, demand-deep-inspection: same pane has wedge-escalated $n times in a row - do not re-absorb on the run-step/pane state alone)"
     }
+    $reason = $reason + (Get-FmWatchRunLivenessNote `
+            -Task (Invoke-FmSeam -Name 'Convert-FmWindowToTask' -Arguments @($Window, $Context.State) -Default '') `
+            -Context $Context)
     if (-not (Add-FmWakeRecord -Kind stale -Key $Window -Payload $reason -Context $Context)) {
         throw 'fm-watch: could not enqueue wedge escalation'
     }
@@ -435,6 +438,53 @@ function Invoke-FmPausedStale {
     Write-FmTriageLog -Message "absorbed stale (paused, awaiting external, age ${age}s): $Window" -Context $Context -Settings $Settings
 }
 
+function Get-FmWatchRunLivenessNote {
+    <#
+        The run-liveness clause a stale reason carries, or '' when this build has
+        no owner for the reading.
+
+        WHY A STALE REASON CARRIES THIS AT ALL. A quiet pane is the same shape
+        whether the worker is waiting on a run that is still going or on one that
+        has already ended, and the difference decides what a supervisor should
+        do. Without the reading in the payload the supervisor has to derive it by
+        hand, and the ad-hoc derivation used before this existed was WRONG in
+        every recorded instance - it declared nine genuinely-running suites
+        finished (docs/finished-run-stall.md). So the clause states what was
+        MEASURED and never what it implies, and the `processes` wording exists
+        specifically to stop the false "your run finished" steer.
+
+        An absent, throwing or inconclusive reading says the check did NOT run,
+        which is this repo's rule for a step with no answer - never silence,
+        which would read as "nothing is running".
+    #>
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Task,
+        [Parameter(Mandatory)][hashtable]$Context
+    )
+    if (-not $Task) { return '' }
+    if (-not (Test-FmSeam -Name 'Get-FmTaskRunLiveness')) { return '' }
+    $dataPath = Join-Path $Context.Home 'data'
+    $reading = Invoke-FmSeam -Name 'Get-FmTaskRunLiveness' -Arguments @($Task, $Context.State, $dataPath) -Default $null
+    if ($null -eq $reading -or -not ($reading.PSObject.Properties.Name -contains 'State')) {
+        return ' [run-liveness: unknown - the reading did NOT run]'
+    }
+    switch ([string]$reading.State) {
+        'none' {
+            return ' [run-liveness: none - no live process for this task beyond its agent, so nothing it could be waiting on is still running]'
+        }
+        'processes' {
+            $ids = @($reading.ProcessId)
+            return " [run-liveness: $($ids.Count) live process(es) for this task - pids $($ids -join ', ') - work IS in flight; do not tell this worker its run has finished]"
+        }
+        default {
+            $detail = ''
+            if ($reading.PSObject.Properties.Name -contains 'Detail') { $detail = [string]$reading.Detail }
+            return " [run-liveness: unknown - $detail; this check did NOT run]"
+        }
+    }
+}
+
 function Invoke-FmNonTerminalStaleSurface {
     <# surface_nonterminal_stale. Takes no settings: like the bash original it
        surfaces unconditionally and writes no triage line, so there is no bound
@@ -445,14 +495,18 @@ function Invoke-FmNonTerminalStaleSurface {
         [Parameter(Mandatory)][hashtable]$Context
     )
     $key = Get-FmWindowKey -Window $Window
-    if (-not (Add-FmWakeRecord -Kind stale -Key $Window -Payload "stale: $Window" -Context $Context)) {
+    $task = Invoke-FmSeam -Name 'Convert-FmWindowToTask' -Arguments @($Window, $Context.State) -Default ''
+    # Read once and reuse: the queued record and the delivered reason must not
+    # disagree about what was measured, and one process-table read per surface is
+    # the whole cost of this evidence.
+    $reason = "stale: $Window" + (Get-FmWatchRunLivenessNote -Task $task -Context $Context)
+    if (-not (Add-FmWakeRecord -Kind stale -Key $Window -Payload $reason -Context $Context)) {
         throw 'fm-watch: could not enqueue non-terminal stale'
     }
     Set-FmFileTextLf -Path (Join-Path $Context.State ".stale-$key") -Text $Hash
     $sinceFile = Join-Path $Context.State ".stale-since-$key"
     try { Remove-FmStateFile -Path $sinceFile } catch { Write-Debug "watch: could not clear wedge timer $sinceFile; the next cycle re-reads the old start time: $_" }
 
-    $task = Invoke-FmSeam -Name 'Convert-FmWindowToTask' -Arguments @($Window, $Context.State) -Default ''
     $last = Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @((Join-Path $Context.State "$task.status")) -Default ''
     $held = Invoke-FmSeam -Name 'Test-FmStatusIsPausedOrCaptainHeld' -Arguments @($last) -Default $false
     if ($held) {
@@ -463,7 +517,7 @@ function Invoke-FmNonTerminalStaleSurface {
     else {
         Clear-FmPauseState -Window $Window -Context $Context
     }
-    New-FmWakeDelivery -Reason "stale: $Window" -Context $Context
+    New-FmWakeDelivery -Reason $reason -Context $Context
 }
 
 # --- heartbeat backstop ------------------------------------------------------

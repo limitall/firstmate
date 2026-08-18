@@ -152,6 +152,11 @@ module any other way.
   the home of the worktree-tangle detector the guard binds by name.
 - `docs/lifecycle.md` - briefs and the wake classifier, plus how that area
   degrades when another area's owner is absent.
+- `docs/finished-run-stall.md` - why a crewmate waiting on a background run and
+  one waiting on a finished run used to read identically, what the ad-hoc process
+  count got wrong nine times in one evening, and the tri-state reading that
+  replaced it. Read the asymmetry section before touching that area: answering
+  `none` while a run is going is the failure it exists to refuse.
 - `docs/teardown-windows.md` - teardown: the landed-work test (the one thing
   that must never be relaxed), process custody via Win32 job objects instead of
   `lsof` and process groups, the exclusive-open stale-lock probe, and the lease

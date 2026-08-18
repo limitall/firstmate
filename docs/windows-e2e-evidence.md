@@ -4865,3 +4865,155 @@ As section 30's note says, these were made in a checkout whose `CLAUDE.md` and
 That repair is now also what `Protect-FmInstructionLink` keeps in place, and this
 run is the first where `git status` stayed clean of both paths for the whole
 suite.
+
+---
+
+## 32. The finished-run stall: the diagnosis was the opposite of the report - `PROVEN (Windows 11)`
+
+Reported: workers wait forever on background runs that have already finished,
+found by counting processes whose command line names the worker's worktree.
+`docs/finished-run-stall.md` owns the full account; this section is what was
+executed.
+
+### 32.1 The forensic pass - `PROVEN`, from the harness's own records
+
+Claude Code writes a `queue-operation` record when a background task actually
+ends, and every typed message, into `~/.claude/projects/<project>/<session>.jsonl`.
+Pairing the two answers the question directly.
+Read-only analyzers over the four workers' transcripts (`crew-first`,
+`tg-route`, `ui-voice`, `installer`) produced:
+
+```
+NUDGE line=333 17-08-2026 02:26:51 PM
+   "Your background suite run has already finished - there are zero pwsh
+    processes left in your worktree, so the completion ..."
+   STILL RUNNING: bsx85glsp started 14:04:32, FINISHED 14:34:42 = 7.8 min AFTER the nudge
+   STILL RUNNING: bx7a48x6f started 14:01:01, FINISHED 14:34:41 = 7.8 min AFTER the nudge
+```
+
+Nine nudges, four workers, and **every one named at least one run that was still
+running** - by 7.0 to 54.1 minutes. The table is in
+`docs/finished-run-stall.md`.
+
+The completion mechanism itself was measured working, and fast. From
+`crew-first`, whose turn had ended 33 minutes earlier with no message in between:
+
+```
+238 13:29:44.614 enqueue  <task-notification><task-id>bm3wefu0n</task-id> ... <status>failed</status>
+239 13:29:44.638 dequeue
+240 13:29:45     user     <task-notification> ... (delivered as a fresh turn)
+242 13:29:52     assistant (the worker resumes)
+```
+
+24 ms from enqueue to delivery into an idle session. Four such deliveries were
+measured; three completed inside 35 ms.
+
+### 32.2 The false positive, reproduced live against a running suite - `PROVEN (Windows 11)`
+
+`Invoke-Pester -Path ./tests` was launched in the background exactly as the
+stalled workers launched theirs, and both readings were taken while it ran.
+The measuring command builds the worktree pattern from `state/<id>.meta` rather
+than naming it, because a command that names the path it searches for matches
+itself:
+
+```
+$ Get-CimInstance Win32_Process -Filter "ProcessId=33228"
+  ALIVE  cpu=267.8s
+  its own command line names the worktree: False
+
+$ the ad-hoc check the supervisor used (pwsh.exe naming the worktree)
+  count = 1
+  includes the running suite: False
+
+$ pwsh bin/fm-run-liveness.ps1 finished-run-stall
+  liveness: processes · task: finished-run-stall · 7 live process(es) · pids: 7888, 11372, 11632, 24412, 30540, 33228, 36068
+  includes the running suite: True
+```
+
+**The ad-hoc check cannot see the run at all.** The single process it did match
+was not the suite but a transient grandchild the suite had just spawned:
+
+```
+ProcessId       : 28580
+ParentProcessId : 33228
+cmd             : pwsh.exe -NoProfile -File ...\6\firstmate-win\bin\fm-watch.ps1 -MaxCycles 1
+```
+
+That is why the count read zero intermittently rather than always: it was
+sampling incidental grandchildren, never the run.
+
+The mechanical reason is in the run's own command line. The harness starts a
+background command as `pwsh.exe -NoProfile -Command "<script text>"` with the
+worktree as its **working directory**, which never appears in `CommandLine`.
+
+### 32.3 The measurement the new reading rests on - `PROVEN (Windows 11)`
+
+Every recorded worker's agent process, and its direct children, read from one
+`Win32_Process` table:
+
+```
+  finished-run-stall     agent pid 34720    direct children 2   liveness processes
+  lock-identity          agent pid 37388    direct children 4   liveness processes
+  nm-windows             agent pid 32480    direct children 1   liveness processes
+  ui-readonly            agent pid 11932    direct children 2   liveness processes
+```
+
+and, sampled earlier the same day while two of those workers were idle at their
+prompt, the same agents had **zero** children. The Bash and PowerShell tool
+shells are created per call and exit with it - measured, for instance, at
+`bash.exe` pid 11372 created 10:32:26, the same second its background command
+started, under `claude.exe` pid 34720 created at 10:23:56. There is no
+long-lived idle tool shell, which is what makes "the agent has descendants" and
+"the worker is running something" the same statement.
+
+The launcher is identifiable without guessing because firstmate wrote its
+command line:
+
+```
+"C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -Command "$env:CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION='false';
+ claude --dangerously-skip-permissions --effort 'xhigh'
+ ('...launch-brief: ' + (Get-Content -Raw -LiteralPath 'C:\Users\ADMIN\firstmate-win\data\finished-run-stall\brief.md'))"
+```
+
+### 32.4 Suite and analyzer numbers - `PROVEN (Windows 11)`
+
+Two back-to-back whole-directory runs on the rebased branch (`8097620`, a clean
+fast-forward onto `main` at `835bc53`):
+
+```
+PASS1 total=2121 passed=2087 failed=9 skipped=25
+  this checkout's own instruction surface  x3
+  Install-FmHome / where do I start Claude x2
+  Invoke-FmDoctor                          x4
+PASS2 total=2121 passed=2096 failed=0 skipped=25
+git status after: (clean)
+```
+
+The nine PASS1 failures are the documented fresh-worktree instruction-surface
+set that the suite repairs as it goes; PASS2 is the run to read. Worth recording
+against the earlier account of this: `git status` came back **clean** after both
+passes this time, so the worktree no longer ends with `CLAUDE.md` and
+`.claude/skills` dirty.
+
+The analyzer sweep, repo-wide and file-by-file so nothing is silently skipped:
+
+```
+0 findings across 186 files
+```
+
+Three markdown-only edits landed after PASS2 (a wrapped bullet in
+`CONTRIBUTING.md`, two sentences in `docs/finished-run-stall.md`, and this
+subsection). No `.ps1`, `.psm1` or `.psd1` differs from the validated tree.
+`tests/FmContract.Tests.ps1` is the only suite that reads `CONTRIBUTING.md`, and
+it was re-run against the final tree: **39 passed, 0 failed**, with the analyzer
+sweep repeated there at 0 findings.
+
+### 32.5 What is NOT proven here
+
+- That no genuine stall exists. Nine instances were checked and none was one;
+  that is not the same claim.
+- The Linux `/proc` branch of `Get-FmRunLivenessProcessTable`. It is the
+  development path; the Windows branch is the product and is what ran above.
+- The reading against a torn-down or crashed endpoint on Windows. It returns
+  `unknown` by construction there, and the tests cover that branch, but no
+  crashed worker was observed during this task.

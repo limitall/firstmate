@@ -314,7 +314,7 @@ Describe 'Wedge timer' {
         { Invoke-FmWedgeTimerCheck -Window 's:1' -SinceFile $script:Since -Label 'non-terminal stale' `
                 -EscalationFile $script:Esc -Context $script:Ctx -Settings $script:Settings } | Should -Throw
 
-        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -BeLike '*possible wedge, escalation 1)'
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -BeLike '*possible wedge, escalation 1)*'
         [System.IO.File]::Exists($script:Since) | Should -BeFalse
         (Get-FmFirstLine -Path $script:Esc) | Should -Be '1'
     }
@@ -558,7 +558,9 @@ Describe 'Pane staleness with the backend present' {
         Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
 
         { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings } | Should -Throw
-        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -Match "\tstale\tsess:1\tstale: sess:1$"
+        # The reason now carries the run-liveness clause; the stale verdict itself
+        # is still the whole of the payload before it.
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -Match "\tstale\tsess:1\tstale: sess:1 "
     }
 
     It 'resets the count when the pane changes again' {
@@ -639,6 +641,73 @@ Describe 'Pane staleness with the backend present' {
         @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 1
     }
 
+    It 'carries the run-liveness reading into the surfaced stale reason' {
+        # The whole point of the clause: a supervisor reading the wake must not
+        # have to derive this by hand. The ad-hoc derivation that preceded it was
+        # wrong in every recorded instance (docs/finished-run-stall.md).
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            return [pscustomobject]@{ TaskId = $TaskId; State = 'none'; ProcessId = @(); AgentProcessId = @(9); Detail = 'x' }
+        }
+        try {
+            1..2 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings }
+            { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings } | Should -Throw
+            @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -Match 'run-liveness: none - no live process'
+        }
+        finally { Remove-Item -Path 'function:Get-FmTaskRunLiveness' -ErrorAction SilentlyContinue }
+    }
+
+    It 'names the live processes, and warns off the false "your run finished" steer' {
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            return [pscustomobject]@{ TaskId = $TaskId; State = 'processes'; ProcessId = @(4242, 4243); AgentProcessId = @(9); Detail = 'x' }
+        }
+        try {
+            1..2 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings }
+            { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings } | Should -Throw
+            $record = @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0]
+            $record | Should -Match 'run-liveness: 2 live process'
+            $record | Should -Match '4242, 4243'
+            $record | Should -Match 'do not tell this worker its run has finished'
+        }
+        finally { Remove-Item -Path 'function:Get-FmTaskRunLiveness' -ErrorAction SilentlyContinue }
+    }
+
+    It 'says the reading did NOT run rather than staying silent about it' {
+        # Silence would read as "nothing is running", which is the direction this
+        # whole area exists to refuse.
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            throw 'no process table here'
+        }
+        try {
+            1..2 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings }
+            { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings } | Should -Throw
+            @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -Match 'run-liveness: unknown.*did NOT run'
+        }
+        finally { Remove-Item -Path 'function:Get-FmTaskRunLiveness' -ErrorAction SilentlyContinue }
+    }
+
+    It 'carries the reading into a wedge escalation too' {
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            return [pscustomobject]@{ TaskId = $TaskId; State = 'processes'; ProcessId = @(555); AgentProcessId = @(9); Detail = 'x' }
+        }
+        try {
+            $env:FM_STALE_ESCALATE_SECS = '1'
+            $settings = Get-FmWatchSettings
+            Set-FmFileTextLf -Path (Join-Path $script:Ctx.State '.stale-since-sess_1') -Text (((Get-FmUnixTime) - 300).ToString() + "`n")
+            { Invoke-FmWedgeTimerCheck -Window 'sess:1' -SinceFile (Join-Path $script:Ctx.State '.stale-since-sess_1') `
+                    -Label 'test' -EscalationFile (Join-Path $script:Ctx.State '.wedge-escalations-sess_1') `
+                    -Context $script:Ctx -Settings $settings } | Should -Throw
+            @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -Match 'run-liveness: 1 live process'
+        }
+        finally {
+            Remove-Item -Path 'function:Get-FmTaskRunLiveness' -ErrorAction SilentlyContinue
+            Remove-Item -Path 'env:FM_STALE_ESCALATE_SECS' -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'bounds a busy pane that has gone too long with no observed progress' {
         $script:StubBusy = $true
         $env:FM_BUSY_TURN_MAX_SECS = '600'
@@ -651,7 +720,7 @@ Describe 'Pane staleness with the backend present' {
         Set-FmFileTextLf -Path (Join-Path $script:Ctx.State '.stale-since-sess_1') -Text (((Get-FmUnixTime) - 300).ToString() + "`n")
 
         { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings } | Should -Throw
-        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -BeLike '*possible wedge, escalation 1)'
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -BeLike '*possible wedge, escalation 1)*'
     }
 
     It 'keeps escalating a busy pane whose evidence stays stale' {
@@ -707,7 +776,7 @@ Describe 'Pane staleness with the backend present' {
 
         1..2 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings }
         { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings } | Should -Throw
-        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -Match "\tstale\tsess:1\tstale: sess:1$"
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -Match "\tstale\tsess:1\tstale: sess:1 "
 
         # Already classified: the wedge timer arms, then escalates one threshold
         # later. Nothing about the pane has changed since the surface above.
@@ -717,7 +786,7 @@ Describe 'Pane staleness with the backend present' {
 
         Set-FmFileTextLf -Path $since -Text (((Get-FmUnixTime) - 240).ToString() + "`n")
         { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings } | Should -Throw
-        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[1] | Should -BeLike '*possible wedge, escalation 1)'
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[1] | Should -BeLike '*possible wedge, escalation 1)*'
     }
 }
 

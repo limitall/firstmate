@@ -83,6 +83,46 @@ function Test-FmNmHeadMatchesWorktree {
     return ((Invoke-FmGit -Directory $WorktreePath -Arguments @('merge-base', '--is-ancestor', $localFull, $runFull)).Ok)
 }
 
+# Get-FmCrewLivenessDetail: the run-liveness clause the fallback current-state
+# line carries, or '' when this build has no owner for the reading.
+#
+# Read ONLY on the path that has no run to consult and an idle endpoint - the
+# exact path whose answer used to come from the crew's own stale status log and
+# so reported a worker as `working` whether or not anything of its was running.
+# That gap is what let nine genuinely-running suites be declared finished
+# (docs/finished-run-stall.md).
+#
+# An INCONCLUSIVE reading adds nothing here, which is deliberately not what a
+# stale wake reason does with the same input. A wake reason is an action prompt,
+# so an absent reading there has to say it did not run. This line already carries
+# a `source:` field saying where its answer came from, and most `unknown` readings
+# mean the ordinary `this task has no live agent` that the line already reports -
+# so an `unknown` clause on every such line would be noise, not information. A
+# reading that THREW is different and does say so: that one is a real gap.
+function Get-FmCrewLivenessDetail {
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Id,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$StatePath
+    )
+    $reader = Get-Command -Name 'Get-FmTaskRunLiveness' -ErrorAction SilentlyContinue
+    if (-not $reader) { return '' }
+    try {
+        $reading = & $reader -TaskId $Id -StatePath $StatePath
+    } catch {
+        return 'run-liveness: unknown (the reading did NOT run)'
+    }
+    if ($null -eq $reading -or -not ($reading.PSObject.Properties.Name -contains 'State')) {
+        return 'run-liveness: unknown (the reading did NOT run)'
+    }
+    switch ([string]$reading.State) {
+        'none' { return 'run-liveness: none - nothing of this task''s is running' }
+        'processes' { return "run-liveness: $(@($reading.ProcessId).Count) live process(es) - work IS in flight" }
+        default { return '' }
+    }
+}
+
 # Map a status-log verb onto a canonical state for the fallback path. `paused`
 # is the declared-external-wait verb: a crew with no active run and an idle
 # endpoint that declared a known external wait reports `paused` distinctly, so a

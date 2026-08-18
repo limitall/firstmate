@@ -151,6 +151,7 @@ function Get-FmCrewState {
     # report unknown rather than trusting a possibly-stale status log.
     if (-not $target) { return (& $emit 'unknown' 'none' 'no backend target recorded') }
 
+    $liveness = ''
     if ($kind -ne 'secondmate') {
         $verdict = Get-FmCrewEndpointVerdict -Backend $backend -Target $target -Id $Id -Harness $harness -StatePath $state
         if (-not $verdict.Available) { return (& $emit 'unknown' 'none' $verdict.Detail) }
@@ -159,6 +160,14 @@ function Get-FmCrewState {
             'idle' { }
             default { return (& $emit 'unknown' 'pane' "harness state unavailable ($($verdict.Detail))") }
         }
+        # An idle endpoint with no run attributed is the one state this reader
+        # could not previously distinguish: a crew waiting on a background run
+        # that is still going looks exactly like one waiting on a run that has
+        # ended, and the log's last `working:` event answers both the same way.
+        # The reading is taken here and only here, so a busy pane and an
+        # attributed run - both of which already answer the question - never pay
+        # for a process-table read.
+        $liveness = Get-FmCrewLivenessDetail -Id $Id -StatePath $state
     }
 
     # Fall back to the status log's last line, but ONLY when its verb maps to a
@@ -168,10 +177,14 @@ function Get-FmCrewState {
     if ($logVerb) {
         $logState = Get-FmCrewStateFromLogVerb -Line $logLine
         if ($logState -ne 'unknown') {
-            return (& $emit $logState 'status-log' (Get-FmStatusLineNote -Line $logLine))
+            $detail = Get-FmStatusLineNote -Line $logLine
+            if ($liveness) { $detail = "$detail$sep$liveness" }
+            return (& $emit $logState 'status-log' $detail)
         }
     }
-    return (& $emit 'unknown' 'none' 'no current-state source available')
+    $detail = 'no current-state source available'
+    if ($liveness) { $detail = "$detail$sep$liveness" }
+    return (& $emit 'unknown' 'none' $detail)
 }
 
 # --- gate detail parsing ----------------------------------------------------

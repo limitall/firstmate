@@ -203,6 +203,7 @@ staleness but can never swallow a wake.
 | `Get-FmPrimaryTangleBranch`, `Get-FmDefaultBranch` (owned since `Public/FmTangle.ps1` landed - see below) | no worktree-tangle alarm |
 | `Invoke-FmPrCheckMigration`, `Repair-FmPrPollRetirementAll`, `Publish-FmPrPollRetirement` | migration assumed done, no retirement recovery |
 | `Invoke-FmPendingReplyTick`, `Invoke-FmProceventReconcile` | no-op |
+| `Get-FmTaskRunLiveness` (LANDED - `Public/FmRunLiveness.ps1`) | stale reasons carry no run-liveness clause; a supervisor is back to deriving it by hand, which is what `docs/finished-run-stall.md` records going wrong |
 
 ## The two seams that now have owners
 
@@ -253,6 +254,18 @@ names, no collision. Folding them together is worth doing once the foundation
 area lands, but not while the byte-level interop evidence above is pinned to
 these call paths.
 
+## What a stale reason now carries
+
+A quiet pane is the same shape whether the worker is waiting on a run that is
+still going or on one that has already ended, and the difference decides what a
+supervisor does next. Every non-terminal stale and every wedge escalation
+therefore appends a `[run-liveness: ...]` clause read through the seam above:
+`none`, `N live process(es)` with their pids, or `unknown` saying the check did
+NOT run. `docs/finished-run-stall.md` owns why - the ad-hoc derivation this
+replaced declared nine genuinely-running suites finished - and the `processes`
+wording exists specifically to stop that steer being repeated. Nothing about the
+surface/absorb decision changed; only the evidence attached to it.
+
 ## Environment
 
 Same names and defaults as the bash originals: `FM_POLL` (15), `FM_HEARTBEAT`
@@ -265,8 +278,10 @@ Same names and defaults as the bash originals: `FM_POLL` (15), `FM_HEARTBEAT`
 `FM_CLAUDE_TURNEND_BLOCK_BUDGET` (3). Paths follow `FM_ROOT_OVERRIDE`,
 `FM_ROOT`, `FM_HOME`, `FM_STATE_OVERRIDE`, `STATE` with the same precedence.
 
-`FM_WATCH_DISABLE_FSNOTIFY=1` is the only addition, and it only disables the
-latency shortcut.
+`FM_WATCH_DISABLE_FSNOTIFY=1` only disables the latency shortcut.
+`FM_RUN_LIVENESS_DISABLE=1` turns off the run-liveness reading the stale clause
+quotes; every verdict then becomes `unknown`, which every caller already treats as
+no information. Those two are this port's only additions here.
 
 ## Not verified on Windows
 

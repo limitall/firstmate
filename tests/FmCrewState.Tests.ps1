@@ -105,6 +105,90 @@ Describe 'Get-FmCrewState' {
     }
 }
 
+Describe 'the run-liveness clause on the status-log fallback' {
+    # The status-log fallback is the one path with no authority of its own: it
+    # reports the crew's last EVENT because nothing better is available. That is
+    # exactly where a crew waiting on a finished run and a crew waiting on a
+    # running one used to read identically, and a supervisor acting on the
+    # difference had to derive it by hand - wrongly, in every recorded instance
+    # (docs/finished-run-stall.md).
+    BeforeEach {
+        $script:TestHome = New-FmTestHome
+        $script:BusyVerdict = 'idle record'
+        $script:Repo = New-FmTestProject -Root $script:TestHome.Path -Id 't1'
+        New-FmTestMeta -TestHome $script:TestHome -Id 't1' -Fields @{
+            worktree = $script:Repo.Worktree
+            window   = 'fleet:fm-t1'
+        } | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $script:TestHome.State 't1.status'), "working: mid-flight`n")
+    }
+    AfterEach {
+        Remove-Item -Path 'function:Get-FmTaskRunLiveness' -ErrorAction SilentlyContinue
+        Remove-FmTestHome -TestHome $script:TestHome
+    }
+
+    It 'says nothing of this task is running when the reading is none' {
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            return [pscustomobject]@{ TaskId = $TaskId; State = 'none'; ProcessId = @(); AgentProcessId = @(7); Detail = 'd' }
+        }
+        $line = Get-FmCrewState -Id 't1'
+        $line | Should -Match '^state: working · source: status-log · mid-flight'
+        $line | Should -Match 'run-liveness: none'
+    }
+
+    It 'says work IS in flight when the reading finds processes' {
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            return [pscustomobject]@{ TaskId = $TaskId; State = 'processes'; ProcessId = @(11, 12); AgentProcessId = @(7); Detail = 'd' }
+        }
+        Get-FmCrewState -Id 't1' | Should -Match 'run-liveness: 2 live process\(es\) - work IS in flight'
+    }
+
+    It 'adds nothing when the reading is inconclusive' {
+        # `source:` already says where the answer came from, so an unknown
+        # clause on every line would be noise rather than information.
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            return [pscustomobject]@{ TaskId = $TaskId; State = 'unknown'; ProcessId = @(); AgentProcessId = @(); Detail = 'd' }
+        }
+        Get-FmCrewState -Id 't1' | Should -Be 'state: working · source: status-log · mid-flight'
+    }
+
+    It 'says the reading did NOT run when it throws' {
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            throw 'no process table'
+        }
+        Get-FmCrewState -Id 't1' | Should -Match 'run-liveness: unknown \(the reading did NOT run\)'
+    }
+
+    It 'carries the clause onto the no-source line too' {
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            return [pscustomobject]@{ TaskId = $TaskId; State = 'none'; ProcessId = @(); AgentProcessId = @(7); Detail = 'd' }
+        }
+        [System.IO.File]::WriteAllText((Join-Path $script:TestHome.State 't1.status'), "resolved: closed`n")
+        $line = Get-FmCrewState -Id 't1'
+        $line | Should -Match '^state: unknown · source: none · no current-state source available'
+        $line | Should -Match 'run-liveness: none'
+    }
+
+    It 'never pays for the reading when the endpoint is busy' {
+        # A busy pane already answers the question, and this read costs a whole
+        # process table.
+        $script:LivenessCalls = 0
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            $script:LivenessCalls++
+            return [pscustomobject]@{ TaskId = $TaskId; State = 'none'; ProcessId = @(); AgentProcessId = @(); Detail = 'd' }
+        }
+        $script:BusyVerdict = 'busy lifecycle-record'
+        Get-FmCrewState -Id 't1' | Should -Be 'state: working · source: pane · harness busy (busy lifecycle-record)'
+        $script:LivenessCalls | Should -Be 0
+    }
+}
+
 Describe 'no-mistakes run attribution' {
     BeforeEach {
         $script:TestHome = New-FmTestHome
