@@ -5291,3 +5291,51 @@ A transcript still arriving from the PREVIOUS press is now held for the page ins
 The bridge cannot tell that line apart from the current capture's, because the engine hands over text with nothing identifying which capture produced it.
 That is the dictation path's own timing and is out of this task's scope; it can only be fixed by the engine correlating a transcript to a capture.
 What has changed is that it can no longer be asked mid-hold, and can no longer desynchronise the toggle.
+
+### 32.8 The suite and the analyzer
+
+Both runs from one keeper, at `33ad893`, which is every line of code this task
+ships. The only commit after it is this section and a correction to
+`CONTRIBUTING.md` - two Markdown files, neither of them swept by the analyzer and
+neither read by a test.
+
+```
+Invoke-Pester -Path ./tests    run A   2438 passed,  9 failed, 18 skipped   (39.5m)
+Invoke-Pester -Path ./tests    run B   2447 passed,  0 failed, 18 skipped   (40.7m)
+Invoke-ScriptAnalyzer, repo-wide, via tests/FmAnalyzer.Tests.ps1
+                                       zero findings at every severity
+```
+
+48 files in one process each time.
+
+**RUN B IS THE NUMBER, AND RUN A IS WHY.** All nine of run A's failures are the
+instruction-surface set: this worktree is a fresh clone, `core.symlinks` is false
+on Windows, so git leaves `CLAUDE.md` and `.claude/skills` as the 9-byte and
+14-byte placeholder files that hold their target text.
+Everything that reads the operating contract fails against those until
+`tests/FmInstall.Tests.ps1` runs `fm-setup.ps1` against this checkout and repairs
+them, part-way through the same run.
+Run B starts with the surface already repaired and finds nothing.
+None of the nine touches anything this task changed - they are `this checkout's
+own instruction surface`, `Invoke-FmDoctor`, and the two setup checks either side
+of them.
+
+**The earlier baseline in section 31 was thirteen, and four of those are absent
+here for a reason worth writing down.** Those four were a property of how the
+suite was LAUNCHED rather than of the tree: `Get-FmBridgeHouseWork` treats a
+command line containing the words `Invoke-Pester` as a test run, and section 31's
+keeper started the suite from a script file, where that string appears nowhere.
+This keeper starts its child with `-Command "Invoke-Pester ..."`, so the string is
+present and those four pass. That is the launcher, not a fix - the underlying
+strict-mode reads on an empty result are still there for the areas that own them.
+
+Eighteen skipped is seventeen pre-existing plus one added here: `did not run the
+page checks, and here is why`, which is present so a machine WITHOUT node reports
+the gap rather than a clean run that proved nothing. Node is on this machine, so
+it skips.
+
+**The checkout was dirtied by the run and restored without git.** `fm-setup.ps1`
+turns `.claude/skills` into a junction, and a git write to that path deletes the
+link's target - the whole skills tree. Both files were put back to the bytes git
+wants by writing them directly, and the junction was removed with
+`Directory.Delete(path, $false)` so nothing could walk through it.

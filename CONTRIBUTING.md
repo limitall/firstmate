@@ -330,8 +330,10 @@ and by nothing else, so nothing load-bearing may depend on it.
   When a clean tree is genuinely needed, do not go through git at all: both paths
   are tracked mode 120000 and `core.symlinks` is false here, so what git wants on
   disk is a plain file holding the target text. Write those bytes with no trailing
-  newline - `../.agents/skills` and `AGENTS.md` - and the tree is clean with the
-  skills tree untouched. `ln -s` is not the answer either: with symlinks off, MSYS
+  newline - `../.agents/skills` and `AGENTS.md`, 17 and 9 bytes - and the tree is
+  clean with the skills tree untouched. Remove the junction first with
+  `[System.IO.Directory]::Delete($path, $false)`, which unlinks it rather than
+  walking through; `Remove-Item -Recurse` would take the target with it. `ln -s` is not the answer either: with symlinks off, MSYS
   copies instead, which turned `.claude/skills` into a 19-directory duplicate and
   `CLAUDE.md` into a 56KB copy of the contract.
 
@@ -357,8 +359,9 @@ directory with no instructions and no hooks, and nothing said so.
   that reads `CLAUDE.md` on Windows must assume this until setup has run.
 - **`.claude/skills` is the second committed link, and it breaks the same way.**
   It points at `.agents/skills`, and a `core.symlinks=false` clone writes a
-  14-byte file containing the text `.agents/skills`, which means a session in
-  that checkout loads zero skills while every command still works.
+  17-byte file containing the text `../.agents/skills` - the link is relative to
+  `.claude/`, so the `../` is part of it - which means a session in that checkout
+  loads zero skills while every command still works.
   `Test-FmSkillsLinkPlaceholder` recognises it and setup repairs it, asking for
   a symlink, then a directory junction (no privilege needed on NTFS), then a
   synced copy. Never "fix" this by deleting the committed link: a Linux clone of
