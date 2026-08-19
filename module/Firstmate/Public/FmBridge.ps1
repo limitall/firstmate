@@ -667,6 +667,7 @@ function Step-FmSpeechCaptureState {
         through, so a stale tab is safer than it used to be, not merely
         supported. `Dictated` records a line arriving from the engine's hook.
         `TakeForPage` is `/api/heard`; `TakeForFleet` is `/api/fleet`.
+        `Failed` says the engine did not take the last request.
 
         .PARAMETER State
         The state to advance. Not mutated - a new object comes back.
@@ -678,7 +679,7 @@ function Step-FmSpeechCaptureState {
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)]
-        [ValidateSet('Start', 'Stop', 'Cancel', 'Toggle', 'Dictated', 'TakeForPage', 'TakeForFleet')]
+        [ValidateSet('Start', 'Stop', 'Cancel', 'Toggle', 'Failed', 'Dictated', 'TakeForPage', 'TakeForFleet')]
         [string]$Step,
 
         [Parameter(Mandatory)][pscustomobject]$State,
@@ -730,6 +731,18 @@ function Step-FmSpeechCaptureState {
             $awaiting = $false
             $pending = ''
             $forPage = $false
+        }
+        'Failed' {
+            # The engine did not take the last request, so it is certainly not
+            # recording for us - and believing otherwise is what sends the next
+            # release into an idle engine and starts a recording there.
+            #
+            # NOTHING ELSE IS DISTURBED, deliberately. A stop that failed to
+            # reach the engine may still be followed by a transcript, and a page
+            # that has released is already polling for one; clearing that wait
+            # here would put its line back on the fleet channel, which is the
+            # defect this whole machine exists to end.
+            $recording = $false
         }
         'Dictated' {
             $pending = $Text

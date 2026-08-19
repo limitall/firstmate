@@ -459,6 +459,43 @@ Describe 'Step-FmSpeechCaptureState' {
         }
     }
 
+    # An engine that refused establishes exactly one fact - it is not recording
+    # for us - and the state has to record that fact and no more than it.
+    Context 'an engine that did not take the request' {
+
+        It 'stops believing a refused start is recording' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $s.Recording | Should -BeTrue
+            (Step-FmSpeechCaptureState -Step 'Failed' -State $s).State.Recording | Should -BeFalse
+        }
+
+        It 'so the release after a refused start says nothing to the engine' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $s = (Step-FmSpeechCaptureState -Step 'Failed' -State $s).State
+            (Step-FmSpeechCaptureState -Step 'Stop' -State $s).EngineAction | Should -Be 'None'
+        }
+
+        # A stop that never reached the engine may still be followed by a
+        # transcript, and the page is already polling for one. Clearing that wait
+        # would put its line back on the fleet channel, which is the defect this
+        # machine exists to end.
+        It 'leaves an outstanding wait for words alone' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $s = (Step-FmSpeechCaptureState -Step 'Stop' -State $s).State
+            $s = (Step-FmSpeechCaptureState -Step 'Failed' -State $s).State
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State $s -Text 'it arrived anyway').State
+            (Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $s).Handed | Should -Be ''
+            (Step-FmSpeechCaptureState -Step 'TakeForPage' -State $s).Handed | Should -Be 'it arrived anyway'
+        }
+
+        It 'never asks the engine for anything itself' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            (Step-FmSpeechCaptureState -Step 'Failed' -State $s).EngineAction | Should -Be 'None'
+            (Step-FmSpeechCaptureState -Step 'Failed' -State (New-FmSpeechCaptureState)).EngineAction |
+                Should -Be 'None'
+        }
+    }
+
     Context 'a page that does not know start from stop' {
 
         # A tab left open from before this landed sends one word for both edges.

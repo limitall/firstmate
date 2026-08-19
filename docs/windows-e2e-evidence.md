@@ -5192,6 +5192,7 @@ That is a real regression from it, and it is the reason the captain was pressing
 A stop with nothing running resolves to `None` rather than a toggle, which is the whole of defect 2.
 A transcript produced under a page-driven capture is refused to `/api/fleet` entirely and leaves only by `/api/heard`, which is the whole of defect 1.
 A bare `toggle` from a tab left open from before is resolved against what is actually running rather than passed through, so a stale page is safer than it was rather than merely tolerated.
+An engine that refused a request establishes exactly one fact, that it is not recording for us, and the `Failed` step records that fact and nothing more - in particular it leaves an outstanding wait for words alone, because clearing that would put the line back on the fleet channel.
 
 `/api/listen` now takes `start`, `stop` or `cancel`, and answers with `recording`, which `/api/fleet` also carries.
 The mic badge reads that rather than the page's own `capture` variable, which is the value that used to go stale.
@@ -5267,7 +5268,7 @@ A check that cannot fail against the code it guards is not guarding anything, an
 - **The browser's own permission prompt.** The refusal PATH is exercised; the prompt the captain sees is not.
 - **That the dictation app behaves as this models it.** The model comes from `bin/fm-dictate.ps1` and `Invoke-FmSpeechCapture`'s description - one flag that starts and stops, no silence cutoff of its own, which is why the page owns a VAD for continuous mode. That is a modelled assumption, not a measurement against the app.
 - **Layout, at any window size.** Unchanged by this work and still measured only in a real browser.
-- **A live bridge end to end.** No listener was started. The HTTP surface is wired to a machine that is covered by 22 Pester cases, but the two together have not been run against a real engine.
+- **A live bridge end to end.** No listener was started. The HTTP surface is wired to a machine that is covered by 26 Pester cases, but the two together have not been run against a real engine.
 
 **One limitation the fix does not remove, recorded rather than hidden.**
 A transcript still arriving from the PREVIOUS press is now held for the page instead of broadcast, so it is delivered as the answer to the press that is in flight when it lands.
