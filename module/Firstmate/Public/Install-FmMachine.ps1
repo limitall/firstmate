@@ -405,7 +405,7 @@ function Install-FmMachine {
             $module = @(Get-FmToolModuleRequirement | Where-Object { $_.Name -eq $requirement.Name })[0]
             $result = Install-FmToolModule -Requirement $module -Update:$updating -Confirm:$false
         } else {
-            $result = Invoke-FmToolRoute -Entry $requirement -Route $requirement.Route `
+            $result = Invoke-FmToolRoute -Route $requirement.Route `
                 -InstallRoot $InstallRoot -PathScope $PathScope -Update:$updating -Confirm:$false
             # PATH is reloaded after every install, so the tool just written into
             # a per-user directory is visible to the next detection and to the

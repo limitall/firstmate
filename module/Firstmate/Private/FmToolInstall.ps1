@@ -850,18 +850,31 @@ function Get-FmToolUpdateCommand {
     $Command
 }
 
+# Run one route, and report what it did.
+#
+# THE ROUTE NAMES ITS OWN TOOL, and that is the whole parameter list on purpose.
+# This function used to take a second, untyped -Entry record as well and read
+# $Entry.Tool off it. Nothing declared what shape that record had to be, and the
+# one caller passes a requirement from Get-FmMachineInstallPlan, which publishes
+# Name rather than Tool. Under strict mode the very first non-module install
+# threw "The property 'Tool' cannot be found on this object" and took the whole
+# run with it - MEASURED on the captain's clean Windows 11 machine, 2026-08-20,
+# at the one step no machine that already had the tools could ever reach.
+#
+# So there is no second record to disagree with any more. Every route record -
+# Get-FmToolRoute's, and the module route Install-FmMachine builds - carries
+# Tool, because a route for no particular tool is not a thing.
 function Invoke-FmToolRoute {
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([pscustomobject])]
     param(
-        [Parameter(Mandatory)]$Entry,
         [Parameter(Mandatory)]$Route,
         [string]$InstallRoot = '',
         [ValidateSet('User', 'Process')][string]$PathScope = 'User',
         [switch]$Update
     )
 
-    $result = [pscustomobject]@{ Tool = $Entry.Tool; Label = $Entry.Label; Action = 'skipped'; Detail = '' }
+    $result = [pscustomobject]@{ Tool = $Route.Tool; Action = 'skipped'; Detail = '' }
 
     switch ($Route.Kind) {
         'none' {
@@ -877,7 +890,7 @@ function Invoke-FmToolRoute {
             return $result
         }
         'portable' {
-            if (-not $PSCmdlet.ShouldProcess($Entry.Tool, 'install from the vendor release archive')) {
+            if (-not $PSCmdlet.ShouldProcess($Route.Tool, 'install from the vendor release archive')) {
                 $result.Detail = 'WhatIf'
                 return $result
             }
@@ -900,7 +913,7 @@ function Invoke-FmToolRoute {
         $result.Detail = "run this once in an ADMINISTRATOR shell, then re-run this installer: $($Route.Command)"
         return $result
     }
-    if (-not $PSCmdlet.ShouldProcess($Entry.Tool, "run: $($Route.Command)")) {
+    if (-not $PSCmdlet.ShouldProcess($Route.Tool, "run: $($Route.Command)")) {
         $result.Detail = 'WhatIf'
         return $result
     }
