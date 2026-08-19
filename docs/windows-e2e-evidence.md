@@ -5125,7 +5125,7 @@ It stopped at 2.7 seconds while still held, and the next press produced nothing 
 
 ### 32.3 The causes, stated plainly
 
-Six defects, not one. The first two produce the captain's two symptoms; the rest are the same class and were found on the way.
+Seven defects, not one. The first two produce the captain's two symptoms; the rest are the same class and were found on the way, several of them by the checks written for the first two.
 
 **1. The fleet poll answered a capture the captain was still holding.**
 `refreshFleet()` runs every 2000 ms and did `if(f.dictated && !awaitingReply){ wordsArrived(f.dictated); }`.
@@ -5156,7 +5156,13 @@ That is why the report says "then after it not workig any time" rather than nami
 **6. Three smaller ones, same class.**
 `mouseleave` ended a hold, so a few pixels of pointer drift off a 40px button read as the microphone closing by itself.
 The settle timer from the previous answer (`setTimeout(... 2200)`) relabelled a live hold as Standing by if the captain pressed again inside that window.
+That one was found by the ten-cycle check rather than by reading: nine of ten cycles reported the hold as Standing by while the microphone was open and recording.
 `collectPcm` connected a fresh `GainNode` to `actx.destination` on every press and never disconnected it: 22 nodes still connected after ten presses, measured.
+
+**7. A refused microphone killed the slow path for good.**
+`recordHere`'s `catch` cleared `capture` but not `listening`, and `recordHere` refuses to start while `listening` is set.
+So one denied permission - or any throw after the capture began - left the slow path dead for the rest of the page's life, silently.
+Exactly the shape of the defect the captain reported, on the other path, and it would have outlived the fix for the first six.
 
 ### 32.4 Did it regress when the listening mode landed - partly, and here is which part
 
@@ -5195,7 +5201,7 @@ The mic badge reads that rather than the page's own `capture` variable, which is
 ### 32.6 Fixed, measured the same way
 
 ```
-54 checks, 0 failed
+58 checks, 0 failed
   ok   right Alt opens the microphone
   ok   right Alt: the engine is told exactly once
   ok   Control and right Alt together is AltGr, not push to talk
@@ -5220,6 +5226,8 @@ The mic badge reads that rather than the page's own `capture` variable, which is
   ok   and the refusal is said out loud
   ok   every stream the slow path opened was stopped
   ok   no audio node is left connected after ten presses
+  ok   a refused microphone is reported
+  ok   and the press after a refusal still opens the microphone
   ok   no listener or timer raised
 ```
 
@@ -5250,7 +5258,7 @@ t=30s  stage=listening  Mic open  elapsed-shown="30s"
 engine told:  ["START"]  then, on release, ["START","stop"]
 ```
 
-**The negative control.** The same 54 checks run against `3af8a04` unmodified fail 32 of them, including every one named in 32.3.
+**The negative control.** The same 58 checks run against `3af8a04` unmodified fail 35 of them, including every one named in 32.3.
 A check that cannot fail against the code it guards is not guarding anything, and `CONTRIBUTING.md` requires this to be shown rather than assumed.
 
 ### 32.7 What was NOT proven here, and cannot be from this seat

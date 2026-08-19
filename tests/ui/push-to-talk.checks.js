@@ -222,6 +222,26 @@ async function main(){
   chk('no audio node is left connected after ten presses', live.length, 0);
   chk('one AudioContext serves the whole page', H.ctxCount, 1);
 
+  // ---- a microphone the browser refuses must not kill the slow path ------
+  // The refusal used to leave `listening` set, and recordHere will not start
+  // while it is - so one denied permission killed the slow path for the life of
+  // the page, silently, which is the same shape as the defect this task began on.
+  await loadPage(PAGE, function(sv){ sv.warm = false; });
+  H.micDenied = true;
+  act.mouseDown();
+  await H.clock.advance(600);
+  chk('a refused microphone is reported', /No microphone/.test(act.heard()), true);
+  chk('a refused microphone leaves the badge closed', act.micWord(), 'Mic closed');
+  act.mouseUp();
+  await H.clock.advance(400);
+  H.micDenied = false;
+  act.mouseDown();
+  await H.clock.advance(700);
+  chk('and the press after a refusal still opens the microphone', act.stage(), 'listening');
+  chk('and the badge says so', act.micWord(), 'Mic open');
+  act.mouseUp();
+  await H.clock.advance(1400);
+
   // ---- nothing threw where nothing could be seen to throw ----------------
   chk('no listener or timer raised', H.errors.join(' | '), '');
 

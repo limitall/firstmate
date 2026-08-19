@@ -1505,6 +1505,12 @@ async function recordHere(reason){
     // than the browser's.
     pump();
   }catch(e){
+    // `listening` FIRST, and it is not optional. It stops the pump loop, and the
+    // teardown on the next line takes the analyser with it - so a frame that ran
+    // in between would read a null one. Leaving it set was also its own defect:
+    // recordHere refuses to start while it is, so one refused permission used to
+    // kill the slow path for the rest of the page's life without a word.
+    listening=false; pcmChunks=[];
     capture='off'; setLive(false); releaseMic();
     sayTrouble('No microphone','No microphone, or permission refused. Typing still works.');
   }
@@ -1550,7 +1556,7 @@ async function micOff(){
   }
 }
 function pump(){
-  if(!listening) return;
+  if(!listening || !ana) return;
   ana.getByteFrequencyData(data);
   const step=Math.floor(data.length/bins.length)||1;
   let s=0;
