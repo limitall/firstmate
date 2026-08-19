@@ -5072,3 +5072,197 @@ launches from a script file, so that string is nowhere.
 That makes them a property of how the suite is RUN, not of the tree, which is
 why they are absent from every earlier run in this file and appear in both of
 these. They are left for the areas that own them rather than fixed from here.
+
+## 32. Push to talk stopped after a second and never worked again - `PROVEN (Windows 11), NO BROWSER AND NO MICROPHONE`
+
+Dated 2026-08-19, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\11\firstmate-win`,
+PowerShell 7.6.4, node v22.15.0, Windows 11 Pro 10.0.26200, against `main` at `3af8a04`.
+
+The captain's report, verbatim:
+
+> found bug push to talk not working proper on click/push it stop in 1-2 sec and
+> then after it not workig any time
+
+### 32.1 How this was reproduced without starting a screen
+
+No bridge was started, no page was served, and no browser was opened at any point in this work.
+That is the captain's standing rule after the two speaking incidents, and `CONTRIBUTING.md`'s "Seeing the browser screen" states it.
+It is also not a limitation here: every defect below is in the page's own state machine, and a state machine does not need a microphone to be driven.
+
+`tests/ui/bridge-page-harness.js` loads `ui/bridge.html`'s own `<script>` into a stubbed window under `node:vm` and drives it through its own event listeners.
+The clock is virtual, so a thirty-second hold and ten consecutive presses cost milliseconds.
+The server model mirrors `bin/fm-bridge.ps1`, including the two behaviours that turned out to matter: `/api/listen` is a toggle whose edge the caller owns, and `/api/fleet` and `/api/heard` drain the same pending transcript.
+
+Nothing renders and nothing can speak, because there is no page and no `speechSynthesis` behind the stub.
+
+### 32.2 Both symptoms, reproduced
+
+Driven against `3af8a04` unmodified.
+
+```
+=== the keyboard route the screen advertises ===
+dock hint says              : "Hold right Alt to speak"
+after holding right Alt     : stage=undefined  mic=Mic closed  engine toggles=[]
+
+=== the button, held, while a transcript lands mid-hold ===
+t=0.3s  stage               : listening  mic=Mic open  toggles=["START"]
+t=2.7s  stage               : answered  (still holding)
+t=2.7s  asked already       : ["what is the fleet doing"]
+t=6.7s  stage               : idle  (still holding)
+t=6.7s  mic badge           : Mic open
+released -> engine toggles  : ["START","START"]
+released -> engine recording: true
+released -> mic badge       : Mic closed
+
+=== and now the button again ===
+press 2 -> stage            : hearing
+press 2 -> new engine calls : 0
+press 2 -> anything on screen saying why: "Acknowledged."
+```
+
+Both halves of the captain's report, in one run.
+It stopped at 2.7 seconds while still held, and the next press produced nothing at all with nothing on screen to say so.
+
+### 32.3 The causes, stated plainly
+
+Six defects, not one. The first two produce the captain's two symptoms; the rest are the same class and were found on the way.
+
+**1. The fleet poll answered a capture the captain was still holding.**
+`refreshFleet()` runs every 2000 ms and did `if(f.dictated && !awaitingReply){ wordsArrived(f.dictated); }`.
+`/api/fleet` drains the very same `$script:pendingDictation` that `/api/heard` does, so a transcript arriving mid-hold was taken by whichever poll got there first and asked as a question immediately.
+The engine takes about three seconds to transcribe, so the line in flight from the PREVIOUS press routinely landed inside the NEXT hold.
+That is the 1-2 seconds: the page flipped from Listening to Thinking to Standing by while the captain was still speaking.
+
+**2. The release then re-started the engine, and every press after it was inverted.**
+`Invoke-FmSpeechCapture`'s own description says it: one flag starts and stops, so "the CALLER owns which edge it is on - a stray second stop would begin a new recording."
+Nobody owned it. The page sent a bare toggle on press and another on release and assumed they paired up.
+Once anything else finished a capture first they stopped pairing, and the measurement above shows the result: two `START` edges, the engine left recording, and the page's own badge saying `Mic closed` over a live microphone.
+From that point push-to-talk was exactly backwards for the life of the page.
+
+**3. The keyboard route was never bound at all.**
+`idleHint()` returns `Hold right Alt to speak`. The only key handler was `e.code === 'Space'`.
+Nothing anywhere in the file referenced `AltRight`.
+This one IS a regression from the listening-mode work, and 32.4 has the bisect.
+
+**4. And Space could not work either, from 300 ms after load.**
+The keydown handler refused while `document.activeElement.id === 'typed'`, and `setTimeout(focusMessage, 300)` puts the caret in the message box at load and `focusMessage()` returns it there after every exchange.
+So the advertised key did nothing ever, and the unadvertised one did nothing after the first three hundred milliseconds.
+
+**5. Every refusal was a bare `return`.**
+All three guards at the top of `talkStart` returned silently, and `awaitingWords` kept one of them true for up to 45 seconds after every capture.
+The captain pressed a control, nothing happened, and the page looked perfectly healthy.
+That is why the report says "then after it not workig any time" rather than naming an error.
+
+**6. Three smaller ones, same class.**
+`mouseleave` ended a hold, so a few pixels of pointer drift off a 40px button read as the microphone closing by itself.
+The settle timer from the previous answer (`setTimeout(... 2200)`) relabelled a live hold as Standing by if the captain pressed again inside that window.
+`collectPcm` connected a fresh `GainNode` to `actx.destination` on every press and never disconnected it: 22 nodes still connected after ten presses, measured.
+
+### 32.4 Did it regress when the listening mode landed - partly, and here is which part
+
+The same interaction, driven at five commits:
+
+```
+0870c15    hint=""                          hold:undefined->undefined  stolen=no   edges=[]
+8f6567a    hint=""                          hold:listening->answered   stolen=YES  edges=[START,START]  2nd-press-calls=0
+ed75d0d    hint=""                          hold:listening->answered   stolen=YES  edges=[START,START]  2nd-press-calls=0
+c4aa731    hint="Hold right Alt to speak"   hold:listening->answered   stolen=YES  edges=[START,START]  2nd-press-calls=0
+3af8a04    hint="Hold right Alt to speak"   hold:listening->answered   stolen=YES  edges=[START,START]  2nd-press-calls=0
+```
+
+**The steal and the inversion are older than the listening mode.**
+They are identical at `8f6567a`, which is where the fleet poll's `dictated` pickup reached the fast engine path, and at `ed75d0d`, the commit before the listening mode.
+`c4aa731` did not cause them.
+
+**What `c4aa731` did cause is defect 3.**
+`git log -S` puts the string `Hold right Alt to speak` in that commit and the only `e.code` binding in the file has been `Space` since `29bbb80`.
+So the listening-mode work put the words "right Alt" on screen and bound nothing to them.
+That is a real regression from it, and it is the reason the captain was pressing a key that could never have worked.
+
+### 32.5 The fix
+
+**The bridge owns the edge, and it owns whose transcript a line is.**
+`Step-FmSpeechCaptureState` and `New-FmSpeechCaptureState` in `module/Firstmate/Public/FmBridge.ps1` are one small machine with both rules in it.
+A stop with nothing running resolves to `None` rather than a toggle, which is the whole of defect 2.
+A transcript produced under a page-driven capture is refused to `/api/fleet` entirely and leaves only by `/api/heard`, which is the whole of defect 1.
+A bare `toggle` from a tab left open from before is resolved against what is actually running rather than passed through, so a stale page is safer than it was rather than merely tolerated.
+
+`/api/listen` now takes `start`, `stop` or `cancel`, and answers with `recording`, which `/api/fleet` also carries.
+The mic badge reads that rather than the page's own `capture` variable, which is the value that used to go stale.
+
+**On the page**: right Alt is bound and works wherever the caret is (Control plus right Alt is left alone, because that is AltGr typing a character); Space keeps its guard so it still types a space; pointer capture replaces `mouseleave` so the hold follows the pointer; a lost window or a hidden tab ends the capture instead of stranding it; every refusal says why; a press while the last words are outstanding abandons that wait instead of swallowing the press; `releaseMic` takes down the sink, the source and the analyser; and `setStage` cancels a pending settle so an old answer cannot relabel a live hold.
+
+### 32.6 Fixed, measured the same way
+
+```
+54 checks, 0 failed
+  ok   right Alt opens the microphone
+  ok   right Alt: the engine is told exactly once
+  ok   Control and right Alt together is AltGr, not push to talk
+  ok   Space while typing does not open the microphone
+  ok   a whole fleet poll later, still listening
+  ok   a whole fleet poll later, nothing has been asked
+  ok   six seconds in, still listening
+  ok   the engine is not left recording
+  ok   and the very next press opens the microphone
+  ok   ten consecutive holds each opened the microphone
+  ok   ten consecutive releases each produced an answer
+  ok   ten consecutive releases each closed the microphone
+  ok   twenty engine edges, strictly alternating
+  ok   a thirty second hold captures the whole thirty seconds
+  ok   a long hold tells the engine once, not repeatedly
+  ok   the pointer leaving the button does not end the hold
+  ok   a window that loses focus closes the microphone
+  ok   a window that loses focus says so on screen
+  ok   a press while waiting for the last words is not swallowed
+  ok   the previous answer does not relabel the hold that follows it
+  ok   a press behind the reply overlay is refused
+  ok   and the refusal is said out loud
+  ok   every stream the slow path opened was stopped
+  ok   no audio node is left connected after ten presses
+  ok   no listener or timer raised
+```
+
+The ten cycles in full, each one a press, a hold, a release and an answer:
+
+```
+cycle  1  opened=yes  engine=["START","stop"]  asked=1   mic-after=Mic closed  engine-recording-after=false
+cycle  2  opened=yes  engine=["START","stop"]  asked=2   mic-after=Mic closed  engine-recording-after=false
+cycle  3  opened=yes  engine=["START","stop"]  asked=3   mic-after=Mic closed  engine-recording-after=false
+cycle  4  opened=yes  engine=["START","stop"]  asked=4   mic-after=Mic closed  engine-recording-after=false
+cycle  5  opened=yes  engine=["START","stop"]  asked=5   mic-after=Mic closed  engine-recording-after=false
+cycle  6  opened=yes  engine=["START","stop"]  asked=6   mic-after=Mic closed  engine-recording-after=false
+cycle  7  opened=yes  engine=["START","stop"]  asked=7   mic-after=Mic closed  engine-recording-after=false
+cycle  8  opened=yes  engine=["START","stop"]  asked=8   mic-after=Mic closed  engine-recording-after=false
+cycle  9  opened=yes  engine=["START","stop"]  asked=9   mic-after=Mic closed  engine-recording-after=false
+cycle 10  opened=yes  engine=["START","stop"]  asked=10  mic-after=Mic closed  engine-recording-after=false
+```
+
+And the thirty-second hold, which the old page could not survive past the first fleet poll:
+
+```
+t= 5s  stage=listening  Mic open  elapsed-shown="5s"
+t=10s  stage=listening  Mic open  elapsed-shown="10s"
+t=15s  stage=listening  Mic open  elapsed-shown="15s"
+t=20s  stage=listening  Mic open  elapsed-shown="20s"
+t=25s  stage=listening  Mic open  elapsed-shown="25s"
+t=30s  stage=listening  Mic open  elapsed-shown="30s"
+engine told:  ["START"]  then, on release, ["START","stop"]
+```
+
+**The negative control.** The same 54 checks run against `3af8a04` unmodified fail 32 of them, including every one named in 32.3.
+A check that cannot fail against the code it guards is not guarding anything, and `CONTRIBUTING.md` requires this to be shown rather than assumed.
+
+### 32.7 What was NOT proven here, and cannot be from this seat
+
+- **Real amplitude from real hardware.** The analyser is stubbed and returns a constant level, so "the bars move when the captain speaks" is untested and untestable here.
+- **The browser's own permission prompt.** The refusal PATH is exercised; the prompt the captain sees is not.
+- **That the dictation app behaves as this models it.** The model comes from `bin/fm-dictate.ps1` and `Invoke-FmSpeechCapture`'s description - one flag that starts and stops, no silence cutoff of its own, which is why the page owns a VAD for continuous mode. That is a modelled assumption, not a measurement against the app.
+- **Layout, at any window size.** Unchanged by this work and still measured only in a real browser.
+- **A live bridge end to end.** No listener was started. The HTTP surface is wired to a machine that is covered by 22 Pester cases, but the two together have not been run against a real engine.
+
+**One limitation the fix does not remove, recorded rather than hidden.**
+A transcript still arriving from the PREVIOUS press is now held for the page instead of broadcast, so it is delivered as the answer to the press that is in flight when it lands.
+The bridge cannot tell that line apart from the current capture's, because the engine hands over text with nothing identifying which capture produced it.
+That is the dictation path's own timing and is out of this task's scope; it can only be fixed by the engine correlating a transcript to a capture.
+What has changed is that it can no longer be asked mid-hold, and can no longer desynchronise the toggle.

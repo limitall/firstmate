@@ -373,6 +373,209 @@ Describe 'Get-FmSpeechEngineStatus' {
     }
 }
 
+Describe 'New-FmSpeechCaptureState' {
+
+    It 'starts with nothing running, nothing waiting and nothing pending' {
+        $s = New-FmSpeechCaptureState
+        $s.Recording | Should -BeFalse
+        $s.AwaitingPage | Should -BeFalse
+        $s.Pending | Should -Be ''
+        $s.PendingForPage | Should -BeFalse
+    }
+
+    It 'hands out a fresh object each time, so two bridges cannot share one' {
+        $a = New-FmSpeechCaptureState
+        $b = New-FmSpeechCaptureState
+        [object]::ReferenceEquals($a, $b) | Should -BeFalse
+    }
+}
+
+Describe 'Step-FmSpeechCaptureState' {
+
+    # THE DEFECT THIS FILE EXISTS FOR. The engine's interface is one flag that
+    # both starts and stops, and the page used to send it blind on press and on
+    # release. The moment those stopped pairing up, every release started a
+    # recording and every press stopped one - the microphone open with nobody
+    # holding it and the screen's badge saying "closed" over it. The captain's
+    # report was "on click/push it stop in 1-2 sec and then after it not workig
+    # any time"; docs/windows-e2e-evidence.md section 32 has the measurement.
+    Context 'the edge of the engine toggle' {
+
+        It 'a first press starts the engine' {
+            $r = Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)
+            $r.EngineAction | Should -Be 'Toggle'
+            $r.State.Recording | Should -BeTrue
+        }
+
+        It 'a release of that press stops it, once' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $r = Step-FmSpeechCaptureState -Step 'Stop' -State $s
+            $r.EngineAction | Should -Be 'Toggle'
+            $r.State.Recording | Should -BeFalse
+        }
+
+        # This is the whole fix. A stop with nothing running used to be passed
+        # through as a toggle, which STARTS a recording.
+        It 'says nothing to the engine when a stop arrives with nothing running' {
+            $r = Step-FmSpeechCaptureState -Step 'Stop' -State (New-FmSpeechCaptureState)
+            $r.EngineAction | Should -Be 'None'
+            $r.State.Recording | Should -BeFalse
+        }
+
+        It 'says nothing to the engine when a second press arrives during a hold' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $r = Step-FmSpeechCaptureState -Step 'Start' -State $s
+            $r.EngineAction | Should -Be 'None'
+            # and it is still recording, so the release that follows still stops it
+            $r.State.Recording | Should -BeTrue
+        }
+
+        It 'drops a capture on cancel, and only when one is running' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            (Step-FmSpeechCaptureState -Step 'Cancel' -State $s).EngineAction | Should -Be 'Cancel'
+            (Step-FmSpeechCaptureState -Step 'Cancel' -State (New-FmSpeechCaptureState)).EngineAction |
+                Should -Be 'None'
+        }
+
+        # Ten presses is the captain's own bar for "usable again afterwards".
+        It 'alternates for ten consecutive press-release cycles and never drifts' {
+            $s = New-FmSpeechCaptureState
+            $sent = [System.Collections.Generic.List[string]]::new()
+            1..10 | ForEach-Object {
+                $r = Step-FmSpeechCaptureState -Step 'Start' -State $s
+                $sent.Add("$($r.EngineAction)"); $s = $r.State
+                $r = Step-FmSpeechCaptureState -Step 'Stop' -State $s
+                $sent.Add("$($r.EngineAction)"); $s = $r.State
+            }
+            ($sent -join ',') | Should -Be ((, 'Toggle,Toggle') * 10 -join ',')
+            $s.Recording | Should -BeFalse
+        }
+
+        It 'leaves nothing recording after a release, whatever landed in between' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State $s -Text 'a late line').State
+            $s = (Step-FmSpeechCaptureState -Step 'Stop' -State $s).State
+            $s.Recording | Should -BeFalse
+        }
+    }
+
+    Context 'a page that does not know start from stop' {
+
+        # A tab left open from before this landed sends one word for both edges.
+        # It is resolved against what is running rather than passed through, so
+        # a stale page is safer than it used to be rather than merely tolerated.
+        It 'reads a bare toggle as a start when nothing is running' {
+            $r = Step-FmSpeechCaptureState -Step 'Toggle' -State (New-FmSpeechCaptureState)
+            $r.EngineAction | Should -Be 'Toggle'
+            $r.State.Recording | Should -BeTrue
+        }
+
+        It 'reads a bare toggle as a stop when something is' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $r = Step-FmSpeechCaptureState -Step 'Toggle' -State $s
+            $r.EngineAction | Should -Be 'Toggle'
+            $r.State.Recording | Should -BeFalse
+        }
+
+        It 'cannot be asked for a request the engine does not have' {
+            { Step-FmSpeechCaptureState -Step 'Pause' -State (New-FmSpeechCaptureState) } |
+                Should -Throw
+        }
+    }
+
+    # THE SECOND HALF OF THE DEFECT. /api/fleet carries a dictated line so the
+    # captain can dictate with their own key while no page asked for anything.
+    # It was handing over lines produced by a capture the page WAS holding, two
+    # seconds into the hold, so the screen answered a sentence the captain had
+    # not finished saying.
+    Context 'whose line a transcript is' {
+
+        It 'gives the fleet a line dictated with nobody holding anything' {
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State (New-FmSpeechCaptureState) -Text 'ahoy').State
+            $r = Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $s
+            $r.Handed | Should -Be 'ahoy'
+            $r.State.Pending | Should -Be ''
+        }
+
+        It 'refuses the fleet a line that landed while a page was holding' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State $s -Text 'still speaking').State
+            $r = Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $s
+            $r.Handed | Should -Be ''
+            # and it is still there for the page that asked
+            $r.State.Pending | Should -Be 'still speaking'
+        }
+
+        It 'refuses the fleet a line that landed while a page was waiting for its own' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $s = (Step-FmSpeechCaptureState -Step 'Stop' -State $s).State
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State $s -Text 'the words').State
+            (Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $s).Handed | Should -Be ''
+        }
+
+        It 'gives the page that asked its own line' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $s = (Step-FmSpeechCaptureState -Step 'Stop' -State $s).State
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State $s -Text 'the words').State
+            $r = Step-FmSpeechCaptureState -Step 'TakeForPage' -State $s
+            $r.Handed | Should -Be 'the words'
+            $r.State.Pending | Should -Be ''
+        }
+
+        It 'hands one utterance over once, however many tabs are polling' {
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State (New-FmSpeechCaptureState) -Text 'once').State
+            $first = Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $s
+            $first.Handed | Should -Be 'once'
+            (Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $first.State).Handed | Should -Be ''
+        }
+
+        # The captain's own key still reaches the screen once the page has
+        # collected what it was waiting for - the fleet channel is narrowed, not
+        # closed.
+        It 'goes back to giving the fleet lines once the page has collected' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $s = (Step-FmSpeechCaptureState -Step 'Stop' -State $s).State
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State $s -Text 'mine').State
+            $s = (Step-FmSpeechCaptureState -Step 'TakeForPage' -State $s).State
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State $s -Text 'dictated with my own key').State
+            (Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $s).Handed |
+                Should -Be 'dictated with my own key'
+        }
+
+        # Dropping a line the captain can simply repeat is safe. Asking firstmate
+        # a question nobody finished saying is not, and that is what the old
+        # broadcast did.
+        It 'discards an uncollected page line at the next press rather than broadcasting it' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $s = (Step-FmSpeechCaptureState -Step 'Stop' -State $s).State
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State $s -Text 'never collected').State
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State $s).State
+            $s.Pending | Should -Be ''
+            $s = (Step-FmSpeechCaptureState -Step 'Stop' -State $s).State
+            (Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $s).Handed | Should -Be ''
+        }
+
+        It 'takes an empty transcript without pretending it heard something' {
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State (New-FmSpeechCaptureState) -Text '').State
+            (Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $s).Handed | Should -Be ''
+            (Step-FmSpeechCaptureState -Step 'TakeForPage' -State $s).Handed | Should -Be ''
+        }
+    }
+
+    Context 'the state it is handed' {
+
+        It 'does not mutate the state it was given' {
+            $s = New-FmSpeechCaptureState
+            $null = Step-FmSpeechCaptureState -Step 'Start' -State $s
+            $s.Recording | Should -BeFalse
+        }
+
+        It 'requires a state rather than inventing one' {
+            { Step-FmSpeechCaptureState -Step 'Start' } | Should -Throw
+        }
+    }
+}
+
 Describe 'Invoke-FmSpeechCapture' {
 
     # The refusals, which are the load-bearing half. Running the engine binary

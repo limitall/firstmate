@@ -592,6 +592,177 @@ function Invoke-FmSpeechCapture {
     [pscustomobject]@{ Ok = $true; Action = $Action; Error = '' }
 }
 
+function New-FmSpeechCaptureState {
+    <#
+        .SYNOPSIS
+        The starting state for one bridge process's push-to-talk bookkeeping.
+
+        .DESCRIPTION
+        A bridge process holds exactly one of these and steps it with
+        `Step-FmSpeechCaptureState`. It is a plain object rather than script
+        scope so the machine can be exercised without a listener.
+
+        The three facts it holds, and why each one exists:
+
+        - `Recording`: a capture THE PAGE asked for is running on the engine.
+          Without it nothing knows which edge of the engine's toggle the next
+          request is on, and a stop sent to an idle engine starts a recording.
+        - `AwaitingPage`: the page has released and is polling for its words.
+          A line that lands in this window belongs to the page even though the
+          capture is already over.
+        - `PendingForPage`: the line now waiting was produced by a capture the
+          page asked for, so it may leave only by `/api/heard`.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Builds a value; the caller owns where it is stored.')]
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param()
+
+    [pscustomobject]@{
+        Recording      = $false
+        AwaitingPage   = $false
+        Pending        = ''
+        PendingForPage = $false
+    }
+}
+
+function Step-FmSpeechCaptureState {
+    <#
+        .SYNOPSIS
+        Advance the push-to-talk machine by one event, and say what the engine
+        must be told.
+
+        .DESCRIPTION
+        THIS FUNCTION EXISTS BECAUSE NOBODY OWNED THE EDGE. The dictation
+        engine's interface is one flag that both starts and stops
+        (`Invoke-FmSpeechCapture` states that in full), so a request sent on the
+        wrong edge does the opposite of what was meant. The page sent a bare
+        toggle on press and another on release and assumed the two paired up.
+        They stopped pairing up the moment anything else finished a capture
+        first, and from then on every press stopped the engine and every release
+        started it - with the page's own indicator saying "closed" over a live
+        microphone. Measured: `docs/windows-e2e-evidence.md` section 32.
+
+        So the EDGE IS RESOLVED HERE, from state, and never assumed by a caller.
+        A stop with nothing running is `None`, which is the whole fix for the
+        stray recording.
+
+        THE SECOND RULE IS WHOSE LINE IT IS. `/api/fleet` carries a dictated
+        line so the captain can dictate with their own key while no page asked
+        for anything. That same channel was handing over lines produced by a
+        capture the page WAS holding, two seconds into the hold, so the screen
+        answered a half-finished sentence while the captain was still speaking.
+        A line produced under a page-driven capture is the page's and leaves
+        only by `TakeForFleet`'s refusal and `TakeForPage`'s hand-over.
+
+        AN UNCOLLECTED PAGE LINE IS DROPPED, NOT BROADCAST. If the tab that
+        asked goes away mid-wait, its line stays marked and the next `Start`
+        discards it. Dropping a line the captain can repeat is safe; asking
+        firstmate a question nobody finished saying is not.
+
+        .PARAMETER Step
+        `Start`, `Stop` and `Cancel` are the page's intents. `Toggle` is what an
+        older page sends; it is resolved against `Recording` rather than passed
+        through, so a stale tab is safer than it used to be, not merely
+        supported. `Dictated` records a line arriving from the engine's hook.
+        `TakeForPage` is `/api/heard`; `TakeForFleet` is `/api/fleet`.
+
+        .PARAMETER State
+        The state to advance. Not mutated - a new object comes back.
+
+        .PARAMETER Text
+        The transcript, for `Dictated`. Ignored by every other event.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('Start', 'Stop', 'Cancel', 'Toggle', 'Dictated', 'TakeForPage', 'TakeForFleet')]
+        [string]$Step,
+
+        [Parameter(Mandatory)][pscustomobject]$State,
+
+        [AllowEmptyString()][string]$Text = ''
+    )
+
+    $recording = [bool]$State.Recording
+    $awaiting = [bool]$State.AwaitingPage
+    $pending = [string]$State.Pending
+    $forPage = [bool]$State.PendingForPage
+
+    $engineAction = 'None'
+    $handed = ''
+
+    $resolved = $Step
+    # An older page sends one word for both edges. Resolve it here rather than
+    # passing it through, because passing it through is the defect.
+    if ($resolved -eq 'Toggle') { $resolved = if ($recording) { 'Stop' } else { 'Start' } }
+
+    switch ($resolved) {
+        'Start' {
+            if (-not $recording) {
+                $engineAction = 'Toggle'
+                $recording = $true
+            }
+            # A new capture supersedes anything uncollected, including a line
+            # the previous tab never came back for.
+            $awaiting = $false
+            $pending = ''
+            $forPage = $false
+        }
+        'Stop' {
+            if ($recording) {
+                $engineAction = 'Toggle'
+                $recording = $false
+                # The words have not arrived yet. Until they do, or until the
+                # next capture, they are still this page's.
+                $awaiting = $true
+            }
+            # Nothing running: say nothing to the engine. Sending the toggle
+            # here is what used to open the microphone with nobody holding it.
+        }
+        'Cancel' {
+            if ($recording) {
+                $engineAction = 'Cancel'
+                $recording = $false
+            }
+            $awaiting = $false
+            $pending = ''
+            $forPage = $false
+        }
+        'Dictated' {
+            $pending = $Text
+            $forPage = ($recording -or $awaiting)
+        }
+        'TakeForPage' {
+            $handed = $pending
+            $pending = ''
+            $forPage = $false
+            $awaiting = $false
+        }
+        'TakeForFleet' {
+            # The page's line never leaves this way, and neither does one landing
+            # while the page is still waiting for its own.
+            if (-not ($forPage -or $awaiting)) {
+                $handed = $pending
+                $pending = ''
+            }
+        }
+    }
+
+    [pscustomobject]@{
+        EngineAction = $engineAction
+        Handed       = $handed
+        State        = [pscustomobject]@{
+            Recording      = $recording
+            AwaitingPage   = $awaiting
+            Pending        = $pending
+            PendingForPage = $forPage
+        }
+    }
+}
+
 function Convert-FmSpeechToText {
     <#
         .SYNOPSIS

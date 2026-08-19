@@ -33,6 +33,7 @@ ROUTES
                         and the panel are one read
     GET  /api/health    is the engine up, what dictation can do, how it listens
     POST /api/listen    start, stop or drop a capture on the WARM speech engine
+                        {"action":"start"|"stop"|"cancel"}; the server owns the edge
     POST /api/listen-mode  hold to talk, or leave the microphone open
     POST /api/voice     whether the screen speaks its answers. Off by default
     GET  /api/heard     a dictated line waiting to be asked, if one has landed
@@ -121,8 +122,10 @@ $home_ = if ($configured) { Get-FmBridgeWorkspace -RepoRoot $root } else { '' }
 $captainName = Get-FmCaptainName
 # Set when the address changes mid-run, cleared when it has been passed on.
 $script:pendingAddress = $null
-# A line dictated through the engine's own hook, waiting for the page to ask it.
-$script:pendingDictation = ''
+# Push-to-talk bookkeeping for this run: which edge of the engine's toggle the
+# next request is on, and whose the line waiting to be collected is.
+# Step-FmSpeechCaptureState owns both rules and says why.
+$script:capture = New-FmSpeechCaptureState
 if (-not (Test-Path -LiteralPath $uiDir -PathType Container)) {
     [Console]::Error.WriteLine("error: no ui directory at $uiDir"); exit 1
 }
@@ -326,25 +329,44 @@ try {
                     $listenBody = ''
                     $lr = [System.IO.StreamReader]::new($req.InputStream, [System.Text.Encoding]::UTF8)
                     try { $listenBody = $lr.ReadToEnd() } finally { $lr.Dispose() }
-                    $wantAction = 'Toggle'
+                    # THE PAGE SAYS WHICH EDGE IT MEANS, AND THE SERVER RESOLVES
+                    # IT. `toggle` is still accepted, because a tab left open from
+                    # before this landed sends it - but it is resolved against
+                    # what is actually running rather than passed through, which
+                    # is the defect section 32 records.
+                    $wantStep = 'Toggle'
                     try {
                         $asked = [string]($listenBody | ConvertFrom-Json).action
-                        if ($asked -eq 'cancel') { $wantAction = 'Cancel' }
-                    } catch { $wantAction = 'Toggle' }
+                        switch ($asked) {
+                            'start'  { $wantStep = 'Start' }
+                            'stop'   { $wantStep = 'Stop' }
+                            'cancel' { $wantStep = 'Cancel' }
+                            default  { $wantStep = 'Toggle' }
+                        }
+                    } catch { $wantStep = 'Toggle' }
 
-                    # A capture that is starting clears any line left over from a
-                    # previous one, so an old transcript can never be picked up
-                    # as the answer to what is being said now.
-                    if ($wantAction -eq 'Toggle') { $script:pendingDictation = '' }
+                    $plan = Step-FmSpeechCaptureState -Step $wantStep -State $script:capture
+                    $script:capture = $plan.State
 
-                    $capture = Invoke-FmSpeechCapture -Action $wantAction
+                    $capture = if ($plan.EngineAction -eq 'None') {
+                        # Nothing to say to the engine. This is the case that used
+                        # to open the microphone with nobody holding it.
+                        [pscustomobject]@{ Ok = $true; Action = 'None'; Error = '' }
+                    } else {
+                        Invoke-FmSpeechCapture -Action $plan.EngineAction
+                    }
                     $state = Get-FmSpeechEngineStatus -HookPath $hookPath
                     if (-not $capture.Ok) {
+                        # The engine refused, so nothing is recording whatever the
+                        # machine just decided. Left believing otherwise, the next
+                        # release would send a stop that starts one.
+                        $script:capture = (Step-FmSpeechCaptureState -Step 'Cancel' -State $script:capture).State
                         [Console]::Error.WriteLine("fm-bridge: dictation not started - $($capture.Error)")
                     }
                     Write-Json -Response $res -Object @{
                         ok        = $capture.Ok
                         error     = $capture.Error
+                        recording = $script:capture.Recording
                         handsOver = $state.HandsOver
                         setup     = $state.Setup
                     }
@@ -356,9 +378,9 @@ try {
                     # cheap as it looks - the fleet read is the expensive one and
                     # it keeps its own four-second-ish cadence. Handed over once,
                     # same rule as /api/fleet.
-                    $waiting = $script:pendingDictation
-                    $script:pendingDictation = ''
-                    Write-Json -Response $res -Object @{ ok = $true; text = $waiting }
+                    $take = Step-FmSpeechCaptureState -Step 'TakeForPage' -State $script:capture
+                    $script:capture = $take.State
+                    Write-Json -Response $res -Object @{ ok = $true; text = $take.Handed }
                     continue
                 }
 
@@ -398,10 +420,13 @@ try {
 
                 if ($path -eq '/api/fleet') {
                     $fleet = Get-FmBridgeFleet -HomePath $home_
-                    $handOver = $script:pendingDictation
                     # Cleared as it is handed over, so one utterance is asked
-                    # once however many tabs are polling.
-                    $script:pendingDictation = ''
+                    # once however many tabs are polling - and REFUSED entirely
+                    # while a page is holding or awaiting its own capture, which
+                    # is what used to answer the captain two seconds into a hold.
+                    $take = Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $script:capture
+                    $script:capture = $take.State
+                    $handOver = $take.Handed
                     Write-Json -Response $res -Object @{
                         ok        = $true
                         engine    = ($null -ne $session -and -not $session.Process.HasExited)
@@ -414,6 +439,10 @@ try {
                         # A line dictated straight into the engine, waiting for
                         # the page to pick it up and ask it. Handed over once.
                         dictated  = $handOver
+                        # IS THE MICROPHONE OPEN, answered by whoever actually
+                        # knows. The page used to answer from its own `capture`
+                        # variable, which is exactly the value that went stale.
+                        recording = $script:capture.Recording
                         tasks     = @($fleet.Tasks)
                         decisions = @($fleet.Decisions)
                         activity  = @($fleet.Activity)
@@ -492,7 +521,7 @@ try {
 
                     if ($dictated) {
                         [Console]::Out.WriteLine("heard: $dictated")
-                        $script:pendingDictation = $dictated
+                        $script:capture = (Step-FmSpeechCaptureState -Step 'Dictated' -State $script:capture -Text $dictated).State
                     }
                     Write-Json -Response $res -Object @{ ok = [bool]$dictated }
                     continue

@@ -371,10 +371,27 @@ directory with no instructions and no hooks, and nothing said so.
 
 ## Seeing the browser screen
 
-`ui/bridge.html` is the one surface here with no Pester coverage, and that is on
-purpose: a test that read its stylesheet would assert implementation source,
-which the rules above forbid. So a change to it is proven by running it, and the
-evidence goes in `docs/windows-e2e-evidence.md`.
+`ui/bridge.html` is proven by running it, and the evidence goes in
+`docs/windows-e2e-evidence.md`. A test that read its stylesheet would assert
+implementation source, which the rules above forbid, so most of this page has no
+Pester coverage and is not going to get any.
+
+**Its BEHAVIOUR is a different question, and push to talk now has coverage.**
+`tests/ui/bridge-page-harness.js` loads the page's own `<script>` into a stubbed
+window under `node:vm` and drives it through its own event listeners, with a
+virtual clock so a thirty-second hold costs milliseconds.
+That is executing the program, not reading its text, so it is behaviour in the
+sense the rules mean - and it needs no server, no browser and no microphone,
+which is what makes it allowed here at all.
+`tests/FmBridgeScreen.Tests.ps1` runs it and turns each check into a Pester
+result, so `Invoke-Pester -Path ./tests` stays the one gate; node's absence is
+reported as a skip with the reason, never as a pass.
+Add to that harness when a change to the page has a state machine in it - which
+edge a request is on, whose data a poll may take, whether a hold survives
+something - and leave anything visual to a browser run and the evidence file.
+Its server model mirrors `bin/fm-bridge.ps1`, so a change to either one belongs
+in both. `docs/windows-e2e-evidence.md` section 32 is what that harness was
+built for and states what it still cannot prove.
 
 - **Do not serve the page to check something, and do not open a browser at it.**
   This is the captain's standing rule after their machine spoke at them, twice,
@@ -415,6 +432,13 @@ evidence goes in `docs/windows-e2e-evidence.md`.
   will not shrink. `min-width:0` plus `max-width` for a flex row, `minmax(0,1fr)`
   for a grid track, and a canvas sized in pixels must be re-measured from its
   container - an arriving reply is not a resize event.
+- **The dictation engine's flag both starts and stops, so somebody has to own
+  which edge a request is on, and that somebody is the bridge.**
+  `Step-FmSpeechCaptureState` holds that rule and the one beside it: a transcript
+  produced by a capture the page asked for leaves by `/api/heard` and never by
+  `/api/fleet`. Both were unowned, and the pair of them is what made push to talk
+  stop after a second and then work backwards for the life of the page - section
+  32. Never send `Invoke-FmSpeechCapture` an edge decided by a caller's guess.
 - **Everything the screen shows leaves through `ConvertTo-FmBridgePlainText`** -
   a panel line in its default form, a whole reply with `-Prose`. It is one
   translator on purpose, so a term that leaked is fixed by adding a word to

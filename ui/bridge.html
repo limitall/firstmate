@@ -587,7 +587,7 @@ canvas#wave{display:block;height:26px;opacity:.9;width:100%;max-width:620px;flex
 
         <div class="dock-line" id="dockLine">
           <button class="mic" id="talk" type="button" aria-pressed="false"
-                  title="Hold to speak, or hold Space" aria-label="Hold to speak">
+                  title="Hold to speak, or hold right Alt" aria-label="Hold to speak">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
@@ -832,7 +832,7 @@ drawWave();
    happened is not their problem.
    ------------------------------------------------------------------ */
 let actx=null, ana=null, data=null;
-let pcmNode=null, pcmChunks=[], pcmRate=48000;
+let pcmNode=null, pcmSink=null, pcmChunks=[], pcmRate=48000;
 
 function collectPcm(src){
   // ScriptProcessor rather than AudioWorklet: a worklet needs a separate module
@@ -849,10 +849,13 @@ function collectPcm(src){
   src.connect(pcmNode);
   // Connected to a silent sink because a ScriptProcessor does not run unless it
   // is routed somewhere; the zero gain keeps the captain from hearing themselves.
-  const sink = actx.createGain();
-  sink.gain.value = 0;
-  pcmNode.connect(sink);
-  sink.connect(actx.destination);
+  // KEPT, so releaseMic can take it down again. It used to be a local, which
+  // left one live node wired to the destination per press - twenty-two of them
+  // still connected after ten presses, measured in section 32.
+  pcmSink = actx.createGain();
+  pcmSink.gain.value = 0;
+  pcmNode.connect(pcmSink);
+  pcmSink.connect(actx.destination);
 }
 
 function buildWav(chunks, fromRate, toRate){
@@ -936,10 +939,17 @@ const STAGE = {
   answered:  { word:'Answered',                 core:'Speaking',    sub:'Standing by' },
   trouble:   { word:'That did not work',        core:'Core active', sub:'Nothing came back' }
 };
-let stageTimer=null, stageAt=0;
+let stageTimer=null, stageAt=0, stageSettle=null;
 function setStage(name, opts){
   const s = STAGE[name] || STAGE.idle;
   opts = opts || {};
+  // THE SETTLE FROM THE LAST ANSWER IS NOT ALLOWED TO LAND ON THIS ONE. An
+  // answer schedules "back to standing by" a couple of seconds later; a press
+  // that arrives inside that window used to be relabelled Standing by while the
+  // microphone was still open and still recording. On screen that is
+  // indistinguishable from the capture stopping by itself, which is half of
+  // what the captain reported. Any new stage cancels the pending one.
+  if (stageSettle) { clearTimeout(stageSettle); stageSettle = null; }
   stateStrip.dataset.state = name;
   stateWord.textContent = opts.word || s.word;
   coreState.textContent = s.core;
@@ -1133,13 +1143,21 @@ function idleHint(){
 let listenMode = 'push';
 let speaking = false;
 let micStream = null;
+// What the BRIDGE says about the dictation app's microphone. The page used to
+// answer that question from its own `capture` variable, and when that went
+// stale the badge said "closed" over a live recording - which is the one thing
+// this badge exists to make impossible. /api/fleet and /api/listen both carry
+// it now, so a page that has lost track is corrected within one poll.
+let engineRecording = false;
 
 function micIsOpen(){
   const held = !!(micStream && micStream.getAudioTracks().some(t => t.readyState === 'live'));
   // 'engine' means the captain's dictation app is recording. This page does
   // not hold that stream, but the microphone IS open and saying otherwise
-  // would be the exact lie this badge exists to prevent.
-  return held || capture === 'engine';
+  // would be the exact lie this badge exists to prevent. Taken from the bridge
+  // first and from this page's own intent second, so the badge goes red the
+  // instant the captain presses and stays honest afterwards either way.
+  return held || engineRecording || capture === 'engine';
 }
 function refreshMic(){
   const on = micIsOpen();
@@ -1151,8 +1169,10 @@ async function ensureMic(){
   if(!actx) actx = new (window.AudioContext||window.webkitAudioContext)();
   if(actx.state === 'suspended') await actx.resume();
   if(!micStream || !micStream.getAudioTracks().some(t => t.readyState === 'live')){
+    // A stream that ended under us - an unplugged device, a browser reclaiming
+    // it - is torn down through the one owner rather than half-replaced here.
+    if(micStream) releaseMic();
     micStream = await navigator.mediaDevices.getUserMedia({audio:true});
-    if(window.__fmSrc){ try{ window.__fmSrc.disconnect(); }catch(_){} }
     window.__fmSrc = actx.createMediaStreamSource(micStream);
     ana = actx.createAnalyser(); ana.fftSize = 256; ana.smoothingTimeConstant = .75;
     window.__fmSrc.connect(ana); data = new Uint8Array(ana.frequencyBinCount);
@@ -1165,6 +1185,12 @@ async function ensureMic(){
    claimed otherwise; beside a badge that promises the truth it is not. */
 function releaseMic(){
   if(pcmNode){ try{ pcmNode.disconnect(); }catch(_){} pcmNode.onaudioprocess = null; pcmNode = null; }
+  if(pcmSink){ try{ pcmSink.disconnect(); }catch(_){} pcmSink = null; }
+  // The source and the analyser go too. ensureMic builds a fresh pair for every
+  // stream, and a disconnected node cannot be reconnected - keeping the old ones
+  // around is how a reused graph produces silence with nothing to show for it.
+  if(window.__fmSrc){ try{ window.__fmSrc.disconnect(); }catch(_){} window.__fmSrc = null; }
+  if(ana){ try{ ana.disconnect(); }catch(_){} ana = null; data = null; }
   if(micStream){ micStream.getAudioTracks().forEach(t => t.stop()); micStream = null; }
   target = 0; bins.fill(0);
   refreshMic();
@@ -1216,7 +1242,8 @@ async function beginPhrase(){
   capture = 'engine';
   setLive(true); setStage('listening'); showHeard('');
   typedEl.focus();
-  try { await api('/api/listen',{method:'POST',body:JSON.stringify({action:'toggle'})}); }
+  try { const r = await api('/api/listen',{method:'POST',body:JSON.stringify({action:'start'})});
+        if (r) { engineRecording = !!r.recording; refreshMic(); } }
   catch(e){ /* the wait below reports a phrase that never arrives */ }
 }
 async function endPhrase(drop){
@@ -1224,7 +1251,8 @@ async function endPhrase(drop){
   if(capture !== 'engine') return;
   capture = 'off';
   setLive(false);
-  try { await api('/api/listen',{method:'POST',body:JSON.stringify({action: drop ? 'cancel' : 'toggle'})}); }
+  try { const r = await api('/api/listen',{method:'POST',body:JSON.stringify({action: drop ? 'cancel' : 'stop'})});
+        if (r) { engineRecording = !!r.recording; refreshMic(); } }
   catch(e){ /* as above */ }
   if(drop){ setStage('idle'); return; }
   setStage('hearing');
@@ -1276,17 +1304,39 @@ async function applyMode(mode, save){
 modePush.addEventListener('click', ()=>applyMode('push', true));
 modeCont.addEventListener('click', ()=>applyMode('continuous', true));
 
+/* EVERY REFUSAL HERE IS SAID OUT LOUD.
+
+   All three of these used to be a bare `return`. The captain pressed a control,
+   nothing happened, nothing appeared, and the page looked perfectly healthy -
+   which is the half of this defect that made them assume they were holding it
+   wrong. A push-to-talk that declines has to say so. */
 async function talkStart(){
   // In continuous mode the microphone is already listening and the phrase
   // detector owns when a capture starts, so holding the button would open a
   // second one on top of it.
-  if (listenMode === 'continuous') return;
+  if (listenMode === 'continuous'){
+    showHeard('The microphone is already open in continuous listening. Just speak.', true);
+    return;
+  }
   // The overlay covers the dock, so the microphone behind it cannot be clicked -
-  // but Space still reaches this, and opening the microphone from behind a
+  // but a key still reaches this, and opening the microphone from behind a
   // dialog is the sort of thing the badge beside the dock exists to make
   // impossible to do unnoticed.
-  if (!replySheet.hidden) return;
-  if (capture !== 'off' || awaitingWords) return;
+  if (!replySheet.hidden){
+    showHeard('Close the full reply first, then hold to speak.', true);
+    return;
+  }
+  // Already capturing under a hold that is still on: a repeat, not a refusal.
+  if (capture !== 'off' && pressed) return;
+  // Capturing with nobody holding it: the release never landed. A key held while
+  // the window lost focus never gets its keyup, and until now that stranded this
+  // control for the rest of the page's life. Clear it and carry on.
+  if (capture !== 'off') await abandonCapture('');
+  // Pressing again while the last words are still outstanding MEANS the captain
+  // has given up on them. Abandoning that wait is the point; swallowing the
+  // press for the full forty-five seconds is the other half of "it never works
+  // again".
+  if (awaitingWords) stopWaiting();
   pressed = true;
   // Asked again when the answer was no. The dictation app is often started AFTER
   // this page, and a page that decided once at load would keep taking the slow
@@ -1309,11 +1359,13 @@ async function talkStart(){
     showHeard('');
     typedEl.focus();
     let r = null;
-    try { r = await api('/api/listen',{method:'POST',body:JSON.stringify({action:'toggle'})}); }
+    try { r = await api('/api/listen',{method:'POST',body:JSON.stringify({action:'start'})}); }
     catch(e){ r = null; }
     if (r && r.ok){
       speech.handsOver = !!r.handsOver;
       speech.setup = r.setup || '';
+      engineRecording = !!r.recording;
+      refreshMic();
       // Let go before the request landed: the release that should have stopped
       // this has already been and gone, so stop it here instead.
       if (!pressed) await talkStop();
@@ -1321,7 +1373,7 @@ async function talkStart(){
     }
     // Refused, and it says why rather than falling silent. Recording here still
     // works, so the button is not a dead end - it is just the slow way.
-    capture = 'off'; setLive(false);
+    capture = 'off'; engineRecording = false; setLive(false);
     if (!pressed){ setStage('idle'); return; }
     await recordHere((r && r.error) || 'your dictation app did not answer');
     return;
@@ -1334,8 +1386,15 @@ async function talkStop(){
   if (capture === 'engine'){
     capture = 'off';
     setLive(false); setStage('hearing');
-    try { await api('/api/listen',{method:'POST',body:JSON.stringify({action:'toggle'})}); }
+    // 'stop', not 'toggle'. The engine's own flag both starts and stops, so a
+    // stop sent to an engine that had already finished used to BEGIN a fresh
+    // recording - the microphone open with nobody holding it, and every press
+    // after that doing the opposite of what it said. The bridge owns the edge
+    // now (Step-FmSpeechCaptureState) and answers with what is really running.
+    try { const r = await api('/api/listen',{method:'POST',body:JSON.stringify({action:'stop'})});
+          if (r) { engineRecording = !!r.recording; } }
     catch(e){ /* the words may still arrive; the wait below reports either way */ }
+    refreshMic();
     waitForWords();
     return;
   }
@@ -1347,6 +1406,31 @@ async function talkStop(){
     if (!listening) return;
     capture = 'off'; await micOff();
   }
+}
+
+/* A capture that has to end without becoming a question: a release that never
+   arrived, a window that lost focus mid-hold, a fresh press on top of a stale
+   one. It closes the microphone at both ends - this page's stream and the
+   engine's - and asks nothing. */
+async function abandonCapture(why){
+  const had = capture !== 'off' || listening;
+  stopWaiting();
+  if (capture === 'engine'){
+    capture = 'off';
+    try { const r = await api('/api/listen',{method:'POST',body:JSON.stringify({action:'cancel'})});
+          if (r) { engineRecording = !!r.recording; } }
+    catch(e){ /* the badge is corrected by the next fleet poll either way */ }
+  } else if (capture === 'here'){
+    capture = 'off';
+    listening = false;
+    pcmChunks = [];
+    releaseMic();
+  }
+  pressed = false;
+  setLive(false);
+  refreshMic();
+  if (had && why) showHeard(why, true);
+  return had;
 }
 
 function stopWaiting(){
@@ -1670,7 +1754,11 @@ async function respond(said){
       // of every answer - shorter, no markup, no paths - and only falls back
       // to reading the written one when that could not be produced.
       speak(res.spoken || res.reply);
-      setTimeout(()=>{ if(!awaitingReply && !awaitingWords) setStage('idle'); },2200);
+      stageSettle = setTimeout(()=>{
+        stageSettle = null;
+        // Nothing may be under way, INCLUDING a hold that started since.
+        if(!awaitingReply && !awaitingWords && capture === 'off' && !pressed && !listening) setStage('idle');
+      },2200);
     } else {
       sayTrouble('No answer came back', res.error || 'No answer came back.');
     }
@@ -1688,16 +1776,68 @@ async function respond(said){
   refreshFleet();
 }
 
-// talkStop is reached by three events on purpose and fires once: the capture
-// state is cleared before the stop is sent, so a mouseup followed by a mouseleave
-// cannot send a second toggle - which, to an app whose flag is a toggle, would
-// start recording again.
-talk.addEventListener('mousedown',talkStart);
-talk.addEventListener('touchstart',e=>{e.preventDefault();talkStart()},{passive:false});
-['mouseup','mouseleave','touchend'].forEach(ev=>talk.addEventListener(ev,talkStop));
-addEventListener('keydown',e=>{
-  if(e.code==='Space'&&!e.repeat&&document.activeElement.id!=='typed'){e.preventDefault();talkStart()}});
-addEventListener('keyup',e=>{if(e.code==='Space')talkStop()});
+/* ==================================================================
+   THE TWO WAYS IN, AND THE HOLD THAT HAS TO SURVIVE THEM.
+
+   THE BUTTON. It used to stop on `mouseleave`, so a few pixels of drift off a
+   40px target ended a capture mid-sentence and looked exactly like the
+   microphone closing by itself. Pointer capture is the fix: the hold follows
+   the pointer wherever it goes and ends only when the captain actually lets go,
+   and one pointer API covers mouse, pen and touch, so there are no longer three
+   pairs of listeners to keep in agreement.
+
+   THE KEY. The dock has told the captain to hold RIGHT ALT since the listening
+   mode landed, and nothing was ever bound to it - the only key handler was
+   Space. Space is then refused while the message box has focus, which
+   focusMessage() gives it 300ms after load and returns to it after every single
+   exchange. So the advertised key did nothing ever, and the unadvertised one did
+   nothing after the first three hundred milliseconds. Both halves measured in
+   docs/windows-e2e-evidence.md section 32.
+
+   Right Alt now works wherever the caret is, which is the whole point of a
+   push-to-talk key. Space keeps its guard, because a Space in a message box is
+   a space. AltGr arrives as right Alt with Control held on this platform, so
+   that combination is left alone - on the layouts that use it to type, it is a
+   character, not a microphone.
+
+   The keyup is NOT guarded the way the keydown is. If the caret moved while the
+   captain was speaking, the release still has to land; a stop that can be
+   refused is how a microphone gets left open.
+   ================================================================== */
+talk.addEventListener('pointerdown', e=>{
+  e.preventDefault();
+  try{ talk.setPointerCapture(e.pointerId); }catch(_){ /* older pointer stacks */ }
+  talkStart();
+});
+['pointerup','pointercancel'].forEach(ev=>talk.addEventListener(ev, e=>{
+  try{ talk.releasePointerCapture(e.pointerId); }catch(_){ /* already released */ }
+  talkStop();
+}));
+
+let pttKey = '';
+function pttKeyDown(e){
+  if (e.code === 'AltRight') return !e.ctrlKey;          // Control+right Alt is AltGr
+  return e.code === 'Space' && document.activeElement.id !== 'typed';
+}
+addEventListener('keydown', e=>{
+  if (e.repeat || pttKey || !pttKeyDown(e)) return;
+  e.preventDefault();
+  pttKey = e.code;
+  talkStart();
+});
+addEventListener('keyup', e=>{
+  if (e.code !== pttKey) return;
+  pttKey = '';
+  talkStop();
+});
+/* A key held when the window goes away never gets its keyup, and a page that
+   waits for one holds the microphone open with nobody there. Both of these end
+   the capture rather than leaving it running behind a window the captain can no
+   longer see. */
+addEventListener('blur', ()=>{ if(pttKey || pressed){ pttKey=''; abandonCapture('The window lost focus, so the microphone was closed.'); } });
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden && (pttKey || pressed)){ pttKey=''; abandonCapture('This tab went to the background, so the microphone was closed.'); }
+});
 function sendTyped(){
   const v = typedEl.value.trim();
   if(!v) return;
@@ -1899,7 +2039,22 @@ async function refreshFleet(){
     // A line dictated straight into the speech engine, transcribed by its warm
     // model and handed over here. Asked exactly as if it had been typed, so the
     // captain can dictate from anywhere and watch the answer appear.
-    if(f.dictated && !awaitingReply){ wordsArrived(f.dictated); }
+    // WHOSE LINE IS THIS. The bridge refuses to put a page-driven capture's
+    // transcript on this channel at all - Step-FmSpeechCaptureState owns that
+    // rule - and this is the page's half of the same question: a line arriving
+    // while THIS page is holding, or is waiting for its own words, is not a
+    // question the captain has finished asking. Without it the screen answered
+    // two seconds into a hold, while they were still speaking.
+    if(f.dictated && !awaitingReply && !awaitingWords && capture === 'off' && !pressed){
+      wordsArrived(f.dictated);
+    }
+    // The bridge is the authority on whether the dictation app holds the
+    // microphone; the badge follows it rather than this page's own guess.
+    if (typeof f.recording !== 'undefined'){
+      const wasRec = engineRecording;
+      engineRecording = !!f.recording;
+      if (wasRec !== engineRecording) refreshMic();
+    }
     paintFleet(f);
     const dot=document.getElementById('dot');
     const bs=document.getElementById('bridgeState');
