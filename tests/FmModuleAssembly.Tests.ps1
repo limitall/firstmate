@@ -466,6 +466,83 @@ Describe 'the two entry points at the repo root' {
     }
 }
 
+Describe 'the first command README gives a newcomer' {
+    # WHY THIS EXISTS. Windows ships with script execution switched off, and
+    # README's first instruction was a bare `.\install.ps1`. On the captain's
+    # clean Windows 11 machine, 2026-08-20, before anything else could go wrong:
+    #
+    #     .\install.ps1 : File ...\install.ps1 cannot be loaded because running
+    #     scripts is disabled on this system.
+    #
+    # The very first thing our own instructions tell a newcomer to type could
+    # not run. So this does not check what README SAYS - it takes the command
+    # README gives and RUNS it, on the shell a clean machine actually opens,
+    # with scripts disabled exactly as they are out of the box.
+    BeforeAll {
+        $script:WindowsPowerShell = Join-Path $env:WINDIR 'System32' 'WindowsPowerShell' 'v1.0' 'powershell.exe'
+        $script:ReadmeCommand = ''
+        $readme = @([System.IO.File]::ReadAllLines((Join-Path $script:RepoRoot 'README.md')))
+        $inBlock = $false
+        foreach ($line in $readme) {
+            if ($line -match '^```') { if ($inBlock) { break }; $inBlock = $true; continue }
+            if ($inBlock -and $line -match 'install\.ps1') { $script:ReadmeCommand = $line.Trim(); break }
+        }
+
+        # A Group Policy that pins the execution policy would override the
+        # -ExecutionPolicy the tests below pass to their children, and both
+        # would then be measuring the policy rather than the command.
+        $script:PolicyForced = @(Get-ExecutionPolicy -List |
+                Where-Object { $_.Scope -in @('MachinePolicy', 'UserPolicy') -and $_.ExecutionPolicy -ne 'Undefined' }).Count -gt 0
+
+        function Invoke-CleanMachineShell {
+            param([Parameter(Mandatory)][string]$Command)
+            # -ExecutionPolicy Restricted is what a clean Windows client has, and
+            # it is passed to a CHILD process: no machine setting is changed.
+            $output = & $script:WindowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Restricted `
+                -Command "Set-Location -LiteralPath '$($script:RepoRoot)'; $Command" 2>&1
+            [pscustomobject]@{ ExitCode = $LASTEXITCODE; Text = (@($output | ForEach-Object { [string]$_ }) -join "`n") }
+        }
+    }
+
+    It 'gives one, inside its first code block' {
+        $script:ReadmeCommand | Should -Not -BeNullOrEmpty -Because 'README opens with the command a newcomer types first'
+    }
+
+    It 'runs it, on a machine where running scripts is disabled' {
+        if (-not ($IsWindows -and (Test-Path -LiteralPath $script:WindowsPowerShell -PathType Leaf))) {
+            Set-ItResult -Skipped -Because 'Windows PowerShell 5.1 is not on this machine'
+            return
+        }
+        if ($script:PolicyForced) {
+            Set-ItResult -Skipped -Because 'a Group Policy pins the execution policy, so a child cannot be given the clean-machine one'
+            return
+        }
+        # -DetectOnly -Offline: it must REACH its own work and change nothing,
+        # which is the whole claim - not that some error text was different.
+        $result = Invoke-CleanMachineShell -Command "$($script:ReadmeCommand) -DetectOnly -Offline"
+        $result.Text | Should -Not -Match 'running scripts is disabled'
+        $result.Text | Should -Match 'what this machine has'
+        $result.Text | Should -Match '-DetectOnly: nothing was changed'
+        $result.ExitCode | Should -Be 0
+    }
+
+    It 'and the bare form README used to give really does fail there' {
+        # The negative control. Without it this file would keep passing if
+        # README regressed AND the policy stopped mattering, and would prove
+        # nothing about either.
+        if (-not ($IsWindows -and (Test-Path -LiteralPath $script:WindowsPowerShell -PathType Leaf))) {
+            Set-ItResult -Skipped -Because 'Windows PowerShell 5.1 is not on this machine'
+            return
+        }
+        if ($script:PolicyForced) {
+            Set-ItResult -Skipped -Because 'a Group Policy pins the execution policy, so a child cannot be given the clean-machine one'
+            return
+        }
+        $result = Invoke-CleanMachineShell -Command '.\install.ps1 -DetectOnly -Offline'
+        $result.Text | Should -Match 'running scripts is disabled'
+    }
+}
+
 Describe 'cross-area bindings' {
     # WHY THIS EXISTS. Areas bind to each other by NAME at call time:
     #

@@ -11,7 +11,14 @@ is an explained skip rather than a "command not found" halfway through.
 
     git clone <this repo> C:\Users\<you>\firstmate-win
     cd C:\Users\<you>\firstmate-win
-    .\install.ps1
+    powershell -ExecutionPolicy Bypass -File .\install.ps1
+
+THE -ExecutionPolicy Bypass IS PART OF THE FIRST COMMAND, not an afterthought.
+Windows ships with script execution switched off, so a bare `.\install.ps1` on a
+clean machine answers "install.ps1 cannot be loaded because running scripts is
+disabled on this system" and nothing else happens. That form applies to the one
+process it starts, needs no administrator, and changes no machine setting -
+which is why it is documented rather than `Set-ExecutionPolicy`.
 
 THREE OUTCOMES PER REQUIREMENT, not two.
 
@@ -31,6 +38,10 @@ NO STEP NEEDS ADMINISTRATOR. Every tool comes from a per-user installer or a
 release archive expanded under %LOCALAPPDATA%\Programs. The two routes that
 genuinely need elevation - the winget packages for git and Node.js - are named
 and skipped on an unelevated run, and everything else still installs.
+
+WHAT IT INSTALLS, YOU CAN FIND. A per-user install registers nothing by itself,
+so this run adds PowerShell 7 to your own Start menu and prints where the
+executable went. "Installed" has to mean you can open it.
 
 IT ENDS BY PROVING ITSELF. Every tool is run and made to print a version, the
 instructions and skills are read and counted, and this repo's own test suite is
@@ -59,13 +70,13 @@ and the report says currency was not checked.
 Print what this machine has and what it needs, and change nothing.
 
 .EXAMPLE
-.\install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 .EXAMPLE
-.\install.ps1 -Unattended
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Unattended
 
 .EXAMPLE
-.\install.ps1 -DetectOnly
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -DetectOnly
 #>
 [CmdletBinding()]
 param(
@@ -146,6 +157,22 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
             [Console]::Out.WriteLine('  Open a new window and re-run this script.')
             exit 1
         }
+        # SAY WHERE IT WENT. That route expands a zip into a per-user directory:
+        # it writes pwsh.exe and edits PATH, and it registers nothing, so a
+        # captain told "installed" went looking in the Start menu and found
+        # nothing there - measured on a clean Windows 11 machine, 2026-08-20.
+        # The relaunched run adds the Start menu entry (Set-FmMachineShellShortcut);
+        # this is what the captain can see BEFORE that, at the moment they were
+        # previously left guessing.
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine('  PowerShell 7 is installed, in your own profile and with no administrator:')
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine("    $localPwsh")
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine('  That route expands an archive, so nothing has registered it yet. This run adds')
+        [Console]::Out.WriteLine('  it to your Start menu as "PowerShell 7", and it is on PATH as pwsh in a NEW')
+        [Console]::Out.WriteLine('  window. It does not replace the Windows PowerShell you are in now.')
+        [Console]::Out.WriteLine('')
         $pwshCommand = Get-Command -Name $localPwsh -ErrorAction SilentlyContinue
     }
 

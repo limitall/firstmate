@@ -272,6 +272,20 @@ below are what those bugs cost.
   owner that is PRESENT, and only where the resolved name is a literal. A
   by-name call whose owner is still unported is a degradation on purpose and is
   not flagged.
+- **A test that builds its own input proves nothing about the caller's input.**
+  The parameter-name rule above has a twin one level down: a function that takes
+  an untyped RECORD has an undeclared shape contract, and nothing checks it.
+  `Invoke-FmToolRoute` read `$Entry.Tool`; its one caller passes a requirement
+  from `Get-FmMachineInstallPlan`, which publishes `Name`. Under strict mode the
+  first real install threw and the whole run died - on the first clean machine
+  this installer ever met, at the one step a machine that already had the tools
+  could never reach. Every test in the area passed, because every one of them
+  constructed the record it handed over. Where a producer and a consumer live in
+  different functions, at least one test must put the PRODUCER'S OWN output
+  through the consumer, untouched; `-WhatIf` usually gets that far without
+  performing the side effect. Better still, do not accept a record whose shape
+  nobody declares - pass the one the other side already owns, as that function
+  now does with its route.
 - **A degradation test stops testing degradation once the owner lands.** Suites
   asserting the "owner not loaded" branch must stage the absence at the
   `Resolve-Fm*Command` seam. Deleting the function is not enough - the

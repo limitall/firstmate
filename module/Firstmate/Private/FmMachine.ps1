@@ -85,6 +85,211 @@ function Set-FmMachineCommandShim {
     [pscustomobject]@{ Action = $action; Detail = "$shimPath -> $startScript" }
 }
 
+# --- PowerShell 7, findable ------------------------------------------------------
+#
+# WHY THIS EXISTS. `install.ps1` installs PowerShell 7 with Microsoft's own
+# install-powershell.ps1 pointed at `%LOCALAPPDATA%\Programs\PowerShell7`,
+# because that is the route that needs no administrator - and that route EXPANDS
+# A ZIP. It writes `pwsh.exe`, it puts the directory on the user PATH, and it
+# registers nothing at all. The vendor's MSI is what creates a Start menu entry,
+# and the MSI is machine-scope.
+#
+# MEASURED on the captain's clean Windows 11 machine, 2026-08-20: the run said
+# PowerShell 7 was installed, re-launched itself under
+# `C:\Users\<them>\AppData\Local\Programs\PowerShell7\pwsh.exe`, and there was no
+# Start menu entry and no other way to open it the way a person opens an
+# application. Being told "installed" and then not being able to find the thing
+# is not installed.
+#
+# A `.lnk` in the USER's own Start Menu\Programs folder is what Start and its
+# search box read, and writing one needs no elevation - so the no-administrator
+# rule is kept AND the captain can find it. `install.ps1` additionally prints
+# where the executable went and the one elevated command that gets the vendor's
+# fully registered install, for a captain who wants the Windows Terminal profile
+# and the context-menu entries that only the MSI can add.
+#
+# IT NEVER WRITES A SECOND ONE. A machine that got PowerShell 7 from the MSI
+# already carries `PowerShell\PowerShell 7 (x64).lnk` under the machine-wide
+# Start Menu - measured on this machine - so both folders are searched, and
+# searched RECURSIVELY, because the vendor nests its entry in a subfolder.
+
+# The Start menu folders, in the order they matter: the user's own first,
+# because that is the one that can be written without administrator, then the
+# machine-wide one, which is searched and never written.
+function Get-FmMachineStartMenuDirectory {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+
+    $folders = @()
+    foreach ($name in @('Programs', 'CommonPrograms')) {
+        $path = [string][Environment]::GetFolderPath($name)
+        if ($path) { $folders += $path }
+    }
+    [string[]]$folders
+}
+
+# The path of a Start menu shortcut that already launches this executable, or ''.
+#
+# It reads each .lnk's real target rather than matching on the shortcut's name:
+# the vendor calls its entry "PowerShell 7 (x64)", a captain may have renamed
+# theirs, and what decides whether the captain can already find PowerShell 7 is
+# what the shortcut POINTS AT.
+function Get-FmMachineShellShortcut {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$PwshPath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Directory
+    )
+
+    $shell = $null
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        foreach ($folder in $Directory) {
+            if (-not $folder -or -not (Test-Path -LiteralPath $folder -PathType Container)) { continue }
+            $links = @(Get-ChildItem -LiteralPath $folder -Filter '*.lnk' -Recurse -Force -ErrorAction SilentlyContinue)
+            foreach ($link in $links) {
+                $target = ''
+                try { $target = [string]$shell.CreateShortcut($link.FullName).TargetPath } catch { $target = '' }
+                if ($target -and (Test-FmPathEqual -Left $target -Right $PwshPath)) { return $link.FullName }
+            }
+        }
+    } catch {
+        # A machine whose scripting host refuses is a machine where nothing can
+        # be read AND nothing can be written, so the caller's create attempt is
+        # about to report the same refusal with the same detail. Answering
+        # "none found" here keeps that one report rather than making two.
+        return ''
+    } finally {
+        if ($shell) { $null = [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+    }
+    ''
+}
+
+# Put PowerShell 7 in the Start menu, unless something already did.
+#
+# -PwshPath defaults to the shell this is running in, which after install.ps1's
+# relaunch IS the PowerShell 7 that was just installed. -StartMenuDirectory is
+# the suite's seam: the first entry is where a new shortcut is written and every
+# entry is searched, so the real .lnk can be created and read back against
+# disposable directories without touching the captain's Start menu.
+function Set-FmMachineShellShortcut {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param(
+        [string]$PwshPath = '',
+        [string[]]$StartMenuDirectory = @(),
+        [string]$Name = 'PowerShell 7'
+    )
+
+    $none = [pscustomobject]@{ Action = 'skipped'; Detail = ''; PwshPath = $PwshPath; Shortcut = '' }
+    if (-not $IsWindows) {
+        $none.Detail = 'not Windows; a Start menu entry is a Windows thing'
+        return $none
+    }
+    if (-not $PwshPath) { $PwshPath = [string](Get-Process -Id $PID).Path }
+    $none.PwshPath = $PwshPath
+    if (-not $PwshPath -or -not (Test-Path -LiteralPath $PwshPath -PathType Leaf)) {
+        $none.Detail = "this shell reports no executable path, so there is nothing to point a shortcut at"
+        return $none
+    }
+
+    $directories = @($StartMenuDirectory | Where-Object { $_ })
+    if ($directories.Count -eq 0) { $directories = @(Get-FmMachineStartMenuDirectory) }
+    if ($directories.Count -eq 0) {
+        $none.Detail = 'no Start menu folder resolves on this machine'
+        return $none
+    }
+
+    $existing = Get-FmMachineShellShortcut -PwshPath $PwshPath -Directory $directories
+    if ($existing) {
+        return [pscustomobject]@{
+            Action   = 'already'
+            Detail   = "in Start as '$([System.IO.Path]::GetFileNameWithoutExtension($existing))' -> $PwshPath"
+            PwshPath = $PwshPath
+            Shortcut = $existing
+        }
+    }
+
+    $shortcutPath = Join-Path $directories[0] ($Name + '.lnk')
+    if (-not $PSCmdlet.ShouldProcess($shortcutPath, "add $Name to the Start menu")) {
+        $none.Detail = 'WhatIf'
+        return $none
+    }
+
+    $shell = $null
+    try {
+        if (-not (Test-Path -LiteralPath $directories[0] -PathType Container)) {
+            $null = New-Item -ItemType Directory -Path $directories[0] -Force
+        }
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = $PwshPath
+        $shortcut.WorkingDirectory = [string]$env:USERPROFILE
+        $shortcut.IconLocation = "$PwshPath,0"
+        $shortcut.Description = 'PowerShell 7 - the shell firstmate runs in'
+        $shortcut.Save()
+    } catch {
+        # NOT a failure of the install. The tool is on disk and on PATH; what
+        # could not be added is the convenience of finding it in Start, so the
+        # report says where it is and how to start it instead.
+        return [pscustomobject]@{
+            Action   = 'skipped'
+            Detail   = ("could not add it to the Start menu ($([string]$_.Exception.Message)). " +
+                "It is installed at $PwshPath - start it by running 'pwsh' in a NEW window")
+            PwshPath = $PwshPath
+            Shortcut = ''
+        }
+    } finally {
+        if ($shell) { $null = [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+    }
+
+    [pscustomobject]@{
+        Action   = 'created'
+        Detail   = "in Start as '$Name' -> $PwshPath"
+        PwshPath = $PwshPath
+        Shortcut = $shortcutPath
+    }
+}
+
+# Where PowerShell 7 is and how a person opens it, said out loud in the report.
+#
+# The shortcut above is the answer to "can the captain find it"; this is the
+# answer to "and were they told". They are not the same thing: the captain who
+# hit this was told the install succeeded and left to search for it, so the run
+# now names the executable, names the Start entry, and - where nothing but the
+# machine-wide installer can add the Windows Terminal profile and the
+# right-click entries - gives the ONE elevated command that does, rather than
+# leaving that as something they have to know.
+function Get-FmMachineShellLine {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory)]$Shortcut)
+
+    if (-not $IsWindows) { return [string[]]@() }
+
+    [string[]]$lines = @('PowerShell 7 - the shell everything here runs in:')
+    if ($Shortcut.PwshPath) {
+        $lines += "  installed at  $($Shortcut.PwshPath)"
+    }
+    switch ($Shortcut.Action) {
+        'created' { $lines += '  open it from  Start, as "PowerShell 7" - or type pwsh in any NEW window' }
+        'already' { $lines += "  open it from  Start, as `"$([System.IO.Path]::GetFileNameWithoutExtension($Shortcut.Shortcut))`" - or type pwsh in any NEW window" }
+        default { $lines += '  open it from  a NEW window, by typing pwsh' }
+    }
+    if ($Shortcut.Action -ne 'already') {
+        # A per-user install is a zip expansion: it registers no Windows
+        # Terminal profile and no Explorer context-menu entries, and nothing
+        # without administrator can add them. Naming the command is the honest
+        # answer; installing over the captain's machine is not.
+        $lines += '  the Windows Terminal profile and the right-click entries need the machine-wide'
+        $lines += '  installer, which is the one thing here that needs administrator. Optional, once:'
+        $lines += '      winget install Microsoft.PowerShell'
+    }
+    $lines
+}
+
 # --- the suite -----------------------------------------------------------------
 
 # Run in a CHILD process on purpose. The suite imports the module, rewrites

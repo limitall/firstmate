@@ -240,7 +240,10 @@ function Get-FmMachineQuestion {
          backend, the home pointer, the two committed symlinks a Windows clone
          does not get, the skip-worktree protection that stops `git checkout`
          emptying the skills tree, the profile wiring and the Claude hooks,
-      4. writes the `firstmate` command onto the user's PATH,
+      4. writes the `firstmate` command onto the user's PATH, and puts
+         PowerShell 7 in the captain's Start menu - a per-user install expands
+         an archive and registers nothing, so without this the shell it just
+         installed is on disk and nowhere a person looks,
       5. PROVES the result: every tool is run and made to print a version, the
          doctor re-reads the home and the instruction surface, and the
          repository's own test suite is executed.
@@ -450,12 +453,21 @@ function Install-FmMachine {
             }
         }
 
-        # --- 4. the one-word command -------------------------------------------
+        # --- 4. the one-word command, and a shell a person can open -------------
         $shim = Set-FmMachineCommandShim -RepoRoot $RepoRoot -InstallRoot $InstallRoot -PathScope $PathScope -Confirm:$false
         $steps += New-FmInstallStep -Name 'firstmate command' -Action $shim.Action -Detail $shim.Detail
+
+        # The per-user PowerShell 7 install is a zip expansion, so it registers
+        # nothing; a captain told it succeeded then could not find it anywhere.
+        # This runs on EVERY install, not only the one that installed the shell,
+        # so a machine already in that state is repaired by re-running.
+        $shortcut = Set-FmMachineShellShortcut -Confirm:$false
+        $steps += New-FmInstallStep -Name 'PowerShell 7 in Start' -Action $shortcut.Action -Detail $shortcut.Detail
     } else {
         $steps += New-FmInstallStep -Name 'home' -Action 'skipped' -Detail 'WhatIf'
         $steps += New-FmInstallStep -Name 'firstmate command' -Action 'skipped' -Detail 'WhatIf'
+        $shortcut = [pscustomobject]@{ Action = 'skipped'; Detail = 'WhatIf'; PwshPath = ''; Shortcut = '' }
+        $steps += New-FmInstallStep -Name 'PowerShell 7 in Start' -Action 'skipped' -Detail 'WhatIf'
     }
 
     # --- 5. the proof ------------------------------------------------------------
@@ -507,6 +519,14 @@ function Install-FmMachine {
     $lines += @($doctor.Checks | ForEach-Object { Format-FmInstallCheckLine -Check $_ })
     $lines += @('', 'verification - the suite:')
     $lines += @($suiteCheck | ForEach-Object { Format-FmInstallCheckLine -Check $_ })
+    # Only on a run that did something. A WhatIf run has not looked at the Start
+    # menu and has installed nothing, so telling the captain how to open a shell
+    # it did not touch - let alone naming an elevated command - would be advice
+    # about a machine this run never read.
+    if ($performed) {
+        $shellLines = @(Get-FmMachineShellLine -Shortcut $shortcut)
+        if ($shellLines.Count) { $lines += @('') + $shellLines }
+    }
     $lines += @('') + @(Get-FmMachineOptionalLine -FirstmateHome $doctor.FirstmateHome)
     $lines += @('') + (Get-FmMachineSummaryLine -Outcomes $outcomes)
     $lines += ''

@@ -361,6 +361,54 @@ Describe 'the no-administrator portable install' {
     }
 }
 
+Describe 'running a route on what the planner actually hands over' {
+    # THE DEFECT THIS PINS, and why nothing here saw it.
+    #
+    # Invoke-FmToolRoute took an untyped -Entry record beside the route and
+    # built its result from $Entry.Tool. Get-FmMachineInstallPlan, its only
+    # caller's producer, publishes Name. Under strict mode the FIRST non-module
+    # install threw "The property 'Tool' cannot be found on this object" and
+    # took the whole run with it - measured on the captain's clean Windows 11
+    # machine, 2026-08-20.
+    #
+    # It survived every test in this file because no test ever put the planner's
+    # own records through the install call. A record a test writes for itself
+    # proves the function accepts THAT record, which is not the question; the
+    # question is whether it accepts the one the caller passes. So these take
+    # the plan untouched, exactly as install.ps1 hands it over.
+    #
+    # -WhatIf THROUGHOUT, and it is not a weaker check for this defect: the
+    # crash was on the first line of the function body, which -WhatIf reaches
+    # before it declines to do anything. It is what lets every requirement -
+    # including the ones this machine would otherwise really install - go
+    # through the real call with nothing downloaded and nothing written.
+    BeforeAll {
+        $script:LivePlan = Get-FmMachineInstallPlan -Offline
+    }
+
+    It 'accepts every requirement in the plan, and answers naming that tool' {
+        @($script:LivePlan.Requirements).Count | Should -BeGreaterThan 0 -Because 'an empty plan would make this vacuous'
+        foreach ($requirement in $script:LivePlan.Requirements) {
+            $result = Invoke-FmToolRoute -Route $requirement.Route -WhatIf
+            $result.Tool | Should -Be $requirement.Name -Because "$($requirement.Label) must come back named as itself"
+            $result.Action | Should -BeIn @('skipped', 'manual', 'needs-admin', 'blocked')
+        }
+    }
+
+    It 'carries a route naming its own tool on every requirement, module ones included' {
+        # The route is now the ONLY record Invoke-FmToolRoute is given, so a
+        # route that does not name its tool is the one remaining way to
+        # reproduce the crash. Both producers are covered: Get-FmToolRoute for a
+        # tool, and the module route Get-FmMachineInstallPlan builds inline.
+        foreach ($requirement in $script:LivePlan.Requirements) {
+            $requirement.Route.PSObject.Properties.Name | Should -Contain 'Tool'
+            $requirement.Route.Tool | Should -Be $requirement.Name
+        }
+        @($script:LivePlan.Requirements | Where-Object { $_.Kind -eq 'module' }).Count |
+            Should -BeGreaterThan 0 -Because 'the module requirements take the same path and must be covered too'
+    }
+}
+
 Describe 'choosing the release asset' {
     BeforeAll {
         $script:Release = [pscustomobject]@{
@@ -463,6 +511,148 @@ Describe 'the firstmate command' {
         (Set-FmMachineCommandShim -RepoRoot $script:RepoRoot -InstallRoot $installRoot -PathScope Process -WhatIf).Action |
             Should -Be 'skipped'
         Test-Path -LiteralPath (Join-Path $installRoot 'firstmate') | Should -BeFalse
+    }
+}
+
+Describe 'PowerShell 7, findable' {
+    # WHY THIS EXISTS. install.ps1's PowerShell 7 route is Microsoft's own
+    # installer pointed at a per-user directory, because it is the one that
+    # needs no administrator - and it expands a zip, so it registers nothing.
+    # The captain was told PowerShell 7 was installed, the run re-launched
+    # itself under %LOCALAPPDATA%\Programs\PowerShell7\pwsh.exe, and there was
+    # no Start menu entry and no other way to open it as an application.
+    #
+    # These run against disposable directories with -StartMenuDirectory, so a
+    # real .lnk is written and read back without touching the captain's own
+    # Start menu.
+    BeforeEach {
+        $script:StartMenu = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $script:CommonStartMenu = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $script:StartMenu -Force
+        $null = New-Item -ItemType Directory -Path $script:CommonStartMenu -Force
+        $script:Pwsh = [string](Get-Process -Id $PID).Path
+    }
+
+    It 'writes a Start menu entry that launches this pwsh' -Skip:(-not $IsWindows) {
+        $result = Set-FmMachineShellShortcut -PwshPath $script:Pwsh `
+            -StartMenuDirectory @($script:StartMenu, $script:CommonStartMenu) -Confirm:$false
+
+        $result.Action | Should -Be 'created'
+        Test-Path -LiteralPath $result.Shortcut -PathType Leaf | Should -BeTrue
+        # Read the shortcut's REAL target back rather than trusting that Save()
+        # meant it: a .lnk pointing at nothing is exactly the outcome this is
+        # here to refuse.
+        $shell = New-Object -ComObject WScript.Shell
+        try { [string]$shell.CreateShortcut($result.Shortcut).TargetPath | Should -Be $script:Pwsh }
+        finally { $null = [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+    }
+
+    It 'puts it in the USER folder, which is the one that needs no administrator' -Skip:(-not $IsWindows) {
+        $result = Set-FmMachineShellShortcut -PwshPath $script:Pwsh `
+            -StartMenuDirectory @($script:StartMenu, $script:CommonStartMenu) -Confirm:$false
+        Split-Path -Parent $result.Shortcut | Should -Be $script:StartMenu
+        @(Get-ChildItem -LiteralPath $script:CommonStartMenu -Force).Count | Should -Be 0 -Because 'the machine-wide folder is searched, never written'
+    }
+
+    It 'adds no second entry when one already launches this pwsh' -Skip:(-not $IsWindows) {
+        $first = Set-FmMachineShellShortcut -PwshPath $script:Pwsh `
+            -StartMenuDirectory @($script:StartMenu, $script:CommonStartMenu) -Confirm:$false
+        $again = Set-FmMachineShellShortcut -PwshPath $script:Pwsh `
+            -StartMenuDirectory @($script:StartMenu, $script:CommonStartMenu) -Confirm:$false
+
+        $again.Action | Should -Be 'already'
+        $again.Shortcut | Should -Be $first.Shortcut
+        @(Get-ChildItem -LiteralPath $script:StartMenu -Filter '*.lnk' -Recurse -Force).Count | Should -Be 1
+    }
+
+    It 'finds the vendor''s own entry, nested in a subfolder and named its way' -Skip:(-not $IsWindows) {
+        # The machine-wide MSI writes "PowerShell\PowerShell 7 (x64).lnk", so
+        # matching on the shortcut's NAME or searching one level deep would both
+        # miss it and leave the captain with two Start entries for one shell.
+        $nested = Join-Path $script:CommonStartMenu 'PowerShell'
+        $null = New-Item -ItemType Directory -Path $nested -Force
+        $shell = New-Object -ComObject WScript.Shell
+        try {
+            $vendor = $shell.CreateShortcut((Join-Path $nested 'PowerShell 7 (x64).lnk'))
+            $vendor.TargetPath = $script:Pwsh
+            $vendor.Save()
+        } finally { $null = [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+
+        $result = Set-FmMachineShellShortcut -PwshPath $script:Pwsh `
+            -StartMenuDirectory @($script:StartMenu, $script:CommonStartMenu) -Confirm:$false
+        $result.Action | Should -Be 'already'
+        $result.Detail | Should -Match 'PowerShell 7 \(x64\)'
+        @(Get-ChildItem -LiteralPath $script:StartMenu -Filter '*.lnk' -Recurse -Force).Count | Should -Be 0
+    }
+
+    It 'ignores a shortcut that points at some other shell' -Skip:(-not $IsWindows) {
+        # What decides whether PowerShell 7 is findable is what the shortcut
+        # POINTS AT. Windows PowerShell 5.1 has a Start entry on every machine,
+        # and it is not this.
+        $other = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $shell = New-Object -ComObject WScript.Shell
+        try {
+            $decoy = $shell.CreateShortcut((Join-Path $script:StartMenu 'Windows PowerShell.lnk'))
+            $decoy.TargetPath = $other
+            $decoy.Save()
+        } finally { $null = [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+
+        $result = Set-FmMachineShellShortcut -PwshPath $script:Pwsh `
+            -StartMenuDirectory @($script:StartMenu, $script:CommonStartMenu) -Confirm:$false
+        $result.Action | Should -Be 'created'
+        $result.Shortcut | Should -Be (Join-Path $script:StartMenu 'PowerShell 7.lnk')
+    }
+
+    It 'writes nothing under -WhatIf' -Skip:(-not $IsWindows) {
+        $result = Set-FmMachineShellShortcut -PwshPath $script:Pwsh `
+            -StartMenuDirectory @($script:StartMenu, $script:CommonStartMenu) -WhatIf
+        $result.Action | Should -Be 'skipped'
+        $result.Detail | Should -Be 'WhatIf'
+        @(Get-ChildItem -LiteralPath $script:StartMenu -Force).Count | Should -Be 0
+    }
+
+    It 'defaults to the real per-user Start menu folder, without writing to it' -Skip:(-not $IsWindows) {
+        # The default is the whole point of the fix, so it is asserted rather
+        # than assumed - under -WhatIf, so this test cannot put an entry in the
+        # captain's own Start menu.
+        $result = Set-FmMachineShellShortcut -PwshPath $script:Pwsh -WhatIf
+        $userPrograms = [Environment]::GetFolderPath('Programs')
+        if ($result.Action -eq 'already') {
+            # This machine has PowerShell 7 from the machine-wide installer, so
+            # the correct answer is to find that one and add nothing.
+            $result.Shortcut | Should -Not -BeNullOrEmpty
+        } else {
+            $result.Detail | Should -Be 'WhatIf'
+            # Assigned before indexing: a one-element result would otherwise be
+            # a bare string, and [0] would answer with its first CHARACTER.
+            $folders = @(Get-FmMachineStartMenuDirectory)
+            $folders[0] | Should -Be $userPrograms
+        }
+    }
+
+    It 'tells the captain where it is and how to open it' -Skip:(-not $IsWindows) {
+        $created = [pscustomobject]@{
+            Action = 'created'; Detail = 'x'; PwshPath = 'C:\Users\x\AppData\Local\Programs\PowerShell7\pwsh.exe'
+            Shortcut = 'C:\Users\x\...\PowerShell 7.lnk'
+        }
+        $lines = (Get-FmMachineShellLine -Shortcut $created) -join "`n"
+        $lines | Should -Match ([regex]::Escape($created.PwshPath))
+        $lines | Should -Match 'Start, as "PowerShell 7"'
+        # A per-user install cannot register the Windows Terminal profile or the
+        # right-click entries, and the one command that can needs administrator.
+        # Naming it is the honest answer; a run that installed it would not be.
+        $lines | Should -Match 'winget install Microsoft\.PowerShell'
+        $lines | Should -Match 'needs administrator'
+    }
+
+    It 'does not push the elevated installer at a machine that already registers it' -Skip:(-not $IsWindows) {
+        $already = [pscustomobject]@{
+            Action = 'already'; Detail = 'x'; PwshPath = 'C:\Program Files\PowerShell\7\pwsh.exe'
+            Shortcut = 'C:\ProgramData\...\PowerShell 7 (x64).lnk'
+        }
+        $lines = (Get-FmMachineShellLine -Shortcut $already) -join "`n"
+        $lines | Should -Match 'PowerShell 7 \(x64\)'
+        $lines | Should -Not -Match 'winget install Microsoft\.PowerShell'
     }
 }
 

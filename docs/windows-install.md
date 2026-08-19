@@ -410,6 +410,23 @@ Without that fallback, every winget route is refused on a machine that has winge
 It checks `$PSVersionTable` itself, offers Microsoft's own per-user PowerShell 7 install, and re-runs itself under `pwsh`.
 Nothing above that relaunch may use PowerShell 7 syntax, and `tests/FmModuleAssembly.Tests.ps1` parses the file with the real 5.1 to keep it that way.
 
+**And running it at all is the requirement before that.**
+Windows ships with script execution switched off, so a bare `.\install.ps1` on a clean machine answers `install.ps1 cannot be loaded because running scripts is disabled on this system` - measured on the captain's clean Windows 11 machine, 2026-08-20, before any of the above could happen.
+`README.md`, `docs/windows-quickstart.md` and this script's own help all give `powershell -ExecutionPolicy Bypass -File .\install.ps1` instead, which applies to the one process it starts, needs no administrator, and changes no machine setting.
+`Set-ExecutionPolicy` is deliberately NOT what is documented: the first command in our own instructions must not ask a newcomer to change a security setting of their machine.
+`tests/FmModuleAssembly.Tests.ps1` takes the command out of `README.md` and RUNS it in a real Windows PowerShell 5.1 given the clean-machine policy, with the bare form as its negative control, so a README that regresses fails the suite rather than the next clean machine.
+
+**"Installed" has to mean the captain can find it.**
+The PowerShell 7 route is the one that needs no administrator, and that is why it is `install-powershell.ps1 -Destination "$env:LOCALAPPDATA\Programs\PowerShell7" -AddToPath`: an archive expansion.
+It writes `pwsh.exe`, it edits the user PATH, and it **registers nothing** - no Start menu entry, no Windows Terminal profile, no context-menu entries, because only the machine-wide MSI adds those.
+Measured on the same clean machine: the run reported success, re-launched itself under `C:\Users\<them>\AppData\Local\Programs\PowerShell7\pwsh.exe`, and left the captain with no way to open PowerShell 7 as an application.
+
+The route was kept, because no-administrator is the harder constraint and the right one.
+What was added is `Set-FmMachineShellShortcut`, which writes a `.lnk` into the captain's OWN `Start Menu\Programs` folder - the folder Start and its search box read, and the one that needs no elevation.
+It runs on every install rather than only on the run that installed the shell, so a machine already in that state is repaired by re-running.
+It never adds a second entry: both the user and the machine-wide Start Menu folders are searched, recursively, and matched on what each `.lnk` actually POINTS AT rather than on its name - the MSI's entry is `PowerShell\PowerShell 7 (x64).lnk`, nested and named nothing this could have guessed.
+`Get-FmMachineShellLine` then says out loud where the executable is and how to open it, and names `winget install Microsoft.PowerShell` as the optional elevated route for the Windows Terminal profile and the right-click entries - which is the honest answer, since nothing without administrator can add them.
+
 **It ends by proving itself.**
 `Install-FmMachine` finishes with a verification pass rather than a success message: every catalogued tool is run and made to print a version, `Invoke-FmDoctor` re-reads the home and the instruction surface (including the skills count and the contract's byte length), and the repository's own Pester suite is executed in a bounded child process.
 `Ready` is false when any of that fails, when anything was skipped as unsupported, or when any install did not complete - and the last line says so in plain words instead of ending on a cheerful note.

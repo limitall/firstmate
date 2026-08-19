@@ -7,14 +7,19 @@ Native PowerShell 7. No WSL, no Git Bash, no Linux anything.
 ```powershell
 git clone <your firstmate-win remote> C:\Users\<you>\firstmate-win
 cd C:\Users\<you>\firstmate-win
-.\install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 That is everything.
 `install.ps1` assumes nothing is already on the machine - including the shell it is running in - and does step 2 below as part of its run.
 It is safe to re-run at any time.
 
+**Why `-ExecutionPolicy Bypass` is part of the first command.**
+Windows ships with script execution switched off, so a bare `.\install.ps1` on a clean machine answers `install.ps1 cannot be loaded because running scripts is disabled on this system` and nothing else happens.
+The form above applies to the one process it starts, needs no administrator, and changes no machine setting - which is why it is the default written here rather than an instruction to run `Set-ExecutionPolicy`.
+
 Run it from Windows PowerShell 5.1 if that is what opened: it detects the wrong shell, offers to install PowerShell 7 into your own profile with no administrator, and re-runs itself under it.
+That per-user install expands an archive rather than running the machine-wide installer, so it registers nothing by itself; the run adds PowerShell 7 to your Start menu and tells you where the executable went, so "installed" means you can open it.
 
 **What it installs, and from where.**
 Each of these is the vendor's own published installer or release archive, and each one writes into your own profile rather than into Program Files, so none of it needs administrator:
@@ -38,7 +43,7 @@ Anything missing is installed.
 Anything present but older than the latest published version is offered as an optional update, one question at a time, and declining is always safe.
 Anything present but below a minimum this repo actually states is reported and **skipped** rather than installed over, and the run ends by saying the machine is not ready.
 
-Use `.\install.ps1 -Unattended` to take the safe default for every question, `-SkipOptional` for the required tools only, and `-DetectOnly` to see the state of the machine without changing it.
+Add `-Unattended` to that command to take the safe default for every question, `-SkipOptional` for the required tools only, and `-DetectOnly` to see the state of the machine without changing it.
 
 **It ends by proving itself**, not by announcing success: every tool is run and made to print a version, the doctor re-reads the home and the instruction surface, and this repo's own test suite is executed.
 The last thing printed is a summary of every requirement and what happened to it.

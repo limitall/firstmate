@@ -5339,3 +5339,229 @@ turns `.claude/skills` into a junction, and a git write to that path deletes the
 link's target - the whole skills tree. Both files were put back to the bytes git
 wants by writing them directly, and the junction was removed with
 `Directory.Delete(path, $false)` so nothing could walk through it.
+
+## 33. The first clean-machine install: it crashed, and PowerShell 7 could not be found - `PROVEN (Windows 11) FOR THE DEFECTS AND THE FIXES, NOT FOR A CLEAN MACHINE`
+
+Dated 2026-08-20, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\12\firstmate-win`,
+PowerShell 7.6.4, Windows 11 Pro 10.0.26200, branched from `main` at `9508233`.
+
+Section 31 ended by naming exactly one thing this installer had never done: an actual install.
+It said so in as many words - "the DOWNLOAD itself, and `Invoke-FmToolRoute` actually executing a vendor installer, have not been executed anywhere.
+They are the one part of this area that a clean machine is needed to prove."
+The captain then closed that gap the hard way, on a genuinely clean Windows 11 machine, and it produced three defects in the order a newcomer meets them.
+
+**READ THE HEADING'S QUALIFIER.**
+This machine has every tool the installer installs, so nothing here is a clean-machine run.
+What was proven is stated against each item below, and 33.5 is the honest list of what still rests on reasoning.
+
+### 33.1 The three defects, as the captain met them
+
+```
+1.  .\install.ps1 : File ...\install.ps1 cannot be loaded because running
+    scripts is disabled on this system.
+2.  PowerShell 7 installed "successfully" and was in no Start menu and nowhere
+    else a person looks.
+3.  Invoke-FmToolRoute: module/Firstmate/Public/Install-FmMachine.ps1:408
+      The property 'Tool' cannot be found on this object.
+```
+
+The captain's own words on the second one:
+
+> as first step it install powershell 7 version but after success install
+> message it not visible in start menu or anywhere
+
+Everything before the crash worked and was left alone: the wrong-shell detection and relaunch, the detection table, the Pester version explanation, the no-mistakes skip.
+
+### 33.2 The crash, reproduced at the captain's own stack frame - `PROVEN`
+
+Reproduced twice, at two depths, before anything was changed.
+Neither reproduction installed anything.
+
+At the seam, with the record the real producer publishes:
+
+```
+requirement properties: Kind, Name, Command, Label, Why, Required, Present,
+    Path, Version, Latest, Minimum, MinimumSource, MinimumCapability,
+    Classification, Route, UpdateCommand, Reason, Question
+has Tool?  False
+CRASH: The property 'Tool' cannot be found on this object. Verify that the
+    property exists.
+```
+
+And through `Install-FmMachine -Approved`, the captain's own path, driven at a plan whose requirements were all made inert except one `missing` with a route that installs nothing:
+
+```
+CRASH: The property 'Tool' cannot be found on this object.
+  at: Install-FmMachine.ps1:408 char:23
+  +   $result = Invoke-FmToolRoute -Entry $requirement -Route $requiremen ...
+```
+
+The same frame and the same message the captain reported, and the run died there - before `Install-FmHome`, before the shim, before the doctor - so it wrote nothing.
+
+`Invoke-FmToolRoute` took an untyped `-Entry` record beside the route and built its result from `$Entry.Tool`.
+Nothing declared what shape `-Entry` had to be.
+Its one caller passes a `Get-FmMachineInstallPlan` requirement, which publishes `Name`.
+
+**Why every test passed over it.**
+Not because the tests were thin - the area has sixty-odd - but because no test ever put the planner's own records through the install call, and every test that touched a requirement built one for itself.
+The `-WhatIf` test that drives `Install-FmMachine` skips the loop body entirely.
+A record a test writes proves the function accepts THAT record, which was never the question.
+
+The fix removes the shape rather than correcting it: `-Entry` is gone, the route is the only record passed, and it names its own tool.
+`CONTRIBUTING.md`'s cross-area composition section now carries the rule.
+
+After the fix, every requirement the real planner produces, through the real call, under `-WhatIf` so nothing downloads:
+
+```
+git                  tool=git                 action=needs-admin
+node                 tool=node                action=needs-admin
+claude               tool=claude              action=skipped (WhatIf)
+herdr                tool=herdr               action=skipped (WhatIf)
+treehouse            tool=treehouse           action=skipped (WhatIf)
+gh                   tool=gh                  action=skipped (WhatIf)
+gh-axi ... quota-axi tool=<each>              action=skipped (WhatIf)
+Pester               tool=Pester              action=skipped (WhatIf)
+PSScriptAnalyzer     tool=PSScriptAnalyzer    action=skipped (WhatIf)
+```
+
+That is `tests/FmToolInstall.Tests.ps1`, "running a route on what the planner actually hands over".
+`-WhatIf` is not a weaker check for THIS defect: the crash was on the first line of the function body, which `-WhatIf` reaches before it declines to do anything.
+
+### 33.3 Scripts are disabled on a clean machine - `PROVEN`
+
+The first command in our own instructions could not run.
+Reproduced here without changing any machine setting, by giving a CHILD shell the policy a clean machine has:
+
+```
+powershell -NoProfile -ExecutionPolicy Restricted -Command
+    "Set-Location <checkout>; .\install.ps1 -DetectOnly -Offline"
+
+.\install.ps1 : File ...\install.ps1 cannot be loaded because running scripts
+is disabled on this system. For more information, see about_Execution_Policies
+    + FullyQualifiedErrorId : UnauthorizedAccess
+```
+
+The documented form, from that same Restricted shell:
+
+```
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -DetectOnly -Offline
+
+  FIRSTMATE - install
+  This is Windows PowerShell 5.1.26100.8115. Firstmate is PowerShell 7 only -
+  Re-running under C:\Program Files\PowerShell\7\pwsh.exe...
+  what this machine has:   [13 requirements, classified]
+  -DetectOnly: nothing was changed.                              exit 0
+```
+
+`README.md`, `docs/windows-quickstart.md` and `install.ps1`'s own help all give that form now.
+`Set-ExecutionPolicy` is deliberately not what is documented: the first thing a newcomer types must not be a change to their machine's security settings, and `-ExecutionPolicy Bypass` on the command line applies to the one process it starts.
+
+Both runs above are now a test.
+`tests/FmModuleAssembly.Tests.ps1` takes the command OUT of `README.md` and runs it, with the bare form as its negative control, so a README that regresses fails the suite rather than the next clean machine.
+It skips itself, with the reason, where Windows PowerShell 5.1 is absent or a Group Policy pins the execution policy.
+
+### 33.4 PowerShell 7 was installed and could not be found - `PROVEN for the mechanism`
+
+The route is `install-powershell.ps1 -Destination "$env:LOCALAPPDATA\Programs\PowerShell7" -AddToPath`, and it was chosen because it is the one that needs no administrator.
+It expands an archive: it writes `pwsh.exe`, it edits the user PATH, and it registers nothing.
+Only the machine-wide MSI creates a Start menu entry, a Windows Terminal profile or the context-menu entries.
+
+**The route was kept.**
+No-administrator is the harder constraint and the right one, and switching to an unverified per-user MSI invocation would be exactly the "never trust a route you have not read" defect this area exists for.
+
+What was added is a `.lnk` in the captain's OWN `Start Menu\Programs` folder - the folder Start and its search box read, and the one that needs no elevation - plus output that says where the executable went and how to open it.
+
+Measured here, against this machine's REAL Start menu, read-only under `-WhatIf`:
+
+```
+folders searched:
+  C:\Users\ADMIN\AppData\Roaming\Microsoft\Windows\Start Menu\Programs
+  C:\ProgramData\Microsoft\Windows\Start Menu\Programs
+
+Action   : already
+Detail   : in Start as 'PowerShell 7 (x64)' -> C:\Program Files\PowerShell\7\pwsh.exe
+Shortcut : C:\ProgramData\...\Start Menu\Programs\PowerShell\PowerShell 7 (x64).lnk
+```
+
+That is the vendor's own MSI entry, found on the machine that has one, so no second entry is added.
+It is nested in a `PowerShell` subfolder and named nothing this could have guessed, which is why the search is recursive and matches on what each `.lnk` POINTS AT rather than on its name.
+
+Creating one is exercised for real in `tests/FmToolInstall.Tests.ps1` against disposable directories: the `.lnk` is written, and its target is read back through `WScript.Shell` rather than trusted - a shortcut pointing at nothing is precisely the outcome this exists to refuse.
+The idempotence, the user-folder choice, the nested vendor entry, a decoy pointing at Windows PowerShell 5.1, and `-WhatIf` each have their own test.
+
+What the report prints, rendered from a per-user install:
+
+```
+PowerShell 7 - the shell everything here runs in:
+  installed at  C:\Users\<them>\AppData\Local\Programs\PowerShell7\pwsh.exe
+  open it from  Start, as "PowerShell 7" - or type pwsh in any NEW window
+  the Windows Terminal profile and the right-click entries need the machine-wide
+  installer, which is the one thing here that needs administrator. Optional, once:
+      winget install Microsoft.PowerShell
+```
+
+and from a machine that already registers it, where that last block is correctly absent:
+
+```
+PowerShell 7 - the shell everything here runs in:
+  installed at  C:\Program Files\PowerShell\7\pwsh.exe
+  open it from  Start, as "PowerShell 7 (x64)" - or type pwsh in any NEW window
+```
+
+`install.ps1` also says where it went at the moment the captain previously saw "success" and nothing else - in the Windows PowerShell 5.1 block, before the relaunch that adds the Start entry.
+
+It runs on EVERY install rather than only the run that installed the shell, so the captain's machine - already in the bad state - is repaired by re-running.
+
+### 33.5 What was NOT run, and what rests on reasoning
+
+Stated plainly, because the whole reason this task existed is that section 31 was honest about the same gap.
+
+- **No clean machine was used, and no tool was installed on this one.**
+  This machine has git, Node, the Claude CLI, herdr, treehouse, gh, the five axi tools, Pester and PSScriptAnalyzer, and the brief forbids installing over them.
+  Every route call recorded above ran under `-WhatIf`.
+- **A full `install.ps1` run to completion on a machine missing the tools is still unproven.**
+  What is proven is that the step it died on now accepts every record the planner produces, for all thirteen of them, and that the run reaches that step.
+- **PowerShell 7 was not installed by this work.**
+  That the `-Destination` route registers nothing is the captain's measurement, not this seat's: their run reported success, relaunched under `C:\Users\<them>\AppData\Local\Programs\PowerShell7\pwsh.exe`, and no Start entry existed.
+  It is consistent with what that route does - expand a zip - but it was not re-measured here.
+- **No `.lnk` was written into this machine's real Start menu.**
+  The real folders were only read.
+  Creation and read-back were proven against disposable directories, and the default folder choice was asserted under `-WhatIf`.
+- **How quickly Windows Search indexes a new per-user Start entry was not measured.**
+  The entry is in the Start menu's app list; whether the search box finds it in the same second is not claimed.
+- **`winget install Microsoft.PowerShell` was not run.**
+  It is named as the optional elevated route for the Windows Terminal profile and the context-menu entries, which is the same claim this repo already makes about the two winget routes it declares as needing administrator.
+
+### 33.6 The suite and the analyzer, on this branch
+
+Both passes run back to back in one keeper, on the final tree, with the analyzer
+sweep taken separately as well as inside the suite.
+
+```
+Invoke-Pester -Path ./tests    run A   2461 passed, 0 failed, 18 skipped   (28.5m)
+Invoke-Pester -Path ./tests    run B   2461 passed, 0 failed, 18 skipped   (24.2m)
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+                                       zero findings at every severity
+```
+
+48 files in one process each time, and a clean working tree afterwards - only
+the ten files this task changed.
+
+**Run A is clean here, and section 32's was not, for a reason worth stating
+rather than reading as an improvement.** The instruction-surface failures that
+open a fresh worktree's first run were already gone before this run started:
+earlier in this task the install and tool files were run on their own to gate
+the first commit, and `tests/FmInstall.Tests.ps1` repairs `CLAUDE.md` and
+`.claude/skills` as part of its own work. That first subset run showed the
+familiar set - six of them, all doctor, backend and separate-home checks - and
+the immediate re-run showed none. So this is still "report the SECOND run"; the
+second run simply happened earlier than usual.
+
+The eighteen skips are all pre-existing and none is new: fifteen are symlink
+tests on a host without Developer Mode or POSIX-only cases, two are the Job
+Object degradation pair, and one is the bridge page-check reporter.
+
+The analyzer needed one fix during this work and it is recorded rather than
+quietly absorbed: `Get-FmMachineShellLine` built its lines into an untyped array
+and tripped `PSUseOutputTypeCorrectly`. Declaring `[string[]]$lines` is the fix,
+not widening the `OutputType`.
