@@ -222,6 +222,42 @@ async function main(){
   chk('no audio node is left connected after ten presses', live.length, 0);
   chk('one AudioContext serves the whole page', H.ctxCount, 1);
 
+  // ---- continuous listening shares the same edge -------------------------
+  // Not the reported defect, but it is the second caller of /api/listen, and an
+  // edge with two callers is exactly how the first one drifted. The phrase
+  // detector owns when a capture starts and stops here; what is checked is that
+  // its edges still pair, and that switching back to push gives the microphone
+  // back.
+  await loadPage(PAGE, function(sv){ sv.listenMode = 'continuous'; });
+  H.level = 2;                                    // a quiet room to start in
+  H.win.applyMode('continuous', false);
+  await H.clock.advance(400);
+  chk('continuous listening opens the page stream', act.micWord(), 'Mic open');
+  chk('continuous listening has not started the engine yet', H.server.toggles.join(','), '');
+  H.level = 200;                                  // the captain speaks
+  await H.clock.advance(400);
+  chk('speech starts a phrase', act.stage(), 'listening');
+  chk('and starts the engine exactly once', H.server.toggles.join(','), 'START');
+  H.level = 2;                                    // and stops
+  await H.clock.advance(1600);                    // the hang is 1100ms
+  chk('a pause ends the phrase', act.stage(), 'hearing');
+  chk('and stops the engine exactly once', H.server.toggles.join(','), 'START,stop');
+  H.server.engineHandsOver('what is under way');
+  await H.clock.advance(1200);
+  chk('the phrase is asked once', H.server.asked.length, 1);
+  H.level = 200;
+  await H.clock.advance(500);
+  chk('a second phrase starts', act.stage(), 'listening');
+  H.level = 2;
+  await H.clock.advance(1600);
+  chk('two phrases, four engine edges, alternating',
+      H.server.toggles.join(','), 'START,stop,START,stop');
+  H.win.applyMode('push', false);
+  await H.clock.advance(400);
+  chk('switching back to push closes the microphone', act.micWord(), 'Mic closed');
+  chk('switching back to push leaves nothing recording', H.server.recording, false);
+  H.level = 90;
+
   // ---- a microphone the browser refuses must not kill the slow path ------
   // The refusal used to leave `listening` set, and recordHere will not start
   // while it is - so one denied permission killed the slow path for the life of

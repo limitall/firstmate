@@ -5202,7 +5202,7 @@ The mic badge reads that rather than the page's own `capture` variable, which is
 ### 32.6 Fixed, measured the same way
 
 ```
-58 checks, 0 failed
+69 checks, 0 failed
   ok   right Alt opens the microphone
   ok   right Alt: the engine is told exactly once
   ok   Control and right Alt together is AltGr, not push to talk
@@ -5229,6 +5229,8 @@ The mic badge reads that rather than the page's own `capture` variable, which is
   ok   no audio node is left connected after ten presses
   ok   a refused microphone is reported
   ok   and the press after a refusal still opens the microphone
+  ok   two phrases, four engine edges, alternating
+  ok   switching back to push closes the microphone
   ok   no listener or timer raised
 ```
 
@@ -5259,8 +5261,12 @@ t=30s  stage=listening  Mic open  elapsed-shown="30s"
 engine told:  ["START"]  then, on release, ["START","stop"]
 ```
 
-**The negative control.** The same 58 checks run against `3af8a04` unmodified fail 35 of them, including every one named in 32.3.
+**The negative control.** The same 69 checks run against `3af8a04` unmodified fail 35 of them, including every one named in 32.3.
 A check that cannot fail against the code it guards is not guarding anything, and `CONTRIBUTING.md` requires this to be shown rather than assumed.
+
+The eleven continuous-listening checks pass on BOTH trees, and that is the correct result rather than a weak one.
+Continuous mode was never broken; it is the SECOND caller of the `/api/listen` edge, and an edge with two callers is how the first one drifted.
+They are regression guards, not defect demonstrations, and they are labelled as such rather than counted among the 35.
 
 ### 32.7 What was NOT proven here, and cannot be from this seat
 
