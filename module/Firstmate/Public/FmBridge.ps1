@@ -668,6 +668,7 @@ function Step-FmSpeechCaptureState {
         supported. `Dictated` records a line arriving from the engine's hook.
         `TakeForPage` is `/api/heard`; `TakeForFleet` is `/api/fleet`.
         `Failed` says the engine did not take the last request.
+        A page that has given up waiting for its words says so with `Cancel`.
 
         .PARAMETER State
         The state to advance. Not mutated - a new object comes back.
@@ -752,7 +753,15 @@ function Step-FmSpeechCaptureState {
             $handed = $pending
             $pending = ''
             $forPage = $false
-            $awaiting = $false
+            # ONLY A LINE THAT ACTUALLY ARRIVED ENDS THE WAIT. The page polls
+            # this every 400ms while the engine spends about three seconds
+            # transcribing, so the first several polls are empty by design.
+            # Clearing the wait on one of those handed the transcript back to
+            # `/api/fleet` the moment it did land, which is the very race this
+            # machine exists to remove - one poll later and further from where
+            # anyone would look for it. The page says when it has given up, with
+            # `Cancel`.
+            if ($handed) { $awaiting = $false }
         }
         'TakeForFleet' {
             # The page's line never leaves this way, and neither does one landing

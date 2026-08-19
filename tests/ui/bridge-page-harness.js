@@ -175,7 +175,11 @@ class Server {
     }
     if (p === '/api/heard'){
       const t = this.pendingDictation;
-      this.pendingDictation = ''; this.pendingForPage = false; this.awaitingPage = false;
+      this.pendingDictation = ''; this.pendingForPage = false;
+      // Only a line that actually arrived ends the wait - most polls here are
+      // empty, because the engine takes about three seconds. Mirrors
+      // Step-FmSpeechCaptureState's TakeForPage, and the reason is the same.
+      if (t) this.awaitingPage = false;
       return {ok:true, text:t};
     }
     if (p === '/api/fleet'){

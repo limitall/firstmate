@@ -222,6 +222,36 @@ async function main(){
   chk('no audio node is left connected after ten presses', live.length, 0);
   chk('one AudioContext serves the whole page', H.ctxCount, 1);
 
+  // ---- a transcript that takes its time still reaches the page -----------
+  // The engine spends about three seconds transcribing, so the page makes
+  // several empty /api/heard polls first. Those must not hand its line back to
+  // the fleet channel, and the words must still arrive.
+  await loadPage(PAGE);
+  act.mouseDown();
+  await H.clock.advance(500);
+  act.mouseUp();
+  await H.clock.advance(3000);            // several empty polls, and a fleet poll
+  chk('nothing was asked while the transcript was still being made', H.server.asked.length, 0);
+  H.server.engineHandsOver('the words, three seconds later');
+  await H.clock.advance(1200);
+  chk('a slow transcript still reaches the page', H.server.asked.join('|'),
+      'the words, three seconds later');
+  chk('and it was asked exactly once', H.server.asked.length, 1);
+
+  // ---- and a page that gives up releases its claim ------------------------
+  // Otherwise the line it never collected would be pinned out of reach, and the
+  // captain's own dictation key would stop reaching the screen.
+  await loadPage(PAGE);
+  act.mouseDown();
+  await H.clock.advance(400);
+  act.mouseUp();
+  await H.clock.advance(46000);          // past the 45s the page waits
+  chk('the page says the words did not arrive', act.stageWord(), 'The words did not arrive');
+  H.server.engineHandsOver('dictated with my own key');
+  await H.clock.advance(2600);
+  chk('and the captain own-key dictation reaches the screen again',
+      H.server.asked.join('|'), 'dictated with my own key');
+
   // ---- continuous listening shares the same edge -------------------------
   // Not the reported defect, but it is the second caller of /api/listen, and an
   // edge with two callers is exactly how the first one drifted. The phrase

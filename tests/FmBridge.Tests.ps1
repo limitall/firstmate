@@ -592,6 +592,42 @@ Describe 'Step-FmSpeechCaptureState' {
             (Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $s).Handed | Should -Be ''
         }
 
+        # THE RACE THIS ALMOST SHIPPED WITH. The page polls /api/heard every
+        # 400ms while the engine spends about three seconds transcribing, so the
+        # first several polls are empty by design. An empty one used to end the
+        # page's claim, and the transcript then went out over the fleet channel
+        # the moment it landed - the same defect, one poll later, and further
+        # from where anyone would look for it.
+        It 'does not end the wait on an empty poll, which is most of them' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $s = (Step-FmSpeechCaptureState -Step 'Stop' -State $s).State
+            # three empty polls while the engine transcribes
+            1..3 | ForEach-Object { $s = (Step-FmSpeechCaptureState -Step 'TakeForPage' -State $s).State }
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State $s -Text 'the words at last').State
+            (Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $s).Handed | Should -Be ''
+            (Step-FmSpeechCaptureState -Step 'TakeForPage' -State $s).Handed | Should -Be 'the words at last'
+        }
+
+        It 'ends the wait when a line actually arrives' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $s = (Step-FmSpeechCaptureState -Step 'Stop' -State $s).State
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State $s -Text 'mine').State
+            $s = (Step-FmSpeechCaptureState -Step 'TakeForPage' -State $s).State
+            $s.AwaitingPage | Should -BeFalse
+        }
+
+        # Otherwise a page that gave up would pin its line out of everyone's
+        # reach for the rest of the run.
+        It 'releases the claim when the page says it has given up' {
+            $s = (Step-FmSpeechCaptureState -Step 'Start' -State (New-FmSpeechCaptureState)).State
+            $s = (Step-FmSpeechCaptureState -Step 'Stop' -State $s).State
+            $s = (Step-FmSpeechCaptureState -Step 'Cancel' -State $s).State
+            $s.AwaitingPage | Should -BeFalse
+            $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State $s -Text 'dictated with my own key').State
+            (Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $s).Handed |
+                Should -Be 'dictated with my own key'
+        }
+
         It 'takes an empty transcript without pretending it heard something' {
             $s = (Step-FmSpeechCaptureState -Step 'Dictated' -State (New-FmSpeechCaptureState) -Text '').State
             (Step-FmSpeechCaptureState -Step 'TakeForFleet' -State $s).Handed | Should -Be ''

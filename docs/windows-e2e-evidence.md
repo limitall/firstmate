@@ -5194,6 +5194,13 @@ A transcript produced under a page-driven capture is refused to `/api/fleet` ent
 A bare `toggle` from a tab left open from before is resolved against what is actually running rather than passed through, so a stale page is safer than it was rather than merely tolerated.
 An engine that refused a request establishes exactly one fact, that it is not recording for us, and the `Failed` step records that fact and nothing more - in particular it leaves an outstanding wait for words alone, because clearing that would put the line back on the fleet channel.
 
+**One more instance of the same race, caught in review before it shipped.**
+The first version of this machine ended the page's claim on the first `/api/heard` poll, whatever that poll returned.
+The page polls every 400 ms and the engine spends about three seconds transcribing, so the first several polls are empty by design - and clearing the claim on one of them handed the transcript straight back to the fleet channel the moment it landed.
+That is the original defect, one poll later and further from where anyone would look for it.
+Only a line that actually arrived ends the wait now, and a page that gives up says so with `Cancel` rather than in silence, so a line nobody collected is released rather than pinned out of reach.
+Reverting just that one line turns the Pester case `does not end the wait on an empty poll, which is most of them` red, which is how it was confirmed to be load-bearing rather than decorative.
+
 `/api/listen` now takes `start`, `stop` or `cancel`, and answers with `recording`, which `/api/fleet` also carries.
 The mic badge reads that rather than the page's own `capture` variable, which is the value that used to go stale.
 
@@ -5202,7 +5209,7 @@ The mic badge reads that rather than the page's own `capture` variable, which is
 ### 32.6 Fixed, measured the same way
 
 ```
-69 checks, 0 failed
+74 checks, 0 failed
   ok   right Alt opens the microphone
   ok   right Alt: the engine is told exactly once
   ok   Control and right Alt together is AltGr, not push to talk
@@ -5229,6 +5236,9 @@ The mic badge reads that rather than the page's own `capture` variable, which is
   ok   no audio node is left connected after ten presses
   ok   a refused microphone is reported
   ok   and the press after a refusal still opens the microphone
+  ok   nothing was asked while the transcript was still being made
+  ok   a slow transcript still reaches the page
+  ok   and the captain own-key dictation reaches the screen again
   ok   two phrases, four engine edges, alternating
   ok   switching back to push closes the microphone
   ok   no listener or timer raised
@@ -5261,10 +5271,10 @@ t=30s  stage=listening  Mic open  elapsed-shown="30s"
 engine told:  ["START"]  then, on release, ["START","stop"]
 ```
 
-**The negative control.** The same 69 checks run against `3af8a04` unmodified fail 35 of them, including every one named in 32.3.
+**The negative control.** The same 74 checks run against `3af8a04` unmodified fail 35 of them, including every one named in 32.3.
 A check that cannot fail against the code it guards is not guarding anything, and `CONTRIBUTING.md` requires this to be shown rather than assumed.
 
-The eleven continuous-listening checks pass on BOTH trees, and that is the correct result rather than a weak one.
+The eleven continuous-listening checks, and the five over a slow transcript, pass on BOTH trees, and that is the correct result rather than a weak one.
 Continuous mode was never broken; it is the SECOND caller of the `/api/listen` edge, and an edge with two callers is how the first one drifted.
 They are regression guards, not defect demonstrations, and they are labelled as such rather than counted among the 35.
 
@@ -5274,7 +5284,7 @@ They are regression guards, not defect demonstrations, and they are labelled as 
 - **The browser's own permission prompt.** The refusal PATH is exercised; the prompt the captain sees is not.
 - **That the dictation app behaves as this models it.** The model comes from `bin/fm-dictate.ps1` and `Invoke-FmSpeechCapture`'s description - one flag that starts and stops, no silence cutoff of its own, which is why the page owns a VAD for continuous mode. That is a modelled assumption, not a measurement against the app.
 - **Layout, at any window size.** Unchanged by this work and still measured only in a real browser.
-- **A live bridge end to end.** No listener was started. The HTTP surface is wired to a machine that is covered by 26 Pester cases, but the two together have not been run against a real engine.
+- **A live bridge end to end.** No listener was started. The HTTP surface is wired to a machine that is covered by 29 Pester cases, but the two together have not been run against a real engine.
 
 **One limitation the fix does not remove, recorded rather than hidden.**
 A transcript still arriving from the PREVIOUS press is now held for the page instead of broadcast, so it is delivered as the answer to the press that is in flight when it lands.
