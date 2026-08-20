@@ -192,6 +192,27 @@ Describe 'where a tool actually comes from' {
         $wingetRoutes.Count | Should -BeGreaterThan 0 -Because 'git and Node.js come from winget, so this sweep is not vacuous'
     }
 
+    It 'never names a winget package that does not exist' -Skip:(-not $IsWindows) {
+        # SAME RULE AS "NEVER TRUST A PACKAGE NAME", applied to the other package
+        # manager. orca and cmux were published here as `winget install orca` and
+        # `winget install cmux`. MEASURED, winget v1.29.280, 2026-08-20: neither
+        # id exists - both answer "No package found matching input criteria" -
+        # while every id this file does name resolves to exactly one package.
+        # A route that cannot succeed is reported as a step that FAILED rather
+        # than as one nobody can take, which is a worse answer than having none.
+        foreach ($tool in @('orca', 'cmux')) {
+            Get-FmBootstrapInstallCommand -Tool $tool | Should -BeNullOrEmpty `
+                -Because "$tool is not a winget package on any machine"
+            (Get-FmToolRoute -Tool $tool).Kind | Should -Be 'manual' `
+                -Because "$tool is a backend this port cannot drive, so it is a human step"
+            Get-FmBootstrapMissingDiagnostic -Tool $tool | Should -Match '^MISSING_MANUAL: '
+        }
+        # And the ones that ARE winget packages still are.
+        foreach ($tool in @('node', 'git')) {
+            Get-FmBootstrapInstallCommand -Tool $tool | Should -Match '^winget install -e --id '
+        }
+    }
+
     It 'gives the elevated PowerShell 7 route the same flags, because it is copied and pasted' -Skip:(-not $IsWindows) {
         # Get-FmMachineShellLine prints this one for a human to run. It is still
         # a winget command, and a captain who pastes it into a script hits the
@@ -1112,5 +1133,180 @@ Describe 'the end report' {
 
     It 'renders an empty run without failing' {
         @(Get-FmMachineSummaryLine -Outcomes @()).Count | Should -Be 1
+    }
+}
+
+Describe 'a failed install, reported' {
+    # THE DEFECT, PINNED. A failing install was reported as the command, its exit
+    # code, and the LAST non-blank line the tool printed:
+    #
+    #   [skipped] Node.js - FAILED: 'winget install OpenJS.NodeJS' exited 1:
+    #             Node.js OpenJS.NodeJS winget
+    #
+    # MEASURED from the captain's install log, 2026-08-20. That fragment is a row
+    # of winget's package table, not an error. Firstmate read it, found no cause,
+    # and told the captain the install needed administrator - which was wrong,
+    # and which they had already acted on. These pin the three things that made
+    # that report useless: the cause was thrown away, the exit code was the child
+    # shell's rather than the tool's, and nothing said what it meant.
+
+    BeforeAll {
+        # The captain's shape exactly: a banner, the cause in the middle, and a
+        # package table whose last row is what got reported as the error.
+        $script:CaptainShape = @(
+            'Write-Output "Windows Package Manager v1.9.25200"'
+            'Write-Output "The source agreements were not accepted."'
+            'Write-Output "Name    Id            Version Source"'
+            'Write-Output "Node.js OpenJS.NodeJS 26.7.0  winget"'
+            'exit 1'
+        ) -join '; '
+
+        function Get-FmDemoRoute {
+            param([Parameter(Mandatory)][string]$Command, [string]$Tool = 'Node.js')
+            [pscustomobject]@{
+                Tool               = $Tool
+                Kind               = 'command'
+                Command            = $Command
+                Portable           = $null
+                NeedsAdministrator = $false
+                Instructions       = ''
+            }
+        }
+    }
+
+    It 'keeps the cause, instead of the last line that happened to follow it' -Skip:(-not $IsWindows) {
+        $result = Invoke-FmToolRoute -Route (Get-FmDemoRoute -Command $script:CaptainShape) -Confirm:$false
+        $result.Action | Should -Be 'failed'
+        $result.Detail | Should -Match 'The source agreements were not accepted'
+        # What was run, so the reader can run it themselves.
+        $result.Detail | Should -Match ([regex]::Escape('Windows Package Manager'))
+        # The table row is still there - nothing is dropped - but it is no longer
+        # the whole report, which is what made it read as the error.
+        $result.Detail | Should -Match 'Node\.js OpenJS\.NodeJS'
+        @($result.Detail -split '\r?\n').Count |
+            Should -BeGreaterThan 1 -Because 'a failure flattened into one line is how the cause was lost'
+    }
+
+    It 'reports the exit code the TOOL returned, not the child shell verdict' -Skip:(-not $IsWindows) {
+        # `pwsh -Command <native command>` exits 0 or 1 and discards the native
+        # code, so every winget failure this installer ever reported arrived as a
+        # bare 1 - a number that distinguishes nothing and means nothing.
+        $result = Invoke-FmToolRoute -Route (Get-FmDemoRoute -Command 'cmd /c exit 42') -Confirm:$false
+        $result.Action | Should -Be 'failed'
+        $result.Detail | Should -Match 'exited 42'
+    }
+
+    It 'still calls a working install installed, whatever an earlier command left behind' -Skip:(-not $IsWindows) {
+        # The other half of preferring the tool's code: a nonzero code left over
+        # by some earlier native call inside a vendor script must not turn an
+        # install that worked into a reported failure.
+        $result = Invoke-FmToolRoute -Confirm:$false `
+            -Route (Get-FmDemoRoute -Command 'cmd /c exit 3 | Out-Null; Write-Output "vendor installer finished"')
+        $result.Action | Should -Be 'installed'
+    }
+
+    It 'says what an exit code means only where this repo has measured one' {
+        # MEASURED, winget v1.29.280, 2026-08-20.
+        Get-FmToolExitCodeMeaning -Command 'winget install -e --id Git.Git' -ExitCode -1978335212 |
+            Should -Match 'no package'
+        Get-FmToolExitCodeMeaning -Command 'winget install -e --id Git.Git' -ExitCode -1978335230 |
+            Should -Match 'command line'
+        # AND NOTHING WHERE IT HAS NOT. An invented meaning is the defect that
+        # started all this, so an unrecognised code says nothing at all and lets
+        # the tool's own words stand.
+        Get-FmToolExitCodeMeaning -Command 'winget install -e --id Git.Git' -ExitCode 9009 | Should -BeNullOrEmpty
+        Get-FmToolExitCodeMeaning -Command 'npm install -g gh-axi' -ExitCode -1978335212 | Should -BeNullOrEmpty
+    }
+
+    It 'prints the code in the form it can be looked up in' {
+        # A winget HRESULT arrives as a large negative decimal and is documented
+        # in hex, so a report carrying only -1978335212 cannot be looked up.
+        $detail = Get-FmToolRunFailureDetail -Command 'winget install -e --id Git.Git' -ExitCode -1978335212 `
+            -Output @('No package found matching input criteria.')
+        $detail | Should -Match '0x8A150014'
+        $detail | Should -Match 'No package found matching input criteria'
+    }
+
+    It 'says a tool printed nothing, rather than reporting an empty cause' {
+        $detail = Get-FmToolRunFailureDetail -Command 'demo' -ExitCode 7 -Output @()
+        $detail | Should -Match 'exited 7'
+        $detail | Should -Match 'printed nothing'
+    }
+
+    It 'names the command that actually ran when it is not the one printed' {
+        # winget is resolved to its real location rather than by name, and which
+        # winget ran has already mattered once on this machine.
+        $detail = Get-FmToolRunFailureDetail -Command 'winget install -e --id Git.Git' -ExitCode 1 `
+            -Output @('nope') -AsRun '& "C:\somewhere\winget.exe" install -e --id Git.Git'
+        $detail | Should -Match ([regex]::Escape('C:\somewhere\winget.exe'))
+    }
+
+    It 'keeps both ends of a long output, and says how much it left out' {
+        # MEASURED: winget's rejected-command-line output is 51 lines and the
+        # cause is the THIRD of them. Keeping the tail alone would throw the
+        # cause away and keep help text.
+        $long = @(1..100 | ForEach-Object { "line $_" })
+        $lines = @(Format-FmToolFailureOutput -Output $long)
+        $text = $lines -join "`n"
+        $text | Should -Match 'line 1\b' -Because 'the cause is often the first thing printed'
+        $text | Should -Match 'line 100\b' -Because 'and just as often the last'
+        # NO SILENT TRUNCATION: a report that quietly drops lines reads as all of
+        # them.
+        $text | Should -Match 'lines not shown'
+        $lines.Count | Should -BeLessThan $long.Count
+    }
+
+    It 'quotes a short output whole' {
+        $lines = @(Format-FmToolFailureOutput -Output @('one', '', 'two'))
+        ($lines -join "`n") | Should -Match 'in full'
+        ($lines -join "`n") | Should -Not -Match 'not shown'
+    }
+
+    It 'keeps a multi-line failure readable in the transcript' {
+        # The transcript line is where the captain reads a failure first. A
+        # detail of several lines used to be impossible here, so nothing indented
+        # the continuation; without this the cause runs back to column zero.
+        $step = New-FmInstallStep -Name 'Node.js' -Action 'skipped' `
+            -Detail "FAILED: 'x' exited 1.`nwhat it printed, in full:`n    the cause"
+        $lines = @(Format-FmInstallStepLine -Step $step)
+        $lines.Count | Should -Be 3
+        $lines[0] | Should -Match 'Node\.js - FAILED'
+        $lines[2] | Should -Match '^\s{14}'
+        ($lines -join "`n") | Should -Match 'the cause'
+    }
+
+    It 'keeps a multi-line failure readable in the end summary' {
+        # The summary is the last thing read, and a failure whose cause is only
+        # in the transcript above is one the captain has to go looking for.
+        $outcomes = @([pscustomobject]@{
+                Label          = 'Node.js'
+                Classification = 'missing'
+                Outcome        = 'failed'
+                Detail         = "'winget install' exited 1.`nwhat it printed, in full:`n    the cause"
+            })
+        $lines = @(Get-FmMachineSummaryLine -Outcomes $outcomes)
+        ($lines -join "`n") | Should -Match 'Node\.js\s+FAILED'
+        ($lines -join "`n") | Should -Match 'the cause'
+        # Not out at the detail column, where quoted output wraps into nonsense.
+        @($lines | Where-Object { $_ -match 'what it printed' })[0] | Should -Match '^\s{8}\S'
+    }
+
+    It 'does not wait on a question nobody can see' -Skip:(-not $IsWindows) {
+        # The run captures the child's output through a pipe, so a vendor
+        # installer that stops to ask something asks it into the pipe and then
+        # waits forever. The child is a non-interactive host, so it returns.
+        $result = Invoke-FmToolRoute -Confirm:$false `
+            -Route (Get-FmDemoRoute -Command '$null = Read-Host "do you trust this source? [y/N]"; Write-Output done')
+        $result.Action | Should -BeIn @('installed', 'failed') -Because 'either answer is fine; waiting forever is not'
+    }
+
+    It 'appends its exit-code epilogue on its own line, because the routes carry comments' {
+        # `winget install ... # or ./install.ps1, which needs no administrator` is
+        # a real route. On one line a trailing comment swallows everything after
+        # it, epilogue included, and the tool's exit code goes back to being lost.
+        $text = Get-FmToolShellCommandText -Command 'winget install -e --id GitHub.cli  # or ./install.ps1'
+        @($text -split '\r?\n')[0] | Should -Match '# or \./install\.ps1$'
+        @($text -split '\r?\n').Count | Should -BeGreaterThan 1
+        $text | Should -Match 'exit \$fmCode'
     }
 }

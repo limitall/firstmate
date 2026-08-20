@@ -5769,3 +5769,253 @@ immediate re-run showed none. So this is still "report the SECOND run"; the
 second run simply happened earlier than usual, exactly as in 33.6.
 
 The eighteen skips are all pre-existing and none is new.
+
+---
+
+## 35. winget could not succeed unattended, and the failure was reported as an administrator problem - `PROVEN (Windows 11) FOR THE MECHANISM, THE REPORTING AND THE FIXES, NOT FOR THE AGREEMENT PROMPT ITSELF`
+
+Dated 2026-08-20, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\14\firstmate-win`,
+PowerShell 7.6.4, Windows 11 Pro 10.0.26200, branched from `main` at `6cbb918`.
+
+Section 34 fixed the refused launch that ended the captain's second install.
+The same install log carries a second failure that section 34 did not touch, and a report of it that was worse than the failure.
+
+### 35.1 What the captain met, and what they were told
+
+```
+[skipped] Node.js - FAILED: 'winget install OpenJS.NodeJS' exited 1:
+          Node.js OpenJS.NodeJS winget
+...
+Node.js   FAILED   'winget install OpenJS.NodeJS' exited 1
+```
+
+This was an **Administrator** Windows PowerShell - the title bar said so.
+The same log shows winget v1.9.25200 present and running, so winget was neither missing nor unreachable.
+
+**The captain was told this needed administrator.**
+They were already running as administrator, specifically because of that advice, and they pushed back on being told it again.
+They were right.
+
+### 35.2 The cause: `winget install <id>` with no agreement flags cannot complete unattended
+
+winget asks the operator to accept its source agreements the first time it is used.
+Run where it cannot ask - a script, or output collected through a pipeline, which is exactly how `Invoke-FmToolShellCommand` runs every route - it exits without installing anything.
+Elevation is irrelevant to that, and so is winget's presence.
+
+A bare `winget install <name>` is also a SEARCH rather than an exact match, and a search that matches several packages asks a second question nobody is there to answer either.
+
+**This is the one claim in this section taken from the captain's log rather than measured here.**
+This machine has already accepted winget's source agreements, and resetting them would change global machine state to reproduce a prompt the fix removes either way, so it was not done.
+What WAS measured here is that the flags exist on this winget, that they are accepted, and that the exact-match form resolves to one package:
+
+```
+PS> & "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe" --version
+v1.29.280
+
+PS> winget install --help
+  --id                                 Filter results by id
+  -e,--exact                           Find package using exact match
+  --accept-package-agreements          Accept all license agreements for packages
+  --accept-source-agreements           Accept all source agreements during source operations
+
+PS> winget search -e --id OpenJS.NodeJS --accept-source-agreements
+Name    Id            Version Source
+-------------------------------------
+Node.js OpenJS.NodeJS 26.7.0  winget
+```
+
+That last table is worth looking at twice.
+Its final row carries the same three fields, in the same order, as the fragment the captain was handed as the cause of their failure: name, id, source.
+Their report's "error" has the shape of a row of winget's package table, not the shape of an error.
+
+### 35.3 The fix to the commands - `PROVEN`
+
+`Get-FmBootstrapWingetCommand` is the one owner of the shape, so the flags are stated once rather than once per package, and every winget command this repo prints or runs comes from it:
+
+```
+node     winget install -e --id OpenJS.NodeJS --accept-source-agreements --accept-package-agreements
+git      winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements
+gh       winget install -e --id GitHub.cli --accept-source-agreements --accept-package-agreements  # or ./install.ps1, ...
+curl     winget install -e --id cURL.cURL --accept-source-agreements --accept-package-agreements
+jq       winget install -e --id jqlang.jq --accept-source-agreements --accept-package-agreements
+
+update   winget upgrade -e --id Git.Git --accept-source-agreements --accept-package-agreements
+digest   MISSING: node (install: winget install -e --id OpenJS.NodeJS --accept-source-agreements --accept-package-agreements)
+```
+
+The two commands printed for a human to run - the prerequisite check's fix line and the optional elevated PowerShell 7 route - come from the same builder, because a captain who pastes one into a script meets the same prompt.
+
+**Two of the routes named packages that do not exist**, which exact matching turned from a vague search into a measurable fact.
+Every id was checked against this machine's winget:
+
+```
+OpenJS.NodeJS          exit=0   Node.js OpenJS.NodeJS 26.7.0  winget
+Git.Git                exit=0   Git  Git.Git 2.55.0.3 winget
+GitHub.cli             exit=0   GitHub CLI GitHub.cli 2.97.0  winget
+cURL.cURL              exit=0   cURL cURL.cURL 8.21.0.6 winget
+jqlang.jq              exit=0   jq   jqlang.jq 1.8.2   winget
+Microsoft.PowerShell   exit=0   PowerShell Microsoft.PowerShell 7.6.5.0 winget
+orca                   exit=-1978335212 No package found matching input criteria.
+cmux                   exit=-1978335212 No package found matching input criteria.
+```
+
+`winget install orca` and `winget install cmux` were never going to work on any machine, which is the same defect as the `npm install -g treehouse` route this area was built to remove: a package name nobody checked.
+Both are also backends this port cannot drive, since `Start-FmWorker -Backend` is `[ValidateSet('herdr')]`, so they now answer exactly as tmux already did - `MISSING_MANUAL`, naming a human step, through `Get-FmBootstrapManualInstallUrl`:
+
+```
+tmux    MISSING_MANUAL: tmux (instructions: https://firstmate.invalid/windows-backends)
+orca    MISSING_MANUAL: orca (instructions: https://firstmate.invalid/windows-backends)
+cmux    MISSING_MANUAL: cmux (instructions: https://firstmate.invalid/windows-backends)
+```
+
+A step nobody can take is a better answer than a step that reports itself as failed, and it is what "state plainly that it needs a human" means here.
+This one was found by the fix rather than by the report: `-e --id` is what turns "a search returned nothing useful" into "this package does not exist".
+
+**That was committed on its own, first**, as `9880b28`, so it could be landed while the captain was blocked; everything below it is the second commit.
+
+### 35.4 The reporting was the worse half - `PROVEN`
+
+The old report took the command, the exit code, and the LAST non-blank line the tool printed.
+Reading the last line is not a summary of a failure, it is a coin toss, and this machine will demonstrate it losing.
+`winget install` with a rejected argument prints 51 lines, of which the cause is the THIRD and the last is help text:
+
+```
+Windows Package Manager v1.29.280
+© 2026 Microsoft. All rights reserved.
+Argument name was not recognized for the current command: '--definitely-not-a-flag'
+[... 47 lines of usage ...]
+More help can be found at: https://aka.ms/winget-command-install
+```
+
+So nothing tries to pick out the one line that is the cause.
+The tool's words are quoted; a truncation keeps both ends and says how many lines it dropped; a tool that printed nothing is reported as having printed nothing, which is a different fact from "no cause was reported".
+
+### 35.5 The exit code was the child shell's, not the tool's - `PROVEN`
+
+`exited 1` told the captain nothing, and this is why.
+
+```
+PS> winget install -e --id Firstmate.NoSuchPackage.Test --accept-source-agreements --accept-package-agreements
+No package found matching input criteria.
+exit = -1978335212   hex = 0x8A150014
+
+PS> pwsh -NoProfile -NonInteractive -Command "<that same command>"
+child exit = 1
+```
+
+`pwsh -Command` reports its own verdict, 0 or 1, and discards the native code inside it.
+Every winget failure this installer has ever reported therefore arrived as a bare 1 - a number that distinguishes nothing from anything and has no meaning to look up.
+
+`Get-FmToolShellCommandText` appends an epilogue that hands the tool's own code back, on its own line because the published one-liners carry trailing `#` notes and on one line a comment would swallow it.
+`$?` stays the authority on WHETHER the run failed and `$LASTEXITCODE` only supplies the number, so a code left behind by an earlier native call inside a vendor script cannot turn a working install into a reported failure.
+Four paths measured through `Invoke-FmToolRoute`, comparing only what this changes - the outcome and the code reported:
+
+| command | outcome | code reported |
+| --- | --- | --- |
+| `winget install -e --id <no such package> ...` | `failed` | was `1`, now `-1978335212 (0x8A150014)` |
+| `cmd /c exit 42` | `failed` | was `1`, now `42` |
+| `cmd /c exit 3 \| Out-Null; Write-Output done` | `installed` | unchanged: a working install stays installed |
+| `Write-Output ok` | `installed` | unchanged |
+
+The third row is the one that had to be checked rather than assumed.
+Preferring `$LASTEXITCODE` alone would have reported that install as a failure on a leftover 3, which is why `$?` and not the number decides whether a run failed.
+A vendor script that throws never reaches the epilogue at all and pwsh exits 1 by itself, exactly as before.
+
+### 35.6 What the captain would see now, on the same failure - `PROVEN`
+
+What the captain was given, from their log:
+
+```
+[skipped] Node.js - FAILED: 'winget install OpenJS.NodeJS' exited 1:
+          Node.js OpenJS.NodeJS winget
+```
+
+The same SHAPE replayed through the real `Invoke-FmToolRoute` - a banner, the cause in the middle, and a package table whose last row is the fragment that used to be the whole report - now returns this.
+The command is a `Write-Output` stand-in because reproducing the agreement refusal itself would mean resetting this machine's winget state; the reporting path under test is the real one.
+
+```
+'Write-Output "Windows Package Manager v1.9.25200"; ...' exited 1.
+what it printed, in full:
+    Windows Package Manager v1.9.25200
+    The source agreements were not accepted.
+    Name    Id            Version Source
+    Node.js OpenJS.NodeJS 26.7.0  winget
+```
+
+The cause is in the report, and the table row is still there rather than standing in for it.
+
+And on a real winget failure, with the exit code and its meaning both recovered:
+
+```
+'winget install -e --id Firstmate.NoSuchPackage.Test --accept-source-agreements --accept-package-agreements'
+    exited -1978335212 (0x8A150014), which means winget found no package matching what it was asked for.
+what it printed, in full:
+    No package found matching input criteria.
+run as: & "C:\Users\ADMIN\AppData\Local\Microsoft\WindowsApps\winget.exe" install -e --id Firstmate.NoSuchPackage.Test ...
+```
+
+`Get-FmToolExitCodeMeaning` carries only codes measured on this machine - `0x8A150002` and `0x8A150014` - and returns nothing for anything else.
+An unrecognised code gets no meaning at all rather than a plausible one, because a plausible-sounding cause invented for a failure is precisely what started this.
+
+### 35.7 The rest of the class
+
+Anything that can stop and ask when nobody is there is in this class, so the whole repo was swept for the rest of it.
+Four more members turned up: two needed a change, and two were already correct and are recorded here so the next sweep does not have to establish it again.
+
+- **`Install-Module`** asks "are you sure you want to install the modules from 'PSGallery'?" on a machine where the gallery is Untrusted, which is the default. `-Force` already answered that; `-Confirm:$false` was missing and now refuses the other route to the same halt, a confirmation inherited from a caller. The portable route already defended itself this way and this one did not.
+- **The child shell** is started `-NonInteractive`, so PowerShell's own prompts do not wait on a person who is not there. Measured: a route whose command calls `Read-Host` returns instead of waiting. It governs PowerShell's prompting only - a native program's prompt is its own business, which is what the winget flags are for.
+- **`install.ps1`'s two questions** are the deliberate exception and were already correct: both take the safe default under `-Unattended` or a redirected stdin rather than waiting. Nothing was changed there.
+- **`gh auth login`** genuinely needs a human, and bootstrap says so as `NEEDS_GH_AUTH` rather than trying to run it. That is the "state plainly that it needs a person" answer, and it was already in place.
+
+### 35.8 The negative controls
+
+Every guard here was checked against the code it guards, by putting the defect back.
+
+```
+flags removed from Get-FmBootstrapWingetCommand
+  -> 3 failed: the catalog sweep, the elevated PowerShell 7 route, the upgrade command
+
+reporting reverted to the last-line + child-verdict form
+  -> 2 failed: 'keeps the cause, instead of the last line that happened to follow it'
+               'reports the exit code the TOOL returned, not the child shell verdict'
+```
+
+The catalog sweep walks `Get-FmToolCatalog` rather than a list of today's tools, so a winget route added later without the flags fails in the suite rather than on a machine.
+
+### 35.9 What was NOT run
+
+- **No tool was installed, and the captain's machine was not touched.** Every winget call made here was a `search`, a `--help`, or an install of a package id that does not exist. Nothing was installed, upgraded or removed on this machine.
+- **The agreement prompt itself was never reproduced.** See 35.2. This machine has already accepted the agreements, and resetting winget's source state to reproduce a prompt would change global machine state for no gain the fix does not already give. That one link in the chain rests on the captain's log and on winget's documented behaviour, not on a measurement from this seat.
+- **`install.ps1` has still never run to completion on a machine missing the tools**, exactly as sections 33.5 and 34.8 said. This section removes a reason it could not; it does not prove it now does.
+- **The `Install-Module` prompt was not reproduced either.** PSGallery is already Trusted on this machine and the NuGet provider is present (3.0.0.1), so there is nothing here to prompt. `-Confirm:$false` is a flag matching what the portable route already carries, not a measured repair.
+
+### 35.10 The suite and the analyzer, on this branch
+
+Both passes run back to back in one keeper, on the final tree, with the analyzer
+sweep taken inside the suite as `tests/FmAnalyzer.Tests.ps1`.
+
+```
+Invoke-Pester -Path ./tests    run A   2490 passed, 0 failed, 18 skipped   (58m)
+Invoke-Pester -Path ./tests    run B   2490 passed, 0 failed, 18 skipped   (49m)
+Invoke-ScriptAnalyzer, repo-wide, via tests/FmAnalyzer.Tests.ps1
+                                       zero findings at every severity
+```
+
+2490 is section 34.9's 2474 plus the sixteen tests this task adds: two with the
+flags commit, fourteen with this one.
+
+**RUN A IS CLEAN HERE, AND THAT IS NOT AN IMPROVEMENT**, for exactly the reason
+34.9 gives. The instruction-surface failures a fresh worktree's first run
+produces had already been cleared: `tests/FmInstall.Tests.ps1` was run on its own
+earlier in this task to gate the first commit, and it repairs `CLAUDE.md` and
+`.claude/skills` as part of its own work. That subset run showed the familiar six
+- all `$doctor.Healthy` - and the immediate re-run showed none. So this is still
+"report the SECOND run"; the second run simply happened earlier than usual.
+
+The eighteen skips are all pre-existing and none is new.
+
+Two earlier whole-suite runs were started and DISCARDED rather than reported,
+because the tree changed under them: the first while this section's reporting fix
+was still being written, the second when `orca` and `cmux` were found not to be
+winget packages. A suite run against a tree that no longer exists proves nothing
+about the one that does.

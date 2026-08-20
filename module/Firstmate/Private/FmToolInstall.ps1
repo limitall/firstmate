@@ -895,6 +895,45 @@ function Get-FmToolLaunchRefusal {
     $text
 }
 
+# THE CHILD'S EXIT CODE IS NOT THE TOOL'S, and that is why "exited 1" told the
+# captain nothing.
+#
+# MEASURED here, 2026-08-20: `winget install` on a package that does not exist
+# exits -1978335212 (0x8A150014) when run directly, and the same command run as
+# `pwsh -Command <it>` makes the child exit 1. `pwsh -Command` reports its own
+# verdict - 0 or 1 - and the native code inside it is discarded. So every winget
+# failure this installer has ever reported arrived as a bare 1, a number that
+# distinguishes nothing from anything and has no meaning to look up. The captain
+# was handed exactly that.
+#
+# The epilogue below hands back the code the TOOL returned, and `$?` decides
+# WHETHER the run failed while $LASTEXITCODE only supplies the number:
+#   - `$?` is captured first, before any statement of ours can overwrite it
+#   - a run `$?` calls successful exits 0 whatever $LASTEXITCODE holds, so a code
+#     left behind by some earlier native call inside a vendor script cannot turn
+#     a working install into a reported failure
+#   - a failure with no native code of its own falls back to 1, which is what the
+#     shell would have said anyway
+#   - a command that throws never reaches the epilogue, and pwsh exits 1 by itself
+#
+# IT IS APPENDED ON ITS OWN LINE, not after a semicolon: the published one-liners
+# carry trailing `# ...` notes, and on one line a comment swallows everything
+# after it - including this.
+function Get-FmToolShellCommandText {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Command)
+
+    @(
+        $Command
+        '$fmOk = $?'
+        '$fmCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }'
+        'if ($fmOk) { exit 0 }'
+        'if ($fmCode -ne 0) { exit $fmCode }'
+        'exit 1'
+    ) -join [System.Environment]::NewLine
+}
+
 # Run one captain-facing install one-liner in a child PowerShell, and never let a
 # refused launch escape.
 #
@@ -917,6 +956,7 @@ function Get-FmToolLaunchRefusal {
 #
 # -ShellPath is the suite's seam: it supplies a file that cannot be started, so
 # the refusal path runs for real without needing a machine that refuses things.
+
 function Invoke-FmToolShellCommand {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -938,7 +978,23 @@ function Invoke-FmToolShellCommand {
 
     $global:LASTEXITCODE = 0
     try {
-        $out = @(& $shell -NoProfile -Command $Command 2>&1 | ForEach-Object { [string]$_ })
+        # -NonInteractive, because THE CAPTURE IS ALSO A GAG. This run collects
+        # the child's output through a pipe, so a vendor installer that stops to
+        # ask a question asks it INTO THE PIPE, where nobody sees it, and then
+        # waits for an answer nobody knows is wanted: an install that stops dead
+        # with a blank screen and no way to tell what it is waiting for.
+        # -NonInteractive declares the child a host with nobody at it, so
+        # PowerShell's own prompts do not wait on a person. MEASURED, 2026-08-20:
+        # a route whose command calls Read-Host returns instead of waiting.
+        #
+        # It governs POWERSHELL's prompting only. A native program's prompt is
+        # its own business, and winget's agreements are exactly that - which is
+        # why they are answered by winget's flags in Get-FmBootstrapWingetCommand
+        # rather than here. Whatever this cannot answer, the verification pass
+        # still catches: a route that returned without installing anything is
+        # reported by the check that looks for the tool afterwards.
+        $out = @(& $shell -NoProfile -NonInteractive -Command (Get-FmToolShellCommandText -Command $Command) 2>&1 |
+                ForEach-Object { [string]$_ })
     } catch {
         # Kept for a -Debug run and never shown to the captain: this is the exact
         # text that sent the first diagnosis after a permission problem that did
@@ -953,6 +1009,135 @@ function Invoke-FmToolShellCommand {
         Shell            = $shell
         WorkingDirectory = $workingDirectory
     }
+}
+
+# --- reporting an install that failed ----------------------------------------------
+#
+# THE DEFECT, AND WHAT IT COST. A failing install was reported as the command, its
+# exit code, and the LAST non-blank line the tool printed:
+#
+#   [skipped] Node.js - FAILED: 'winget install OpenJS.NodeJS' exited 1:
+#             Node.js OpenJS.NodeJS winget
+#
+# MEASURED from the captain's install log, 2026-08-20. That trailing fragment is
+# not a sentence and not an error. It is a row of winget's package table - name,
+# id, source - which is simply what the last line of that run happened to be.
+# Firstmate read the report, found no cause in it, and told the captain the
+# install needed administrator. It did not, and they were ALREADY running as
+# administrator, because of that same advice. One failure reported without its
+# cause produced a wrong diagnosis and cost them the time twice.
+#
+# THE LAST LINE OF A FAILING RUN IS NOT THE ERROR, and taking it is not a
+# summary but a coin toss. MEASURED here, winget v1.29.280, 2026-08-20: a
+# rejected command line prints a banner, then the error, then the usage block.
+# The last line of that is usage boilerplate, and the error is in the middle.
+#
+# So the report carries what was run, what came back in full, and what the exit
+# code means where this repo can say. Nothing here tries to pick out the one
+# line that is the cause, because nothing reliably can.
+
+# How much of a failing tool's output the report keeps, and what it says when it
+# cannot keep all of it.
+#
+# QUOTE THE TOOL, NEVER SUMMARISE IT. A phrase distilled from an error is exactly
+# the thing that has to be guessed at afterwards, and a report that quietly drops
+# lines reads as the whole of the output - so a truncation says how many it left
+# out and where.
+#
+# BOTH ENDS ARE KEPT, and that is not symmetry for its own sake. MEASURED here,
+# winget v1.29.280, 2026-08-20: a rejected command line prints 51 lines, of which
+# the cause - "Argument name was not recognized for the current command" - is the
+# THIRD, and the remaining 48 are the usage block. Keeping the tail alone would
+# have thrown that one line away and kept help text, which is the same mistake as
+# reporting the last line, made more expensively.
+$script:FmToolFailureOutputLines = 24
+$script:FmToolFailureOutputHead = 8
+
+function Format-FmToolFailureOutput {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([AllowEmptyCollection()][AllowNull()][string[]]$Output = @())
+
+    $said = @(@($Output) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.TrimEnd() })
+    if ($said.Count -eq 0) { return [string[]]@() }
+    if ($said.Count -le $script:FmToolFailureOutputLines) {
+        return [string[]](@('what it printed, in full:') + @($said | ForEach-Object { "    $_" }))
+    }
+
+    $head = $script:FmToolFailureOutputHead
+    $tail = $script:FmToolFailureOutputLines - $head
+    $dropped = $said.Count - $script:FmToolFailureOutputLines
+    [string[]](
+        @("what it printed - $($said.Count) lines, of which the first $head and the last ${tail}:") +
+        @(@($said | Select-Object -First $head) | ForEach-Object { "    $_" }) +
+        @("    ... $dropped lines not shown ...") +
+        @(@($said | Select-Object -Last $tail) | ForEach-Object { "    $_" })
+    )
+}
+
+# What this repo can say a nonzero exit MEANS, and not one word more.
+#
+# Every entry was measured on this machine rather than copied off a table, and an
+# unrecognised code returns '' so the report carries the tool's own text instead
+# of a meaning invented for it. Guessing at a cause is the defect this whole
+# area exists to stop repeating.
+function Get-FmToolExitCodeMeaning {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Command,
+        [Parameter(Mandatory)][int]$ExitCode
+    )
+
+    if ($Command -match '(^|\s)winget(\s|$)|winget\.exe') {
+        # MEASURED, winget v1.29.280, 2026-08-20. winget reports its own failures
+        # as HRESULTs in the 0x8A15xxxx range, which arrive here as large
+        # negative numbers.
+        switch ($ExitCode) {
+            -1978335230 { return 'winget rejected the command line it was given' }
+            -1978335212 { return 'winget found no package matching what it was asked for' }
+            default { return '' }
+        }
+    }
+    ''
+}
+
+# One failed run, reported so the reader can act without guessing: what was run,
+# what came back, and what the exit code means where that is known.
+function Get-FmToolRunFailureDetail {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Command,
+        [Parameter(Mandatory)][int]$ExitCode,
+        [AllowEmptyCollection()][AllowNull()][string[]]$Output = @(),
+        # What actually ran, when that is not what the captain would type. winget
+        # is resolved to its real location rather than by name, and knowing WHICH
+        # winget ran has already mattered once on this machine.
+        [string]$AsRun = ''
+    )
+
+    # A winget HRESULT is unreadable as a signed decimal, which is the form it
+    # arrives in, so both forms are printed for anything outside a plain exit
+    # status.
+    $code = if ($ExitCode -lt 0 -or $ExitCode -gt 255) { '{0} (0x{1:X8})' -f $ExitCode, $ExitCode } else { [string]$ExitCode }
+    $headline = "'$Command' exited $code"
+    $meaning = Get-FmToolExitCodeMeaning -Command $Command -ExitCode $ExitCode
+    if ($meaning) { $headline += ", which means $meaning" }
+
+    $said = @(Format-FmToolFailureOutput -Output $Output)
+    $lines = @()
+    if ($said.Count) {
+        $lines += "$headline."
+        $lines += $said
+    } else {
+        # AN EMPTY ANSWER IS ITSELF THE FINDING. "No cause was printed" and "no
+        # cause was reported" are different facts, and only one of them is about
+        # the tool.
+        $lines += "$headline, and printed nothing at all - so there is no error text to read, and the exit code is the whole of what it said."
+    }
+    if ($AsRun -and $AsRun -ne $Command) { $lines += "run as: $AsRun" }
+    $lines -join [System.Environment]::NewLine
 }
 
 # --- running one route -----------------------------------------------------------
@@ -1083,9 +1268,11 @@ function Invoke-FmToolRoute {
         return $result
     }
     if ($run.ExitCode -ne 0) {
-        $tail = @($run.Output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1)
         $result.Action = 'failed'
-        $result.Detail = "'$($Route.Command)' exited $($run.ExitCode)" + $(if ($tail.Count) { ": $($tail[0])" } else { '' })
+        # The ROUTE's command is the headline because it is the line the captain
+        # can run themselves; the resolved one follows only when it differs.
+        $result.Detail = Get-FmToolRunFailureDetail -Command $Route.Command -ExitCode $run.ExitCode `
+            -Output $run.Output -AsRun $command
         return $result
     }
     $result.Action = 'installed'
@@ -1113,6 +1300,13 @@ function Get-FmToolModuleStatus {
     }
 }
 
+# THE OTHER THING THAT CAN STOP AND ASK. PSGallery is Untrusted on a machine
+# nobody has told otherwise, and Install-Module then asks "are you sure you want
+# to install the modules from 'PSGallery'?" before it does anything. -Force is
+# what answers that ahead of the prompt, and it is why it is here; -Confirm:$false
+# refuses the other route to the same halt, a ShouldProcess confirmation
+# inherited from a caller that asked for one. The portable route already defends
+# itself this way, and this one did not.
 function Install-FmToolModule {
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([pscustomobject])]
@@ -1131,15 +1325,22 @@ function Install-FmToolModule {
             Force              = $true
             AllowClobber       = $true
             SkipPublisherCheck = $true
+            Confirm            = $false
             ErrorAction        = 'Stop'
         }
         if ($Requirement.MinimumVersion) { $parameters['MinimumVersion'] = $Requirement.MinimumVersion }
         Install-Module @parameters
     } catch {
+        # SAME RULE AS A FAILED ROUTE. What was run, then what it said, quoted
+        # rather than folded into a sentence of this repo's own.
+        $byHand = "Install-Module $($Requirement.Name) -Scope CurrentUser"
+        $said = @(Format-FmToolFailureOutput -Output @([string]$_.Exception.Message -split '\r?\n'))
+        $lines = @("'$byHand' did not complete.") + $said
+        $lines += "Run that line yourself to see it fail in front of you, then re-run this installer."
         return [pscustomobject]@{
             Name   = $Requirement.Name
             Action = 'failed'
-            Detail = "$($_.Exception.Message) - install it by hand with: Install-Module $($Requirement.Name) -Scope CurrentUser"
+            Detail = ($lines -join [System.Environment]::NewLine)
         }
     }
     $after = Get-FmToolModuleStatus -Requirement $Requirement

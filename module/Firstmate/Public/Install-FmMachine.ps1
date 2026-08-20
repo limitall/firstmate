@@ -675,7 +675,16 @@ function Get-FmMachineSummaryLine {
     $lines = @('summary - every requirement and what happened to it:')
     foreach ($outcome in $Outcomes) {
         $word = if ($wording.ContainsKey($outcome.Outcome)) { $wording[$outcome.Outcome] } else { $outcome.Outcome }
-        $lines += ('    {0,-24} {1,-42} {2}' -f $outcome.Label, $word, $outcome.Detail)
+        # A failed outcome's detail quotes the tool's own output, so it arrives
+        # as several lines. They are indented under the row rather than folded
+        # away: the summary is the last thing the captain reads, and a failure
+        # whose cause is only in the transcript above is a failure they have to
+        # go looking for.
+        $detail = @([string]$outcome.Detail -split '\r?\n')
+        $lines += ('    {0,-24} {1,-42} {2}' -f $outcome.Label, $word, $detail[0])
+        # Indented under the row, not out at the detail column: quoted tool
+        # output starting at column 72 wraps into nonsense on a normal terminal.
+        $lines += @($detail | Select-Object -Skip 1 | ForEach-Object { '        ' + $_ })
     }
     $lines
 }

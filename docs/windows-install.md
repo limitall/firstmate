@@ -399,6 +399,26 @@ Nothing invents a threshold, so a tool with no stated minimum can be older but n
 `Get-FmToolUpdateCommand` exists for one difference that is not cosmetic: `winget install <id>` on an already-installed package reports "already installed" and exits 0 without upgrading anything, so a captain who agreed to an update would have been told it happened and left on the old version.
 Every other route already fetches the newest thing there is, so only the winget verb is rewritten.
 
+**Every route must be able to finish with nobody at the keyboard.**
+The installer runs each one in a child shell and collects its output, so a route that stops to ask a question asks it into a pipe where nobody can see it.
+winget is the case that bit: it asks the operator to accept its source agreements the first time it is used, and a run that cannot answer exits without installing anything.
+Measured from the captain's install log, 2026-08-20, in an ADMINISTRATOR shell: `winget install OpenJS.NodeJS` exited 1 and installed nothing on a machine that had winget v1.9.25200 and ran it.
+Elevation had nothing to do with it, and `docs/windows-e2e-evidence.md` section 35 records that the failure was first reported to the captain as an administrator problem and that they had already opened an elevated shell on that advice.
+
+`Get-FmBootstrapWingetCommand` is the one owner of that shape, so the flags are stated once rather than once per package: `--accept-source-agreements` and `--accept-package-agreements` answer both agreements ahead of the prompt, and `-e --id <id>` matches one package by its exact identifier rather than running a search that can match several and ask a second question.
+Both commands printed for a human to run come from it too, because a captain who pastes one into a script meets the same prompt.
+`tests/FmToolInstall.Tests.ps1` sweeps the catalog the installer actually walks rather than a list of today's tools, so a winget route added later without the flags fails in the suite instead of on a machine.
+
+Exact matching also settled a question a search had been hiding: `winget install orca` and `winget install cmux` named packages that do not exist.
+Measured 2026-08-20, both answer "No package found matching input criteria" while every other id here resolves to exactly one package, so those two routes could never have succeeded - the same defect as the `npm install -g treehouse` route this area was built to remove.
+Both are backends this port cannot drive, so they now answer as tmux already did, through `Get-FmBootstrapManualInstallUrl`: a named human step rather than a command that reports itself as failed.
+
+The rest of the class is either already answered or named.
+`Install-Module` is asked with `-Force`, which answers the untrusted-PSGallery question that a machine nobody has configured otherwise will ask, and `-Confirm:$false`, which refuses the other route to the same halt.
+The child shell is started `-NonInteractive`, so PowerShell's own prompts do not wait on a person who is not there; a native program's prompt is its own business and is answered by that program's flags, which is what the winget flags above are.
+`install.ps1`'s two questions are the deliberate exception, and both take the safe default under `-Unattended` or a redirected stdin rather than waiting.
+`gh auth login` genuinely needs a human, and bootstrap reports `NEEDS_GH_AUTH` instead of trying to run it.
+
 **A launch this machine refuses is an outcome, not a crash.**
 Windows declines to start a program for reasons that have nothing to do with this repo, and it reports every one of them as "access is denied".
 Measured on the captain's machine, 2026-08-20: the second real install died at the first tool needing a child shell, with `Program 'pwsh.exe' failed to run` and a stack trace, having installed nothing and leaving every later requirement unattempted and unreported.
@@ -412,6 +432,23 @@ PowerShell raises a refused launch as a terminating `ApplicationFailedException`
 So `Invoke-FmToolShellCommand` owns starting a child shell and never lets a refusal escape, `Invoke-FmToolRoute` reports it as `blocked` and the run carries on, and `Get-FmToolLaunchRefusal` owns what is said - which never quotes the exception, because "access is denied" plus a trace is exactly what sent the first diagnosis after a permission problem that did not exist.
 The same guard is on `install.ps1`'s re-launch, the suite runner, the home setup and the command shim, so none of them can hand the captain a .NET error.
 WHAT refuses such a launch is not established and this repo does not claim it: the report names the two things that most often do, as things to check.
+
+**A failure is reported with its cause, or it is not reported at all.**
+This area used to report a failing route as the command, its exit code, and the LAST non-blank line the tool printed.
+Measured from the captain's install log, 2026-08-20, that produced `'winget install OpenJS.NodeJS' exited 1: Node.js OpenJS.NodeJS winget` - a row of winget's package table, not an error, and not a sentence.
+Firstmate read that report, found no cause in it, and told the captain the install needed administrator; one failure reported without its cause produced a wrong diagnosis and cost them the time twice.
+
+The last line of a failing run is not the error, and picking it is a coin toss rather than a summary: measured here on winget v1.29.280, a rejected command line prints 51 lines whose cause is the third and whose last is usage boilerplate.
+So `Get-FmToolRunFailureDetail` quotes what the tool said rather than distilling it, keeps both ends when there is too much to keep and says how many lines it dropped, and says so explicitly when a tool printed nothing at all.
+`Get-FmToolExitCodeMeaning` adds what a code means only where this repo has measured one, and returns nothing where it has not, because an invented meaning is the defect this exists to stop repeating.
+
+The exit code had to be recovered before any of that could mean anything.
+`pwsh -Command <native command>` reports its own verdict, 0 or 1, and discards the code the native command returned - measured here, a winget failure that exits `0x8A150014` on its own makes the child exit 1.
+Every winget failure this installer had ever reported therefore arrived as a bare 1, which is what the captain was handed.
+`Get-FmToolShellCommandText` appends an epilogue that hands back the tool's own code while keeping `$?` the authority on whether the run failed, so a stale code from some earlier call inside a vendor script cannot turn a working install into a reported failure.
+It is appended on its own line because the published one-liners carry trailing `#` notes, and on one line a comment swallows everything after it.
+
+`Format-FmInstallStepLine` and `Get-FmMachineSummaryLine` indent the continuation of a multi-line detail rather than dropping it, so the cause survives into both the transcript and the end summary.
 
 **Two enablers are checked before they are used**, because the failure they prevent is a bare "command not found" in the middle of a run: `winget`, which the git and Node.js routes need, and `npm`, which the five axi tools need.
 Both are reported in the plan with what they enable and what to do when absent, and both are probed by RUNNING them: an enabler this machine will not start is not an enabler, so its routes are skipped with a reason rather than each one discovering the same refusal.

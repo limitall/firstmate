@@ -60,6 +60,15 @@ section 2 lists the state-file formats).
   exported, and every `Fm` function a `bin/` entry point calls is exported.
   It enumerates the tree, so a new area or entry point is covered as soon as it
   exists - nothing to add to a list.
+- **A command this repo runs for the captain must complete with nobody at the
+  keyboard, and a failed one must be reported with its cause.** Output is
+  collected through a pipe, so a tool that stops to ask something asks it where
+  nobody can see it - answer the question with the tool's own flags, or state
+  plainly that the step needs a person. When one fails, report what was run, the
+  code the TOOL returned (a child `pwsh -Command` discards it), and the tool's
+  own words quoted rather than distilled into a phrase; never summarise an error
+  into something that has to be guessed at later. `docs/windows-install.md`
+  owns the full contract and what it cost to learn.
 - Mark anything provable only on Windows with a `# WINDOWS-UNVERIFIED:` comment
   and a one-line reason. Where behaviour must differ by platform, branch on
   `$IsWindows`; the Linux path is a development convenience, not the product.

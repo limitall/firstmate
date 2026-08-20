@@ -491,12 +491,20 @@ function Format-FmInstallCheckLine {
     $lines
 }
 
+# A STEP MAY HAVE MORE TO SAY THAN FITS ON ITS LINE, and what it has to say is
+# usually the failure. A failed install quotes the tool's own output, which is
+# several lines, so the extra ones are indented under the first rather than
+# left to run back to column zero - and never dropped, which is how the fragment
+# "Node.js OpenJS.NodeJS winget" came to be the whole of a failure report.
 function Format-FmInstallStepLine {
     [CmdletBinding()]
-    [OutputType([string])]
+    [OutputType([string[]])]
     param([Parameter(Mandatory)]$Step)
 
-    "  [$($Step.Action)]".PadRight(12) + $Step.Name + $(if ($Step.Detail) { " - $($Step.Detail)" } else { '' })
+    $detail = @([string]$Step.Detail -split '\r?\n')
+    $first = "  [$($Step.Action)]".PadRight(12) + $Step.Name + $(if ($Step.Detail) { " - $($detail[0])" } else { '' })
+    if ($detail.Count -le 1) { return [string[]]@($first) }
+    [string[]](@($first) + @($detail | Select-Object -Skip 1 | ForEach-Object { '              ' + $_ }))
 }
 
 # --- the home layout ------------------------------------------------------------

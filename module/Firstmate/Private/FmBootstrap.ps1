@@ -95,9 +95,17 @@ function Get-FmBootstrapInstallCommand {
             'curl' { return (Get-FmBootstrapWingetCommand -PackageId 'cURL.cURL') }
             'jq' { return (Get-FmBootstrapWingetCommand -PackageId 'jqlang.jq') }
             'zellij' { return 'cargo install --locked zellij  # or the platform''s package manager' }
-            'orca' { return (Get-FmBootstrapWingetCommand -PackageId 'orca' -Note 'or the platform''s package manager') }
-            'cmux' { return (Get-FmBootstrapWingetCommand -PackageId 'cmux' -Note 'or see https://cmux.com') }
-            'tmux' { return $null }
+            # orca and cmux are NOT winget packages, and saying they were was the
+            # same defect as the npm names above. MEASURED, winget v1.29.280,
+            # 2026-08-20: `winget search -e --id orca` and `-e --id cmux` both
+            # answer "No package found matching input criteria", while the six
+            # ids this file does name resolve to exactly one package each. A
+            # route that cannot succeed is worse than no route, because it is
+            # reported as a step that failed rather than as one nobody can take.
+            # Both are backends this port cannot drive anyway - Start-FmWorker
+            # is [ValidateSet('herdr')] - so they answer as tmux does, by naming
+            # a human step. Get-FmBootstrapManualInstallUrl owns that answer.
+            { $_ -in 'tmux', 'orca', 'cmux' } { return $null }
             'claude' { return 'irm https://claude.ai/install.ps1 | iex' }
             'treehouse' { return 'irm https://kunchenguid.github.io/treehouse/install.ps1 | iex' }
             'herdr' { return 'irm https://herdr.dev/install.ps1 | iex' }
@@ -129,7 +137,13 @@ function Get-FmBootstrapManualInstallUrl {
     switch ($Tool) {
         # tmux has no native Windows build at all: a Windows home must select a
         # backend that does, so its absence is a manual, human decision.
-        'tmux' { if ($IsWindows) { return 'https://firstmate.invalid/windows-backends' } else { return $null } }
+        #
+        # orca and cmux join it for a related reason. Neither is a winget package
+        # - measured 2026-08-20, both answer "No package found matching input
+        # criteria" - and this port drives neither, so there is no command to
+        # print. The same human decision applies: choose a backend this port can
+        # drive, or install the tool yourself.
+        { $_ -in 'tmux', 'orca', 'cmux' } { if ($IsWindows) { return 'https://firstmate.invalid/windows-backends' } else { return $null } }
         default { return $null }
     }
 }
