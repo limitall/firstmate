@@ -376,9 +376,10 @@ A route is only correct if the installed command runs and prints something `Get-
 A command that resolves but answers nothing to `--version` is reported as unverified, never as installed, because that is the exact shape a wrong package takes.
 
 **No step needs administrator.**
-Every preferred route writes into the user's own profile: the vendor's per-user installer (Claude Code, herdr, treehouse, PowerShell 7) or a release archive expanded under `%LOCALAPPDATA%\Programs` with its `bin` added to the USER PATH (gh).
+Every preferred route writes into the user's own profile: the vendor's per-user installer (Claude Code, treehouse, PowerShell 7) or a release archive expanded under `%LOCALAPPDATA%\Programs` with its directory added to the USER PATH (gh, herdr).
+herdr is on the archive route for a second reason: its own installer fails its OWN verification on a clean machine, twice measured, so `Get-FmBootstrapPortableRelease` takes the release that installer points at - read out of it, not guessed - and installs it directly.
 `choco install gh` was measured failing with "Access to the path 'C:\ProgramData\chocolatey\lib-bad' is denied" on an unelevated session; the portable zip needed nothing.
-The only two routes that genuinely need elevation are the winget packages for git and Node.js, which run machine-scope MSIs.
+The routes that genuinely need elevation are the winget packages, which run machine-scope MSIs.
 Those are DECLARED by `Test-FmBootstrapInstallNeedsAdministrator`, named in the report, and skipped - never attempted, and never allowed to stop the rest of the run.
 
 **Three outcomes per requirement, not two.**
@@ -390,11 +391,18 @@ Those are DECLARED by `Test-FmBootstrapInstallNeedsAdministrator`, named in the 
 | `unusable` | present, and this machine refuses to START it. TOLD, SKIPPED, NOT READY - a second copy in the same place would be refused the same way. |
 | `older` | the captain is ASKED, once, with the installed and published versions and the cost of declining. The default is no, and declining never stops the run. |
 | `unsupported` | the captain is TOLD, the step is SKIPPED, nothing is installed over the top, and the run reports the machine as NOT READY. |
+| `superseded` | below the same kind of stated minimum, but what this repo needs installs BESIDE it rather than over it. Installed, without asking, and the older copy is left alone. |
 | `unknown-version` | present but prints no readable version, so nothing about it is proven. |
 | `unknown-latest` | present, but no vendor answered, so currency is unknown rather than assumed. |
 
 A minimum only exists where this repo STATES one, and `Get-FmToolMinimum` names where each comes from: the axi-family floors bootstrap already enforces, Pester 5 for the suite, and treehouse's `get --lease`, which is a capability rather than a number.
 Nothing invents a threshold, so a tool with no stated minimum can be older but never unsupported.
+
+`superseded` and `unsupported` differ on ONE question - does putting what this repo needs on the machine remove what is already there?
+For a tool it does, so that one is told and skipped.
+For a PowerShell module it does not: `Install-Module -Scope CurrentUser` writes a new version directory into the user's own module tree, PowerShell loads modules by version, and the previous copy stays loadable.
+`Get-FmMachineInstallPlan` is the only caller that sets `-Supersedable`, and it sets it for every module and for no tool.
+Windows ships Pester 3.4.0 on every machine, so this is not an edge case - it is what a clean machine looks like, and refusing it is what used to end a clean-machine install with a step for the captain.
 
 `Get-FmToolUpdateCommand` exists for one difference that is not cosmetic: `winget install <id>` on an already-installed package reports "already installed" and exits 0 without upgrading anything, so a captain who agreed to an update would have been told it happened and left on the old version.
 Every other route already fetches the newest thing there is, so only the winget verb is rewritten.

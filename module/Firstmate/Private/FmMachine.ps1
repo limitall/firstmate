@@ -292,6 +292,38 @@ function Get-FmMachineShellLine {
 
 # --- the suite -----------------------------------------------------------------
 
+# CAN THE SUITE RUN AT ALL, decided before a process is started for it.
+#
+# THE VERSION, NOT MERELY THE NAME. Windows ships Pester 3.4.0 on every machine,
+# so "Pester is installed" is true on a machine that cannot run this suite - and
+# the child process then died on `Import-Module Pester -MinimumVersion 5.0.0`,
+# printing a raw PowerShell error with a source-line caret into the middle of the
+# captain's install log. MEASURED there, 2026-08-21. That was the SECOND time the
+# run reported the same fact: the plan had already said 3.4.0 was below the floor,
+# cleanly, two lines earlier. A condition this run has detected and reported must
+# not also escape as noise.
+#
+# Split from the run so the decision is exercisable against a version list rather
+# than only against whatever this machine happens to have installed.
+function Get-FmMachineSuitePrerequisite {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowEmptyCollection()][version[]]$Available = @())
+
+    $newest = @($Available | Sort-Object -Descending | Select-Object -First 1)
+    if ($newest.Count -eq 0) {
+        return [pscustomobject]@{ CanRun = $false; Newest = ''; Detail = 'Pester is not installed, so the suite could not run' }
+    }
+    if ($newest[0].Major -lt 5) {
+        return [pscustomobject]@{
+            CanRun = $false
+            Newest = $newest[0].ToString()
+            Detail = "the newest Pester on this machine is $($newest[0]), and this suite is written for Pester 5+, so it could not run"
+        }
+    }
+    [pscustomobject]@{ CanRun = $true; Newest = $newest[0].ToString(); Detail = '' }
+}
+
 # Run in a CHILD process on purpose. The suite imports the module, rewrites
 # PSModulePath and sets environment variables of its own; running it inside the
 # session that just performed an install would leave that session's view of the
@@ -310,16 +342,24 @@ function Invoke-FmMachineSuite {
     if (-not (Test-Path -LiteralPath $testsPath -PathType Container)) {
         return [pscustomobject]@{ Ran = $false; Passed = 0; Failed = 0; Detail = "no tests directory at '$testsPath'"; FailedNames = @() }
     }
-    if (-not (Get-Module -ListAvailable -Name 'Pester')) {
-        return [pscustomobject]@{ Ran = $false; Passed = 0; Failed = 0; Detail = 'Pester is not installed, so the suite could not run'; FailedNames = @() }
+    $prerequisite = Get-FmMachineSuitePrerequisite -Available @(Get-Module -ListAvailable -Name 'Pester' | ForEach-Object { $_.Version })
+    if (-not $prerequisite.CanRun) {
+        return [pscustomobject]@{ Ran = $false; Passed = 0; Failed = 0; Detail = $prerequisite.Detail; FailedNames = @() }
     }
 
     $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ('fm-suite-' + [guid]::NewGuid().ToString('N') + '.json')
     $runner = Join-Path ([System.IO.Path]::GetTempPath()) ('fm-suite-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    $errorPath = Join-Path ([System.IO.Path]::GetTempPath()) ('fm-suite-' + [guid]::NewGuid().ToString('N') + '.err')
     [System.IO.File]::WriteAllText($runner, @'
 param([Parameter(Mandatory)][string]$Tests, [Parameter(Mandatory)][string]$ResultPath)
 $ErrorActionPreference = 'Continue'
-Import-Module Pester -MinimumVersion 5.0.0 -ErrorAction Stop
+try {
+    Import-Module Pester -MinimumVersion 5.0.0 -ErrorAction Stop
+} catch {
+    [pscustomobject]@{ Passed = 0; Failed = 0; Skipped = 0; FailedNames = @(); Refused = [string]$_.Exception.Message } |
+        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ResultPath -Encoding utf8
+    exit 1
+}
 $configuration = New-PesterConfiguration
 $configuration.Run.Path = $Tests
 $configuration.Run.PassThru = $true
@@ -331,6 +371,7 @@ $failed = @($result.Failed | ForEach-Object { [string]$_.ExpandedPath })
     Failed      = [int]$result.FailedCount
     Skipped     = [int]$result.SkippedCount
     FailedNames = $failed
+    Refused     = ''
 } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ResultPath -Encoding utf8
 '@, [System.Text.UTF8Encoding]::new($false))
 
@@ -344,7 +385,13 @@ $failed = @($result.Failed | ForEach-Object { [string]$_.ExpandedPath })
         # report the captain is waiting for over a machine that declined to open
         # one more process.
         try {
-            $process = Start-Process -FilePath $pwsh -NoNewWindow -PassThru -ArgumentList @(
+            # THE CHILD'S ERROR STREAM GOES TO A FILE, NOT TO THE CAPTAIN. With
+            # -NoNewWindow and no redirection it writes straight onto the console
+            # this run is composing a report on, which is how a handled Pester
+            # failure arrived in the captain's log as a raw error with a
+            # source-line caret. Whatever it says is read back below and folded
+            # into this function's own verdict instead.
+            $process = Start-Process -FilePath $pwsh -NoNewWindow -PassThru -RedirectStandardError $errorPath -ArgumentList @(
                 '-NoProfile', '-File', $runner, '-Tests', $testsPath, '-ResultPath', $resultPath)
         } catch {
             Write-Debug "could not start the suite process: $_"
@@ -368,16 +415,33 @@ $failed = @($result.Failed | ForEach-Object { [string]$_.ExpandedPath })
                 FailedNames = @()
             }
         }
+        # WHATEVER THE CHILD SAID, SAID ONCE AND IN THIS FUNCTION'S WORDS.
+        $said = ''
+        if (Test-Path -LiteralPath $errorPath -PathType Leaf) {
+            $said = ([System.IO.File]::ReadAllText($errorPath)).Trim()
+        }
         if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            $detail = "the suite process produced no result file (exit code $($process.ExitCode))"
+            if ($said) {
+                $firstLines = @($said -split "`r`n|`n" | Where-Object { $_.Trim() } | Select-Object -First 3)
+                $detail += '. It said: ' + ($firstLines -join ' ')
+            }
+            return [pscustomobject]@{ Ran = $false; Passed = 0; Failed = 0; Detail = $detail; FailedNames = @() }
+        }
+        $parsed = [System.IO.File]::ReadAllText($resultPath) | ConvertFrom-Json
+        # The runner writes a result file even when it could not start Pester, so
+        # that refusal arrives here as a verdict rather than as an error on the
+        # captain's console.
+        $refused = if ($parsed.PSObject.Properties.Name -contains 'Refused') { [string]$parsed.Refused } else { '' }
+        if ($refused) {
             return [pscustomobject]@{
                 Ran         = $false
                 Passed      = 0
                 Failed      = 0
-                Detail      = "the suite process produced no result file (exit code $($process.ExitCode))"
+                Detail      = "the suite could not start Pester: $refused"
                 FailedNames = @()
             }
         }
-        $parsed = [System.IO.File]::ReadAllText($resultPath) | ConvertFrom-Json
         $names = @($parsed.FailedNames)
         return [pscustomobject]@{
             Ran         = $true
@@ -387,7 +451,7 @@ $failed = @($result.Failed | ForEach-Object { [string]$_.ExpandedPath })
             FailedNames = $names
         }
     } finally {
-        foreach ($temp in @($runner, $resultPath)) {
+        foreach ($temp in @($runner, $resultPath, $errorPath)) {
             if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
         }
     }
@@ -422,7 +486,7 @@ function Get-FmMachineToolVerification {
             -Minimum $minimum.Version -CapabilityMet $capabilityMet -Launchable $status.Launchable
         $name = "tool $($entry.Label)"
         $status_ = if ($entry.Required) { 'missing' } else { 'warn' }
-        $fix = (Get-FmToolRoute -Tool $entry.Tool).Command
+        $fix = Get-FmToolFixCommand -Route (Get-FmToolRoute -Tool $entry.Tool)
 
         switch ($classification) {
             'missing' {
@@ -523,14 +587,17 @@ function Get-FmMachineModuleVerification {
     foreach ($requirement in (Get-FmToolModuleRequirement)) {
         $status = Get-FmToolModuleStatus -Requirement $requirement
         $name = "module $($requirement.Name)"
+        # -Supersedable for the same reason the plan sets it: a module below the
+        # floor is one this run installs beside what is there, so it must not be
+        # classified here as the kind that gets told and skipped.
         $classification = Get-FmToolClassification -Present $status.Present -Installed $status.Version `
-            -Minimum $requirement.MinimumVersion
-        $fix = "Install-Module $($requirement.Name) -Scope CurrentUser"
+            -Minimum $requirement.MinimumVersion -Supersedable $true
+        $fix = Get-FmToolModuleInstallCommand -Name $requirement.Name -MinimumVersion $requirement.MinimumVersion
         switch ($classification) {
             'missing' {
                 $checks += New-FmInstallCheck -Name $name -Status 'warn' -Detail "not installed - $($requirement.Why)" -Fix $fix
             }
-            'unsupported' {
+            { $_ -in 'unsupported', 'superseded' } {
                 $checks += New-FmInstallCheck -Name $name -Status 'warn' `
                     -Detail "$($status.Version) is installed; this repo requires at least $($requirement.MinimumVersion) ($($requirement.MinimumSource))" `
                     -Fix $fix

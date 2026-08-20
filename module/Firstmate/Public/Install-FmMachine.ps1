@@ -99,6 +99,9 @@ function Get-FmMachineInstallPlan {
             Minimum           = $minimum.Version
             MinimumSource     = $minimum.Source
             MinimumCapability = $minimum.Capability
+            # A tool is installed OVER what is there, so a version below a
+            # stated floor is told and skipped rather than replaced.
+            Supersedable      = $false
             Classification    = (Get-FmToolClassification -Present $status.Present -Installed $status.Version `
                     -Latest $latest -Minimum $minimum.Version -CapabilityMet $capabilityMet -Launchable $status.Launchable)
             Route             = $route
@@ -139,17 +142,23 @@ function Get-FmMachineInstallPlan {
             Minimum           = $module.MinimumVersion
             MinimumSource     = $module.MinimumSource
             MinimumCapability = ''
+            # A module is not. PowerShell keeps every version of a module in its
+            # own version directory, so Install-Module -Scope CurrentUser adds
+            # one to the user's own tree and removes nothing - which is what
+            # makes Windows' own Pester 3.4.0 this run's job rather than the
+            # captain's.
+            Supersedable      = $true
             Classification    = (Get-FmToolClassification -Present $status.Present -Installed $status.Version `
-                    -Latest $latest -Minimum $module.MinimumVersion)
+                    -Latest $latest -Minimum $module.MinimumVersion -Supersedable $true)
             Route             = [pscustomobject]@{
                 Tool               = $module.Name
                 Kind               = 'module'
-                Command            = "Install-Module $($module.Name) -Scope CurrentUser"
+                Command            = (Get-FmToolModuleInstallCommand -Name $module.Name -MinimumVersion $module.MinimumVersion)
                 Portable           = $null
                 NeedsAdministrator = $false
                 Instructions       = ''
             }
-            UpdateCommand     = "Install-Module $($module.Name) -Scope CurrentUser -Force"
+            UpdateCommand     = (Get-FmToolModuleInstallCommand -Name $module.Name -MinimumVersion $module.MinimumVersion -Force)
             Reason            = ''
             Question          = ''
         }
@@ -174,6 +183,7 @@ function Get-FmMachineInstallPlan {
             'missing' { '[missing]' }
             'older' { '[older]' }
             'unsupported' { '[unsupported]' }
+            'superseded' { '[superseded]' }
             'unusable' { '[unusable]' }
             default { '[unknown]' }
         }
@@ -190,6 +200,7 @@ function Get-FmMachineInstallPlan {
         Missing      = @($requirements | Where-Object { $_.Classification -eq 'missing' })
         Older        = @($requirements | Where-Object { $_.Classification -in @('older', 'unknown-version') })
         Unsupported  = @($requirements | Where-Object { $_.Classification -eq 'unsupported' })
+        Superseded   = @($requirements | Where-Object { $_.Classification -eq 'superseded' })
         Unusable     = @($requirements | Where-Object { $_.Classification -eq 'unusable' })
         Lines        = $lines
     }
@@ -424,8 +435,12 @@ function Install-FmMachine {
             continue
         }
 
+        # 'superseded' IS INSTALLED WITHOUT ASKING, exactly like 'missing', and
+        # for the same reason: what this repo needs is not on the machine yet,
+        # and putting it there replaces nothing. The older copy stays.
         $wanted = switch ($requirement.Classification) {
             'missing' { $true }
+            'superseded' { $true }
             'older' { $UpdateTool -contains $requirement.Name }
             'unknown-version' { $UpdateTool -contains $requirement.Name }
             default { $false }
@@ -442,7 +457,9 @@ function Install-FmMachine {
             continue
         }
 
-        $updating = ($requirement.Classification -ne 'missing')
+        # Not an update of what is on the machine: a version that was not there
+        # before, put beside the one that was.
+        $updating = ($requirement.Classification -notin @('missing', 'superseded'))
         if ($requirement.Kind -eq 'module') {
             $module = @(Get-FmToolModuleRequirement | Where-Object { $_.Name -eq $requirement.Name })[0]
             $result = Install-FmToolModule -Requirement $module -Update:$updating -Confirm:$false

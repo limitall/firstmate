@@ -201,26 +201,129 @@ function Test-FmBootstrapInstallNeedsAdministrator {
 # exactly that shape on the captain's machine today, which is why this is the
 # pattern to prefer generally rather than a special case for one tool.
 #
-# Only gh is listed: treehouse, herdr and Claude Code publish their OWN
-# installers that do the same thing, and re-deriving their release layout here
-# would be a second copy of a contract those vendors already own.
+# HERDR IS HERE BECAUSE ITS OWN INSTALLER IS NOT USABLE, and this is the answer
+# to that rather than a workaround inside it. MEASURED on the captain's clean
+# Windows 11 VMs, twice: `irm https://herdr.dev/install.ps1 | iex` downloads the
+# release and then fails ITS OWN verification -
+#
+#   Downloaded Herdr command failed verification:
+#   C:\Users\...\.herdr\packages\standalone\releases\.staging.0.8.2-...\herdr.exe --version
+#
+# so herdr was the one required tool no clean machine ended up with. Nothing here
+# fixes someone else's script. What this does instead is READ that script and
+# take the same two facts out of it - where the release is, and which version is
+# current - then install it the way gh already is.
+#
+# WHAT THEIR INSTALLER DOES, read from https://herdr.dev/install.ps1 on
+# 2026-08-21 rather than guessed at:
+#   - the stable channel is the manifest at https://herdr.dev/latest.json, and
+#     the preview channel is preview.json beside it
+#   - a Windows machine is the target triple x86_64-pc-windows-msvc, whose asset
+#     key in that manifest is `windows-x86_64`
+#   - an asset is either a bare URL string or an object carrying url/sha256/format
+#     (their Get-ManifestAsset accepts both, so this does too)
+#   - the version identity is the manifest's `version` on stable, and
+#     "<base_version>-preview.<build_id>" on preview
+#
+# MEASURED at the same time, against the real manifest and the real release:
+# latest.json answers version 0.8.2 and points at
+# github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-windows-x86_64.zip;
+# that zip holds herdr.exe at its root beside a conpty/ directory; and the
+# expanded herdr.exe answers `--version` with "herdr 0.8.2" and exit code 0. The
+# binary was never the problem - their staging step was.
+#
+# Only these three are listed: treehouse and Claude Code publish their OWN
+# installers that work, and re-deriving their release layout here would be a
+# second copy of a contract those vendors already own.
+#
+# EVERY FIELD IS DECLARED ON EVERY RECORD, including the ones a given tool does
+# not use. Install-FmToolPortable runs under Set-StrictMode, where reading a
+# property a record does not carry is a terminating error rather than $null -
+# which is exactly how a first real install died on a record shape nothing
+# declared.
+#
+#   Source            'github'   the repository's own latest release
+#                     'manifest' a vendor-published JSON pointing at the release
+#   ManifestUrl       for 'manifest': where that JSON is
+#   AssetKey          for 'manifest': which asset in it is this machine's
+#   AssetPattern      for 'github': which asset of the release is this machine's
+#   BinSubdirectory   what goes on PATH, relative to the expansion; '' means the
+#                     expansion itself
+#   StripRoot         the archive holds one versioned directory to unwrap
 function Get-FmBootstrapPortableRelease {
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Tool)
 
     if (-not $IsWindows) { return $null }
-    if ($Tool -ne 'gh') { return $null }
 
-    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
-    [pscustomobject]@{
-        Tool            = 'gh'
-        Repository      = 'cli/cli'
-        AssetPattern    = "gh_*_windows_$arch.zip"
-        # The gh zip's root holds bin/ and LICENSE, so the expansion IS the
-        # install directory and bin/ under it is what goes on PATH.
-        BinSubdirectory = 'bin'
-        StripRoot       = $false
+    if ($Tool -eq 'gh') {
+        $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+        return [pscustomobject]@{
+            Tool            = 'gh'
+            Source          = 'github'
+            Repository      = 'cli/cli'
+            ManifestUrl     = ''
+            AssetKey        = ''
+            AssetPattern    = "gh_*_windows_$arch.zip"
+            # The gh zip's root holds bin/ and LICENSE, so the expansion IS the
+            # install directory and bin/ under it is what goes on PATH.
+            BinSubdirectory = 'bin'
+            StripRoot       = $false
+        }
+    }
+
+    if ($Tool -eq 'herdr') {
+        return [pscustomobject]@{
+            Tool            = 'herdr'
+            Source          = 'manifest'
+            Repository      = 'herdr.dev'
+            ManifestUrl     = 'https://herdr.dev/latest.json'
+            # x86_64 is the only Windows build herdr publishes. An ARM64 machine
+            # runs it under emulation, which is what their own installer does
+            # too - it maps both Windows architectures to the same triple.
+            AssetKey        = 'windows-x86_64'
+            AssetPattern    = 'herdr-windows-x86_64.zip'
+            # herdr.exe sits at the root of that zip, so the expansion itself is
+            # what goes on PATH - and conpty/ has to stay beside it.
+            BinSubdirectory = ''
+            StripRoot       = $false
+        }
+    }
+
+    $null
+}
+
+# WHERE A VENDOR'S OWN INSTALLER PUTS THE TOOL, when it does not leave it
+# somewhere this session can find.
+#
+# MEASURED on the captain's clean Windows 11 VM, 2026-08-21. The Claude CLI route
+# ran, reported `[created] Claude CLI - irm https://claude.ai/install.ps1 | iex`,
+# and the verification pass eight lines later said `[missing] tool Claude CLI -
+# not on PATH`. Both are true: the installer wrote claude.exe into the user's own
+# profile and this run could not reach it, so the machine ended NOT READY with a
+# required tool physically present on it.
+#
+# MEASURED on a machine that has them, 2026-08-21: the Claude CLI is at
+# %USERPROFILE%\.local\bin\claude.exe, and herdr's own installer leaves the
+# runnable copy at %LOCALAPPDATA%\Programs\Herdr\bin - not in the .herdr staging
+# tree its failure message names.
+#
+# This is the LAST RESORT and not the route. It is consulted only when a route
+# reported success and the command still does not resolve, and a directory that
+# is not there changes nothing - so a vendor that moves its output makes this
+# quietly stop helping rather than start being wrong.
+function Get-FmBootstrapInstalledLocation {
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Tool)
+
+    if (-not $IsWindows) { return [string[]]@() }
+    switch ($Tool) {
+        'claude' { return [string[]]@('%USERPROFILE%\.local\bin') }
+        'herdr' { return [string[]]@('%LOCALAPPDATA%\Programs\Herdr\bin', '%USERPROFILE%\.herdr\bin') }
+        'treehouse' { return [string[]]@('%LOCALAPPDATA%\treehouse') }
+        default { return [string[]]@() }
     }
 }
 

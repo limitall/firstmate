@@ -22,6 +22,8 @@ It installs each missing tool from the vendor that publishes it, wires the home,
 No step needs administrator.
 Where a tool is already installed but older than the latest published version, you are asked once, with what is installed and what is available; declining is always safe and never stops the run.
 Where a tool is below a minimum this repo actually states, you are told, that step is skipped rather than installed over, and the machine is reported as not ready.
+Where a MODULE is below one, it is simply installed: PowerShell keeps every version of a module in its own directory, so the copy already there is left exactly where it is.
+That is how Windows' own Pester 3.4.0 stops being something you have to replace by hand.
 
 Add `-Unattended` to that command to take the safe default for every question, or `-DetectOnly` to see what the machine has and change nothing.
 Re-running it at any time is safe.

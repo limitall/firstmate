@@ -6246,3 +6246,152 @@ The eighteen skips are all pre-existing and none is new.
 
 One earlier whole-suite run was started and DISCARDED rather than reported, because it was launched before the fix was finished and the tree changed under it.
 A suite run against a tree that no longer exists proves nothing about the one that does.
+
+## 37. The clean VM got most of the way, and the three things that stopped it - `PROVEN (Windows 11) FOR THE CAUSES AND THE FIXES; THE CLEAN-MACHINE RUN ITSELF IS STILL THE CAPTAIN'S`
+
+The captain rebuilt a Windows 11 VM at 00:22 on 2026-08-21 and kept the log.
+It is the third clean-machine attempt and by far the furthest one: Node.js, npm, all five axi tools, gh, treehouse, PSScriptAnalyzer, the home, the instruction links, the protection, the `firstmate` command and PowerShell 7 in Start all came out `[created]` on a machine that had none of them.
+
+Three things did not, and the captain's instruction about them is the bar this section is written against:
+
+> "add all things in script in don't want user have to execute any thing else manual or extra all must be done from our script itself"
+
+So a printed instruction is a failure, not an acceptable outcome.
+That reverses what sections 31 and 35 recorded as correct behaviour for one class of requirement, and the reversal is deliberate: the older rule was "never install over a version the captain did not agree to replace", and the answer is not to abandon it but to notice that two of these three were never replacements at all.
+
+**That log tests nothing about the source pin.**
+It was taken from a clone made before `a8dcbe5` landed, and its Node.js line carries no `--source winget`.
+Section 36 stands unchanged and untested by this run.
+
+### 37.1 Pester: the machine had it, we refused it, and the line we printed was wrong twice over
+
+Measured, from the log:
+
+```
+[skipped] module Pester - UNSUPPORTED: 3.4.0 is installed; this repo requires at least
+          5.0.0 ... Update it yourself, then re-run:
+          Install-Module Pester -Scope CurrentUser -Force
+```
+
+and then, because the suite could not run without it:
+
+```
+[missing] test suite - the suite process produced no result file (exit code 1)
+NOT READY: 1 requirement(s) are installed at a version this repo cannot work with
+```
+
+Windows ships Pester 3.4.0 in `C:\Program Files\WindowsPowerShell\Modules` on every machine, so this is not an edge case - it is what a clean machine IS, and it ended every clean install with a chore.
+
+**Is the printed line even runnable? MEASURED here rather than assumed**, because the addendum asked for exactly that and it is a claim about a machine neither seat is on:
+
+| what was measured | result |
+| --- | --- |
+| `Get-AuthenticodeSignature` on Windows' `Pester\3.4.0\Pester.psd1` | `Valid`, `CN=Microsoft Windows, O=Microsoft Corporation` |
+| `Get-AuthenticodeSignature` on the gallery's Pester (via `Save-Module` to a temp directory) | `Valid`, `CN=Jakub Jares, O=Jakub Jares, L=Praha, C=CZ` |
+| `PublishersMismatch` in PowerShellGet's own resource table | "A Microsoft-signed module ... conflicts with the new module ... from publisher ... If you still want to install or update, use -SkipPublisherCheck parameter." |
+| `$script:WhitelistedModules` in PowerShellGet **2.2.5** (what PowerShell 7 carries) | `@{ "Pester" = $true; "PSReadline" = $true }` - the mismatch is downgraded to a warning and the install proceeds |
+| the same table in PowerShellGet **1.0.0.1** (what Windows PowerShell 5.1 ships) | absent - `WhitelistedModules` occurs 0 times, `PublishersMismatch` twice |
+
+So the honest answer is narrower than "it fails" and narrower than "it works": **it depends on which window the captain pastes it into, and the log shows them sitting in Windows PowerShell 5.1 - the one where it throws.**
+A printed fix is a line someone pastes into whatever shell they have open, so `-SkipPublisherCheck` is what makes it true in both.
+`Get-FmToolModuleInstallCommand` is now the only place that builds it, which also settles the two callers that disagreed about `-Force`.
+
+**But the line is no longer the point.**
+`superseded` is a new classification beside `unsupported`, and the two differ on one question: does putting what this repo needs on the machine REMOVE what is already there?
+
+- For a tool it does, so that one is still told and skipped and still ends the run NOT READY.
+- For a PowerShell module it does not. `Install-Module -Scope CurrentUser` writes a new version directory into the user's own module tree and PowerShell loads modules by version.
+
+**Side-by-side is not a hope here; it is what this machine is doing.**
+This seat has Windows' `Pester\3.4.0` in `C:\Program Files\WindowsPowerShell\Modules` and a `Pester\6.1.0` in a separate tree, `Get-Module -ListAvailable` lists both, and every suite run in this document ran on the 6.1.0 one.
+`Get-FmMachineInstallPlan` is the only caller that sets `-Supersedable`, and it sets it for every module and for no tool.
+
+**And the same fact stopped arriving twice.**
+Before any of that, the run dumped a raw `Import-Module Pester -MinimumVersion 5.0.0` failure with a source-line caret into the middle of the log - the same version problem the plan had already reported cleanly two lines earlier, arriving again as an unhandled error.
+Three things now prevent it: `Get-FmMachineSuitePrerequisite` decides on the VERSION rather than the name before a process is started, the runner writes a refusal into its own result file instead of throwing, and the child's error stream is redirected to a file and folded into this function's verdict rather than printed onto the console the report is being composed on.
+
+### 37.2 A tool this run installed, reported missing by this run
+
+Measured, in the same log, eight lines apart:
+
+```
+[created] Claude CLI - irm https://claude.ai/install.ps1 | iex
+...
+[missing] tool Claude CLI - not on PATH - firstmate itself
+            fix: irm https://claude.ai/install.ps1 | iex
+```
+
+Both lines are true.
+The vendor's installer wrote `claude.exe` into the user's own profile, this already-running process could not see it, and the run then advised the captain to repeat an install that had already worked - and called a working machine broken.
+
+Reloading PATH from the persisted environment was already happening after every install and is not always enough: an installer that reports where it put the tool, rather than persisting a PATH entry, leaves nothing to reload.
+So `Resolve-FmToolAfterInstall` asks the last question that is left - is it actually there? - and looks in the directory that vendor's own installer uses.
+
+**MEASURED on a machine that has them, 2026-08-21:**
+
+| tool | where its own installer left it |
+| --- | --- |
+| Claude CLI | `%USERPROFILE%\.local\bin\claude.exe` |
+| herdr | `%LOCALAPPDATA%\Programs\Herdr\bin\herdr.exe` - **not** the `.herdr\packages\standalone\releases\.staging...` path its failure message names |
+| treehouse | `%LOCALAPPDATA%\treehouse` (from the captain's own log) |
+
+A tool with no entry, or an entry that is not on this machine, changes nothing and the recovery reports that it found nothing.
+The step line says when a tool was reached that way, so a vendor installer that stops persisting PATH is visible rather than silently patched over.
+
+### 37.3 herdr: read their installer, take the same release, prove it runs
+
+herdr's own installer has now failed its own verification on two clean VMs:
+
+```
+==> Downloading Herdr
+Downloaded Herdr command failed verification:
+C:\Users\...\.herdr\packages\standalone\releases\.staging.0.8.2-...\herdr.exe --version
+```
+
+Nothing here fixes someone else's script and nothing here tries to.
+What this does instead is what the captain asked for: read that installer rather than run it, take the two facts out of it, and install the same release the way `gh` already is.
+
+**Read from `https://herdr.dev/install.ps1` on 2026-08-21:**
+
+| what their installer does | where |
+| --- | --- |
+| stable channel is `https://herdr.dev/latest.json`, preview is `preview.json` beside it | the `$ManifestUrl` default |
+| a Windows machine is the triple `x86_64-pc-windows-msvc`, asset key `windows-x86_64` | `$targetTriple` |
+| an asset is a bare URL string OR an object carrying `url`/`sha256`/`format` | their `Get-ManifestAsset` accepts both |
+| the version identity is `version` on stable, `"<base_version>-preview.<build_id>"` on preview | their `Resolve-HerdrVersion` |
+
+**Measured against the real manifests and the real release, from this seat:**
+
+```
+https://herdr.dev/latest.json    version 0.8.2
+                                 windows-x86_64 -> github.com/herdrdev/herdr/releases/
+                                 download/v0.8.2/herdr-windows-x86_64.zip   (bare string, no sha256)
+https://herdr.dev/preview.json   base_version 0.8.2 + build_id 2026-08-19-b5c4a0176e91
+                                 windows-x86_64 -> { url; sha256 01c8bc9f...c6e25e; format zip }
+zip layout                       herdr.exe at the root, beside conpty/ and THIRD-PARTY-NOTICES/
+                                 7 entries; no versioned root directory to strip
+```
+
+and then, the thing that actually decides it - **the expanded binary was run**:
+
+```
+Install-FmToolPortable -Portable (Get-FmBootstrapPortableRelease -Tool herdr)
+    -InstallRoot <scratch> -PathScope Process
+  action : installed
+  exe    : True
+  proof  : herdr 0.8.2   exit=0
+```
+
+**The binary was never the problem.**
+Their staging step was, and it is not on the path this repo now takes.
+`Get-FmToolLatestVersion -Tool 'herdr'` reads the same manifest, so "is it current" and "what would be installed" cannot disagree - and it replaces a GitHub prerelease scan whose newest tag is a date stamp that nothing can rank against the `herdr 0.8.2` the tool itself prints.
+Where a channel publishes a checksum the download is verified against it; the stable channel publishes none, and an absent checksum is never treated as a passing one.
+
+### 37.4 What was NOT proven here, and needs the captain's VM
+
+- **No clean machine has run any of this.** Every measurement above was taken on a machine that already has the tools. What is proven is the mechanism, the classification, the manifest contract and that the herdr binary runs; what is not proven is a full `install.ps1` from a fresh clone.
+- **Pester 5 was never installed on this machine to watch it succeed.** Doing so would have written into the captain's own module tree to answer a question that source-reading and two signature checks already answer. The side-by-side claim rests on this machine ALREADY being in that state, and on PowerShellGet's own whitelist table - not on a fresh install observed here.
+- **The `-SkipPublisherCheck` refusal was not reproduced.** Reproducing it means installing Pester 5 over Windows' copy from Windows PowerShell 5.1 and watching it throw. What is measured is both signers, PowerShellGet's own message text, and the presence and absence of the whitelist in the two versions - which is why the conclusion is stated as "depends which shell" rather than as a flat failure.
+- **The Claude CLI recovery was exercised against a stand-in, not against the Claude installer.** `Resolve-FmToolAfterInstall` was run for real against a disposable directory holding a dummy command, with `-PathScope Process`. Whether `%USERPROFILE%\.local\bin` is where that installer puts it on a CLEAN machine rests on it being where it is on this one.
+- **herdr was installed to a scratch directory, not to `%LOCALAPPDATA%\Programs`.** The download, the manifest read, the expansion, the layout check, the PATH edit and `herdr --version` all ran; what did not run is the same route landing on a machine that has no herdr at all.
+- **The whole-run report has not been seen end to end.** The lines this section changes were exercised through their own functions and through the suite, not by watching an install print them.

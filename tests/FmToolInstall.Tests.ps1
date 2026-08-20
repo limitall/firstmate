@@ -111,15 +111,21 @@ Describe 'where a tool actually comes from' {
         # exits 0 and leaves the machine broken in a way nothing reports.
         foreach ($tool in @('treehouse', 'herdr')) {
             $route = Get-FmToolRoute -Tool $tool
-            $route.Kind | Should -Be 'command' -Because "$tool has a scriptable installer of its own"
+            # treehouse comes from its own installer; herdr comes from the
+            # release its own installer downloads, because that installer fails
+            # its own verification on a clean machine. Neither is npm, which is
+            # the whole of what this pins.
+            $route.Kind | Should -BeIn @('command', 'portable') -Because "$tool has a real source of its own"
             $route.Command | Should -Not -Match 'npm' -Because "the npm package called '$tool' is not this software"
         }
     }
 
     It 'takes each tool from the vendor that publishes it' -Skip:(-not $IsWindows) {
         (Get-FmToolRoute -Tool 'treehouse').Command | Should -Match 'kunchenguid\.github\.io/treehouse/install\.ps1'
-        (Get-FmToolRoute -Tool 'herdr').Command | Should -Match 'herdr\.dev/install\.ps1'
         (Get-FmToolRoute -Tool 'claude').Command | Should -Match 'claude\.ai/install\.ps1'
+        # herdr is taken from the release its OWN installer points at, read out
+        # of that installer rather than guessed - see the herdr Describe below.
+        (Get-FmToolRoute -Tool 'herdr').Portable.ManifestUrl | Should -Match 'herdr\.dev'
         # The axi tools genuinely ARE npm packages, so npm is the right source
         # for them and only for them.
         foreach ($tool in @('gh-axi', 'chrome-devtools-axi', 'lavish-axi', 'tasks-axi', 'quota-axi')) {
@@ -1374,5 +1380,282 @@ Describe 'a failed install, reported' {
         @($text -split '\r?\n')[0] | Should -Match '# or \./install\.ps1$'
         @($text -split '\r?\n').Count | Should -BeGreaterThan 1
         $text | Should -Match 'exit \$fmCode'
+    }
+}
+
+Describe 'a fix line the captain can actually paste' {
+    # THE BAR, IN THE CAPTAIN'S WORDS: nothing is left for them to run by hand,
+    # and where a line IS printed - because a step genuinely failed - it has to
+    # be one that works when pasted into whatever window they have open.
+
+    It 'builds every module install line in one place, and always with -SkipPublisherCheck' {
+        # MEASURED 2026-08-21, because this is a claim about a machine:
+        #   - Windows' own Pester 3.4.0 manifest is Authenticode Valid, signed
+        #     'CN=Microsoft Windows, O=Microsoft Corporation'
+        #   - the gallery's Pester is Authenticode Valid, signed 'CN=Jakub Jares'
+        #   - PowerShellGet raises PublishersMismatch on exactly that pair and
+        #     names -SkipPublisherCheck as the way past it
+        #   - PowerShellGet 2.2.5, which PowerShell 7 carries, whitelists Pester
+        #     so it passes there; 1.0.0.1, which Windows PowerShell 5.1 ships,
+        #     does not, so the same line throws there
+        # The captain's clean-VM log has them in Windows PowerShell 5.1 - the
+        # shell where it fails - so the switch is what makes the line true in
+        # both.
+        Get-FmToolModuleInstallCommand -Name 'Pester' -MinimumVersion '5.0.0' |
+            Should -Be 'Install-Module Pester -MinimumVersion 5.0.0 -Scope CurrentUser -SkipPublisherCheck'
+    }
+
+    It 'adds -Force only when replacing a copy that is already there' {
+        # Without it Install-Module reports "already installed" and does nothing,
+        # so a captain who asked for an update would be told it happened.
+        Get-FmToolModuleInstallCommand -Name 'Pester' -MinimumVersion '5.0.0' -Force |
+            Should -Match '\s-Force\s'
+        Get-FmToolModuleInstallCommand -Name 'Pester' -MinimumVersion '5.0.0' |
+            Should -Not -Match '\s-Force(\s|$)'
+    }
+
+    It 'states no minimum where none is stated' {
+        Get-FmToolModuleInstallCommand -Name 'PSScriptAnalyzer' |
+            Should -Be 'Install-Module PSScriptAnalyzer -Scope CurrentUser -SkipPublisherCheck'
+    }
+
+    It 'prints no Install-Module line anywhere that would fail on a clean machine' -Skip:(-not $IsWindows) {
+        # THE DEFECT, PINNED, and swept rather than spot-checked: four places
+        # printed this line and two of them disagreed. Every place that renders
+        # one now goes through the builder, so a fifth added later without the
+        # switch fails here rather than on a captain's VM.
+        $plan = Get-FmMachineInstallPlan -Offline
+        $lines = @()
+        foreach ($requirement in @($plan.Requirements | Where-Object { $_.Kind -eq 'module' })) {
+            $lines += @($requirement.Route.Command, $requirement.UpdateCommand)
+        }
+        foreach ($check in @(Get-FmMachineModuleVerification)) { $lines += $check.Fix }
+        foreach ($check in @((Invoke-FmDoctor -RepoRoot $script:RepoRoot).Checks)) { $lines += $check.Fix }
+
+        $moduleLines = @($lines | Where-Object { $_ -and $_ -match 'Install-Module' })
+        $moduleLines.Count | Should -BeGreaterThan 0 -Because 'this sweep must not be vacuous'
+        foreach ($line in $moduleLines) {
+            $line | Should -Match '\s-SkipPublisherCheck(\s|$)' `
+                -Because "'$line' is refused by PowerShellGet 1.0.0.1 over Windows' own Microsoft-signed Pester"
+            $line | Should -Match '\s-Scope CurrentUser(\s|$)' `
+                -Because "'$line' must need no administrator"
+        }
+    }
+
+    It 'answers a portable route with a command, never with a description of one' -Skip:(-not $IsWindows) {
+        # Get-FmToolRoute's Command for a portable route is "expand the cli/cli
+        # release asset ... into ...", which is a true statement of what this
+        # installer does and is not something anybody can type. Printed as a
+        # "fix:" it hands the captain a sentence instead of a remedy.
+        $route = Get-FmToolRoute -Tool 'gh'
+        $route.Kind | Should -Be 'portable'
+        $fix = Get-FmToolFixCommand -Route $route
+        $fix | Should -Not -Match '^expand '
+        $fix | Should -Match 'install\.ps1'
+    }
+
+    It 'passes a vendor one-liner straight through, because that one is runnable' -Skip:(-not $IsWindows) {
+        Get-FmToolFixCommand -Route (Get-FmToolRoute -Tool 'claude') |
+            Should -Be 'irm https://claude.ai/install.ps1 | iex'
+    }
+}
+
+Describe "Windows' own Pester is installed beside, never over" {
+    # THE DEFECT, MEASURED on the captain's clean Windows 11 VM 2026-08-21: every
+    # clean machine carries Pester 3.4.0, the run refused to install 5+, printed
+    # a command for the captain to run, and reported the machine NOT READY. The
+    # refusal was protecting a copy no install here would have touched.
+
+    It 'calls a module below the floor superseded, because installing it replaces nothing' {
+        Get-FmToolClassification -Present $true -Installed '3.4.0' -Minimum '5.0.0' -Supersedable $true |
+            Should -Be 'superseded'
+    }
+
+    It 'still calls a TOOL below the floor unsupported, because installing that one does replace it' {
+        Get-FmToolClassification -Present $true -Installed '3.4.0' -Minimum '5.0.0' |
+            Should -Be 'unsupported'
+    }
+
+    It 'leaves a module that clears the floor alone' {
+        Get-FmToolClassification -Present $true -Installed '6.1.0' -Latest '6.1.0' -Minimum '5.0.0' -Supersedable $true |
+            Should -Be 'current'
+    }
+
+    It 'marks modules supersedable and tools not, in the plan the installer acts on' -Skip:(-not $IsWindows) {
+        $plan = Get-FmMachineInstallPlan -Offline
+        foreach ($requirement in $plan.Requirements) {
+            $expected = ($requirement.Kind -eq 'module')
+            $requirement.Supersedable | Should -Be $expected `
+                -Because "$($requirement.Label) is a $($requirement.Kind), and only a module install adds a version beside what is there"
+        }
+    }
+
+    It 'keeps a superseded module out of the bucket that ends a run NOT READY' {
+        # 'unsupported' is what makes install.ps1 report the machine unfinished
+        # and tell the captain to fix it themselves. A module never belongs
+        # there, because this run installs it.
+        $requirement = [pscustomobject]@{
+            Kind = 'module'; Label = 'module Pester'; Path = 'C:\Program Files\WindowsPowerShell\Modules\Pester\3.4.0'
+            Version = '3.4.0'; Minimum = '5.0.0'; MinimumSource = 'the suite is written for Pester 5+'
+            MinimumCapability = ''; Why = 'runs the test suite'; Classification = 'superseded'
+        }
+        $reason = Get-FmToolClassificationReason -Requirement $requirement
+        $reason | Should -Match 'BESIDE'
+        $reason | Should -Match 'left exactly as it is'
+        $reason | Should -Match '3\.4\.0'
+    }
+
+    It 'asks nothing about it, because installing it is this run''s job' {
+        $requirement = [pscustomobject]@{
+            Kind = 'module'; Label = 'module Pester'; Path = ''; Version = '3.4.0'; Latest = '6.1.0'
+            Minimum = '5.0.0'; MinimumSource = 'the suite'; MinimumCapability = ''; Classification = 'superseded'
+        }
+        Get-FmMachineQuestion -Requirement $requirement | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'a tool this run installed is never reported missing by this run' {
+    # THE DEFECT, MEASURED on the captain's clean Windows 11 VM 2026-08-21:
+    #   [created] Claude CLI - irm https://claude.ai/install.ps1 | iex
+    #   [missing] tool Claude CLI - not on PATH - firstmate itself
+    # Both true. The installer wrote claude.exe into the user's own profile, this
+    # already-running process could not see it, and the run advised repeating an
+    # install that had worked.
+
+    BeforeEach { $script:PathBefore = $env:PATH }
+    AfterEach { $env:PATH = $script:PathBefore }
+
+    It 'finds what a vendor installer left behind and puts it on PATH' {
+        $vendorDirectory = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $vendorDirectory -Force
+        Set-Content -LiteralPath (Join-Path $vendorDirectory 'demoinstalled.cmd') -Value '@echo demo' -NoNewline
+
+        $result = Resolve-FmToolAfterInstall -Tool 'demoinstalled' -PathScope Process `
+            -Candidate @($vendorDirectory) -Confirm:$false
+
+        $result.Resolved | Should -BeTrue
+        $result.Recovered | Should -BeTrue -Because 'the environment did not have it and the known location did'
+        $result.Directory | Should -Be $vendorDirectory
+        Test-FmToolOnPath -Directory $vendorDirectory -Scope Process | Should -BeTrue
+    }
+
+    It 'reports honestly when the tool is in neither place' {
+        $empty = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $empty -Force
+        $result = Resolve-FmToolAfterInstall -Tool 'notinstalledanywhere' -PathScope Process `
+            -Candidate @($empty) -Confirm:$false
+        $result.Resolved | Should -BeFalse
+        $result.Recovered | Should -BeFalse
+    }
+
+    It 'names a real per-user directory for every tool whose installer writes one' -Skip:(-not $IsWindows) {
+        # MEASURED on a machine that has them, 2026-08-21: the Claude CLI is at
+        # %USERPROFILE%\.local\bin and herdr's own installer leaves the runnable
+        # copy at %LOCALAPPDATA%\Programs\Herdr\bin.
+        (Get-FmBootstrapInstalledLocation -Tool 'claude') | Should -Contain '%USERPROFILE%\.local\bin'
+        (Get-FmBootstrapInstalledLocation -Tool 'herdr') | Should -Contain '%LOCALAPPDATA%\Programs\Herdr\bin'
+        # A tool with no entry is not a hole: nothing is searched and the
+        # recovery simply reports what it found, which is nothing.
+        (Get-FmBootstrapInstalledLocation -Tool 'git') | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'herdr, installed rather than advised' {
+    # THE DEFECT, MEASURED on the captain's clean Windows 11 VMs TWICE: the
+    # vendor's own installer downloads the release and then fails ITS OWN
+    # verification, so herdr was the one required tool no clean machine ended up
+    # with. What this repo does about it is read their installer and take the
+    # same release the same way gh already is - not work around their script.
+
+    It 'takes the portable route, and needs no administrator for it' -Skip:(-not $IsWindows) {
+        $route = Get-FmToolRoute -Tool 'herdr'
+        $route.Kind | Should -Be 'portable'
+        $route.NeedsAdministrator | Should -BeFalse
+        # herdr.exe is at the root of that zip beside conpty/, which has to stay
+        # next to it - so the expansion itself is what goes on PATH.
+        $route.Portable.BinSubdirectory | Should -BeNullOrEmpty
+        $route.Portable.StripRoot | Should -BeFalse
+    }
+
+    It 'reads the same manifest their installer reads' -Skip:(-not $IsWindows) {
+        # Read from https://herdr.dev/install.ps1 on 2026-08-21: the stable
+        # channel is latest.json, and a Windows machine is the target triple
+        # x86_64-pc-windows-msvc, whose asset key is windows-x86_64.
+        $portable = Get-FmBootstrapPortableRelease -Tool 'herdr'
+        $portable.Source | Should -Be 'manifest'
+        $portable.ManifestUrl | Should -Be 'https://herdr.dev/latest.json'
+        $portable.AssetKey | Should -Be 'windows-x86_64'
+    }
+
+    It 'reads an asset published as a bare URL, which is the stable channel''s shape' {
+        # Captured from https://herdr.dev/latest.json, 2026-08-21.
+        $manifest = [pscustomobject]@{
+            version = '0.8.2'
+            assets  = [pscustomobject]@{
+                'windows-x86_64' = 'https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-windows-x86_64.zip'
+            }
+        }
+        $asset = Get-FmToolManifestAsset -Manifest $manifest -AssetKey 'windows-x86_64'
+        $asset.Name | Should -Be 'herdr-windows-x86_64.zip'
+        $asset.Version | Should -Be '0.8.2'
+        # No checksum on that channel, and an absent one is never treated as a
+        # passing one.
+        $asset.Sha256 | Should -BeNullOrEmpty
+    }
+
+    It 'reads an asset published as an object with a checksum, which is preview''s shape' {
+        # Captured from https://herdr.dev/preview.json, 2026-08-21.
+        $manifest = [pscustomobject]@{
+            channel      = 'preview'
+            base_version = '0.8.2'
+            build_id     = '2026-08-19-b5c4a0176e91'
+            assets       = [pscustomobject]@{
+                'windows-x86_64' = [pscustomobject]@{
+                    url    = 'https://github.com/herdrdev/herdr/releases/download/preview-2026-08-19-b5c4a0176e91/herdr-windows-x86_64.zip'
+                    sha256 = '01c8bc9f22be0ad447ceb8f4ed8ae18871b31694ccfd6b504b26ee31f0c6e25e'
+                    format = 'zip'
+                }
+            }
+        }
+        $asset = Get-FmToolManifestAsset -Manifest $manifest -AssetKey 'windows-x86_64'
+        $asset.Sha256 | Should -Be '01c8bc9f22be0ad447ceb8f4ed8ae18871b31694ccfd6b504b26ee31f0c6e25e'
+        # Their rule for a preview identity, not one invented here.
+        $asset.Version | Should -Be '0.8.2-preview.2026-08-19-b5c4a0176e91'
+    }
+
+    It 'refuses, naming the manifest, when it carries nothing for this machine' {
+        $manifest = [pscustomobject]@{ version = '0.8.2'; assets = [pscustomobject]@{ 'linux-x86_64' = 'https://example.invalid/x' } }
+        { Get-FmToolManifestAsset -Manifest $manifest -AssetKey 'windows-x86_64' -Origin 'https://herdr.dev/latest.json' } |
+            Should -Throw "*lists no 'windows-x86_64' asset*"
+    }
+}
+
+Describe 'a condition this run detected does not also escape as noise' {
+    # THE DEFECT, MEASURED on the captain's clean Windows 11 VM 2026-08-21: the
+    # plan said cleanly that Pester 3.4.0 was below the floor, and eight lines
+    # later the suite's child process dumped a raw `Import-Module Pester
+    # -MinimumVersion 5.0.0` failure with a source-line caret into the middle of
+    # the install log. The same fact, arriving twice, the second time as an
+    # unhandled error.
+
+    It 'refuses to start the suite on a Pester this suite is not written for' {
+        $prerequisite = Get-FmMachineSuitePrerequisite -Available @([version]'3.4.0')
+        $prerequisite.CanRun | Should -BeFalse
+        $prerequisite.Detail | Should -Match '3\.4\.0'
+        $prerequisite.Detail | Should -Match 'Pester 5\+'
+    }
+
+    It 'says Pester is absent rather than too old when it is absent' {
+        $prerequisite = Get-FmMachineSuitePrerequisite -Available @()
+        $prerequisite.CanRun | Should -BeFalse
+        $prerequisite.Detail | Should -Match 'not installed'
+    }
+
+    It 'runs when a copy this suite is written for is present, whatever else is' {
+        # The shape every clean Windows machine is in once this installer has
+        # run: Windows' own 3.4.0 still there, and a 5+ beside it.
+        $prerequisite = Get-FmMachineSuitePrerequisite -Available @([version]'3.4.0', [version]'6.1.0')
+        $prerequisite.CanRun | Should -BeTrue
+        $prerequisite.Newest | Should -Be '6.1.0'
     }
 }

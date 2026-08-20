@@ -29,15 +29,29 @@ THREE OUTCOMES PER REQUIREMENT, not two.
                  version. You are ASKED, one requirement at a time, with what is
                  installed and what is available. Declining is always safe, is
                  always the default, and never stops the run.
-  unsupported    installed but below a minimum this repo actually states. You
-                 are TOLD, the step is SKIPPED, and nothing is installed over
-                 the top of it. A machine in that state is reported as NOT
-                 READY rather than finished.
+  unsupported    installed but below a minimum this repo actually states, and
+                 the only way to put what this repo needs there is to REPLACE
+                 it. You are TOLD, the step is SKIPPED, and nothing is
+                 installed over the top of it. A machine in that state is
+                 reported as NOT READY rather than finished.
+  superseded     the same, except that what this repo needs installs BESIDE it.
+                 That is every PowerShell module, because PowerShell keeps each
+                 version of a module in its own directory and loads by version.
+                 Windows ships Pester 3.4.0 on every machine and this repo needs
+                 5+, so this run installs 5+ into your own module directory and
+                 leaves Windows' copy exactly where it is. Nothing is asked and
+                 nothing is left for you to run.
+
+NOTHING IS LEFT FOR YOU TO RUN. Every line this script prints is either something
+it did, or something that genuinely cannot be done from a script - and that one
+is named, with the reason, and with whatever the tool itself said. A step you
+have to perform yourself for the machine to work is a defect in this script, not
+an instruction to you.
 
 NO STEP NEEDS ADMINISTRATOR. Every tool comes from a per-user installer or a
-release archive expanded under %LOCALAPPDATA%\Programs. The two routes that
-genuinely need elevation - the winget packages for git and Node.js - are named
-and skipped on an unelevated run, and everything else still installs.
+release archive expanded under %LOCALAPPDATA%\Programs. A route that genuinely
+needs elevation is named and skipped on an unelevated run, and everything else
+still installs.
 
 WHAT IT INSTALLS, YOU CAN FIND. A per-user install registers nothing by itself,
 so this run adds PowerShell 7 to your own Start menu and prints where the
@@ -255,6 +269,19 @@ foreach ($requirement in $plan.Unsupported) {
     Say ''
 }
 
+# ---- 2a. a module below the floor is INSTALLED BESIDE what is there ----------
+# Not the same case as the block above, and the difference is what it does to the
+# copy already on the machine: PowerShell keeps every version of a module in its
+# own version directory, so this adds one and removes nothing. Windows ships
+# Pester 3.4.0 on every machine, which made this the ordinary case - and
+# refusing it is what used to end a clean-machine run with a command for the
+# captain to run by hand.
+foreach ($requirement in $plan.Superseded) {
+    Say "  $($requirement.Label) is below what this repo needs, and nothing here replaces it."
+    Say "    $($requirement.Reason)"
+    Say ''
+}
+
 # ---- 2b. and so is a tool this machine will not start ------------------------
 # Installing a second copy into the same place would be refused in the same way,
 # so this is told rather than repaired, exactly like the block above.
@@ -298,7 +325,11 @@ if (-not $report.Ready) {
     exit 1
 }
 
-Say '  Open a NEW shell, so the `firstmate` command is on PATH, then:'
+# NOT A STEP IN THE INSTALL. Everything above is done and proven; this is about
+# the WINDOW you are standing in, which took its copy of PATH when it opened and
+# cannot be given a new one from inside. Any new window has it.
+Say '  Everything is installed and proven. This window took its PATH when it opened,'
+Say '  so type this in a NEW one:'
 Say ''
 Say '    firstmate          start it - opens your browser, everything happens there'
 Say ''

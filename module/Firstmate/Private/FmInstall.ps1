@@ -901,10 +901,10 @@ function Get-FmInstallPrerequisiteCheck {
         $checks += New-FmInstallCheck -Name 'Pester 5+' -Status 'ok' -Detail $pester[0].Version.ToString()
     } elseif ($pester.Count -gt 0) {
         $checks += New-FmInstallCheck -Name 'Pester 5+' -Status 'warn' -Detail "found $($pester[0].Version)" `
-            -Fix 'Install-Module Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force'
+            -Fix (Get-FmToolModuleInstallCommand -Name 'Pester' -MinimumVersion '5.0.0' -Force)
     } else {
         $checks += New-FmInstallCheck -Name 'Pester 5+' -Status 'warn' -Detail 'not installed (needed to run the suite, not to run firstmate)' `
-            -Fix 'Install-Module Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force'
+            -Fix (Get-FmToolModuleInstallCommand -Name 'Pester' -MinimumVersion '5.0.0' -Force)
     }
 
     # herdr is the only session provider this port drives. Without it a worker

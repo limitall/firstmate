@@ -42,6 +42,8 @@ Both install cleanly and leave a machine that fails at dispatch with nothing say
 Anything missing is installed.
 Anything present but older than the latest published version is offered as an optional update, one question at a time, and declining is always safe.
 Anything present but below a minimum this repo actually states is reported and **skipped** rather than installed over, and the run ends by saying the machine is not ready.
+A PowerShell module below that minimum is the exception, and it is installed instead: PowerShell holds every version of a module in its own directory and loads by version, so a new one goes in beside the old one and replaces nothing.
+Windows ships Pester 3.4.0 on every machine and this repo needs 5+, so without that exception every clean machine ended its install with a command for you to run.
 
 Add `-Unattended` to that command to take the safe default for every question, `-SkipOptional` for the required tools only, and `-DetectOnly` to see the state of the machine without changing it.
 

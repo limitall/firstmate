@@ -323,10 +323,20 @@ function Get-FmToolLatestVersion {
         'git' { return (Get-FmToolGitHubLatestVersion -Repository 'git-for-windows/git' -TimeoutSeconds $TimeoutSeconds) }
         'gh' { return (Get-FmToolGitHubLatestVersion -Repository 'cli/cli' -TimeoutSeconds $TimeoutSeconds) }
         'treehouse' { return (Get-FmToolGitHubLatestVersion -Repository 'kunchenguid/treehouse' -TimeoutSeconds $TimeoutSeconds) }
-        # Windows herdr binaries are published only on PREVIEW releases while
-        # native Windows support is in beta, so the newest release of any kind is
-        # the one a Windows machine can actually be on.
-        'herdr' { return (Get-FmToolGitHubLatestVersion -Repository 'herdrdev/herdr' -IncludePrerelease -TimeoutSeconds $TimeoutSeconds) }
+        # THE VENDOR'S OWN ANSWER, from the same manifest their installer reads
+        # and this repo's route installs from - so "is it current" and "what
+        # would be installed" cannot disagree. It also replaced a GitHub
+        # prerelease scan whose newest tag is a date stamp, which nothing can
+        # rank against the `herdr 0.8.2` the tool itself prints.
+        'herdr' {
+            try {
+                $manifest = Invoke-RestMethod -Uri 'https://herdr.dev/latest.json' -TimeoutSec $TimeoutSeconds -ErrorAction Stop
+                return (Get-FmToolManifestVersion -Manifest $manifest)
+            } catch {
+                Write-Debug "could not read the latest herdr release: $_"
+                return ''
+            }
+        }
         'claude' {
             try {
                 return ([string](Invoke-RestMethod -Uri 'https://downloads.claude.ai/claude-code-releases/latest' `
@@ -381,7 +391,10 @@ function Get-FmToolModuleLatestVersion {
 #   missing         not present at all
 #   unusable        present, and this machine refuses to START it
 #   unsupported     present, below a minimum this repo STATES, or missing a
-#                   stated capability
+#                   stated capability, and what this repo needs can only be put
+#                   there by REPLACING it
+#   superseded      the same, except that what this repo needs installs BESIDE
+#                   it and leaves it exactly where it is
 #   older           present, working, behind the latest published version
 #   current         present and at or ahead of the latest published version
 #   unknown-version present but its banner carries no readable version
@@ -391,6 +404,27 @@ function Get-FmToolModuleLatestVersion {
 # established about a program that never ran: a version was not read, a floor was
 # not cleared, and a capability was not proved. Reporting it as any of those
 # would state something this machine did not show.
+#
+# WHY 'superseded' IS A CLASS AND NOT A SOFTER 'unsupported'. The rule that an
+# unsupported requirement is told and SKIPPED exists to stop this installer
+# writing over a working tool the captain never agreed to replace. That rule is
+# about REPLACEMENT, and a PowerShell module install is not one: PowerShell keeps
+# every version of a module in its own version directory and loads by version, so
+# Install-Module -Scope CurrentUser adds a directory to the user's own module
+# tree and removes nothing.
+#
+# MEASURED, 2026-08-21, on the machine this was written on - which is in exactly
+# the state a clean VM is in: Windows' own Pester 3.4.0 sits in
+# C:\Program Files\WindowsPowerShell\Modules\Pester\3.4.0 and a Pester 6.1.0 sits
+# in a separate tree, both are listed by Get-Module -ListAvailable, and this
+# repo's suite runs on the 6.1.0 one. Side-by-side is not a hope here; it is what
+# this machine is doing.
+#
+# MEASURED on the captain's clean Windows 11 VM, 2026-08-21: every clean machine
+# has that Pester 3.4.0, the run refused to install 5+ over it, printed a command
+# for the captain to run, and reported the machine NOT READY. That was a step the
+# captain had to perform for a job this installer is perfectly able to do, and
+# this class is what removes it.
 function Get-FmToolClassification {
     [CmdletBinding()]
     [OutputType([string])]
@@ -400,12 +434,18 @@ function Get-FmToolClassification {
         [string]$Latest = '',
         [string]$Minimum = '',
         [bool]$CapabilityMet = $true,
-        [bool]$Launchable = $true
+        [bool]$Launchable = $true,
+        # Set only where installing what this repo needs leaves what is already
+        # there untouched. Get-FmMachineInstallPlan is the one caller that sets
+        # it, and it sets it for modules and never for tools.
+        [bool]$Supersedable = $false
     )
+
+    $belowFloor = if ($Supersedable) { 'superseded' } else { 'unsupported' }
 
     if (-not $Present) { return 'missing' }
     if (-not $Launchable) { return 'unusable' }
-    if (-not $CapabilityMet) { return 'unsupported' }
+    if (-not $CapabilityMet) { return $belowFloor }
 
     $have = Get-FmToolVersionNumber -Text $Installed
     if ($Minimum) {
@@ -413,7 +453,7 @@ function Get-FmToolClassification {
         # An unreadable version cannot be shown to clear a floor, so it is never
         # assumed to. It is reported as unknown and the floor stays unproven.
         if ($null -eq $have) { return 'unknown-version' }
-        if ($null -ne $floor -and $have -lt $floor) { return 'unsupported' }
+        if ($null -ne $floor -and $have -lt $floor) { return $belowFloor }
     }
     if ($null -eq $have) { return 'unknown-version' }
 
@@ -447,6 +487,12 @@ function Get-FmToolClassificationReason {
                 return "$($Requirement.Version) is installed, and this port needs a build that $($Requirement.MinimumCapability)"
             }
             return "$($Requirement.Version) is installed; this repo requires at least $($Requirement.Minimum) ($($Requirement.MinimumSource))"
+        }
+        'superseded' {
+            $where = if ($Requirement.Path) { " in $($Requirement.Path)" } else { '' }
+            return ("$($Requirement.Version) is installed$where; this repo needs at least $($Requirement.Minimum) " +
+                "($($Requirement.MinimumSource)), so this run installs it into your own module directory BESIDE that copy, " +
+                'which is left exactly as it is')
         }
         'unknown-version' { return "installed at $($Requirement.Path), but it prints no version this installer can read, so nothing about it is proven" }
         'unknown-latest' { return "$($Requirement.Version) is installed; the published version could not be read, so whether it is current is unknown" }
@@ -484,6 +530,70 @@ function Update-FmToolSessionPath {
     }
     $env:PATH = ($entries -join $separator)
     $env:PATH
+}
+
+# A TOOL THIS RUN INSTALLED, MADE REACHABLE BY THIS RUN.
+#
+# THE DEFECT, MEASURED on the captain's clean Windows 11 VM, 2026-08-21:
+#
+#   [created] Claude CLI - irm https://claude.ai/install.ps1 | iex
+#   ...
+#   [missing] tool Claude CLI - not on PATH - firstmate itself
+#             fix: irm https://claude.ai/install.ps1 | iex
+#
+# Both lines were true. The vendor's installer put claude.exe in the user's own
+# profile, this process could not see it, and the run advised the captain to
+# repeat an install that had already worked - then called a working machine
+# broken. Reloading PATH from the persisted environment is the first answer and
+# it is not always enough: an installer that reports where it put the tool
+# instead of persisting a PATH entry leaves nothing to reload.
+#
+# So this asks the last question that is left - IS IT ACTUALLY THERE? - by
+# looking in the directory that vendor's own installer uses, and puts that
+# directory on PATH when the tool is in it. Get-FmBootstrapInstalledLocation owns
+# the list; a tool with no entry, or an entry that is not there, changes nothing
+# and this returns $false exactly as before.
+function Resolve-FmToolAfterInstall {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Tool,
+        [string]$Command = '',
+        [ValidateSet('User', 'Process')][string]$PathScope = 'User',
+        # The suite's seam: a directory list to search instead of the table, so
+        # the recovery runs for real against a disposable directory rather than
+        # needing a machine where a vendor installer has misbehaved.
+        [string[]]$Candidate = @()
+    )
+
+    if (-not $Command) { $Command = $Tool }
+    $found = [pscustomobject]@{ Tool = $Tool; Resolved = $false; Directory = ''; Recovered = $false }
+
+    # 1. the environment itself, which is where an installer that persisted a
+    #    PATH entry a moment ago has already written it.
+    $null = Update-FmToolSessionPath -Confirm:$false
+    if (Get-Command -Name $Command -CommandType Application -ErrorAction SilentlyContinue) {
+        $found.Resolved = $true
+        return $found
+    }
+
+    # 2. the vendor's own directory.
+    $candidates = if ($Candidate.Count -gt 0) { $Candidate } else { @(Get-FmBootstrapInstalledLocation -Tool $Tool) }
+    foreach ($candidate in $candidates) {
+        $directory = [System.Environment]::ExpandEnvironmentVariables($candidate)
+        if ($directory -match '%\w+%') { continue }
+        if (-not (Test-Path -LiteralPath $directory -PathType Container)) { continue }
+        $executable = @(Get-ChildItem -LiteralPath $directory -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.BaseName -ieq $Command -and $_.Extension -in @('.exe', '.cmd', '.bat', '.ps1', '') })
+        if ($executable.Count -eq 0) { continue }
+        if (-not $PSCmdlet.ShouldProcess($directory, "put the directory holding $Tool on PATH")) { continue }
+        $null = Add-FmToolUserPath -Directory $directory -Scope $PathScope -Confirm:$false
+        $found.Resolved = [bool](Get-Command -Name $Command -CommandType Application -ErrorAction SilentlyContinue)
+        $found.Directory = $directory
+        $found.Recovered = $found.Resolved
+        if ($found.Resolved) { return $found }
+    }
+    $found
 }
 
 # Is this directory already on the PATH the given scope would be asked to write?
@@ -722,6 +832,29 @@ function Get-FmToolRoute {
     }
 }
 
+# A LINE THE CAPTAIN CAN ACTUALLY PASTE, for a tool that is not here.
+#
+# Get-FmToolRoute's Command is a description for a portable route - "expand the
+# cli/cli release asset gh_*_windows_amd64.zip into ..." - which is exactly right
+# as a statement of what this installer does and is not a command anybody can
+# run. Printing it as a "fix:" hands the captain a sentence instead of a remedy.
+#
+# Every fix line this repo prints has to be one that works when pasted, so a
+# route nobody can type by hand answers with the thing that DOES it: this
+# installer, which needs no administrator and is safe to run again.
+function Get-FmToolFixCommand {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)]$Route)
+
+    switch ($Route.Kind) {
+        'portable' { return 'powershell -ExecutionPolicy Bypass -File .\install.ps1   # installs it from the vendor''s own release archive, no administrator' }
+        'manual' { return "install it by hand: $($Route.Instructions)" }
+        'none' { return '' }
+        default { return [string]$Route.Command }
+    }
+}
+
 # --- the portable-release install -----------------------------------------------
 
 # Which asset of a release is the one for this machine. Split out from the
@@ -746,6 +879,84 @@ function Get-FmToolReleaseAsset {
         Url  = [string]$match[0].browser_download_url
         Tag  = [string]$Release.tag_name
     }
+}
+
+# WHERE ONE PORTABLE ROUTE'S ARCHIVE ACTUALLY IS, as a { Name; Url; Version;
+# Sha256 } record - the same shape whichever vendor publishes it, so
+# Install-FmToolPortable has one download to perform rather than one per source.
+#
+# 'manifest' IS NOT A GITHUB RELEASE LOOKUP even when the file it names lives on
+# GitHub. herdr publishes a small JSON saying which release is current and where
+# its assets are, and their own installer reads exactly that - so this reads the
+# same file rather than re-deriving the answer from the releases API and hoping
+# the two agree. Their asset value is a bare URL string on the stable channel and
+# an object carrying url/sha256/format on preview; their Get-ManifestAsset
+# accepts both shapes and so does this.
+function Get-FmToolPortableAsset {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Portable,
+        [int]$TimeoutSeconds = 30
+    )
+
+    if ($Portable.Source -eq 'manifest') {
+        $manifest = Invoke-RestMethod -Uri $Portable.ManifestUrl -TimeoutSec $TimeoutSeconds -ErrorAction Stop
+        return Get-FmToolManifestAsset -Manifest $manifest -AssetKey $Portable.AssetKey -Origin $Portable.ManifestUrl
+    }
+
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$($Portable.Repository)/releases/latest" `
+        -Headers @{ 'User-Agent' = 'firstmate-win' } -TimeoutSec $TimeoutSeconds -ErrorAction Stop
+    $asset = Get-FmToolReleaseAsset -Release $release -AssetPattern $Portable.AssetPattern
+    [pscustomobject]@{ Name = $asset.Name; Url = $asset.Url; Version = $asset.Tag; Sha256 = '' }
+}
+
+# READING THE MANIFEST, split from FETCHING it, so the two shapes a vendor
+# actually publishes can be exercised against captured documents rather than
+# only against the network.
+function Get-FmToolManifestAsset {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Manifest,
+        [Parameter(Mandatory)][string]$AssetKey,
+        [string]$Origin = 'the release manifest'
+    )
+
+    $assets = $null
+    if ($Manifest.PSObject.Properties.Name -contains 'assets') { $assets = $Manifest.assets }
+    $entry = if ($assets -and ($assets.PSObject.Properties.Name -contains $AssetKey)) { $assets.$AssetKey } else { $null }
+    if (-not $entry) {
+        throw "error: $Origin lists no '$AssetKey' asset, so there is nothing to download for this machine"
+    }
+    # A bare URL string on one channel and an object carrying url/sha256/format
+    # on the other. Their own reader accepts both, so this does too.
+    $url = if ($entry -is [string]) { [string]$entry } elseif ($entry.PSObject.Properties.Name -contains 'url') { [string]$entry.url } else { '' }
+    if (-not $url) { throw "error: the '$AssetKey' asset in $Origin carries no URL" }
+    $sha = if ($entry -isnot [string] -and ($entry.PSObject.Properties.Name -contains 'sha256')) { [string]$entry.sha256 } else { '' }
+    [pscustomobject]@{
+        Name    = [System.IO.Path]::GetFileName(([uri]$url).AbsolutePath)
+        Url     = $url
+        Version = (Get-FmToolManifestVersion -Manifest $Manifest)
+        Sha256  = $sha
+    }
+}
+
+# The version identity a herdr-style manifest names, by their own rule: the
+# stable channel carries `version`, and the preview channel carries a
+# base_version and a build_id that combine into one.
+function Get-FmToolManifestVersion {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)]$Manifest)
+
+    $names = $Manifest.PSObject.Properties.Name
+    $version = if ($names -contains 'version') { [string]$Manifest.version } else { '' }
+    if ($version) { return $version }
+    $base = if ($names -contains 'base_version') { [string]$Manifest.base_version } else { '' }
+    $build = if ($names -contains 'build_id') { [string]$Manifest.build_id } else { '' }
+    if ($base -and $build) { return "$base-preview.$build" }
+    ''
 }
 
 # Expand an archive into a destination that ends up holding the tool.
@@ -825,11 +1036,18 @@ function Install-FmToolPortable {
     $downloaded = ''
     try {
         if (-not $archive) {
-            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$($Portable.Repository)/releases/latest" `
-                -Headers @{ 'User-Agent' = 'firstmate-win' } -ErrorAction Stop
-            $asset = Get-FmToolReleaseAsset -Release $release -AssetPattern $Portable.AssetPattern
+            $asset = Get-FmToolPortableAsset -Portable $Portable
             $downloaded = Join-Path ([System.IO.Path]::GetTempPath()) ('fm-tool-' + [guid]::NewGuid().ToString('N') + '-' + $asset.Name)
             Invoke-WebRequest -Uri $asset.Url -OutFile $downloaded -ErrorAction Stop
+            # WHERE THE VENDOR PUBLISHES A CHECKSUM, IT IS CHECKED. herdr's
+            # preview manifest carries one; their stable manifest does not, and
+            # an absent checksum is not treated as a passing one.
+            if ($asset.Sha256) {
+                $actual = (Get-FileHash -LiteralPath $downloaded -Algorithm SHA256).Hash
+                if ($actual -ne $asset.Sha256.ToUpperInvariant()) {
+                    throw "error: the download of $($asset.Name) does not match the checksum $($Portable.Repository) published for it (got $actual, expected $($asset.Sha256)); nothing was installed"
+                }
+            }
             $archive = $downloaded
         }
         $null = Expand-FmToolArchive -ArchivePath $archive -Destination $destination -StripRoot:([bool]$Portable.StripRoot) -Confirm:$false
@@ -1285,12 +1503,64 @@ function Invoke-FmToolRoute {
             -Output $run.Output -AsRun $command
         return $result
     }
+    # THE INSTALL IS NOT FINISHED UNTIL THIS RUN CAN REACH WHAT IT INSTALLED.
+    # A vendor installer edits an environment this already-running process cannot
+    # see, so without this the very next check reports the tool that was just
+    # installed as missing - measured on the captain's clean VM with the Claude
+    # CLI, which was installed and then declared not on PATH eight lines later.
+    $reached = Resolve-FmToolAfterInstall -Tool $Route.Tool -PathScope $PathScope -Confirm:$false
     $result.Action = 'installed'
     $result.Detail = $Route.Command
+    if ($reached.Recovered) {
+        $result.Detail += " (and put on PATH from $($reached.Directory), which its installer did not do for this session)"
+    }
     $result
 }
 
 # --- the modules ----------------------------------------------------------------
+
+# THE ONE LINE THIS REPO PRINTS FOR A MODULE, built in one place because four
+# places printed it and two of them disagreed.
+#
+# -SkipPublisherCheck IS NOT OPTIONAL HERE, and the reason is Pester specifically.
+# Windows ships Pester 3.4.0 in C:\Program Files\WindowsPowerShell\Modules, and
+# PowerShellGet refuses to put a differently-signed newer copy anywhere near it
+# unless it is told to carry on.
+#
+# MEASURED here, 2026-08-21, because this is a claim about a machine and had to
+# be one:
+#   - the shipped Pester 3.4.0 manifest is Authenticode Valid and signed
+#     'CN=Microsoft Windows, O=Microsoft Corporation'
+#   - the gallery's Pester is Authenticode Valid and signed 'CN=Jakub Jares'
+#   - PowerShellGet raises PublishersMismatch on exactly that pair, and names
+#     -SkipPublisherCheck as the way past it
+#   - PowerShellGet 2.2.5, which PowerShell 7 carries, holds a WhitelistedModules
+#     table containing 'Pester', so THERE the mismatch is downgraded to a warning
+#     and the line succeeds without the switch
+#   - PowerShellGet 1.0.0.1, which Windows PowerShell 5.1 ships, has no such
+#     table, so THERE the same line throws
+#
+# The captain's clean-VM log has them sitting in Windows PowerShell 5.1 - which
+# is the shell this fix line was handed to, and the one it fails in. A printed
+# fix is a line someone pastes into whatever window they have open, so it has to
+# work in both and this is what makes it.
+function Get-FmToolModuleInstallCommand {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string]$MinimumVersion = '',
+        # For a copy that is already there: -Force is what stops Install-Module
+        # reporting "already installed" and doing nothing.
+        [switch]$Force
+    )
+
+    $command = "Install-Module $Name"
+    if ($MinimumVersion) { $command += " -MinimumVersion $MinimumVersion" }
+    $command += ' -Scope CurrentUser'
+    if ($Force) { $command += ' -Force' }
+    "$command -SkipPublisherCheck"
+}
 
 function Get-FmToolModuleStatus {
     [CmdletBinding()]
@@ -1343,7 +1613,7 @@ function Install-FmToolModule {
     } catch {
         # SAME RULE AS A FAILED ROUTE. What was run, then what it said, quoted
         # rather than folded into a sentence of this repo's own.
-        $byHand = "Install-Module $($Requirement.Name) -Scope CurrentUser"
+        $byHand = Get-FmToolModuleInstallCommand -Name $Requirement.Name -MinimumVersion $Requirement.MinimumVersion
         $said = @(Format-FmToolFailureOutput -Output @([string]$_.Exception.Message -split '\r?\n'))
         $lines = @("'$byHand' did not complete.") + $said
         $lines += "Run that line yourself to see it fail in front of you, then re-run this installer."
