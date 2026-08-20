@@ -339,8 +339,25 @@ $failed = @($result.Failed | ForEach-Object { [string]$_.ExpandedPath })
         # output and nothing to act on, at the exact moment the captain is
         # waiting to be told whether the machine works.
         $pwsh = (Get-Process -Id $PID).Path
-        $process = Start-Process -FilePath $pwsh -NoNewWindow -PassThru -ArgumentList @(
-            '-NoProfile', '-File', $runner, '-Tests', $testsPath, '-ResultPath', $resultPath)
+        # A REFUSED LAUNCH IS A VERDICT, NOT A CRASH. This is the last step of
+        # the install, so an unguarded start here would throw away the whole
+        # report the captain is waiting for over a machine that declined to open
+        # one more process.
+        try {
+            $process = Start-Process -FilePath $pwsh -NoNewWindow -PassThru -ArgumentList @(
+                '-NoProfile', '-File', $runner, '-Tests', $testsPath, '-ResultPath', $resultPath)
+        } catch {
+            Write-Debug "could not start the suite process: $_"
+            return [pscustomobject]@{
+                Ran         = $false
+                Passed      = 0
+                Failed      = 0
+                Detail      = (Get-FmToolLaunchRefusal -Program $pwsh `
+                        -Consequence 'the suite was never started, so this install is not proven by it' `
+                        -Remedy "Run it yourself: Invoke-Pester -Path '$testsPath'.")
+                FailedNames = @()
+            }
+        }
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             try { $process.Kill($true) } catch { Write-Debug "could not stop the suite process: $_" }
             return [pscustomobject]@{
@@ -400,9 +417,9 @@ function Get-FmMachineToolVerification {
         if ($SkipOptional -and -not $entry.Required) { continue }
         $status = Get-FmToolStatus -Command $entry.Command
         $minimum = Get-FmToolMinimum -Tool $entry.Tool
-        $capabilityMet = if ($status.Present) { Test-FmToolCapability -Tool $entry.Tool } else { $true }
+        $capabilityMet = if ($status.Present -and $status.Launchable) { Test-FmToolCapability -Tool $entry.Tool } else { $true }
         $classification = Get-FmToolClassification -Present $status.Present -Installed $status.Version `
-            -Minimum $minimum.Version -CapabilityMet $capabilityMet
+            -Minimum $minimum.Version -CapabilityMet $capabilityMet -Launchable $status.Launchable
         $name = "tool $($entry.Label)"
         $status_ = if ($entry.Required) { 'missing' } else { 'warn' }
         $fix = (Get-FmToolRoute -Tool $entry.Tool).Command
@@ -423,6 +440,15 @@ function Get-FmMachineToolVerification {
             'unknown-version' {
                 $checks += New-FmInstallCheck -Name $name -Status $status_ -Required:$entry.Required `
                     -Detail "'$($entry.Command)' resolves to $($status.Path) but answers nothing to --version, so it is not verified as the real tool" `
+                    -Fix $fix
+            }
+            # NOT the same finding as the one above, and saying so matters: that
+            # one ran and printed nothing useful, this one never ran at all.
+            'unusable' {
+                $checks += New-FmInstallCheck -Name $name -Status $status_ -Required:$entry.Required `
+                    -Detail (Get-FmToolLaunchRefusal -Program $status.Path `
+                        -Consequence "'$($entry.Command)' could not be exercised, so this install is not proven" `
+                        -Remedy "Open a new window and run '$($entry.Command) --version' yourself.") `
                     -Fix $fix
             }
             default {

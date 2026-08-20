@@ -181,6 +181,13 @@ function Get-FmSessionCappedLine {
 # code. PowerShell's own invocation operator is used deliberately: on Windows the
 # npm-installed tools resolve to .cmd shims, which Process.Start cannot launch
 # directly but the invocation operator handles.
+#
+# FOUND, LAUNCHED AND EXITED ARE THREE DIFFERENT FACTS, and the caller needs all
+# three. A command that is not on PATH (Found false), one that resolves but which
+# Windows refuses to START at all (Launched false), and one that ran and answered
+# badly (ExitCode) call for three different things to be said to the captain, and
+# folding the middle one into "it exited 1 and printed this exception" is what
+# left a real refusal reported as a tool that prints no version.
 function Invoke-FmSessionCommandLine {
     [CmdletBinding()]
     param(
@@ -191,7 +198,7 @@ function Invoke-FmSessionCommandLine {
     $resolved = Get-Command -Name $Command -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if (-not $resolved) {
-        return [pscustomobject]@{ ExitCode = 127; Output = @(); Found = $false }
+        return [pscustomobject]@{ ExitCode = 127; Output = @(); Found = $false; Launched = $false; Refusal = '' }
     }
 
     $global:LASTEXITCODE = 0
@@ -199,9 +206,24 @@ function Invoke-FmSessionCommandLine {
     try {
         $out = @(& $resolved.Source @Arguments 2>&1 | ForEach-Object { [string]$_ })
     } catch {
-        return [pscustomobject]@{ ExitCode = 1; Output = @([string]$_); Found = $true }
+        # The raw text is kept for a -Debug run and never handed to a caller that
+        # prints for the captain; the callers turn Launched into their own words.
+        Write-Debug "could not start '$($resolved.Source)': $_"
+        return [pscustomobject]@{
+            ExitCode = 1
+            Output   = @()
+            Found    = $true
+            Launched = $false
+            Refusal  = [string]$resolved.Source
+        }
     }
-    [pscustomobject]@{ ExitCode = $global:LASTEXITCODE; Output = $out; Found = $true }
+    [pscustomobject]@{
+        ExitCode = $global:LASTEXITCODE
+        Output   = $out
+        Found    = $true
+        Launched = $true
+        Refusal  = ''
+    }
 }
 
 # --- digest formatting --------------------------------------------------------

@@ -23,6 +23,11 @@ Set-StrictMode -Version Latest
     middle two is the whole point:
 
       missing          not installed; install it
+      unusable         installed, and this machine refuses to START it. Nothing
+                       is installed over the top - a second copy in the same
+                       place would be refused the same way - and the run says so
+                       in the captain's words rather than raising the .NET error
+                       the refusal arrives as.
       older            installed and working, behind the latest published
                        version. Optional to update, and the safe answer is no.
       unsupported      installed but below a minimum this repo actually STATES.
@@ -71,8 +76,12 @@ function Get-FmMachineInstallPlan {
         if ($SkipOptional -and -not $entry.Required) { continue }
         $status = Get-FmToolStatus -Command $entry.Command
         $minimum = Get-FmToolMinimum -Tool $entry.Tool
-        $latest = if ($status.Present -and -not $Offline) { Get-FmToolLatestVersion -Tool $entry.Tool } else { '' }
-        $capabilityMet = if ($status.Present) { Test-FmToolCapability -Tool $entry.Tool } else { $true }
+        # Nothing is asked of the vendor, and no capability probe is run, for a
+        # tool this machine will not START: both questions are about a program
+        # that never ran, and the answers would be about nothing.
+        $usable = ($status.Present -and $status.Launchable)
+        $latest = if ($usable -and -not $Offline) { Get-FmToolLatestVersion -Tool $entry.Tool } else { '' }
+        $capabilityMet = if ($usable) { Test-FmToolCapability -Tool $entry.Tool } else { $true }
 
         $route = Get-FmToolRoute -Tool $entry.Tool
         $requirement = [pscustomobject]@{
@@ -83,6 +92,7 @@ function Get-FmMachineInstallPlan {
             Why               = $entry.Why
             Required          = $entry.Required
             Present           = $status.Present
+            Launchable        = $status.Launchable
             Path              = $status.Path
             Version           = $status.Version
             Latest            = $latest
@@ -90,7 +100,7 @@ function Get-FmMachineInstallPlan {
             MinimumSource     = $minimum.Source
             MinimumCapability = $minimum.Capability
             Classification    = (Get-FmToolClassification -Present $status.Present -Installed $status.Version `
-                    -Latest $latest -Minimum $minimum.Version -CapabilityMet $capabilityMet)
+                    -Latest $latest -Minimum $minimum.Version -CapabilityMet $capabilityMet -Launchable $status.Launchable)
             Route             = $route
             # What the CAPTAIN should run to replace what is there, which is not
             # always what installs it fresh: `winget install` on an installed
@@ -118,6 +128,11 @@ function Get-FmMachineInstallPlan {
             # still worth installing without asking.
             Required          = $false
             Present           = $status.Present
+            # A module is imported, never started as a program, so the launch
+            # question does not arise - but the field is here because both kinds
+            # of requirement flow into ONE set of consumers, and a record that is
+            # a field short throws under strict mode rather than degrading.
+            Launchable        = $status.Present
             Path              = $status.Path
             Version           = $status.Version
             Latest            = $latest
@@ -159,6 +174,7 @@ function Get-FmMachineInstallPlan {
             'missing' { '[missing]' }
             'older' { '[older]' }
             'unsupported' { '[unsupported]' }
+            'unusable' { '[unusable]' }
             default { '[unknown]' }
         }
         $lines += ('    {0,-14}{1,-24}{2}' -f $mark, $requirement.Label, $requirement.Reason)
@@ -174,6 +190,7 @@ function Get-FmMachineInstallPlan {
         Missing      = @($requirements | Where-Object { $_.Classification -eq 'missing' })
         Older        = @($requirements | Where-Object { $_.Classification -in @('older', 'unknown-version') })
         Unsupported  = @($requirements | Where-Object { $_.Classification -eq 'unsupported' })
+        Unusable     = @($requirements | Where-Object { $_.Classification -eq 'unusable' })
         Lines        = $lines
     }
 }
@@ -191,7 +208,8 @@ function Get-FmMachineInstallPlan {
     Only two classes carry a question. 'missing' is not one of them: installing
     what is absent is what the script is for. 'unsupported' is not one either:
     that one is TOLD, not asked, because the answer must never be "install over
-    the top of it".
+    the top of it". Nor is 'unusable', for the same reason and one more - the
+    captain cannot answer a question about a program the machine will not run.
 
 .PARAMETER Requirement
     One requirement record from Get-FmMachineInstallPlan.
@@ -233,7 +251,8 @@ function Get-FmMachineQuestion {
 
       1. acts on each requirement's class - installs what is MISSING from its
          genuine source, updates only what the captain named in -UpdateTool, and
-         SKIPS anything UNSUPPORTED rather than installing over the top of it,
+         SKIPS anything UNSUPPORTED or UNUSABLE rather than installing over the
+         top of it,
       2. installs Pester and PSScriptAnalyzer into the user's own module
          directory, which the suite and the analyzer bar need,
       3. runs the home setup (Install-FmHome): the home layout, the herdr
@@ -265,6 +284,13 @@ function Get-FmMachineQuestion {
     with its outcome. An unsupported-and-skipped requirement means the machine is
     NOT fully ready, and the verdict says exactly that rather than ending on a
     cheerful note.
+
+    AND A MACHINE THAT REFUSES A LAUNCH DOES NOT END THE RUN. Windows can decline
+    to start a program for reasons that have nothing to do with this repo, and it
+    reports every one of them as "access is denied". That used to arrive as a raw
+    .NET error at the first tool that needed a child shell, killing the run with
+    every later requirement unattempted; it is now one requirement's outcome,
+    said in the captain's words, and everything else still runs.
 
 .PARAMETER Approved
     Assert that the captain approved this install in the current session.
@@ -385,6 +411,19 @@ function Install-FmMachine {
             continue
         }
 
+        # NEITHER IS INSTALLING OVER IT THE ANSWER HERE. The tool is on the
+        # machine and this machine refused to start it, so a fresh copy in the
+        # same place would be refused in the same way; what the captain needs is
+        # to be told, not a second unusable install. The run carries on with
+        # every other requirement and the verdict says the machine is not ready.
+        if ($requirement.Classification -eq 'unusable') {
+            $outcome.Outcome = 'unusable-skipped'
+            $outcome.Detail = $requirement.Reason
+            $outcomes += $outcome
+            $steps += New-FmInstallStep -Name $requirement.Label -Action 'skipped' -Detail ('UNUSABLE: ' + $outcome.Detail)
+            continue
+        }
+
         $wanted = switch ($requirement.Classification) {
             'missing' { $true }
             'older' { $UpdateTool -contains $requirement.Name }
@@ -435,7 +474,25 @@ function Install-FmMachine {
 
     # --- 3. the home, the symlinks, the protection, the hooks -------------------
     if ($performed) {
-        $setup = Install-FmHome -RepoRoot $RepoRoot -Confirm:$false
+        # SAME RULE AS THE TOOL LOOP. Setup writes into the checkout and into the
+        # user's profile, and a machine can refuse a write for reasons that have
+        # nothing to do with this repo - the checkout sitting somewhere protected
+        # is the obvious one. Refusing is an answer the captain can act on; an
+        # unhandled exception at the two-thirds mark is not.
+        try {
+            $setup = Install-FmHome -RepoRoot $RepoRoot -Confirm:$false
+        } catch {
+            Write-Debug "the home setup did not complete: $_"
+            $setup = [pscustomobject]@{
+                Installed = $false
+                Reason    = ("setting up the home in '$RepoRoot' did not complete - this machine refused a change it had to make. " +
+                    'Nothing after that step ran. A checkout somewhere the machine does not guard, such as your own profile ' +
+                    'rather than Documents or OneDrive, is the first thing to try; re-run this script from there.')
+                Steps     = @()
+                Checks    = @()
+                Lines     = @()
+            }
+        }
         $steps += @($setup.Steps)
         if (-not $setup.Installed) {
             return [pscustomobject]@{
@@ -454,7 +511,18 @@ function Install-FmMachine {
         }
 
         # --- 4. the one-word command, and a shell a person can open -------------
-        $shim = Set-FmMachineCommandShim -RepoRoot $RepoRoot -InstallRoot $InstallRoot -PathScope $PathScope -Confirm:$false
+        try {
+            $shim = Set-FmMachineCommandShim -RepoRoot $RepoRoot -InstallRoot $InstallRoot -PathScope $PathScope -Confirm:$false
+        } catch {
+            # Not a reason to lose the report: everything is installed and the
+            # home is wired; what is missing is a one-word command on PATH.
+            Write-Debug "could not write the firstmate command: $_"
+            $shim = [pscustomobject]@{
+                Action = 'skipped'
+                Detail = ("this machine refused to write the one-word command. Start firstmate with " +
+                    "pwsh -File `"$(Join-Path $RepoRoot 'start.ps1')`" until that is sorted out.")
+            }
+        }
         $steps += New-FmInstallStep -Name 'firstmate command' -Action $shim.Action -Detail $shim.Detail
 
         # The per-user PowerShell 7 install is a zip expansion, so it registers
@@ -507,9 +575,10 @@ function Install-FmMachine {
     $blocking = @($checks | Where-Object { $_.Status -eq 'missing' })
     $warnings = @($checks | Where-Object { $_.Status -eq 'warn' })
     $unsupported = @($outcomes | Where-Object { $_.Outcome -eq 'unsupported-skipped' })
+    $unusable = @($outcomes | Where-Object { $_.Outcome -eq 'unusable-skipped' })
     $failed = @($outcomes | Where-Object { $_.Outcome -in @('failed', 'blocked', 'needs-administrator') })
     $verified = ($performed -and $blocking.Count -eq 0)
-    $ready = ($verified -and $unsupported.Count -eq 0 -and $failed.Count -eq 0)
+    $ready = ($verified -and $unsupported.Count -eq 0 -and $unusable.Count -eq 0 -and $failed.Count -eq 0)
 
     $lines = @("install: $RepoRoot", '')
     $lines += @($steps | ForEach-Object { Format-FmInstallStepLine -Step $_ })
@@ -539,6 +608,10 @@ function Install-FmMachine {
     } elseif ($unsupported.Count -gt 0) {
         $lines += ("NOT READY: $($unsupported.Count) requirement(s) are installed at a version this repo cannot work with and were SKIPPED, " +
             'so this machine is not fully set up. Update the tools named above, then re-run ./install.ps1.')
+    } elseif ($unusable.Count -gt 0) {
+        $lines += ("NOT READY: $($unusable.Count) requirement(s) are installed and this machine refused to START them, so they were SKIPPED. " +
+            'Nothing was installed over the top of them - a second copy in the same place would be refused the same way. ' +
+            'The lines above say what to check, then re-run ./install.ps1.')
     } else {
         $lines += ("NOT READY: $($blocking.Count) check(s) failed and $($failed.Count) install(s) did not complete. " +
             'Fix the failures above, then re-run ./install.ps1.')
@@ -591,6 +664,7 @@ function Get-FmMachineSummaryLine {
         'older-kept'          = 'older, left alone at your choice'
         'kept-unproven'       = 'present but unproven, left alone at your choice'
         'unsupported-skipped' = 'UNSUPPORTED, skipped'
+        'unusable-skipped'    = 'UNUSABLE - this machine refused to start it'
         'failed'              = 'FAILED'
         'blocked'             = 'BLOCKED'
         'needs-administrator' = 'NEEDS ADMINISTRATOR, skipped'

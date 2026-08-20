@@ -178,7 +178,33 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 
     [Console]::Out.WriteLine("  Re-running under $($pwshCommand.Source)...")
     [Console]::Out.WriteLine('')
-    & $pwshCommand.Source -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @relaunchArguments
+    # A MACHINE MAY REFUSE THIS, and the refusal must not be a .NET error. Windows
+    # declines to start a program for reasons that have nothing to do with this
+    # repo and reports every one of them as "access is denied"; unguarded, that
+    # arrives here as "Program 'pwsh.exe' failed to run" plus a stack trace, in
+    # the first thirty seconds of the captain's first command.
+    # Catchable whatever $ErrorActionPreference says: PowerShell raises a refused
+    # launch as a terminating ApplicationFailedException, which is why the
+    # unguarded form took the whole run with it.
+    try {
+        & $pwshCommand.Source -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @relaunchArguments
+    } catch {
+        [Console]::Out.WriteLine('  Windows refused to start PowerShell 7 from here:')
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine("    $($pwshCommand.Source)")
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine('  The machine declined the launch; PowerShell itself did not fail. Open that')
+        [Console]::Out.WriteLine('  program yourself from the Start menu, change to this folder, and run:')
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine('    .\install.ps1')
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine('  A launch refused with nothing but "access is denied" is usually security')
+        [Console]::Out.WriteLine('  software guarding how a program is started, or Controlled folder access,')
+        [Console]::Out.WriteLine('  which protects Documents - a checkout that is not under Documents rules')
+        [Console]::Out.WriteLine('  the second one out.')
+        [Console]::Out.WriteLine('')
+        exit 1
+    }
     exit $LASTEXITCODE
 }
 
@@ -226,6 +252,16 @@ foreach ($requirement in $plan.Unsupported) {
     Warn "    $($requirement.Reason)"
     Warn "    Please update it yourself: $($requirement.UpdateCommand)"
     Warn '    This installer will SKIP that step rather than install over the top of it.'
+    Say ''
+}
+
+# ---- 2b. and so is a tool this machine will not start ------------------------
+# Installing a second copy into the same place would be refused in the same way,
+# so this is told rather than repaired, exactly like the block above.
+foreach ($requirement in $plan.Unusable) {
+    Warn "  $($requirement.Label) is installed, and this machine will not start it."
+    Warn "    $($requirement.Reason)"
+    Warn '    This installer will SKIP that step rather than install another copy it cannot run.'
     Say ''
 }
 

@@ -827,6 +827,31 @@ function Get-FmInstallToolFix {
     ''
 }
 
+# One run of `<command> --version`, reported as the three facts that decide what
+# is said about it: was it on PATH, did Windows let it START, and what did it
+# print. Running it twice to learn two of them would double every detection pass,
+# so both callers come through here and the version-only caller drops the rest.
+function Get-FmInstallCommandProbe {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        [string[]]$Arguments = @('--version')
+    )
+
+    $res = Invoke-FmSessionCommandLine -Command $Command -Arguments $Arguments
+    $version = ''
+    if ($res.Launched -and $res.ExitCode -eq 0) {
+        $line = @($res.Output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+        if ($line.Count -gt 0) { $version = ([string]$line[0]).Trim() }
+    }
+    [pscustomobject]@{
+        Found    = [bool]$res.Found
+        Launched = [bool]$res.Launched
+        Version  = $version
+    }
+}
+
 function Get-FmInstallCommandVersion {
     [CmdletBinding()]
     [OutputType([string])]
@@ -835,11 +860,7 @@ function Get-FmInstallCommandVersion {
         [string[]]$Arguments = @('--version')
     )
 
-    $res = Invoke-FmSessionCommandLine -Command $Command -Arguments $Arguments
-    if ($res.ExitCode -ne 0) { return '' }
-    $line = @($res.Output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
-    if ($line.Count -eq 0) { return '' }
-    ([string]$line[0]).Trim()
+    (Get-FmInstallCommandProbe -Command $Command -Arguments $Arguments).Version
 }
 
 function Get-FmInstallPrerequisiteCheck {

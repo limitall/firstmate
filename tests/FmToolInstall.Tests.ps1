@@ -752,6 +752,213 @@ Describe 'Install-FmMachine' {
     }
 }
 
+Describe 'a launch this machine refuses' {
+    # THE DEFECT, PINNED. A child shell Windows declined to start raised a raw
+    # .NET error - "Program 'pwsh.exe' failed to run ... Access is denied" plus a
+    # stack trace - and took the whole install with it at the first tool that
+    # needed one. MEASURED on the captain's machine, 2026-08-20. The first
+    # diagnosis drawn from that text was wrong: it read as a permission problem
+    # between two accounts, and the captain disproved it by running the whole
+    # thing as a single user, where it failed identically. That is what a raw
+    # exception costs.
+    #
+    # A file that is not a program is the seam: CreateProcess refuses it for
+    # real, so every one of these runs the true refusal path on any machine,
+    # without needing a machine that refuses things.
+    BeforeAll {
+        $script:BadBin = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $script:BadBin -Force
+        $script:BadExe = Join-Path $script:BadBin 'fm-unstartable.exe'
+        Set-Content -LiteralPath $script:BadExe -Value 'this file is not a program' -NoNewline
+    }
+
+    It 'separates "not on PATH" from "would not start" from "ran and answered"' -Skip:(-not $IsWindows) {
+        $env:PATH = $script:BadBin + [System.IO.Path]::PathSeparator + $script:SavedPath
+        try {
+            $absent = Invoke-FmSessionCommandLine -Command 'fm-no-such-tool-at-all'
+            $absent.Found | Should -BeFalse
+            $absent.Launched | Should -BeFalse
+
+            $refused = Invoke-FmSessionCommandLine -Command 'fm-unstartable'
+            $refused.Found | Should -BeTrue -Because 'it is on PATH'
+            $refused.Launched | Should -BeFalse -Because 'Windows would not start it'
+            # AND THE EXCEPTION IS NOT SMUGGLED OUT AS OUTPUT. It used to be
+            # returned as the command's own first line, which is how a refusal
+            # reached a caller wearing a tool banner's clothes.
+            @($refused.Output).Count | Should -Be 0
+
+            $real = Invoke-FmSessionCommandLine -Command 'git' -Arguments @('--version')
+            $real.Launched | Should -BeTrue
+        } finally { $env:PATH = $script:SavedPath }
+    }
+
+    It 'reports a tool it could not start as UNUSABLE, through the real detection' -Skip:(-not $IsWindows) {
+        $env:PATH = $script:BadBin + [System.IO.Path]::PathSeparator + $script:SavedPath
+        try {
+            # The producer's own record goes into the consumer untouched: nothing
+            # here builds a status by hand, which is how the last defect in this
+            # area survived a green suite.
+            $status = Get-FmToolStatus -Command 'fm-unstartable'
+            $status.Present | Should -BeTrue
+            $status.Launchable | Should -BeFalse
+            $status.Version | Should -Be ''
+
+            Get-FmToolClassification -Present $status.Present -Installed $status.Version -Launchable $status.Launchable |
+                Should -Be 'unusable'
+        } finally { $env:PATH = $script:SavedPath }
+    }
+
+    It 'keeps a tool that DOES start out of the unusable class' -Skip:(-not $IsWindows) {
+        # The other direction, and the one that matters most: over-rejecting
+        # would report a working machine as broken.
+        $status = Get-FmToolStatus -Command 'git'
+        $status.Present | Should -BeTrue
+        $status.Launchable | Should -BeTrue
+        Get-FmToolClassification -Present $status.Present -Installed $status.Version -Launchable $status.Launchable |
+            Should -Not -Be 'unusable'
+    }
+
+    It 'says it in the captain plain words, and never in the exception ones' -Skip:(-not $IsWindows) {
+        $env:PATH = $script:BadBin + [System.IO.Path]::PathSeparator + $script:SavedPath
+        try {
+            $status = Get-FmToolStatus -Command 'fm-unstartable'
+            $reason = Get-FmToolClassificationReason -Requirement ([pscustomobject]@{
+                    Classification    = 'unusable'
+                    Command           = 'fm-unstartable'
+                    Path              = $status.Path
+                    Why               = 'the tests'
+                    Version           = ''
+                    Latest            = ''
+                    Minimum           = ''
+                    MinimumSource     = ''
+                    MinimumCapability = ''
+                })
+            $reason | Should -Match 'refused to start'
+            $reason | Should -Match ([regex]::Escape($status.Path))
+            # No exception text, no stack trace, no .NET wrapper.
+            $reason | Should -Not -Match 'failed to run'
+            $reason | Should -Not -Match 'An error occurred trying to start process'
+            $reason | Should -Not -Match 'Exception'
+            $reason | Should -Not -Match 'char:\d'
+        } finally { $env:PATH = $script:SavedPath }
+    }
+
+    It 'turns a refused install command into an outcome, not a terminating error' -Skip:(-not $IsWindows) {
+        # END TO END through the REAL route record. Nothing is installed: the
+        # shell it is told to use cannot start, so the vendor's command is never
+        # reached - which is also what makes running this safe.
+        $route = Get-FmToolRoute -Tool 'claude'
+        $route.Kind | Should -Be 'command' -Because 'the route this exercises has to be one that needs a child shell'
+
+        { $script:RouteResult = Invoke-FmToolRoute -Route $route -ShellPath $script:BadExe -PathScope 'Process' -Confirm:$false } |
+            Should -Not -Throw
+        $result = $script:RouteResult
+        $result.Action | Should -Be 'blocked'
+        $result.Detail | Should -Match 'refused to start'
+        $result.Detail | Should -Match ([regex]::Escape($route.Command)) -Because 'the captain is left with the command to run themselves'
+        $result.Detail | Should -Not -Match 'An error occurred trying to start process'
+        $result.Detail | Should -Not -Match 'FmToolInstall\.ps1'
+    }
+
+    It 'still runs the command when the shell DOES start' -Skip:(-not $IsWindows) {
+        # The other direction for the launcher itself, so the guard cannot be
+        # satisfied by refusing everything.
+        $run = Invoke-FmToolShellCommand -Command '"launched"; exit 0'
+        $run.Launched | Should -BeTrue
+        $run.ExitCode | Should -Be 0
+        ($run.Output -join ' ') | Should -Match 'launched'
+    }
+
+    It 'reports a non-zero install command as failed rather than as refused' -Skip:(-not $IsWindows) {
+        # "The machine would not start it" and "it ran and went wrong" are two
+        # different things to tell the captain, and blurring them would put the
+        # refusal wording where it is untrue.
+        $run = Invoke-FmToolShellCommand -Command 'exit 9'
+        $run.Launched | Should -BeTrue
+        $run.ExitCode | Should -Be 9
+    }
+
+    It 'carries the unusable class through the real plan and names it in the report' -Skip:(-not $IsWindows) {
+        # THE PLAN, not a record built here. PATH is narrowed to the unstartable
+        # stub so the catalog's own commands resolve to it, and the session PATH
+        # rebuild is stood down for the same reason - it reads the persisted
+        # environment, which this suite must never write.
+        Mock Update-FmToolSessionPath { $env:PATH }
+        $env:PATH = $script:BadBin
+        try {
+            foreach ($entry in (Get-FmToolCatalog)) {
+                Copy-Item -LiteralPath $script:BadExe -Destination (Join-Path $script:BadBin ($entry.Command + '.exe')) -Force
+            }
+            $plan = Get-FmMachineInstallPlan -Offline
+            $plan.Unusable.Count | Should -BeGreaterThan 0
+            foreach ($requirement in $plan.Unusable) {
+                $requirement.Present | Should -BeTrue
+                $requirement.Launchable | Should -BeFalse
+                $requirement.Reason | Should -Match 'refused to start'
+                # 'unusable' is TOLD, never asked about: there is no answer the
+                # captain can give about a program that will not run.
+                $requirement.Question | Should -Be ''
+            }
+            ($plan.Lines -join [Environment]::NewLine) | Should -Match '\[unusable\]'
+            # And it is not quietly folded into the ask-me pile.
+            @($plan.Older | Where-Object { $_.Classification -eq 'unusable' }).Count | Should -Be 0
+        } finally {
+            $env:PATH = $script:SavedPath
+            Get-ChildItem -LiteralPath $script:BadBin -Filter '*.exe' |
+                Where-Object { $_.Name -ne 'fm-unstartable.exe' } | Remove-Item -Force
+        }
+    }
+
+    It 'names the outcome in the end report' {
+        $lines = @(Get-FmMachineSummaryLine -Outcomes @(
+                [pscustomobject]@{ Label = 'gh'; Classification = 'unusable'; Outcome = 'unusable-skipped'; Detail = 'x' })) -join [Environment]::NewLine
+        $lines | Should -Match 'gh\s+UNUSABLE - this machine refused to start it'
+    }
+
+    It 'tells the captain plainly when install.ps1 cannot re-launch itself' -Skip:(-not $IsWindows) {
+        # THE CAPTAIN'S FIRST COMMAND, end to end. A clean Windows machine opens
+        # Windows PowerShell 5.1, so this is the one path where a refusal is the
+        # very first thing that happens - and where it used to arrive as
+        # "Program 'pwsh.exe' failed to run" plus a stack trace.
+        $windowsPowerShell = Join-Path $env:WINDIR 'System32' 'WindowsPowerShell' 'v1.0' 'powershell.exe'
+        if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
+            Set-ItResult -Skipped -Because 'Windows PowerShell 5.1 is not on this machine'
+            return
+        }
+        # A pwsh that resolves and cannot be started, and a PATH holding nothing
+        # else, so install.ps1 finds this one and gets no further. Nothing is
+        # installed and nothing is detected: the run ends at the re-launch.
+        $fakeShellDir = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $fakeShellDir -Force
+        Copy-Item -LiteralPath $script:BadExe -Destination (Join-Path $fakeShellDir 'pwsh.exe') -Force
+
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $windowsPowerShell
+        foreach ($argument in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                (Join-Path $script:RepoRoot 'install.ps1'), '-DetectOnly')) {
+            $psi.ArgumentList.Add($argument)
+        }
+        $psi.Environment['PATH'] = $fakeShellDir + [System.IO.Path]::PathSeparator + (Join-Path $env:WINDIR 'System32')
+        $psi.WorkingDirectory = $script:RepoRoot
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $process = [System.Diagnostics.Process]::Start($psi)
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit(120000) | Should -BeTrue -Because 'it must not sit there waiting'
+        $combined = $stdout + [Environment]::NewLine + $stderr
+
+        $process.ExitCode | Should -Be 1
+        $combined | Should -Match 'refused to start PowerShell 7'
+        $combined | Should -Match 'Controlled folder access'
+        # Not a .NET error, and not a stack trace.
+        $combined | Should -Not -Match 'failed to run'
+        $combined | Should -Not -Match 'An error occurred trying to start process'
+        $combined | Should -Not -Match 'At line:\d'
+    }
+}
+
 Describe 'the optional channels' {
     BeforeEach {
         $script:OptionalHome = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())

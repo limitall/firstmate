@@ -379,12 +379,18 @@ function Get-FmToolModuleLatestVersion {
 # the prompts, the install loop and the end report cannot disagree about it.
 #
 #   missing         not present at all
+#   unusable        present, and this machine refuses to START it
 #   unsupported     present, below a minimum this repo STATES, or missing a
 #                   stated capability
 #   older           present, working, behind the latest published version
 #   current         present and at or ahead of the latest published version
 #   unknown-version present but its banner carries no readable version
 #   unknown-latest  present, but the published version could not be determined
+#
+# 'unusable' OUTRANKS EVERY OTHER PRESENT CLASS, because none of them can be
+# established about a program that never ran: a version was not read, a floor was
+# not cleared, and a capability was not proved. Reporting it as any of those
+# would state something this machine did not show.
 function Get-FmToolClassification {
     [CmdletBinding()]
     [OutputType([string])]
@@ -393,10 +399,12 @@ function Get-FmToolClassification {
         [string]$Installed = '',
         [string]$Latest = '',
         [string]$Minimum = '',
-        [bool]$CapabilityMet = $true
+        [bool]$CapabilityMet = $true,
+        [bool]$Launchable = $true
     )
 
     if (-not $Present) { return 'missing' }
+    if (-not $Launchable) { return 'unusable' }
     if (-not $CapabilityMet) { return 'unsupported' }
 
     $have = Get-FmToolVersionNumber -Text $Installed
@@ -427,6 +435,11 @@ function Get-FmToolClassificationReason {
 
     switch ($Requirement.Classification) {
         'missing' { return "not installed - $($Requirement.Why)" }
+        'unusable' {
+            return (Get-FmToolLaunchRefusal -Program $Requirement.Path `
+                    -Consequence 'it could not be run and nothing about it is proven' `
+                    -Remedy "Open it yourself in a new window - if '$($Requirement.Command) --version' answers there, the refusal is this machine's and not the tool's.")
+        }
         'current' { return "$($Requirement.Version) is the latest published version" }
         'older' { return "$($Requirement.Version) is installed; $($Requirement.Latest) is published" }
         'unsupported' {
@@ -576,22 +589,28 @@ function Get-FmToolEnablerStatus {
         Fix         = 'install PowerShell 7 without administrator: & ([scriptblock]::Create((irm https://aka.ms/install-powershell.ps1))) -Destination "$env:LOCALAPPDATA\Programs\PowerShell7" -AddToPath'
     }
 
+    # AN ENABLER THAT WILL NOT START IS NOT AN ENABLER. Both of these are probed
+    # by RUNNING them, and a machine that declines the launch makes the enabler
+    # unsatisfied - so the routes that need it are skipped with a reason before
+    # they are attempted, rather than each one discovering the same refusal.
     $winget = Get-FmToolWingetPath
+    $wingetProbe = if ($winget) { Get-FmInstallCommandProbe -Command $winget } else { $null }
     $enablers += [pscustomobject]@{
         Name        = 'winget'
         Present     = [bool]$winget
-        Version     = $(if ($winget) { (Get-FmInstallCommandVersion -Command $winget) } else { '' })
-        Satisfied   = [bool]$winget
+        Version     = $(if ($wingetProbe) { $wingetProbe.Version } else { '' })
+        Satisfied   = [bool]($wingetProbe -and $wingetProbe.Launched)
         Enables     = 'the git and Node.js routes, which are the only two that come from a package manager'
         Fix         = 'install "App Installer" from the Microsoft Store, or install git and Node.js by hand from git-scm.com and nodejs.org'
     }
 
     $npm = Get-Command -Name 'npm' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $npmProbe = if ($npm) { Get-FmInstallCommandProbe -Command 'npm' } else { $null }
     $enablers += [pscustomobject]@{
         Name        = 'npm'
         Present     = [bool]$npm
-        Version     = $(if ($npm) { (Get-FmInstallCommandVersion -Command 'npm') } else { '' })
-        Satisfied   = [bool]$npm
+        Version     = $(if ($npmProbe) { $npmProbe.Version } else { '' })
+        Satisfied   = [bool]($npmProbe -and $npmProbe.Launched)
         Enables     = 'the five axi tools, which are published on npm'
         Fix         = 'it arrives with Node.js, so it appears once Node.js is installed - re-run this installer afterwards'
     }
@@ -608,16 +627,23 @@ function Get-FmToolStatus {
     $resolved = Get-Command -Name $Command -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if (-not $resolved) {
-        return [pscustomobject]@{ Command = $Command; Present = $false; Path = ''; Version = '' }
+        return [pscustomobject]@{ Command = $Command; Present = $false; Path = ''; Version = ''; Launchable = $false }
     }
     # THE VERSION IS THE PROOF, not the presence. A command that resolves but
     # answers nothing to --version is reported with an empty version, and the
     # classification treats that as unknown rather than as installed.
+    #
+    # AND "COULD NOT BE STARTED" IS A THIRD ANSWER, not a version of the second.
+    # A file on PATH that Windows declines to launch prints no version either,
+    # and calling that "prints no version this installer can read" describes the
+    # wrong thing entirely: nothing was read because nothing ran.
+    $probe = Get-FmInstallCommandProbe -Command $Command
     [pscustomobject]@{
-        Command = $Command
-        Present = $true
-        Path    = [string]$resolved.Source
-        Version = (Get-FmInstallCommandVersion -Command $Command)
+        Command    = $Command
+        Present    = $true
+        Path       = [string]$resolved.Source
+        Version    = $probe.Version
+        Launchable = [bool]$probe.Launched
     }
 }
 
@@ -825,6 +851,110 @@ function Install-FmToolPortable {
     }
 }
 
+# --- a launch this machine refused -----------------------------------------------
+#
+# WHAT THIS AREA SHIPPED, and what it cost. A child shell that Windows declined
+# to start raised a raw .NET error, took the whole run down with it, and printed
+#
+#   Program 'pwsh.exe' failed to run: An error occurred trying to start process
+#   '...\PowerShell7\pwsh.exe' with working directory '...irstmate'.
+#   Access is denied.
+#
+# followed by a stack trace. MEASURED on the captain's machine, 2026-08-20. That
+# text is worse than useless: "access is denied" reads as a permission problem,
+# and the first diagnosis drawn from it - one account running another account's
+# PowerShell - was WRONG. The captain disproved it by running the whole thing as
+# a single user, where it failed identically, and where that same executable had
+# started successfully seconds earlier in the same session.
+#
+# So the report never quotes the exception. It says what was being started, that
+# the MACHINE refused the launch rather than the program failing, and what to do
+# instead. What refused it cannot be read from inside the denied process, so the
+# usual suspects are offered as things to check rather than as a diagnosis.
+function Get-FmToolLaunchRefusal {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Program,
+        [string]$WorkingDirectory = '',
+        [string]$Consequence = '',
+        [string]$Remedy = ''
+    )
+
+    $what = if ($Program) { "'$Program'" } else { 'the program' }
+    $where = if ($WorkingDirectory) { " from $WorkingDirectory" } else { '' }
+    $text = "Windows refused to start $what$where"
+    if ($Consequence) { $text += ", so $Consequence" }
+    $text += '. The machine declined the launch; the program itself did not fail.'
+    # The remedy goes LAST because it usually ends in a command to run, and a
+    # sentence appended after a command line reads as part of it.
+    $text += ' A launch refused with nothing but "access is denied" is usually security software guarding' +
+    ' how a program is started, or Controlled folder access, which protects Documents - a checkout that is' +
+    ' not under Documents rules the second one out.'
+    if ($Remedy) { $text += " $Remedy" }
+    $text
+}
+
+# Run one captain-facing install one-liner in a child PowerShell, and never let a
+# refused launch escape.
+#
+# THE CHILD IS DELIBERATE. The published install lines are one-liners written for
+# a person (pipelines, `&&` chains), so they are run through PowerShell exactly as
+# documented rather than picked apart into arguments here, and a vendor script
+# that wrecks its session wrecks a session this run is finished with.
+#
+# THE CAPTURE IS WHAT MAKES THE LAUNCH DIFFERENT, and it is why one launch of an
+# executable can be refused seconds after another succeeded. Collecting the
+# child's output through `2>&1 |` means .NET must redirect its streams, and .NET
+# REFUSES to redirect a process started through the shell - measured: setting
+# both raises "The Process object must have the UseShellExecute property set to
+# false in order to redirect IO streams". So this launch always goes through
+# CreateProcess, which is also the only path that produces the message the
+# captain saw: "An error occurred trying to start process '<exe>' with working
+# directory '<dir>'" is .NET's wording for that path and no other. install.ps1's
+# own re-launch of the same executable captures nothing, so it is not the same
+# operation, which is how one can be allowed and the other refused.
+#
+# -ShellPath is the suite's seam: it supplies a file that cannot be started, so
+# the refusal path runs for real without needing a machine that refuses things.
+function Invoke-FmToolShellCommand {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        [string]$ShellPath = ''
+    )
+
+    $shell = if ($ShellPath) { $ShellPath } else { [string](Get-Process -Id $PID).Path }
+    $workingDirectory = [string]$PWD.ProviderPath
+    $refused = [pscustomobject]@{
+        Launched         = $false
+        ExitCode         = 1
+        Output           = @()
+        Shell            = $shell
+        WorkingDirectory = $workingDirectory
+    }
+    if (-not $shell) { return $refused }
+
+    $global:LASTEXITCODE = 0
+    try {
+        $out = @(& $shell -NoProfile -Command $Command 2>&1 | ForEach-Object { [string]$_ })
+    } catch {
+        # Kept for a -Debug run and never shown to the captain: this is the exact
+        # text that sent the first diagnosis after a permission problem that did
+        # not exist.
+        Write-Debug "could not start '$shell' in '$workingDirectory': $_"
+        return $refused
+    }
+    [pscustomobject]@{
+        Launched         = $true
+        ExitCode         = $global:LASTEXITCODE
+        Output           = $out
+        Shell            = $shell
+        WorkingDirectory = $workingDirectory
+    }
+}
+
 # --- running one route -----------------------------------------------------------
 
 # The same route, asked to REPLACE what is there rather than to put it there.
@@ -871,7 +1001,11 @@ function Invoke-FmToolRoute {
         [Parameter(Mandatory)]$Route,
         [string]$InstallRoot = '',
         [ValidateSet('User', 'Process')][string]$PathScope = 'User',
-        [switch]$Update
+        [switch]$Update,
+        # The suite's seam, forwarded whole to Invoke-FmToolShellCommand: a shell
+        # that cannot be started, so the refusal this function must survive is
+        # exercised end to end without a machine that refuses anything.
+        [string]$ShellPath = ''
     )
 
     $result = [pscustomobject]@{ Tool = $Route.Tool; Action = 'skipped'; Detail = '' }
@@ -936,15 +1070,22 @@ function Invoke-FmToolRoute {
         return $result
     }
 
-    # The published install lines are captain-facing one-liners (pipelines, &&
-    # chains), so they are run through PowerShell exactly as documented rather
-    # than picked apart into arguments here.
-    $pwsh = (Get-Process -Id $PID).Path
-    $output = @(& $pwsh -NoProfile -Command $command 2>&1 | ForEach-Object { [string]$_ })
-    if ($LASTEXITCODE -ne 0) {
-        $tail = @($output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1)
+    # A REFUSED LAUNCH IS AN OUTCOME, NOT AN EXCEPTION. This used to be a bare
+    # invocation, so a machine that declined to start the child shell ended the
+    # whole install with a .NET error and a stack trace at the first tool that
+    # needed one - every later requirement went unattempted and unreported.
+    $run = Invoke-FmToolShellCommand -Command $command -ShellPath $ShellPath
+    if (-not $run.Launched) {
+        $result.Action = 'blocked'
+        $result.Detail = Get-FmToolLaunchRefusal -Program $run.Shell -WorkingDirectory $run.WorkingDirectory `
+            -Consequence "$($Route.Tool) was not installed" `
+            -Remedy "Run this yourself in a new PowerShell 7 window, then re-run this installer: $($Route.Command)"
+        return $result
+    }
+    if ($run.ExitCode -ne 0) {
+        $tail = @($run.Output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1)
         $result.Action = 'failed'
-        $result.Detail = "'$($Route.Command)' exited $LASTEXITCODE" + $(if ($tail.Count) { ": $($tail[0])" } else { '' })
+        $result.Detail = "'$($Route.Command)' exited $($run.ExitCode)" + $(if ($tail.Count) { ": $($tail[0])" } else { '' })
         return $result
     }
     $result.Action = 'installed'
