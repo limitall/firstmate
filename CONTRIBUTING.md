@@ -207,6 +207,10 @@ module any other way.
   why the route table has exactly one owner (a second one installed two tools from npm packages that were not the software),
   why no route may need administrator, the three-outcome classification and why `older` and `unsupported` must never be blurred,
   and why `install.ps1` carries no `#requires` line.
+  It also owns the rule that a launch this machine REFUSES is an outcome and never an exception:
+  a captured child launch is on .NET's `CreateProcess` path while an uncaptured one is not,
+  PowerShell raises the refusal as a terminating `ApplicationFailedException` whatever the preference says,
+  and the raw text must never reach the captain - "access is denied" plus a trace is what made one diagnosis of it wrong.
 - `docs/instruction-surface.md` - the operating contract and the skills: what
   `AGENTS.md` is for, how each Linux skill was ported or recorded as absent, how
   the two committed links survive a Windows clone, and what the doctor checks.

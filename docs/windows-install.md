@@ -382,11 +382,12 @@ The only two routes that genuinely need elevation are the winget packages for gi
 Those are DECLARED by `Test-FmBootstrapInstallNeedsAdministrator`, named in the report, and skipped - never attempted, and never allowed to stop the rest of the run.
 
 **Three outcomes per requirement, not two.**
-`Get-FmToolClassification` is the single owner of the decision, and the middle two must never be blurred:
+`Get-FmToolClassification` is the single owner of the decision, and `older` and `unsupported` must never be blurred into each other:
 
 | class | what happens |
 | --- | --- |
 | `missing` | installed. Running `install.ps1` is the consent for that. |
+| `unusable` | present, and this machine refuses to START it. TOLD, SKIPPED, NOT READY - a second copy in the same place would be refused the same way. |
 | `older` | the captain is ASKED, once, with the installed and published versions and the cost of declining. The default is no, and declining never stops the run. |
 | `unsupported` | the captain is TOLD, the step is SKIPPED, nothing is installed over the top, and the run reports the machine as NOT READY. |
 | `unknown-version` | present but prints no readable version, so nothing about it is proven. |
@@ -398,8 +399,22 @@ Nothing invents a threshold, so a tool with no stated minimum can be older but n
 `Get-FmToolUpdateCommand` exists for one difference that is not cosmetic: `winget install <id>` on an already-installed package reports "already installed" and exits 0 without upgrading anything, so a captain who agreed to an update would have been told it happened and left on the old version.
 Every other route already fetches the newest thing there is, so only the winget verb is rewritten.
 
+**A launch this machine refuses is an outcome, not a crash.**
+Windows declines to start a program for reasons that have nothing to do with this repo, and it reports every one of them as "access is denied".
+Measured on the captain's machine, 2026-08-20: the second real install died at the first tool needing a child shell, with `Program 'pwsh.exe' failed to run` and a stack trace, having installed nothing and leaving every later requirement unattempted and unreported.
+The same executable had started successfully seconds earlier in the same run, as the same user, from the same directory - `docs/windows-e2e-evidence.md` section 34 has the whole reproduction, including the cross-user diagnosis that text produced and why it was wrong.
+
+What differs between the two launches is measurable and is the reason one can be allowed and the other refused.
+Collecting a child's output means .NET must redirect its streams, and .NET refuses to redirect a process started through the shell, so `& $pwsh ... 2>&1 | ForEach-Object` is always on the `CreateProcess` path - which is also the only path that produces that message.
+`install.ps1`'s own re-launch collects nothing and is not the same operation.
+PowerShell raises a refused launch as a terminating `ApplicationFailedException` whatever `$ErrorActionPreference` says, which is why an unguarded invocation takes the whole run with it.
+
+So `Invoke-FmToolShellCommand` owns starting a child shell and never lets a refusal escape, `Invoke-FmToolRoute` reports it as `blocked` and the run carries on, and `Get-FmToolLaunchRefusal` owns what is said - which never quotes the exception, because "access is denied" plus a trace is exactly what sent the first diagnosis after a permission problem that did not exist.
+The same guard is on `install.ps1`'s re-launch, the suite runner, the home setup and the command shim, so none of them can hand the captain a .NET error.
+WHAT refuses such a launch is not established and this repo does not claim it: the report names the two things that most often do, as things to check.
+
 **Two enablers are checked before they are used**, because the failure they prevent is a bare "command not found" in the middle of a run: `winget`, which the git and Node.js routes need, and `npm`, which the five axi tools need.
-Both are reported in the plan with what they enable and what to do when absent.
+Both are reported in the plan with what they enable and what to do when absent, and both are probed by RUNNING them: an enabler this machine will not start is not an enabler, so its routes are skipped with a reason rather than each one discovering the same refusal.
 
 `Get-FmToolWingetPath` also looks for `%LOCALAPPDATA%\Microsoft\WindowsApps\winget.exe` directly.
 Measured on the captain's machine: `Get-Command winget` fails while that file runs and prints `v1.29.280`, because the user PATH carries the SYSTEM profile's app-alias directory rather than this user's.
@@ -426,6 +441,10 @@ What was added is `Set-FmMachineShellShortcut`, which writes a `.lnk` into the c
 It runs on every install rather than only on the run that installed the shell, so a machine already in that state is repaired by re-running.
 It never adds a second entry: both the user and the machine-wide Start Menu folders are searched, recursively, and matched on what each `.lnk` actually POINTS AT rather than on its name - the MSI's entry is `PowerShell\PowerShell 7 (x64).lnk`, nested and named nothing this could have guessed.
 `Get-FmMachineShellLine` then says out loud where the executable is and how to open it, and names `winget install Microsoft.PowerShell` as the optional elevated route for the Windows Terminal profile and the right-click entries - which is the honest answer, since nothing without administrator can add them.
+
+**None of that has actually executed on the captain's machine**, and nothing here may imply it has.
+The shortcut is step 4 of the install, and both of their runs died in step 1 - the first on the record-shape defect section 33 fixed, the second on the refused launch above.
+The mechanism is proven against disposable directories, and against this machine's real Start menu read-only, which is a different claim from "the captain's Start menu was repaired".
 
 **It ends by proving itself.**
 `Install-FmMachine` finishes with a verification pass rather than a success message: every catalogued tool is run and made to print a version, `Invoke-FmDoctor` re-reads the home and the instruction surface (including the skills count and the contract's byte length), and the repository's own Pester suite is executed in a bounded child process.

@@ -5512,6 +5512,10 @@ PowerShell 7 - the shell everything here runs in:
 
 It runs on EVERY install rather than only the run that installed the shell, so the captain's machine - already in the bad state - is repaired by re-running.
 
+**CORRECTED BY SECTION 34: that repair has still never executed on the captain's machine.**
+It is step 4 of the install, and their next run died in step 1 on a refused launch.
+The sentence above describes what the code does, not something that has happened there.
+
 ### 33.5 What was NOT run, and what rests on reasoning
 
 Stated plainly, because the whole reason this task existed is that section 31 was honest about the same gap.
@@ -5565,3 +5569,203 @@ The analyzer needed one fix during this work and it is recorded rather than
 quietly absorbed: `Get-FmMachineShellLine` built its lines into an untyped array
 and tripped `PSUseOutputTypeCorrectly`. Declaring `[string[]]$lines` is the fix,
 not widening the `OutputType`.
+
+## 34. The second install attempt: a refused launch, and a diagnosis that was wrong - `PROVEN (Windows 11) FOR THE MECHANISM AND THE FIX, NOT FOR THE REFUSAL ITSELF`
+
+Dated 2026-08-20, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\13\firstmate-win`,
+PowerShell 7.6.4, Windows 11 Pro 10.0.26200, branched from `main` at `b27acca`.
+
+Section 33 fixed the crash the captain's first real install hit and said, in 33.5, that a full run to completion on a machine missing the tools was still unproven.
+The captain ran it again.
+It died again, at the same function, for an entirely different reason - and the first explanation offered for it was wrong.
+That wrong explanation is recorded here on purpose, because leaving it out would be the more comfortable and less useful record.
+
+### 34.1 What the captain met
+
+```
+PS C:\Users\higet\Documents\firstmate> .\install.ps1
+...
+Re-running under C:\Users\higet\AppData\Local\Programs\PowerShell7\pwsh.exe...
+[the whole detection table then prints correctly]
+...
+Invoke-FmToolRoute: ...\Install-FmMachine.ps1:411
+  Program 'pwsh.exe' failed to run: An error occurred trying to start process
+  'C:\Users\higet\AppData\Local\Programs\PowerShell7\pwsh.exe'
+  with working directory 'C:\Users\higet\Documents\firstmate'. Access is denied.
+  At ...\Private\FmToolInstall.ps1:943 char:17
+  + $output = @(& $pwsh -NoProfile -Command $command 2>&1 | ForEach-O ...
+```
+
+Everything up to that point worked, including the whole of section 33's fix: the wrong-shell detection, the re-launch, and a detection table that printed all thirteen requirements.
+The run then ended at the first requirement whose route needs a child shell, with nothing installed and every later requirement unattempted and unreported.
+
+### 34.2 The first diagnosis was WRONG, and the captain is what caught it
+
+The first reading of that output was that `Adit` was being made to run a PowerShell 7 belonging to `higet` - two accounts, one private profile, and a permission denial that follows from it.
+A whole task was briefed on that basis, including a rule about rejecting a per-user path belonging to another account.
+
+**It was inferred from two usernames appearing in two different screenshots, and it was not checked.**
+The captain then ran the entire thing as ONE user, from `C:\Users\higet\Documents\firstmate` as `higet`, and it failed identically.
+Same user, same profile, same machine.
+There is no cross-account problem here and this repo carries no rule about one.
+
+The lesson is not about accounts.
+It is that `Access is denied` plus a stack trace is a text a reader will complete with the most familiar explanation that fits, and permission problems between users are the most familiar of all.
+That is the cost this section's fix is paid to remove.
+
+### 34.3 The fact that makes the shape clear
+
+**That same `pwsh.exe` had started successfully seconds earlier in the same run.**
+The installer detected Windows PowerShell 5.1, re-launched itself under that exact path, and the detection table above printed FROM the re-launched process.
+So the file is executable by this user, from this working directory, on this machine.
+
+The question is therefore not "may this user run pwsh" - demonstrably yes - but what is different about the SECOND launch.
+
+### 34.4 What differs between the two launches - `PROVEN`, locally
+
+Three measurements, all made on this machine, all reproducible without a second account and without a machine that refuses anything.
+
+**1. The message belongs to one .NET start path and no other.**
+`Process.Start` with `UseShellExecute = $false` was pointed at a file that is not a program:
+
+```
+CreateProcess path : Exception calling "Start" with "1" argument(s):
+  "An error occurred trying to start process
+   'C:\Users\ADMIN\AppData\Local\Temp\fm-probe-....exe'
+   with working directory 'C:\Users\ADMIN\...\firstmate-win'.
+   The specified executable is not a valid application for this OS platform."
+```
+
+That is the captain's wording, with a different Win32 reason at the end.
+"An error occurred trying to start process '\<exe>' with working directory '\<dir>'" is .NET's `ErrorStartingProcess` string, emitted from the `CreateProcess` path and used with a working directory only when one was set.
+
+**2. Collecting the child's output forces that path.**
+.NET refuses the other combination outright:
+
+```
+redirect+shellexecute: Exception calling "Start" with "1" argument(s):
+  "The Process object must have the UseShellExecute property set to false
+   in order to redirect IO streams."
+```
+
+`FmToolInstall.ps1:943` was `& $pwsh -NoProfile -Command $command 2>&1 | ForEach-Object`, which collects the child's merged output, so PowerShell has no choice: that launch is always `CreateProcess` with three redirected pipe handles.
+`install.ps1`'s re-launch is `& $pwshCommand.Source ... -File $PSCommandPath` with nothing collected.
+Measured from a real console, the two children differ accordingly - the uncaptured one reports `redirected = False`, the piped one `redirected = True`.
+**They are not the same operation**, which is how one can be allowed and the next refused seconds later.
+
+**3. A refused launch is terminating whatever the preference says.**
+
+```
+EAP=Continue -> THREW ApplicationFailedException
+EAP=Stop     -> THREW ApplicationFailedException
+```
+
+So the unguarded invocation could only ever end the whole run.
+This is also why the fix is a `try`/`catch` rather than an `$ErrorActionPreference` adjustment.
+
+### 34.5 What refused it - `NOT PROVEN`, and this repo does not claim it
+
+**The denial itself could not be reproduced here.**
+Measured on this machine:
+
+```
+ControlledFolderAccess: 0
+ProtectedFolders      :
+ASR ids               :
+ASR actions           :
+```
+
+Controlled folder access is off and no attack-surface-reduction rules are set, so nothing here refuses a launch.
+Two candidates fit the captain's evidence and neither is established:
+
+- **The working directory.** Both of their runs were inside Documents - `C:\Users\higet\OneDrive\Documents\firstmate` and `C:\Users\higet\Documents\firstmate` - and Documents is a Controlled-folder-access protected folder by default. Against this: an inaccessible working directory did NOT reproduce the failure here. `C:\System Volume Information`, which this account cannot list, was accepted as a working directory by both start paths - consistent with bypass-traverse-checking being granted to everyone by default, though that explanation was not itself measured.
+- **The command line.** The requirement that dies first is the Claude CLI, whose route is `irm https://claude.ai/install.ps1 | iex`. A child shell started with a download-and-run one-liner is the canonical shape security software watches for, and it is present on the second launch and absent from the first. This was not tested, and testing it properly would mean running that exact line on this machine, which would install software the brief does not authorize.
+
+Either would produce exactly what the captain saw.
+Naming one as the cause would be the same mistake as 34.2, made a second time.
+
+### 34.6 The fix, which is ours whichever it is
+
+The captain cannot act on `Access is denied` and a stack trace, and neither could the reader who first tried.
+So a refused launch is now an outcome:
+
+- `Invoke-FmToolShellCommand` owns starting the child shell and never lets a refusal escape. `Invoke-FmToolRoute` reports it as `blocked`, and the run continues through every remaining requirement instead of ending at the first.
+- `Get-FmToolLaunchRefusal` owns what is said, and it never quotes the exception. The raw text goes to `Write-Debug` and nowhere else.
+- Detection stopped conflating three different facts. `Invoke-FmSessionCommandLine` now separates "not on PATH" from "would not start" from "ran and answered", and it no longer returns the exception text as though it were the command's output. A tool this machine refuses to start is classified `unusable` rather than as one that prints no readable version, because a version was not read - nothing ran.
+- `unusable` is TOLD and SKIPPED, like `unsupported`. Installing a second copy into the same place would be refused the same way, so the run says so and reports the machine NOT READY.
+- The same guard is on `install.ps1`'s own re-launch, the suite runner, the home setup and the command shim. The home setup matters most of those: it writes into the checkout, and the checkout is inside Documents on the machine that reproduces this, so it is the next thing a folder guard would refuse.
+- An enabler is only satisfied if it actually starts, so a `winget` or `npm` that will not run blocks its routes with a reason instead of being rediscovered by each one.
+
+What the captain would now see in place of the stack trace:
+
+```
+Windows refused to start 'C:\Users\...\PowerShell7\pwsh.exe' from
+C:\Users\...\firstmate, so claude was not installed. The machine declined the
+launch; the program itself did not fail. A launch refused with nothing but
+"access is denied" is usually security software guarding how a program is
+started, or Controlled folder access, which protects Documents - a checkout
+that is not under Documents rules the second one out. Run this yourself in a
+new PowerShell 7 window, then re-run this installer:
+irm https://claude.ai/install.ps1 | iex
+```
+
+### 34.7 The coverage, and its negative control
+
+The refusal is exercised for real rather than mocked: a file that is not a program, which `CreateProcess` declines on any machine.
+`tests/FmToolInstall.Tests.ps1` drives the real detection, the real plan and the real route record through it, in both directions - a tool that will not start is `unusable`, and `git`, which does start, is not.
+The plan test narrows PATH onto stubs and stands `Update-FmToolSessionPath` down, because that function reads the persisted environment and this suite must never write it.
+
+One test runs the captain's first command end to end: `install.ps1` under the real Windows PowerShell 5.1, with a `pwsh` on PATH that resolves and cannot be started.
+It asserts exit 1, the plain-words output, and the ABSENCE of `failed to run`, `An error occurred trying to start process` and `At line:`.
+
+Every guard was reverted on the finished tree, one at a time, to check the tests are not passing for some other reason.
+All five put their own failure back and nothing else:
+
+| reverted | the test that failed |
+| --- | --- |
+| the child-shell `try`/`catch` in `Invoke-FmToolShellCommand` | turns a refused install command into an outcome, not a terminating error |
+| the `try`/`catch` around `install.ps1`'s re-launch | tells the captain plainly when install.ps1 cannot re-launch itself |
+| the `unusable` branch of `Get-FmMachineToolVerification` | fails the verification pass over a tool that will not start, and says which failure it is |
+| the `try`/`catch` around the suite's `Start-Process` | reports a suite it could not start as NOT RUN, in words, rather than crashing the report |
+| the enabler's launch probe | calls an enabler that will not start UNSATISFIED rather than present |
+
+```
+tests/FmToolInstall.Tests.ps1   81 passed, 0 failed
+```
+
+### 34.8 What was NOT run
+
+- **No clean machine, and no tool installed.** Every route call here ran against a shell that cannot start, which is also what makes running them safe.
+- **The refusal itself was never reproduced.** See 34.5. Everything about WHY the captain's machine declined the launch rests on their evidence and on reasoning, not on a measurement from this seat.
+- **A full `install.ps1` run to completion is still unproven**, exactly as section 33.5 said. What is now proven is that a refused launch cannot end the run.
+- **The captain's machine was not touched.** No profile, no Start menu entry, no Defender setting.
+- **`Set-FmMachineShellShortcut` has still never run on the captain's machine.** It is step 4, and both of their runs died in step 1. Section 33.4's "a machine already in that state is repaired by re-running" describes what the code does, not something that has happened; `docs/windows-install.md` now carries that qualifier.
+
+### 34.9 The suite and the analyzer, on this branch
+
+Both passes run back to back in one keeper, on the final tree, with the analyzer
+sweep taken inside the suite as `tests/FmAnalyzer.Tests.ps1`.
+
+```
+Invoke-Pester -Path ./tests    run A   2474 passed, 0 failed, 18 skipped   (34m)
+Invoke-Pester -Path ./tests    run B   2474 passed, 0 failed, 18 skipped   (39m)
+Invoke-ScriptAnalyzer, repo-wide, via tests/FmAnalyzer.Tests.ps1
+                                       zero findings at every severity
+```
+
+48 files in one process each time, and a clean working tree afterwards - only
+the files this task changed.
+
+2474 is 2461 plus the thirteen tests this task adds, which is the whole
+difference from section 33.6's baseline.
+
+**RUN A IS CLEAN HERE, AND THAT IS NOT AN IMPROVEMENT.** The instruction-surface
+failures a fresh worktree's first run produces had already been cleared: earlier
+in this task the install and tool files were run on their own to gate the first
+commit, and `tests/FmInstall.Tests.ps1` repairs `CLAUDE.md` and `.claude/skills`
+as part of its own work. That subset run showed the familiar set - six of them,
+all `$doctor.Healthy` on the doctor, backend and separate-home checks - and the
+immediate re-run showed none. So this is still "report the SECOND run"; the
+second run simply happened earlier than usual, exactly as in 33.6.
+
+The eighteen skips are all pre-existing and none is new.

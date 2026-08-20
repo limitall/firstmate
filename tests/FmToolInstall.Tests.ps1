@@ -915,6 +915,67 @@ Describe 'a launch this machine refuses' {
         $lines | Should -Match 'gh\s+UNUSABLE - this machine refused to start it'
     }
 
+    It 'fails the verification pass over a tool that will not start, and says which failure it is' -Skip:(-not $IsWindows) {
+        # The proving pass and the plan ask different questions, so the class has
+        # to reach BOTH. "It ran and printed nothing useful" and "it never ran"
+        # are different findings, and the check must not print the first one.
+        Mock Update-FmToolSessionPath { $env:PATH }
+        $env:PATH = $script:BadBin
+        try {
+            foreach ($entry in (Get-FmToolCatalog)) {
+                Copy-Item -LiteralPath $script:BadExe -Destination (Join-Path $script:BadBin ($entry.Command + '.exe')) -Force
+            }
+            $checks = @(Get-FmMachineToolVerification)
+            $checks.Count | Should -BeGreaterThan 0
+            $required = @($checks | Where-Object { $_.Name -eq 'tool git' })
+            $required.Count | Should -Be 1
+            $required[0].Status | Should -Be 'missing' -Because 'a required tool that cannot be exercised is not a proven install'
+            $required[0].Detail | Should -Match 'refused to start'
+            $required[0].Detail | Should -Not -Match 'answers nothing to --version'
+            $required[0].Detail | Should -Not -Match 'An error occurred trying to start process'
+        } finally {
+            $env:PATH = $script:SavedPath
+            Get-ChildItem -LiteralPath $script:BadBin -Filter '*.exe' |
+                Where-Object { $_.Name -ne 'fm-unstartable.exe' } | Remove-Item -Force
+        }
+    }
+
+    It 'calls an enabler that will not start UNSATISFIED rather than present' -Skip:(-not $IsWindows) {
+        # An enabler is only an enabler if it runs. Reporting npm as satisfied
+        # because a file with that name is on PATH sends every axi route at a
+        # refusal it will each rediscover separately.
+        $env:PATH = $script:BadBin
+        try {
+            Copy-Item -LiteralPath $script:BadExe -Destination (Join-Path $script:BadBin 'npm.exe') -Force
+            $npm = @(Get-FmToolEnablerStatus | Where-Object { $_.Name -eq 'npm' })
+            $npm.Count | Should -Be 1
+            $npm[0].Present | Should -BeTrue -Because 'it is on PATH'
+            $npm[0].Satisfied | Should -BeFalse -Because 'it does not run'
+            $npm[0].Fix | Should -Not -BeNullOrEmpty
+        } finally {
+            $env:PATH = $script:SavedPath
+            Remove-Item -LiteralPath (Join-Path $script:BadBin 'npm.exe') -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'reports a suite it could not start as NOT RUN, in words, rather than crashing the report' -Skip:(-not $IsWindows) {
+        # The suite is the LAST step, so an unguarded start here throws away the
+        # whole report the captain has been waiting for.
+        Mock Start-Process { throw [System.ComponentModel.Win32Exception]::new(5) }
+        $fake = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path (Join-Path $fake 'tests') -Force
+        [System.IO.File]::WriteAllText((Join-Path $fake 'tests' 'Demo.Tests.ps1'), 'Describe ''d'' { It ''p'' { 1 | Should -Be 1 } }')
+
+        $result = $null
+        { $script:SuiteResult = Invoke-FmMachineSuite -RepoRoot $fake -TimeoutSeconds 60 } | Should -Not -Throw
+        $result = $script:SuiteResult
+        $result.Ran | Should -BeFalse
+        $result.Failed | Should -Be 0
+        $result.Detail | Should -Match 'refused to start'
+        $result.Detail | Should -Match 'Invoke-Pester' -Because 'the captain is left with the command to run themselves'
+        $result.Detail | Should -Not -Match 'Win32Exception'
+    }
+
     It 'tells the captain plainly when install.ps1 cannot re-launch itself' -Skip:(-not $IsWindows) {
         # THE CAPTAIN'S FIRST COMMAND, end to end. A clean Windows machine opens
         # Windows PowerShell 5.1, so this is the one path where a refusal is the
