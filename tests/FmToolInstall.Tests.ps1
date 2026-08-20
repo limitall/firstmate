@@ -154,8 +154,8 @@ Describe 'where a tool actually comes from' {
         # `winget install <id>` on a package already present reports "already
         # installed" and exits 0 without upgrading anything, so a captain who
         # said yes would have been told it happened and left on the old version.
-        Get-FmToolUpdateCommand -Command 'winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements' |
-            Should -Be 'winget upgrade -e --id Git.Git --accept-source-agreements --accept-package-agreements'
+        Get-FmToolUpdateCommand -Command 'winget install -e --id Git.Git --source winget --accept-source-agreements --accept-package-agreements' |
+            Should -Be 'winget upgrade -e --id Git.Git --source winget --accept-source-agreements --accept-package-agreements'
     }
 
     It 'gives every winget route the flags that let it finish with nobody at the keyboard' -Skip:(-not $IsWindows) {
@@ -192,6 +192,47 @@ Describe 'where a tool actually comes from' {
         $wingetRoutes.Count | Should -BeGreaterThan 0 -Because 'git and Node.js come from winget, so this sweep is not vacuous'
     }
 
+    It 'pins the one source these packages come from, so an unused one cannot fail the install' -Skip:(-not $IsWindows) {
+        # THE DEFECT, PINNED. MEASURED from the captain's clean-VM install log,
+        # 2026-08-20, with the agreement flags already in: the Node.js route
+        # exited -1978335138 (0x8A15005E) having installed nothing, and winget
+        # said why - "Failed when searching source: msstore ... The server
+        # certificate did not match any of the expected values", then "The
+        # following packages were found among the working sources. Please
+        # specify one of them using the --source option to proceed. Node.js
+        # OpenJS.NodeJS winget".
+        #
+        # The `winget` source was healthy and HAD the package. winget queries
+        # every configured source, so ONE erroring source it did not need was
+        # enough to make it stop and ask which to use - a question nobody is
+        # there to answer, so it exited without installing. Every id below is
+        # published on `winget` and none comes from the Store, so naming the
+        # source removes the question and the whole dependency on msstore's
+        # health.
+        #
+        # This sweeps the catalog the installer actually walks, so a winget
+        # route added later without the pin fails here rather than on the
+        # captain's next clean VM.
+        $pinned = @()
+        foreach ($entry in (Get-FmToolCatalog)) {
+            $route = Get-FmToolRoute -Tool $entry.Tool
+            if ($route.Command -notmatch '^\s*winget\s') { continue }
+            $pinned += $route
+            $route.Command | Should -Match '\s--source\s+winget(\s|$)' `
+                -Because "an unhealthy msstore would fail $($entry.Tool) on a source it does not need"
+            # The replace route is run on the same machines, so it carries the
+            # pin too or the update reintroduces the same failure.
+            Get-FmToolUpdateCommand -Command $route.Command | Should -Match '\s--source\s+winget(\s|$)' `
+                -Because "the update route for $($entry.Tool) meets the same sources"
+        }
+        $pinned.Count | Should -BeGreaterThan 0 -Because 'git and Node.js come from winget, so this sweep is not vacuous'
+
+        # And the builder every one of them is made by, whole, including the
+        # elevated PowerShell 7 line that is printed for a human to paste.
+        Get-FmBootstrapWingetCommand -PackageId 'Demo.Package' |
+            Should -Be 'winget install -e --id Demo.Package --source winget --accept-source-agreements --accept-package-agreements'
+    }
+
     It 'never names a winget package that does not exist' -Skip:(-not $IsWindows) {
         # SAME RULE AS "NEVER TRUST A PACKAGE NAME", applied to the other package
         # manager. orca and cmux were published here as `winget install orca` and
@@ -218,7 +259,7 @@ Describe 'where a tool actually comes from' {
         # a winget command, and a captain who pastes it into a script hits the
         # prompt the flags exist to answer.
         $line = Get-FmBootstrapWingetCommand -PackageId 'Microsoft.PowerShell'
-        $line | Should -Be 'winget install -e --id Microsoft.PowerShell --accept-source-agreements --accept-package-agreements'
+        $line | Should -Be 'winget install -e --id Microsoft.PowerShell --source winget --accept-source-agreements --accept-package-agreements'
     }
 
     It 'leaves every other route alone, because they already fetch the newest thing' {
@@ -796,7 +837,7 @@ Describe 'Install-FmMachine' {
     It 'hands the captain an upgrade command for the winget tools, not an install one' -Skip:(-not $IsWindows) {
         $plan = Get-FmMachineInstallPlan -Offline
         $git = @($plan.Requirements | Where-Object { $_.Name -eq 'git' })[0]
-        $git.UpdateCommand | Should -Be 'winget upgrade -e --id Git.Git --accept-source-agreements --accept-package-agreements'
+        $git.UpdateCommand | Should -Be 'winget upgrade -e --id Git.Git --source winget --accept-source-agreements --accept-package-agreements'
     }
 
     It 'classifies everything as unknown-latest offline rather than calling it current' {
@@ -1211,6 +1252,12 @@ Describe 'a failed install, reported' {
             Should -Match 'no package'
         Get-FmToolExitCodeMeaning -Command 'winget install -e --id Git.Git' -ExitCode -1978335230 |
             Should -Match 'command line'
+        # MEASURED from the captain's clean-VM log, 2026-08-20, where winget
+        # printed this sentence about itself. Routes pin --source winget now, so
+        # if it is seen again it is the source this repo DOES need that cannot be
+        # reached, which is a different answer and worth saying.
+        Get-FmToolExitCodeMeaning -Command 'winget install -e --id Git.Git' -ExitCode -1978335138 |
+            Should -Match 'certificate'
         # AND NOTHING WHERE IT HAS NOT. An invented meaning is the defect that
         # started all this, so an unrecognised code says nothing at all and lets
         # the tool's own words stand.
@@ -1225,6 +1272,25 @@ Describe 'a failed install, reported' {
             -Output @('No package found matching input criteria.')
         $detail | Should -Match '0x8A150014'
         $detail | Should -Match 'No package found matching input criteria'
+    }
+
+    It 'reports a pinned-source install that failed anyway just as fully' {
+        # THE PIN MUST NOT BECOME A GAG. Naming the source removes one failure;
+        # it must not cost the captain the report on any of the others, or the
+        # next clean VM sends back the bare "exited 1" this area exists to stop.
+        # This is the real command a route now runs, failing for a reason the
+        # pin has nothing to do with.
+        $command = 'winget install -e --id OpenJS.NodeJS --source winget --accept-source-agreements --accept-package-agreements'
+        $detail = Get-FmToolRunFailureDetail -Command $command -ExitCode -1978335138 -Output @(
+            'Failed when searching source: winget',
+            'An unexpected error occurred while executing the command:',
+            '0x8a15005e : The server certificate did not match any of the expected values.')
+        $detail | Should -Match ([regex]::Escape($command)) -Because 'the captain must see what was run'
+        $detail | Should -Match '0x8A15005E' -Because 'the code has to be lookup-able'
+        $detail | Should -Match 'certificate did not match any of the expected values' `
+            -Because "the tool's own words are quoted, never distilled"
+        $detail | Should -Match 'Failed when searching source: winget' `
+            -Because 'which source failed is the whole of the finding once the pin is in'
     }
 
     It 'says a tool printed nothing, rather than reporting an empty cause' {

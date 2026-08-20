@@ -1096,6 +1096,16 @@ function Get-FmToolExitCodeMeaning {
         switch ($ExitCode) {
             -1978335230 { return 'winget rejected the command line it was given' }
             -1978335212 { return 'winget found no package matching what it was asked for' }
+            # MEASURED from the captain's clean-VM install log, 2026-08-20:
+            # winget printed this one about itself - "0x8a15005e : The server
+            # certificate did not match any of the expected values" - so this
+            # entry is winget's own sentence, not a meaning invented for a
+            # number. It reached the captain because the msstore source was
+            # unhealthy on that machine; every route now pins --source winget,
+            # so seeing it again means the source this repo DOES need is the one
+            # that cannot be reached - a TLS-inspecting proxy or a clock skew on
+            # the machine itself, not a package problem.
+            -1978335138 { return "a source's server certificate did not match what winget expected" }
             default { return '' }
         }
     }

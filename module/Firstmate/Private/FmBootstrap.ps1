@@ -66,6 +66,30 @@
 # identifier, because a bare `winget install <name>` is a SEARCH, and a search
 # that matches several packages asks a second question nobody is there to
 # answer either.
+#
+# --source winget PINS THE ONE SOURCE THESE PACKAGES COME FROM, so a source this
+# repo does not use cannot fail an install it was never needed for.
+#
+# MEASURED from the captain's clean-VM install log, 2026-08-20, with the flags
+# above already in: the Node.js route exited -1978335138 (0x8A15005E) and
+# installed nothing, and winget's own words were "Failed when searching source:
+# msstore ... The server certificate did not match any of the expected values",
+# then "The following packages were found among the working sources. Please
+# specify one of them using the --source option to proceed. Node.js
+# OpenJS.NodeJS winget". The `winget` source was healthy and HAD the package.
+# winget queries every configured source, and one erroring source is enough for
+# it to stop and ask which to use - a question nobody is there to answer, so it
+# exits without installing. A TLS-inspecting proxy, a clock skew or a
+# locked-down image is enough to break msstore, and none of that is under this
+# repo's control; every id named below is published on `winget`, and nothing
+# here comes from the Store. Naming the source ahead of the question removes
+# both the question and the whole dependency on the other source's health.
+#
+# THIS IS WHAT THE REPORTING FIX BOUGHT. The run before it reported the same
+# failure as a bare `exited 1` with a fragment of winget's package table for a
+# cause, and firstmate read that as needing administrator - twice, wrongly. The
+# commit that made a failure carry its own exit code and the tool's own output
+# is why the log above says the cause out loud and this took five minutes.
 function Get-FmBootstrapWingetCommand {
     [OutputType([string])]
     [CmdletBinding()]
@@ -74,7 +98,7 @@ function Get-FmBootstrapWingetCommand {
         [string]$Note = ''
     )
 
-    $command = "winget install -e --id $PackageId --accept-source-agreements --accept-package-agreements"
+    $command = "winget install -e --id $PackageId --source winget --accept-source-agreements --accept-package-agreements"
     if ($Note) { return "$command  # $Note" }
     $command
 }
