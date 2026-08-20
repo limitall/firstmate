@@ -154,7 +154,50 @@ Describe 'where a tool actually comes from' {
         # `winget install <id>` on a package already present reports "already
         # installed" and exits 0 without upgrading anything, so a captain who
         # said yes would have been told it happened and left on the old version.
-        Get-FmToolUpdateCommand -Command 'winget install Git.Git' | Should -Be 'winget upgrade Git.Git'
+        Get-FmToolUpdateCommand -Command 'winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements' |
+            Should -Be 'winget upgrade -e --id Git.Git --accept-source-agreements --accept-package-agreements'
+    }
+
+    It 'gives every winget route the flags that let it finish with nobody at the keyboard' -Skip:(-not $IsWindows) {
+        # THE DEFECT, PINNED. `winget install OpenJS.NodeJS` exited 1 and
+        # installed nothing on the captain's machine, 2026-08-20, in an
+        # ADMINISTRATOR shell: winget asks the operator to accept its source
+        # agreements the first time, and an install run through a pipeline has
+        # nobody there to accept them.
+        #
+        # This sweeps the catalog the installer actually walks, so a winget route
+        # added later without the flags fails here rather than on a captain's
+        # machine.
+        $wingetRoutes = @()
+        foreach ($entry in (Get-FmToolCatalog)) {
+            $route = Get-FmToolRoute -Tool $entry.Tool
+            if ($route.Command -notmatch '^\s*winget\s') { continue }
+            $wingetRoutes += $route
+            $route.Command | Should -Match '\s--accept-source-agreements(\s|$)' `
+                -Because "$($entry.Tool) would stop at winget's source-agreement prompt"
+            $route.Command | Should -Match '\s--accept-package-agreements(\s|$)' `
+                -Because "$($entry.Tool) would stop at winget's package-agreement prompt"
+            # `-e --id <id>` matches one package by identifier. A bare
+            # `winget install <name>` is a search, and a search with several hits
+            # asks a second question nobody is there to answer.
+            $route.Command | Should -Match '\s-e\s+--id\s+\S+' `
+                -Because "$($entry.Tool) must be matched by its exact package id, not by a search"
+            # What the captain is handed to REPLACE it carries them too, or the
+            # update route reintroduces the same prompt.
+            $update = Get-FmToolUpdateCommand -Command $route.Command
+            $update | Should -Match '\s--accept-source-agreements(\s|$)'
+            $update | Should -Match '\s--accept-package-agreements(\s|$)'
+            $update | Should -Match '\s-e\s+--id\s+\S+'
+        }
+        $wingetRoutes.Count | Should -BeGreaterThan 0 -Because 'git and Node.js come from winget, so this sweep is not vacuous'
+    }
+
+    It 'gives the elevated PowerShell 7 route the same flags, because it is copied and pasted' -Skip:(-not $IsWindows) {
+        # Get-FmMachineShellLine prints this one for a human to run. It is still
+        # a winget command, and a captain who pastes it into a script hits the
+        # prompt the flags exist to answer.
+        $line = Get-FmBootstrapWingetCommand -PackageId 'Microsoft.PowerShell'
+        $line | Should -Be 'winget install -e --id Microsoft.PowerShell --accept-source-agreements --accept-package-agreements'
     }
 
     It 'leaves every other route alone, because they already fetch the newest thing' {
@@ -641,7 +684,7 @@ Describe 'PowerShell 7, findable' {
         # A per-user install cannot register the Windows Terminal profile or the
         # right-click entries, and the one command that can needs administrator.
         # Naming it is the honest answer; a run that installed it would not be.
-        $lines | Should -Match 'winget install Microsoft\.PowerShell'
+        $lines | Should -Match 'winget install -e --id Microsoft\.PowerShell'
         $lines | Should -Match 'needs administrator'
     }
 
@@ -652,7 +695,7 @@ Describe 'PowerShell 7, findable' {
         }
         $lines = (Get-FmMachineShellLine -Shortcut $already) -join "`n"
         $lines | Should -Match 'PowerShell 7 \(x64\)'
-        $lines | Should -Not -Match 'winget install Microsoft\.PowerShell'
+        $lines | Should -Not -Match 'winget install -e --id Microsoft\.PowerShell'
     }
 }
 
@@ -732,7 +775,7 @@ Describe 'Install-FmMachine' {
     It 'hands the captain an upgrade command for the winget tools, not an install one' -Skip:(-not $IsWindows) {
         $plan = Get-FmMachineInstallPlan -Offline
         $git = @($plan.Requirements | Where-Object { $_.Name -eq 'git' })[0]
-        $git.UpdateCommand | Should -Be 'winget upgrade Git.Git'
+        $git.UpdateCommand | Should -Be 'winget upgrade -e --id Git.Git --accept-source-agreements --accept-package-agreements'
     }
 
     It 'classifies everything as unknown-latest offline rather than calling it current' {

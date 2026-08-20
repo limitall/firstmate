@@ -878,7 +878,7 @@ function Get-FmInstallPrerequisiteCheck {
     } else {
         $checks += New-FmInstallCheck -Name 'PowerShell 7' -Status 'missing' -Required `
             -Detail "this session is PowerShell $psVersion" `
-            -Fix 'winget install Microsoft.PowerShell, then re-run this from pwsh (not Windows PowerShell)'
+            -Fix ((Get-FmBootstrapWingetCommand -PackageId 'Microsoft.PowerShell') + ', then re-run this from pwsh (not Windows PowerShell)')
     }
 
     if (Get-Command -Name 'git' -CommandType Application -ErrorAction SilentlyContinue) {

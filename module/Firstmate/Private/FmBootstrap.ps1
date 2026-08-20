@@ -50,6 +50,35 @@
 # such by Test-FmBootstrapInstallNeedsAdministrator so the installer can name and
 # skip them instead of crashing an unelevated run.
 
+# EVERY WINGET COMMAND THIS REPO PRINTS OR RUNS IS BUILT HERE, so the flags that
+# let one finish with nobody at the keyboard are stated once instead of once per
+# package.
+#
+# MEASURED from the captain's install log, 2026-08-20, in an ADMINISTRATOR
+# Windows PowerShell: `winget install OpenJS.NodeJS` exited 1 and installed
+# nothing. winget asks the operator to accept its source agreements the first
+# time it is used, and a run whose output is captured through a pipeline has
+# nobody at that prompt - so it declines and exits 1. Elevation was never the
+# problem: the same log shows winget v1.9.25200 present and running.
+#
+# --accept-source-agreements and --accept-package-agreements answer both
+# agreements ahead of the prompt. `-e --id` matches ONE package by its exact
+# identifier, because a bare `winget install <name>` is a SEARCH, and a search
+# that matches several packages asks a second question nobody is there to
+# answer either.
+function Get-FmBootstrapWingetCommand {
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$PackageId,
+        [string]$Note = ''
+    )
+
+    $command = "winget install -e --id $PackageId --accept-source-agreements --accept-package-agreements"
+    if ($Note) { return "$command  # $Note" }
+    $command
+}
+
 function Get-FmBootstrapInstallCommand {
     [OutputType([string])]
     [CmdletBinding()]
@@ -57,17 +86,17 @@ function Get-FmBootstrapInstallCommand {
 
     if ($IsWindows) {
         switch ($Tool) {
-            'node' { return 'winget install OpenJS.NodeJS' }
-            'git' { return 'winget install Git.Git' }
+            'node' { return (Get-FmBootstrapWingetCommand -PackageId 'OpenJS.NodeJS') }
+            'git' { return (Get-FmBootstrapWingetCommand -PackageId 'Git.Git') }
             # The MSI winget runs is machine-scope, so it needs administrator.
             # firstmate's own installer prefers the portable zip from the same
             # project's releases, which does not - see Get-FmBootstrapPortableRelease.
-            'gh' { return 'winget install GitHub.cli  # or ./install.ps1, which uses the portable zip and needs no administrator' }
-            'curl' { return 'winget install cURL.cURL' }
-            'jq' { return 'winget install jqlang.jq' }
+            'gh' { return (Get-FmBootstrapWingetCommand -PackageId 'GitHub.cli' -Note 'or ./install.ps1, which uses the portable zip and needs no administrator') }
+            'curl' { return (Get-FmBootstrapWingetCommand -PackageId 'cURL.cURL') }
+            'jq' { return (Get-FmBootstrapWingetCommand -PackageId 'jqlang.jq') }
             'zellij' { return 'cargo install --locked zellij  # or the platform''s package manager' }
-            'orca' { return 'winget install orca  # or the platform''s package manager' }
-            'cmux' { return 'winget install cmux  # or see https://cmux.com' }
+            'orca' { return (Get-FmBootstrapWingetCommand -PackageId 'orca' -Note 'or the platform''s package manager') }
+            'cmux' { return (Get-FmBootstrapWingetCommand -PackageId 'cmux' -Note 'or see https://cmux.com') }
             'tmux' { return $null }
             'claude' { return 'irm https://claude.ai/install.ps1 | iex' }
             'treehouse' { return 'irm https://kunchenguid.github.io/treehouse/install.ps1 | iex' }

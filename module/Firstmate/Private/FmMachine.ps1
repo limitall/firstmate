@@ -285,7 +285,7 @@ function Get-FmMachineShellLine {
         # answer; installing over the captain's machine is not.
         $lines += '  the Windows Terminal profile and the right-click entries need the machine-wide'
         $lines += '  installer, which is the one thing here that needs administrator. Optional, once:'
-        $lines += '      winget install Microsoft.PowerShell'
+        $lines += ('      ' + (Get-FmBootstrapWingetCommand -PackageId 'Microsoft.PowerShell'))
     }
     $lines
 }
