@@ -5845,6 +5845,9 @@ digest   MISSING: node (install: winget install -e --id OpenJS.NodeJS --accept-s
 
 The two commands printed for a human to run - the prerequisite check's fix line and the optional elevated PowerShell 7 route - come from the same builder, because a captain who pastes one into a script meets the same prompt.
 
+**Those command lines are what this commit produced and are no longer current**: section 36 adds `--source winget` to every one of them, for a failure this shape did not survive on a clean VM.
+Read 36.4 for the lines as they stand.
+
 **Two of the routes named packages that do not exist**, which exact matching turned from a vague search into a measurable fact.
 Every id was checked against this machine's winget:
 
@@ -6019,3 +6022,227 @@ because the tree changed under them: the first while this section's reporting fi
 was still being written, the second when `orca` and `cmux` were found not to be
 winget packages. A suite run against a tree that no longer exists proves nothing
 about the one that does.
+
+## 36. A source the install never needed stopped it, and the reporting fix is why that took five minutes - `PROVEN (Windows 11) FOR THE FAILURE, THE SOURCES AND THE FIX, NOT FOR THE CERTIFICATE CONDITION`
+
+Dated 2026-08-20, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\15\firstmate-win`,
+PowerShell 7.6.4, Windows 11 Pro 10.0.26200, branched from `main` at `33eee1a`.
+The fix was committed alone as `a8dcbe5` and landed while the captain was blocked; this section is the second commit, written on `87aa469`.
+
+Section 35 made every winget command answerable with nobody at the keyboard, and made a failed install carry its own exit code and the tool's own words.
+The captain then rebuilt a clean VM and ran the installer with both of those in.
+It still installed nothing - and this time the report said exactly why.
+
+### 36.1 What the captain met
+
+```
+[skipped] Node.js - FAILED: 'winget install -e --id OpenJS.NodeJS
+          --accept-source-agreements --accept-package-agreements'
+          exited -1978335138 (0x8A15005E).
+  ...
+  Failed when searching source: msstore
+  An unexpected error occurred while executing the command:
+  0x8a15005e : The server certificate did not match any of the expected values.
+  The following packages were found among the working sources.
+  Please specify one of them using the --source option to proceed.
+  Name    Id            Source
+  Node.js OpenJS.NodeJS winget
+```
+
+Read the last two lines before anything else.
+The `winget` source was healthy and it HAD the package.
+The source that failed was `msstore`, with a certificate mismatch - a TLS-inspecting proxy, a clock skew, a locked-down image - and none of that is under this repo's control.
+
+### 36.2 The mechanism: one erroring source is enough, and it asks a question nobody can answer
+
+winget queries every configured source that is not marked explicit, and when one of them errors it will not go ahead with the package the others found.
+It says which source failed, says the package WAS found among the working sources, and asks to be told which one to use.
+Measured here, winget v1.29.280, 2026-08-20:
+
+```
+PS> winget source list
+Name        Argument                                      Explicit
+------------------------------------------------------------------
+msstore     https://storeedgefd.dsx.mp.microsoft.com/v9.0 false
+winget      https://cdn.winget.microsoft.com/cache        false
+winget-font https://cdn.winget.microsoft.com/fonts        true
+
+PS> winget install --help
+  -s,--source                          Find package using the specified source
+```
+
+The `Explicit` column is the whole finding.
+`winget-font` is `true`, so it is consulted only when it is named; `msstore` is `false`, so every unpinned command consults it whether this repo wants it or not.
+That is a dependency on a component being healthy, taken without ever asking for it.
+
+And the failure it produced is not a soft one.
+"Please specify one of them using the `--source` option to proceed" is a question, asked into a pipe by a run that has nobody at it, and the exit that follows installs nothing - which is the same shape as the agreement prompt section 35 removed, arriving through a different door.
+
+### 36.3 The Store could not have supplied these packages anyway
+
+This is the part that settles it.
+Measured here, 2026-08-20, every id this repo names resolves from the `winget` source alone, and the source that failed the install has none of them:
+
+```
+PS> winget search -e --id <id> --source winget --accept-source-agreements
+OpenJS.NodeJS          exit=0   Node.js       OpenJS.NodeJS        26.7.0
+Git.Git                exit=0   Git           Git.Git              2.55.0.3
+GitHub.cli             exit=0   GitHub CLI    GitHub.cli           2.97.0
+cURL.cURL              exit=0   cURL          cURL.cURL            8.21.0.6
+jqlang.jq              exit=0   jq            jqlang.jq            1.8.2
+Microsoft.PowerShell   exit=0   PowerShell    Microsoft.PowerShell 7.6.5.0
+
+PS> winget search -e --id <id> --source msstore --accept-source-agreements
+OpenJS.NodeJS          exit=-1978335212   No package found matching input criteria.
+Git.Git                exit=-1978335212   No package found matching input criteria.
+```
+
+msstore was not merely unnecessary to this install.
+It could never have supplied a single package in it, and it was still able to stop the whole thing.
+A source we do not use must not be able to fail our install.
+
+### 36.4 The fix - `PROVEN`
+
+`--source winget` goes on the command in `Get-FmBootstrapWingetCommand`, which section 35 already made the one owner of the shape, so all eight surfaces pick it up from one line:
+
+```
+node     winget install -e --id OpenJS.NodeJS --source winget --accept-source-agreements --accept-package-agreements
+git      winget install -e --id Git.Git --source winget --accept-source-agreements --accept-package-agreements
+gh       winget install -e --id GitHub.cli --source winget --accept-source-agreements --accept-package-agreements  # or ./install.ps1, ...
+curl     winget install -e --id cURL.cURL --source winget --accept-source-agreements --accept-package-agreements
+jq       winget install -e --id jqlang.jq --source winget --accept-source-agreements --accept-package-agreements
+
+ps7      winget install -e --id Microsoft.PowerShell --source winget --accept-source-agreements --accept-package-agreements
+update   winget upgrade -e --id Git.Git --source winget --accept-source-agreements --accept-package-agreements
+digest   MISSING: node (install: winget install -e --id OpenJS.NodeJS --source winget --accept-source-agreements --accept-package-agreements)
+```
+
+The two lines printed for a human to paste carry it for the same reason the agreement flags do, and the upgrade rewrite keeps it because it only replaces the verb.
+
+**The trade-off, stated rather than discovered later.**
+A machine whose `winget` source has been removed or renamed - some managed images do that - now fails on the name instead of searching whatever else is configured.
+Measured here, 2026-08-20, that failure is a good one:
+
+```
+PS> winget search -e --id OpenJS.NodeJS --source no-such-source --accept-source-agreements
+exit = -1978335214
+No sources match the given value: no-such-source
+The configured sources are:
+  msstore
+  winget
+  winget-font
+```
+
+It names the machine's actual configuration, it arrives through the same report as every other failure, and what it replaces is an install that stopped on a question with nobody there to answer it.
+`-1978335214` is deliberately NOT added to `Get-FmToolExitCodeMeaning`, even though it was measured here and this change is what makes it reachable: winget already says what is wrong and lists the sources it does have, and a one-line gloss cannot improve on that.
+The rule is that a meaning is added where the tool's own words are not enough, not wherever a code has been seen.
+
+### 36.5 The reporting fix is what made this findable
+
+This is the strongest argument for section 35's second half, and it is worth stating in full.
+
+The run BEFORE that commit met this same failure and reported it like this:
+
+```
+[skipped] Node.js - FAILED: 'winget install OpenJS.NodeJS' exited 1:
+          Node.js OpenJS.NodeJS winget
+```
+
+`exited 1` was the child shell's verdict, not winget's, so the one number that identifies this failure was thrown away.
+The "cause" was the last line the tool happened to print, which was a row of winget's package table.
+Firstmate read that, found no cause in it, and told the captain the install needed administrator - twice, wrongly, while they were already elevated.
+
+The run AFTER it met the same failure and reported `-1978335138 (0x8A15005E)` with winget's own paragraph underneath, naming the source, the certificate, and the question it was asking.
+Diagnosis took five minutes and needed no access to the captain's machine.
+
+Same defect, same machine class, two reports.
+One cost the captain two wrong diagnoses and their time twice; the other was solved from the log.
+Nothing else in this port has demonstrated its own value that cleanly.
+
+### 36.6 The pin must not become a gag - `PROVEN`
+
+Naming the source removes one failure, and it must not cost the captain the report on any of the others.
+`tests/FmToolInstall.Tests.ps1` runs the real reporting path over the real pinned command, failing for a reason the pin has nothing to do with, and requires the command, the code in both forms, and the tool's own words to survive:
+
+```
+'winget install -e --id OpenJS.NodeJS --source winget --accept-source-agreements --accept-package-agreements'
+    exited -1978335138 (0x8A15005E), which means a source's server certificate did not match what winget expected.
+what it printed, in full:
+    Failed when searching source: winget
+    An unexpected error occurred while executing the command:
+    0x8a15005e : The server certificate did not match any of the expected values.
+```
+
+`-1978335138` also joins `Get-FmToolExitCodeMeaning`, and it is the only entry in it taken from the captain's log rather than from this seat.
+It qualifies on the same rule as the others: it is winget's OWN sentence about itself, quoted, not a meaning invented for a number.
+Note what it now means with the pin in - the source this repo DOES need is unreachable, which points at the machine rather than at the package, and is a different answer worth saying.
+
+### 36.7 Coverage
+
+```
+tests/FmToolInstall.Tests.ps1
+  'pins the one source these packages come from, so an unused one cannot fail the install'
+  'reports a pinned-source install that failed anyway just as fully'
+  'says what an exit code means only where this repo has measured one'   (extended)
+```
+
+The pin sweep walks `Get-FmToolCatalog` rather than a list of today's tools, on the install form AND the upgrade form, so a winget route added later without the pin fails in the suite rather than on the captain's next clean VM.
+
+Negative control, RUN rather than asserted, by putting the defect back in `Get-FmBootstrapWingetCommand` and restoring it afterwards:
+
+```
+--source winget removed        Invoke-Pester ./tests/FmToolInstall.Tests.ps1
+                               96 passed, 3 failed
+
+  - pins the one source these packages come from, so an unused one cannot fail the install
+  - gives the elevated PowerShell 7 route the same flags, because it is copied and pasted
+  - hands the captain an upgrade command for the winget tools, not an install one
+```
+
+Those three are the install route, the human-pasted line and the update route, which is the whole surface the builder feeds.
+`reports a pinned-source install that failed anyway just as fully` stays green through it, and that is correct: it holds a literal command rather than the builder's, because its subject is the report and not the flag.
+
+### 36.8 The rest of the class
+
+The question section 35.7 asked was "what else can stop and ask when nobody is there".
+This section asks the sharper one: what else must be HEALTHY for us to succeed, that we never needed?
+The repo was swept for it, and nothing else is in the same position.
+
+- **`Install-Module` names no `-Repository`**, so it searches every registered repository, which is structurally the same shape. It is deliberately left alone. `-Repository PSGallery` would be one word, but the two cases are not alike: every winget id here is published on `winget` and none on the Store, whereas a captain on a corporate network may legitimately have an internal mirror registered INSTEAD of PSGallery, and pinning would break exactly that machine. It is also not measured - PSGallery is Trusted and healthy here, so there is nothing to reproduce. Recorded as considered and declined, not as overlooked.
+- **The "latest published version" lookups were already correct**, and are the pattern this fix should be judged against. `Get-FmToolLatestVersion` and `Get-FmToolModuleLatestVersion` return `''` on any failure and `Get-FmToolClassification` reports `unknown-latest`, so a vendor release feed being down cannot fail a tool. A component we do not need in order to INSTALL already cannot stop us there.
+- **The portable route, the vendor installers and `npm install -g`** each have exactly one source, and it is the source of the thing being installed. There is no unneeded component to drop.
+- **`Get-FmToolWingetPath`** already resolves winget by PATH and then by its real location, so a `Get-Command` miss on a locked-down profile does not refuse a machine that has winget. Same class, already answered; section 33 owns that measurement.
+
+### 36.9 What was NOT run
+
+- **The certificate condition itself was not reproduced.** msstore is healthy on this machine, and breaking a machine's TLS trust or its clock to reproduce it would change global state to prove a link the fix removes either way. That one link rests on the captain's log and on winget's own printed explanation, not on a measurement from this seat. Everything else here - the source list, the `Explicit` column, the flag, and which source has which package - was measured on this machine.
+- **No tool was installed, and no machine was changed.** Every winget call in this section was `--version`, `source list`, `--help`, or `search`. Nothing was installed, upgraded, removed, or re-sourced.
+- **`install.ps1` has still never completed on a machine missing the tools.** This section removes another reason it could not; sections 33.5, 34.8 and 35.9 said the same about theirs, and it stays true until a clean VM finishes.
+- **The pinned command has never run a real install on the captain's VM.** That VM is rebuilt for each attempt, and the fix was committed alone as `a8dcbe5` and landed on `main` while this section was still being written, precisely so the next rebuild would be its first real test. What is proven here is that the pinned form resolves every id from a source that answered; whether it carries a clean VM to the end is the captain's next run to report.
+
+### 36.10 The suite and the analyzer, on this branch
+
+Both passes run on the final tree, with the analyzer sweep taken inside the suite as `tests/FmAnalyzer.Tests.ps1`.
+
+```
+Invoke-Pester -Path ./tests    run A   2492 passed, 0 failed, 18 skipped   (56m)
+Invoke-Pester -Path ./tests    run B   2492 passed, 0 failed, 18 skipped   (53m)
+Invoke-ScriptAnalyzer, repo-wide, via tests/FmAnalyzer.Tests.ps1
+                                       zero findings at every severity
+```
+
+2492 is section 35.10's 2490 plus the two tests this task adds.
+
+**Run A is clean here, and as in 35.10 that is not an improvement.**
+The instruction-surface failures a fresh worktree's first run produces had already been cleared before it started: `tests/FmToolInstall.Tests.ps1`, `tests/FmInstall.Tests.ps1` and `tests/FmAnalyzer.Tests.ps1` were run together earlier to gate the first commit, and that subset showed the familiar six - all `$doctor.Healthy` - which an immediate re-run of `tests/FmInstall.Tests.ps1` cleared at 83 passed, 0 failed.
+So this is still "report the SECOND run"; the repair simply happened before run A rather than during it.
+
+**The two runs bracket the negative control, and the tree was checked rather than assumed.**
+36.7's control edits `Get-FmBootstrapWingetCommand`, so it ran between the two passes and the file was restored from a copy afterwards.
+`git status` then reported only the two markdown files this commit changes, which is what proves the restored source is byte-identical to what run A tested and to what is committed.
+Nothing else moved between the passes: no test in `tests/` reads anything under `docs/`, so both runs cover exactly the same code.
+
+The eighteen skips are all pre-existing and none is new.
+
+One earlier whole-suite run was started and DISCARDED rather than reported, because it was launched before the fix was finished and the tree changed under it.
+A suite run against a tree that no longer exists proves nothing about the one that does.

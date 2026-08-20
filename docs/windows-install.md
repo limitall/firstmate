@@ -405,9 +405,16 @@ winget is the case that bit: it asks the operator to accept its source agreement
 Measured from the captain's install log, 2026-08-20, in an ADMINISTRATOR shell: `winget install OpenJS.NodeJS` exited 1 and installed nothing on a machine that had winget v1.9.25200 and ran it.
 Elevation had nothing to do with it, and `docs/windows-e2e-evidence.md` section 35 records that the failure was first reported to the captain as an administrator problem and that they had already opened an elevated shell on that advice.
 
-`Get-FmBootstrapWingetCommand` is the one owner of that shape, so the flags are stated once rather than once per package: `--accept-source-agreements` and `--accept-package-agreements` answer both agreements ahead of the prompt, and `-e --id <id>` matches one package by its exact identifier rather than running a search that can match several and ask a second question.
+`Get-FmBootstrapWingetCommand` is the one owner of that shape, so the flags are stated once rather than once per package: `--accept-source-agreements` and `--accept-package-agreements` answer both agreements ahead of the prompt, `-e --id <id>` matches one package by its exact identifier rather than running a search that can match several and ask a second question, and `--source winget` names the one source they all come from.
 Both commands printed for a human to run come from it too, because a captain who pastes one into a script meets the same prompt.
-`tests/FmToolInstall.Tests.ps1` sweeps the catalog the installer actually walks rather than a list of today's tools, so a winget route added later without the flags fails in the suite instead of on a machine.
+`tests/FmToolInstall.Tests.ps1` sweeps the catalog the installer actually walks rather than a list of today's tools, so a winget route added later without one of those fails in the suite instead of on a machine.
+
+**A component we do not need must not be able to fail us.**
+That is the sharper form of the rule above, and `--source winget` is where it bit.
+winget queries every configured source that is not marked explicit, and on the captain's clean VM the `msstore` source failed with a certificate mismatch - a TLS-inspecting proxy, a clock skew, a locked-down image, none of it this repo's business.
+One erroring source was enough for winget to stop and ask which of the working ones to use, and the install exited having done nothing, on a machine where the `winget` source was healthy and had the package.
+Measured 2026-08-20: every id this repo names resolves from the `winget` source, and `msstore` has none of them, so it could never have supplied a single package here and was still able to stop the whole run.
+`docs/windows-e2e-evidence.md` section 36 has the log, the source list and the searches, and section 36.8 records the rest of that class - including `Install-Module`, whose missing `-Repository` is the same shape and is deliberately left alone, because a captain may legitimately have an internal mirror registered instead of PSGallery.
 
 Exact matching also settled a question a search had been hiding: `winget install orca` and `winget install cmux` named packages that do not exist.
 Measured 2026-08-20, both answer "No package found matching input criteria" while every other id here resolves to exactly one package, so those two routes could never have succeeded - the same defect as the `npm install -g treehouse` route this area was built to remove.
