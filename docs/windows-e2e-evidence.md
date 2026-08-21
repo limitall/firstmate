@@ -7338,7 +7338,7 @@ The report names five; the other five were derived and then reproduced.
 The count then closes: 1 + 2 + 7 = 10, so there is no eleventh to look for.
 
 **The set was closed by REPRODUCING each group here, not by matching names.**
-Hiding the dictation engine from a child produces exactly the two named `Get-FmSpeechEngineStatus` cases and no others; cloning this commit with `core.autocrlf=true` produces exactly the seven `New-FmBrief` cases, in that order, beginning with the two named; the herdr case fails on this seat unmodified.
+Hiding the dictation engine from a child produces exactly the two named `Get-FmSpeechEngineStatus` cases and no others; cloning this commit with `core.autocrlf=true` produces exactly the seven `New-FmBrief` cases, in that order, beginning with the two named; and the herdr case needs no staging at all, because it fails on this seat unmodified - section 39.7 went further and reproduced it out of a scratch extraction of `feb2c2d`.
 Three separate causes, three exact signatures, ten failures.
 
 **One candidate was investigated and ruled OUT, and it is worth writing down because `CONTRIBUTING.md` predicted it.**
@@ -7354,8 +7354,12 @@ So the four launcher-shaped failures section 31 recorded are not in this suite's
 | 3 | `Get-FmSpeechEngineStatus.says an engine that types where the cursor is has not been wired` | THE TEST IS WRONG | the same |
 | 4-10 | `New-FmBrief generated text.matches the bash scaffolder for <7 fixtures>` | THE TEST IS RIGHT, THE REPO WAS WRONG | this repo shipping no `.gitattributes`, so a clone's line endings came from the cloning machine |
 
+Row 1 was fixed on `main` by `f1e9e18` while this branch was in flight, and section 39.7 is its owner - 40.4 says what this lane added beside it rather than repeating it.
+Rows 2 to 10 are this lane's.
+
 **Nothing was skipped.**
 The third outcome - a declared skip - was available for all ten and is right for none of them: two were a fixture the test could stage for itself, seven were a real defect in the repo, and one was an expectation that had simply stopped being true.
+Reaching for a skip on any of them would have bought a green report and thrown away the only run that had ever asked these questions somewhere new.
 
 ### 42.2 Two tests that had never run anywhere but the seat that wrote them
 
@@ -7438,6 +7442,9 @@ CLAUDE.md                            9 bytes
 .claude/skills                       17 bytes
 Invoke-Pester ./tests/FmBrief.Tests.ps1     22 passed, 0 failed
 ```
+
+Both runs are of the file as it stood BEFORE this lane touched it, so 15+7 and 22+0 are the same twenty-two tests answering differently about the same commit - which is the whole claim.
+41.8 has the number for the tree that actually ships.
 
 Two things had to be checked rather than assumed.
 

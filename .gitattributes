@@ -7,7 +7,7 @@
 # materialised as LF here and as CRLF there. MEASURED 2026-08-21: cloned with
 # `-c core.autocrlf=true`, all eight tests/fixtures/brief/*.md arrive with CRLF,
 # and New-FmBrief's byte-for-byte comparison against them fails seven times on a
-# machine where nothing is wrong. docs/windows-e2e-evidence.md section 40.3 has it.
+# machine where nothing is wrong. docs/windows-e2e-evidence.md section 41.3 has it.
 #
 # LF is not a preference here: state files, briefs and wake records are a
 # byte-for-byte shared contract with a Linux firstmate, and every fixture this

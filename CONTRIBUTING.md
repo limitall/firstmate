@@ -35,7 +35,7 @@ section 2 lists the state-file formats).
   `*.cmd`/`*.bat` are pinned to CRLF because that is a batch file's native form.
   Committed symlinks are unaffected - git never eol-filters a symlink blob, so
   `CLAUDE.md` and `.claude/skills` still arrive as the 9- and 17-byte
-  placeholders setup repairs. `docs/windows-e2e-evidence.md` section 40.3 has the
+  placeholders setup repairs. `docs/windows-e2e-evidence.md` section 41.3 has the
   measurement, both ways.
 - Use `Join-Path`, never a hard-coded separator. Compare paths through
   `Test-FmPathEqual`, which is case-insensitive on Windows and case-sensitive on
@@ -579,7 +579,7 @@ reading, so it looks exactly like a slow test. Measured here: two independent
 keeper runs both stopped at
 `Step-FmSpeechCaptureState.requires a state rather than inventing one`, one of
 them for 36 minutes before it was noticed. `docs/windows-e2e-evidence.md`
-section 40.8 has all three launcher failure shapes together.
+section 41.8 has all three launcher failure shapes together.
 
 ## Module foundation
 

@@ -520,7 +520,7 @@ The mechanism is proven against disposable directories, and against this machine
 `Ready` is false when any of that fails, when anything was skipped as unsupported, or when any install did not complete - and the last line says so in plain words instead of ending on a cheerful note.
 `-SkipSuite` is allowed and reports the install as unproven.
 
-**Whether the WHOLE suite should be the thing that ends an install is an open question, and it is argued in `docs/windows-e2e-evidence.md` section 40.7 rather than restated here.**
+**Whether the WHOLE suite should be the thing that ends an install is an open question, and it is argued in `docs/windows-e2e-evidence.md` section 41.7 rather than restated here.**
 The short of it: the suite defends this repo's contracts against a change a fresh install has not made, so on the one clean VM that reached this step it returned ten failures and not one of them was a fact about that machine.
 Nothing has been changed - which failures may end an install is the captain's call - but read 39.7 before touching this step.
 
