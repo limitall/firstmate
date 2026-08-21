@@ -1,0 +1,22 @@
+# WHAT A CHECKOUT OF THIS REPO IS MADE OF, decided here rather than by whichever
+# machine happens to clone it.
+#
+# There was no .gitattributes, so every tracked file's line endings came from the
+# cloning machine's core.autocrlf. This seat has `input` and a clean Windows 11 VM
+# has `true` - Git for Windows' own installer default - so the same commit
+# materialised as LF here and as CRLF there. MEASURED 2026-08-21: cloned with
+# `-c core.autocrlf=true`, all eight tests/fixtures/brief/*.md arrive with CRLF,
+# and New-FmBrief's byte-for-byte comparison against them fails seven times on a
+# machine where nothing is wrong. docs/windows-e2e-evidence.md section 40.3 has it.
+#
+# LF is not a preference here: state files, briefs and wake records are a
+# byte-for-byte shared contract with a Linux firstmate, and every fixture this
+# suite compares against is a copy of one.
+* text=auto eol=lf
+
+# The exception, because a batch file is a Windows format and CRLF is its native
+# form. cmd.exe tolerates LF for the linear shape bin/fm-dictate.cmd has today,
+# but not reliably once a file grows a label or a continuation, so the safe
+# ending is pinned rather than relied on.
+*.cmd text eol=crlf
+*.bat text eol=crlf

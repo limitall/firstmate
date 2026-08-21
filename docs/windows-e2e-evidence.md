@@ -7311,3 +7311,183 @@ pwsh -NoProfile -NonInteractive -Command 'Invoke-Pester -Path ./tests'
 The captain's own machine has not been watched through a full run since the fix; the run recorded here is this seat's.
 The `.scr` and `.pif` extensions are guarded by the lint on the same reasoning as `.exe` and `.com` but were not separately launched and measured.
 Nothing here addresses the same exposure in PRODUCT code: `Invoke-FmSessionCommandLine` would raise this dialog on the captain's desktop if a tool on their real PATH were a truncated or corrupt `.exe`, and that is a live gap this task did not touch.
+## 42. Ten tests that only passed where they were written - `PROVEN (Windows 11) BY REPRODUCING ALL TEN ON THIS SEAT; THE CLEAN VM ITSELF IS STILL THE CAPTAIN'S`
+
+Dated 2026-08-21, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\9\firstmate-win`, PowerShell 7.6.4, git 2.49, Windows 11 Pro 10.0.26200, against `main` at `2f4d97e`.
+
+The install's own self-check runs the whole suite, and on the captain's clean VM it said:
+
+```
+[missing] test suite - 2526 passed, 10 failed, 15 skipped - first failures:
+  Get-FmBootstrapMissingDiagnostic.renders MISSING, not MISSING_MANUAL, for herdr
+  Get-FmSpeechEngineStatus.says an engine that is set to hand the words over is doing so
+  Get-FmSpeechEngineStatus.says an engine that types where the cursor is has not been wired
+  New-FmBrief generated text.matches the bash scaffolder for ship-direct-pr
+  New-FmBrief generated text.matches the bash scaffolder for ship-local-only
+```
+
+A failing suite is a REQUIRED check (`Install-FmMachine`), so those ten put a nearly-ready machine on `NOT READY`.
+
+**None of the ten was about that machine.**
+Every one of them asserted something about the seat it was written on and called it a behaviour, and the clean VM is simply the first machine that was not that seat.
+
+### 42.1 The ten, and what each turned out to be
+
+The report names five; the other five were derived and then reproduced.
+`FailedNames` is in Pester's own execution order, files alphabetically, so `FmBootstrap` then `FmBridge` then `FmBrief` is the order the five arrive in - and the two named `New-FmBrief` cases are the first two of that block's seven, not all of it.
+The count closes exactly: 1 + 2 + 7 = 10.
+
+| # | test | category | what it actually depended on |
+| --- | --- | --- | --- |
+| 1 | `Get-FmBootstrapMissingDiagnostic.renders MISSING, not MISSING_MANUAL, for herdr` | THE TEST IS WRONG | nothing - it was stale everywhere, including here |
+| 2 | `Get-FmSpeechEngineStatus.says an engine that is set to hand the words over is doing so` | THE TEST IS WRONG | Handy being INSTALLED on the machine running the suite |
+| 3 | `Get-FmSpeechEngineStatus.says an engine that types where the cursor is has not been wired` | THE TEST IS WRONG | the same |
+| 4-10 | `New-FmBrief generated text.matches the bash scaffolder for <7 fixtures>` | THE TEST IS RIGHT, THE REPO WAS WRONG | this repo shipping no `.gitattributes`, so a clone's line endings came from the cloning machine |
+
+**Nothing was skipped.**
+The third outcome - a declared skip - was available for all ten and is right for none of them: two were a fixture the test could stage for itself, seven were a real defect in the repo, and one was an expectation that had simply stopped being true.
+
+### 42.2 Two tests that had never run anywhere but the seat that wrote them
+
+`Get-FmSpeechEngineStatus` asks `Get-FmSpeechEngine` first, and with no engine it returns early - `HandsOver` false, `Setup` empty - without ever reading the settings file the test handed it.
+So the two cases that assert a wired engine could only pass on a machine with a dictation app installed, and this seat has one.
+
+**MEASURED here, by hiding the engine from the child rather than by argument.**
+`Get-FmSpeechEngine` looks in `%LOCALAPPDATA%\Handy`, `%ProgramFiles%\Handy` and on PATH, so a child with those two pointed at empty directories is a machine with no engine:
+
+```
+$env:LOCALAPPDATA = <empty dir>; $env:ProgramFiles = <empty dir>
+Get-FmSpeechEngine                                  -> ''       (an engineless machine)
+
+tests/FmBridge.Tests.ps1, Describe Get-FmSpeechEngineStatus
+  at 2f4d97e, engine hidden      9 passed, 2 failed   <- the captain's exact two
+  at 2f4d97e, engine present    11 passed, 0 failed
+  after this change, hidden     14 passed, 0 failed
+  after this change, present    14 passed, 0 failed
+```
+
+**The three "not wired" cases beside them were the same defect wearing the other face.**
+On a clean VM they passed - because the early return also answers "not wired" - so they reported a setting-reading behaviour they never reached.
+That is worse than the two that failed, and it is why the fix is the whole `Describe` rather than the two lines the report named.
+
+**Running is now staged too, and staged from something true.**
+The function decides `Running` by asking whether a process named after the engine FILE is up.
+So a fixture engine named after THIS process is running by construction on any machine, and one named after a guid is not - two real answers, on a machine with no dictation app anywhere.
+That also made the fourth state testable: the vocabulary rule (`AGENTS.md` section 9) now runs against all four sentences this function can produce, where it used to run against whichever one the seat happened to be in.
+
+### 42.3 Seven tests that were one missing line of repo configuration
+
+There was no `.gitattributes`, so what a checkout of this repo contained was decided by the cloning machine.
+This seat's system git config carries `core.autocrlf=input`; Git for Windows' installer writes `true` by default, which is what `winget install -e --id Git.Git` unattended takes.
+`README.md` and `install.ps1` both tell the captain to plain `git clone`, so nothing between the commit and the disk overrides that.
+
+**MEASURED, by cloning this very commit the way a clean machine does:**
+
+```
+git clone -c core.autocrlf=true <this worktree> <scratch>
+
+tests/fixtures/brief/*.md      all eight arrive with CRLF (52 to 79 CRs each)
+Invoke-Pester ./tests/FmBrief.Tests.ps1     15 passed, 7 failed
+```
+
+and the seven are the whole `-ForEach` block, in its own order, beginning with the two the captain's report named:
+
+```
+[-] matches ... ship-direct-pr        [-] scout            [-] secondmate-projects
+[-] matches ... ship-local-only       [-] scout-herdr      [-] secondmate-no-projects
+[-] matches ... ship-direct-pr-herdr
+```
+
+**THE FIX IS IN THE REPO, NOT IN THE TEST.**
+The comparison is byte-for-byte on purpose: a brief is a safety contract and state files are a byte-for-byte contract with a Linux firstmate, so a test that shrugged at line endings would accept a brief this port must never write.
+`.gitattributes` decides the checkout instead:
+
+```
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+```
+
+**MEASURED after adding it, same clone command, same commit:**
+
+```
+tests/fixtures/brief/*.md            CR=0    (all eight)
+AGENTS.md, ui/bridge.html,
+tests/ui/bridge-page-harness.js,
+docs/fm-gnhf.reference.sh, *.psm1    CR=0
+bin/fm-dictate.cmd                   CR=15   (its own 15 lines - a batch file keeps CRLF)
+CLAUDE.md                            9 bytes
+.claude/skills                       17 bytes
+Invoke-Pester ./tests/FmBrief.Tests.ps1     22 passed, 0 failed
+```
+
+Two things had to be checked rather than assumed.
+
+- **The committed symlinks are untouched.** Git never applies an eol filter to a symlink blob, so `CLAUDE.md` and `.claude/skills` still arrive as the 9- and 17-byte placeholders `Test-FmAgentsLinkPlaceholder` and `Test-FmSkillsLinkPlaceholder` recognise, and setup still repairs them. Had that been wrong, `.gitattributes` would have broken the instruction surface on every Windows clone to fix seven tests.
+- **No existing checkout is disturbed.** `git status` on this worktree after adding the file reports only `.gitattributes` itself: the index was already LF and this seat's working tree already matched it, so there is nothing to renormalize and no captain's clone becomes dirty on the merge.
+
+**The blast radius was never the fixtures.**
+They are where it showed, because they are the only place this suite compares bytes it did not write. The same clone also had CRLF in `AGENTS.md`, in `ui/bridge.html` and in every `.ps1`, which is a repo whose own stated LF contract stopped at its own front door.
+
+**And one line of diagnosis was added where seven byte diffs used to be.**
+`reads its fixtures as this repo commits them, LF and no BOM` runs before the comparisons and names the cause. Checked against a reverted fix - fixtures rewritten to CRLF - it fails first and says `scout-herdr.md arrived with CRLF, so this checkout was materialized against .gitattributes - re-clone, or run: git add --renormalize .`, which is a sentence someone can act on.
+
+### 42.4 The one that was not about the machine at all - and section 39 got there first
+
+`renders MISSING, not MISSING_MANUAL, for herdr` is the only one of the ten that fails on this seat too, and **section 39.7 owns it**: the install-prompt lane found the same stale assertion, proved it pre-existing by running that one test out of `git archive feb2c2d` in a scratch directory, and landed the fix on `main` while this branch was in flight.
+That is where the provenance lives and it is not repeated here.
+Two things this lane adds to it.
+
+**It is one of the captain's ten, which 39.7 could not know.**
+It is the first name in that report, and it is the only one of the ten that was never about the clean VM at all: `Get-FmBootstrapMissingDiagnostic` renders a string from a route table, so it answered the same way on every machine from `feb2c2d` onward.
+A suite nobody had run end to end since is what let it reach a captain's install report as evidence about their machine.
+
+**The rule it was an instance of is now swept, not asserted for one tool.**
+`names this repo's own installer for every tool it installs from a release archive` walks `Get-FmToolCatalog` - the catalogue the installer itself walks - and holds every entry with a portable release to `install.ps1`.
+Three qualify today (`gh`, `herdr`, `node`) and the sweep asserts it is not vacuous, so the next tool that gains a release archive cannot go on printing a vendor one-liner nobody takes, and the fourth one cannot be missed the way this one was.
+
+**Rebase note, because this is exactly the collision the one-owner rule is about.**
+Both lanes changed the same assertion to the same string, independently, within hours.
+The rebase kept section 39's comment and section 39's provenance, and added only the sweep beside it.
+
+### 42.5 What the clean machine actually caught
+
+Two things, and both are worth what the run cost.
+
+- **A repo that did not control its own checkout.** Seven failures, one missing file, and the fixtures were only the visible edge of it.
+- **A stale expectation main had been carrying red since feb2c2d** - section 39.7 pins that commit. It took a clean VM to run the suite end to end at all, which is its own finding: a route can move, its one hand-written expectation can stay behind, and the gap survives until somebody runs everything.
+
+**And one thing it did NOT catch, which matters as much, and section 40 is now the proof of it.**
+That VM's real fault was herdr installed correctly and stopped by Windows before its first instruction, for want of a DLL that is not part of Windows.
+No test in `tests/` could have found that: nothing here starts a session, and the suite that ended the install `NOT READY` was silent on the one requirement the machine actually failed.
+What DID find it is the install's own tool verification, one line, running the tool and reading back what it returned - which is exactly the shape 42.7 argues the proof should have.
+
+### 42.6 A defect found here and deliberately NOT fixed: the brief names a bash script this port does not have
+
+Every ship brief this port scaffolds carries:
+
+```
+run `C:\...\firstmate-win\bin\fm-ensure-agents-md.sh .` in the worktree
+```
+
+and `--herdr-lab` briefs carry `bin/fm-herdr-lab.sh` the same way.
+**There is no `.sh` in `bin/`** - `git ls-files` finds exactly one `.sh` in the whole repo, `docs/fm-gnhf.reference.sh`, which is documentation.
+The equivalent that exists is `bin/fm-ensure-agents-md.ps1`.
+So the path is a native Windows path with an extension Windows cannot execute, handed to every crewmate this port dispatches.
+
+Not fixed here, deliberately.
+That text is pinned byte-for-byte by the fixtures this task was sent to make honest, and `tests/FmBrief.Tests.ps1` states the standing rule for them: a fixture is re-baselined only when the CONTRACT was decided to change, which is the captain's decision and not a worker's.
+It is recorded here so it is answerable rather than discovered again.
+
+**The name of those tests was also part of the damage, and that IS fixed.**
+They were called `matches the bash scaffolder for <fixture>`, and nothing in them runs a bash script - the file's own header has said since 2026-08-14 that the fixtures stopped tracking `bin/fm-brief.sh` when the captain retired the Linux firstmate.
+That name is the only description of these tests an install report carries, and it sent the first reading of this failure looking for a bash dependency this port does not have.
+They are now `matches the pinned brief fixture for <fixture>`.
+The one test still genuinely pinned to the reference implementation keeps `bash scaffolder` in its name and means it.
+
+### 42.7 Is the whole suite the right proof for a fresh install?
+
+**No, and this run is the argument.**
+The suite's job is to defend this repo's contracts against a CHANGE, and a fresh install has made none; anything it says about a machine it says by accident. Ten failures, and not one was a fact about the VM: three were defects that had been in the tree for days and seven were a missing line of repo configuration, so a machine with every tool correctly installed was told `NOT READY` for reasons that would have been identical on any machine. The failure runs the other way too, and section 40 measured it rather than leaving it as an argument: that VM's one real fault was a herdr the machine could not start at all, and the suite never dispatches a worker, never opens a pane and never reaches herdr - so with these ten fixed it would have said `READY` on a machine that cannot do the job. The check that caught herdr was a one-line tool probe in the verification pass, which is the kind of proof this step needs. What a fresh install needs proving is smaller and nameable: this checkout is somewhere usable, the home resolves, the module and the contract load, an entry point runs in a shell with no profile, and every required tool answers with a version - which `Install-FmMachine` already checks, one line each, every one of them a fact about the machine and actionable by the captain - and section 40.6 is what that set looks like when it is made to carry the tool's own exit code instead of a symptom. The suite should keep running, because it is nearly free and it did surface three real defects here, but it should report as a FINDING beside that verdict rather than as the verdict: `these checks did not pass here` is what a suite failure honestly means on a machine that changed nothing, and `NOT READY` should stay reserved for a requirement the machine itself failed. **This has not been changed** - it is a recommendation, because which failures may end an install is the captain's call and not a worker's, and the ten resolved above are the evidence it is worth making.
+
+### 42.8 The suite and the analyzer

@@ -26,6 +26,17 @@ section 2 lists the state-file formats).
   `state/<id>.meta`, `state/<id>.status`, wake-queue records, brief format.
   Write them UTF-8 **without BOM and with LF only** - Windows PowerShell's
   defaults break both. See `Write-FmTextFileLf` / `Add-FmTextLineLf`.
+- **`.gitattributes` decides what a CHECKOUT of this repo contains, and it has
+  to.** Without it, line endings come from the cloning machine's
+  `core.autocrlf` - `input` on the captain's seat, `true` from Git for Windows'
+  installer default - so the same commit was LF here and CRLF on a clean VM,
+  where the brief fixtures' byte-for-byte comparison then failed seven times
+  with nothing wrong on the machine. `* text=auto eol=lf` now settles it;
+  `*.cmd`/`*.bat` are pinned to CRLF because that is a batch file's native form.
+  Committed symlinks are unaffected - git never eol-filters a symlink blob, so
+  `CLAUDE.md` and `.claude/skills` still arrive as the 9- and 17-byte
+  placeholders setup repairs. `docs/windows-e2e-evidence.md` section 40.3 has the
+  measurement, both ways.
 - Use `Join-Path`, never a hard-coded separator. Compare paths through
   `Test-FmPathEqual`, which is case-insensitive on Windows and case-sensitive on
   Linux; getting that backwards silently defeats the worktree-isolation guard.
@@ -66,6 +77,18 @@ section 2 lists the state-file formats).
   `& { }` around the single call that needs it, never bare. `$ErrorActionPreference`
   is the exception and belongs in a file's `BeforeAll`; it surfaces failures
   rather than hiding them.
+- **A test that reads the MACHINE has to stage the machine.** The clean VM's ten
+  failures were all this shape: a test asserted a behaviour and silently also
+  required something about the seat it was written on. `Get-FmSpeechEngineStatus`
+  is the pattern to copy from - it returns early when no engine is installed, so
+  its cases mock `Get-FmSpeechEngine` and stage "running" by naming the fixture
+  engine after a process that is up (this one), which makes both answers real on
+  a machine with no dictation app anywhere. Watch the tests that PASS on the
+  bare machine too: three beside those got the right answer from the early
+  return and proved nothing. Prove a staged test by running it with the machine
+  fact removed - pointing `$env:LOCALAPPDATA` and `$env:ProgramFiles` at empty
+  directories is a machine with no engine - and pair it with the negative
+  control that puts the old failure back.
 - **An absent by-name owner is a DECISION, and it is written down.** Areas bind
   to each other by name at call time, so a call whose target nothing defines
   does not conflict in git, does not fail to compile, and either dies at run

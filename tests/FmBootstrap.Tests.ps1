@@ -190,6 +190,20 @@ Describe 'Get-FmBootstrapMissingDiagnostic' {
         Get-FmBootstrapMissingDiagnostic -Tool 'herdr' |
             Should -Be 'MISSING: herdr (install: powershell -ExecutionPolicy Bypass -File .\install.ps1)'
     }
+
+    # THE RULE THE LINE ABOVE IS AN INSTANCE OF, swept over the catalogue the
+    # installer actually walks rather than asserted for one tool, so the next
+    # tool that gains a release archive cannot go on printing a vendor one-liner
+    # this repo has stopped taking. Above is what happens without it: the route
+    # moved and one hand-written expectation stayed behind.
+    It 'names this repo''s own installer for every tool it installs from a release archive' -Skip:(-not $IsWindows) {
+        $archived = @(Get-FmToolCatalog | Where-Object { Get-FmBootstrapPortableRelease -Tool $_.Tool })
+        $archived.Count | Should -BeGreaterThan 0 -Because 'gh, herdr and Node.js come from release archives, so this sweep is not vacuous'
+        foreach ($entry in $archived) {
+            Get-FmBootstrapMissingDiagnostic -Tool $entry.Tool |
+                Should -Be "MISSING: $($entry.Tool) (install: powershell -ExecutionPolicy Bypass -File .\install.ps1)"
+        }
+    }
 }
 
 Describe 'Get-FmBootstrapBackendName' {

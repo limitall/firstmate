@@ -16,6 +16,14 @@
 # worktree-isolation assertion. A fixture is still never re-baselined to make a
 # failing test pass; it is updated only when the contract itself was decided to
 # change, as here.
+#
+# SO THE COMPARISON TESTS NO LONGER SAY "the bash scaffolder", BECAUSE THEY DO
+# NOT RUN ONE. Nothing here shells out to bin/fm-brief.sh - there is no .sh in
+# bin/ at all - and a name that says otherwise is not a small inaccuracy: it is
+# the only description of these tests a failing install report carries, and it
+# sent one investigation of that report looking for a bash dependency this port
+# does not have. The one test still pinned to the reference implementation says
+# so in its own name, and means it.
 
 BeforeAll {
     . (Join-Path $PSScriptRoot 'FmLifecycle.TestHelpers.ps1')
@@ -94,7 +102,25 @@ Describe 'New-FmBrief generated text' {
     }
     AfterEach { Remove-FmTestHome -TestHome $script:TestHome }
 
-    It 'matches the bash scaffolder for <Fixture>' -ForEach @(
+    # THE CHECKOUT ITSELF IS AN INPUT TO THE COMPARISON BELOW, and it was the
+    # one nobody declared. The fixtures are compared BYTE for byte, so their
+    # line endings are part of the expected value - and until .gitattributes
+    # landed, what a clone put on disk was decided by the cloning machine's
+    # core.autocrlf. `input` on the seat that wrote them, `true` from Git for
+    # Windows' own installer, so a clean VM checked the same commit out with
+    # CRLF and every case below failed on a machine where nothing was wrong.
+    # This runs first so that arrives as one sentence naming the cause, rather
+    # than as seven byte diffs that look like the scaffolder changed.
+    It 'reads its fixtures as this repo commits them, LF and no BOM' {
+        foreach ($file in (Get-ChildItem -LiteralPath $script:FixtureDir -Filter '*.md')) {
+            $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+            @($bytes | Where-Object { $_ -eq 13 }).Count |
+                Should -Be 0 -Because "$($file.Name) arrived with CRLF, so this checkout was materialized against .gitattributes - re-clone, or run: git add --renormalize ."
+            $bytes[0..2] | Should -Not -Be @(0xEF, 0xBB, 0xBF) -Because "$($file.Name) arrived with a byte-order mark"
+        }
+    }
+
+    It 'matches the pinned brief fixture for <Fixture>' -ForEach @(
         @{ Fixture = 'ship-direct-pr'; Params = @{ Repo = 'acme/widget'; Mode = 'direct-PR' } }
         @{ Fixture = 'ship-local-only'; Params = @{ Repo = 'acme/widget'; Mode = 'local-only' } }
         @{ Fixture = 'ship-direct-pr-herdr'; Params = @{ Repo = 'acme/widget'; Mode = 'direct-PR'; HerdrLab = $true } }

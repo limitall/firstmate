@@ -281,11 +281,28 @@ Describe 'Get-FmBridgeCapacity' {
 
 Describe 'Get-FmSpeechEngineStatus' {
 
+    # THE ENGINE IS STAGED HERE, NEVER BORROWED FROM THE MACHINE. Every case
+    # below is about what the captain's SETTING says, and Get-FmSpeechEngineStatus
+    # answers that question only after it has found an engine at all - with none
+    # it returns early with HandsOver false and no Setup line. So the two cases
+    # that assert a wired engine passed on this seat, where Handy is installed,
+    # and failed on a clean VM where it is not; the three that assert "not wired"
+    # passed there for the wrong reason, proving nothing about the setting.
+    # Both halves are the same defect, and staging the engine ends both.
+    #
+    # RUNNING IS STAGED THE SAME WAY. The function decides Running by asking
+    # whether a process named after the engine FILE is up, so an engine named
+    # after this very process is running by construction on any machine, and one
+    # named after a guid is not. No dictation app has to be installed for either
+    # answer to be real.
     BeforeAll {
         $script:SpeechTmp = Join-Path ([IO.Path]::GetTempPath()) ("fm-speech-" + [guid]::NewGuid().ToString('N'))
         $null = New-Item -ItemType Directory -Path $script:SpeechTmp
         $script:Hook = Join-Path $script:SpeechTmp 'fm-dictate.cmd'
         Set-Content -LiteralPath $script:Hook -Value '@echo off' -NoNewline
+
+        $script:LiveEngine = Join-Path $script:SpeechTmp ((Get-Process -Id $PID).ProcessName + '.exe')
+        $script:IdleEngine = Join-Path $script:SpeechTmp ('fm-no-such-engine-' + [guid]::NewGuid().ToString('N') + '.exe')
 
         function script:New-SettingsFixture {
             param([string]$Method, [object]$ScriptPath, [string]$Name)
@@ -305,8 +322,11 @@ Describe 'Get-FmSpeechEngineStatus' {
     }
 
     It 'says an engine that is set to hand the words over is doing so' {
+        Mock -CommandName Get-FmSpeechEngine -MockWith { $script:LiveEngine } -ModuleName Firstmate
         $file = script:New-SettingsFixture -Method 'external_script' -ScriptPath $script:Hook -Name 'wired'
         $s = Get-FmSpeechEngineStatus -SettingsPath $file -HookPath $script:Hook
+        $s.Installed | Should -BeTrue
+        $s.Running | Should -BeTrue
         $s.HandsOver | Should -BeTrue
         # Nothing left to ask the captain for, so nothing is asked.
         $s.Setup | Should -BeNullOrEmpty
@@ -316,8 +336,10 @@ Describe 'Get-FmSpeechEngineStatus' {
     # reads the setting instead of assuming it: with the app typing where the
     # cursor is, a dictated line only arrives when the right window has focus.
     It 'says an engine that types where the cursor is has not been wired' {
+        Mock -CommandName Get-FmSpeechEngine -MockWith { $script:LiveEngine } -ModuleName Firstmate
         $file = script:New-SettingsFixture -Method 'direct' -ScriptPath $null -Name 'direct'
         $s = Get-FmSpeechEngineStatus -SettingsPath $file -HookPath $script:Hook
+        $s.Installed | Should -BeTrue
         $s.HandsOver | Should -BeFalse
         # The one step, naming the exact file, because an instruction the captain
         # cannot act on is the same as no instruction.
@@ -331,8 +353,13 @@ Describe 'Get-FmSpeechEngineStatus' {
         @{ Method = 'external_script'; Path = 'C:\tools\something-else.cmd' }
         @{ Method = 'direct'; Path = 'C:\repo\bin\fm-dictate.cmd' }
     ) {
+        Mock -CommandName Get-FmSpeechEngine -MockWith { $script:LiveEngine } -ModuleName Firstmate
         $file = script:New-SettingsFixture -Method $Method -ScriptPath $Path -Name ('half' + $Method + ($Path -replace '\W', ''))
-        (Get-FmSpeechEngineStatus -SettingsPath $file -HookPath $script:Hook).HandsOver | Should -BeFalse
+        $s = Get-FmSpeechEngineStatus -SettingsPath $file -HookPath $script:Hook
+        # Installed, so the answer below is the SETTING's and not the early
+        # return a machine with no engine takes.
+        $s.Installed | Should -BeTrue
+        $s.HandsOver | Should -BeFalse
     }
 
     It 'treats a settings file it cannot read as not wired, rather than throwing' -ForEach @(
@@ -340,15 +367,19 @@ Describe 'Get-FmSpeechEngineStatus' {
         @{ Body = '' }
         @{ Body = '{"settings":null}' }
     ) {
+        Mock -CommandName Get-FmSpeechEngine -MockWith { $script:LiveEngine } -ModuleName Firstmate
         $file = Join-Path $script:SpeechTmp 'broken.json'
         Set-Content -LiteralPath $file -Value $Body
         $s = Get-FmSpeechEngineStatus -SettingsPath $file -HookPath $script:Hook
+        $s.Installed | Should -BeTrue
         $s.HandsOver | Should -BeFalse
         $s.Detail | Should -Not -BeNullOrEmpty
     }
 
     It 'survives a settings file that is not there' {
+        Mock -CommandName Get-FmSpeechEngine -MockWith { $script:LiveEngine } -ModuleName Firstmate
         $s = Get-FmSpeechEngineStatus -SettingsPath (Join-Path $script:SpeechTmp 'absent.json') -HookPath $script:Hook
+        $s.Installed | Should -BeTrue
         $s.HandsOver | Should -BeFalse
     }
 
@@ -360,15 +391,37 @@ Describe 'Get-FmSpeechEngineStatus' {
         $s.Detail | Should -Match 'installed'
     }
 
+    # An engine that is there but not up is its own answer, and the one the
+    # captain sees most: the model is unloaded, so nothing can be dictated until
+    # they start it. Staged rather than waited for.
+    It 'says an installed engine that is not up is not up' {
+        Mock -CommandName Get-FmSpeechEngine -MockWith { $script:IdleEngine } -ModuleName Firstmate
+        $file = script:New-SettingsFixture -Method 'external_script' -ScriptPath $script:Hook -Name 'idle'
+        $s = Get-FmSpeechEngineStatus -SettingsPath $file -HookPath $script:Hook
+        $s.Installed | Should -BeTrue
+        $s.Running | Should -BeFalse
+        # The setting is still read and still believed - not running is not the
+        # same fact as not wired.
+        $s.HandsOver | Should -BeTrue
+    }
+
     # AGENTS.md section 9 binds on this line exactly as in chat: the bridge prints
     # it and the page shows it. The PATH in Setup is the exception section 9 itself
     # allows - the captain needs it to act - so only Detail is held to the rule.
-    It 'describes the state in the captain nouns, never in machinery' -ForEach @(
-        @{ Method = 'external_script'; Path = 'fm-dictate.cmd' }
-        @{ Method = 'direct'; Path = $null }
+    #
+    # All FOUR states, because the rule is about every sentence this can produce
+    # and the machine used to decide which of them was ever reached.
+    It 'describes the state in the captain nouns, never in machinery: <Case>' -ForEach @(
+        @{ Case = 'running and wired'; Method = 'external_script'; Path = 'fm-dictate.cmd'; Running = $true }
+        @{ Case = 'running and typing at the cursor'; Method = 'direct'; Path = $null; Running = $true }
+        @{ Case = 'wired but not up'; Method = 'external_script'; Path = 'fm-dictate.cmd'; Running = $false }
+        @{ Case = 'not installed'; Method = 'direct'; Path = $null; Running = $false }
     ) {
-        $file = script:New-SettingsFixture -Method $Method -ScriptPath $Path -Name ('nouns' + $Method)
+        $engine = if ($Case -eq 'not installed') { '' } elseif ($Running) { $script:LiveEngine } else { $script:IdleEngine }
+        Mock -CommandName Get-FmSpeechEngine -MockWith { $engine }.GetNewClosure() -ModuleName Firstmate
+        $file = script:New-SettingsFixture -Method $Method -ScriptPath $Path -Name ('nouns' + ($Case -replace '\W', ''))
         $detail = (Get-FmSpeechEngineStatus -SettingsPath $file -HookPath $script:Hook).Detail
+        $detail | Should -Not -BeNullOrEmpty
         $detail | Should -Not -Match '(?i)\.ps1|\.cmd|pwsh|paste_method|external_script|handy'
         $detail | Should -Not -Match '(?i)transcrib|recognizer'
     }
