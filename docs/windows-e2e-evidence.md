@@ -7335,7 +7335,17 @@ Every one of them asserted something about the seat it was written on and called
 
 The report names five; the other five were derived and then reproduced.
 `FailedNames` is in Pester's own execution order, files alphabetically, so `FmBootstrap` then `FmBridge` then `FmBrief` is the order the five arrive in - and the two named `New-FmBrief` cases are the first two of that block's seven, not all of it.
-The count closes exactly: 1 + 2 + 7 = 10.
+The count then closes: 1 + 2 + 7 = 10, so there is no eleventh to look for.
+
+**The set was closed by REPRODUCING each group here, not by matching names.**
+Hiding the dictation engine from a child produces exactly the two named `Get-FmSpeechEngineStatus` cases and no others; cloning this commit with `core.autocrlf=true` produces exactly the seven `New-FmBrief` cases, in that order, beginning with the two named; the herdr case fails on this seat unmodified.
+Three separate causes, three exact signatures, ten failures.
+
+**One candidate was investigated and ruled OUT, and it is worth writing down because `CONTRIBUTING.md` predicted it.**
+`Get-FmBridgeHouseWork.reports only what is running` does `@(Get-FmBridgeHouseWork).Name`, which is the `@()`-then-property trap - and the install's self-check launches the suite from a generated `.ps1`, whose command line does not contain the words `Invoke-Pester` that function counts as a test run, so on a clean VM it genuinely returns nothing.
+It still passed, because `Set-StrictMode -Version Latest` at the top of a test FILE does not reach an `It` body: Pester's discovery and run phases are different scopes.
+Measured directly - a probe file with strict mode on line 2 reports `SILENT`, not `THROWS`, for `@().Name` inside an `It`.
+So the four launcher-shaped failures section 31 recorded are not in this suite's reach any more, and that test is vacuous rather than failing when nothing is running. Left alone here: it is not one of the ten, and it is a different fix.
 
 | # | test | category | what it actually depended on |
 | --- | --- | --- | --- |
@@ -7364,7 +7374,12 @@ tests/FmBridge.Tests.ps1, Describe Get-FmSpeechEngineStatus
   at 2f4d97e, engine present    11 passed, 0 failed
   after this change, hidden     14 passed, 0 failed
   after this change, present    14 passed, 0 failed
+
+tests/FmBridge.Tests.ps1, the WHOLE file, engine hidden
+  after this change             192 passed, 0 failed, 0 skipped
 ```
+
+The last line is the one that answers the acceptance question for this pair: nothing anywhere in the bridge area now needs a dictation app to be on the machine, and nothing was skipped to get there.
 
 **The three "not wired" cases beside them were the same defect wearing the other face.**
 On a clean VM they passed - because the early return also answers "not wired" - so they reported a setting-reading behaviour they never reached.
@@ -7378,8 +7393,11 @@ That also made the fourth state testable: the vocabulary rule (`AGENTS.md` secti
 ### 42.3 Seven tests that were one missing line of repo configuration
 
 There was no `.gitattributes`, so what a checkout of this repo contained was decided by the cloning machine.
-This seat's system git config carries `core.autocrlf=input`; Git for Windows' installer writes `true` by default, which is what `winget install -e --id Git.Git` unattended takes.
-`README.md` and `install.ps1` both tell the captain to plain `git clone`, so nothing between the commit and the disk overrides that.
+
+**MEASURED here:** `git config --system --list` on this seat carries `core.autocrlf=input`.
+That value is written by Git for Windows' own installer from a three-way choice the person installing git makes - and `install.ps1` puts git on a clean machine with `winget install -e --id Git.Git ... --accept-package-agreements`, which takes whatever that installer's unattended default is rather than asking.
+`README.md` and `install.ps1` then both tell the captain to plain `git clone`, so nothing between the commit and the disk overrides it.
+**Which value the captain's VM ended up with was not read from that machine, and does not need to be**: the point is that it is a property of how GIT was installed and not of this repository, and `true` is the value that reproduces the reported failure exactly.
 
 **MEASURED, by cloning this very commit the way a clean machine does:**
 
@@ -7423,14 +7441,28 @@ Invoke-Pester ./tests/FmBrief.Tests.ps1     22 passed, 0 failed
 
 Two things had to be checked rather than assumed.
 
-- **The committed symlinks are untouched.** Git never applies an eol filter to a symlink blob, so `CLAUDE.md` and `.claude/skills` still arrive as the 9- and 17-byte placeholders `Test-FmAgentsLinkPlaceholder` and `Test-FmSkillsLinkPlaceholder` recognise, and setup still repairs them. Had that been wrong, `.gitattributes` would have broken the instruction surface on every Windows clone to fix seven tests.
+- **The committed symlinks are untouched.** Git never applies an eol filter to a symlink blob, so `CLAUDE.md` and `.claude/skills` still arrive as the 9- and 17-byte placeholders `Test-FmAgentsLinkPlaceholder` and `Test-FmSkillsLinkPlaceholder` recognise, and setup still repairs them. Had that been wrong, `.gitattributes` would have broken the instruction surface on every Windows clone to fix seven tests. The recovery `CONTRIBUTING.md` documents - unlink the junction, write those exact bytes back with no trailing newline, never point a git write at that path - was re-run afterwards and still leaves `git status` empty.
 - **No existing checkout is disturbed.** `git status` on this worktree after adding the file reports only `.gitattributes` itself: the index was already LF and this seat's working tree already matched it, so there is nothing to renormalize and no captain's clone becomes dirty on the merge.
 
 **The blast radius was never the fixtures.**
 They are where it showed, because they are the only place this suite compares bytes it did not write. The same clone also had CRLF in `AGENTS.md`, in `ui/bridge.html` and in every `.ps1`, which is a repo whose own stated LF contract stopped at its own front door.
 
 **And one line of diagnosis was added where seven byte diffs used to be.**
-`reads its fixtures as this repo commits them, LF and no BOM` runs before the comparisons and names the cause. Checked against a reverted fix - fixtures rewritten to CRLF - it fails first and says `scout-herdr.md arrived with CRLF, so this checkout was materialized against .gitattributes - re-clone, or run: git add --renormalize .`, which is a sentence someone can act on.
+`reads its fixtures as this repo commits them, LF and no BOM` runs before the comparisons and names the cause.
+Checked against a reverted fix - fixtures rewritten to CRLF in a real checkout - it fails first and names the file, the cause and the way out.
+
+**The way out is spelled out because the obvious two do not work, and that was MEASURED rather than assumed:**
+
+```
+tests/fixtures/brief/*.md rewritten to CRLF in a clone that HAS .gitattributes
+
+git add --renormalize .            index normalized, file on disk still CRLF (52 CRs)
+git checkout -- tests/fixtures     no-op: the CRLF file cleans back to the LF already
+                                   in the index, so git reads it as unchanged
+rm the files, then git checkout    0 CRs, and git status clean
+```
+
+An existing clone is therefore not repaired by adding this file; it is repaired by re-cloning, or by deleting the affected files and letting git materialize them again.
 
 ### 42.4 The one that was not about the machine at all - and section 39 got there first
 
@@ -7455,7 +7487,7 @@ The rebase kept section 39's comment and section 39's provenance, and added only
 Two things, and both are worth what the run cost.
 
 - **A repo that did not control its own checkout.** Seven failures, one missing file, and the fixtures were only the visible edge of it.
-- **A stale expectation main had been carrying red since feb2c2d** - section 39.7 pins that commit. It took a clean VM to run the suite end to end at all, which is its own finding: a route can move, its one hand-written expectation can stay behind, and the gap survives until somebody runs everything.
+- **A stale expectation `main` had been carrying red since `feb2c2d`** - section 39.7 pins that commit. It took a clean VM to run the suite end to end at all, which is its own finding: a route can move, its one hand-written expectation can stay behind, and the gap survives until somebody runs everything.
 
 **And one thing it did NOT catch, which matters as much, and section 40 is now the proof of it.**
 That VM's real fault was herdr installed correctly and stopped by Windows before its first instruction, for want of a DLL that is not part of Windows.
@@ -7463,6 +7495,14 @@ No test in `tests/` could have found that: nothing here starts a session, and th
 What DID find it is the install's own tool verification, one line, running the tool and reading back what it returned - which is exactly the shape 42.7 argues the proof should have.
 
 ### 42.6 A defect found here and deliberately NOT fixed: the brief names a bash script this port does not have
+**None of the ten is caused by herdr being unusable, and that was checked rather than assumed.**
+The only one that names herdr, `Get-FmBootstrapMissingDiagnostic`, renders a string from a route table and never runs the binary; every other herdr test in this suite drives a synthetic `state/<id>.meta` or a mocked CLI.
+Section 40 has since found what that machine's herdr fault actually was, and it is not reachable from any of the ten.
+
+
+**None of the ten is caused by herdr being unusable, and that was checked rather than assumed.**
+The only one that names herdr, `Get-FmBootstrapMissingDiagnostic`, renders a string from a route table and never runs the binary; every other herdr test in this suite drives a synthetic `state/<id>.meta` or a mocked CLI.
+So that defect belongs entirely to the task that owns it, and nothing here waits on it.
 
 Every ship brief this port scaffolds carries:
 

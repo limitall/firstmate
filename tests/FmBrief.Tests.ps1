@@ -114,8 +114,14 @@ Describe 'New-FmBrief generated text' {
     It 'reads its fixtures as this repo commits them, LF and no BOM' {
         foreach ($file in (Get-ChildItem -LiteralPath $script:FixtureDir -Filter '*.md')) {
             $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+            # The remedy is spelled out because the obvious ones do not work and
+            # were tried: `git add --renormalize .` fixes the INDEX and leaves
+            # the file on disk alone, and a plain `git checkout --` then reads
+            # the file as unchanged - its CRLF cleans back to the LF in the
+            # index - and rewrites nothing. Deleting first is what makes git
+            # materialize it again through the eol rule.
             @($bytes | Where-Object { $_ -eq 13 }).Count |
-                Should -Be 0 -Because "$($file.Name) arrived with CRLF, so this checkout was materialized against .gitattributes - re-clone, or run: git add --renormalize ."
+                Should -Be 0 -Because "$($file.Name) arrived with CRLF, so this checkout predates .gitattributes or was made by a git that ignored it - re-clone, or delete tests/fixtures/brief/*.md and run: git checkout -- tests/fixtures/brief"
             $bytes[0..2] | Should -Not -Be @(0xEF, 0xBB, 0xBF) -Because "$($file.Name) arrived with a byte-order mark"
         }
     }

@@ -569,8 +569,17 @@ a parent that OUTLIVES it. An orphaned run fails
 launcher, not the tree, and it costs an hour to rediscover. A run backgrounded by
 an agent harness tends to be killed long before the end instead. What works is a
 keeper: one process that runs no tests itself, starts the suite as its child, and
-waits for it. `docs/windows-e2e-evidence.md` section 33.10 has the probe and both
-failure shapes.
+waits for it.
+
+**Start that child `-NonInteractive`.** The `-NonInteractive` rule above is not
+only for children this repo starts - it applies to the one YOU start to run the
+suite, for the same reason and with a worse symptom: the run stops dead with no
+CPU, no children, no error and nothing on the redirected stdout anyone is
+reading, so it looks exactly like a slow test. Measured here: two independent
+keeper runs both stopped at
+`Step-FmSpeechCaptureState.requires a state rather than inventing one`, one of
+them for 36 minutes before it was noticed. `docs/windows-e2e-evidence.md`
+section 40.8 has all three launcher failure shapes together.
 
 ## Module foundation
 
