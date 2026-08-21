@@ -40,7 +40,13 @@ section 2 lists the state-file formats).
   **Run the whole directory, never one file.** Pester containers share one
   process, so an `$env:FM_*` override left set by one file decides another
   file's behaviour; that has already produced two failures that passed in
-  isolation. Save and restore every environment key your tests touch.
+  isolation. Save and restore every environment key your tests touch. A
+  SILENCING preference - `$WhatIfPreference`, `$ConfirmPreference`,
+  `$ProgressPreference` and friends - is the same hazard with a worse failure
+  mode, because a suppressed write leaves the test passing: set one only inside
+  `& { }` around the single call that needs it, never bare. `$ErrorActionPreference`
+  is the exception and belongs in a file's `BeforeAll`; it surfaces failures
+  rather than hiding them.
 - **An absent by-name owner is a DECISION, and it is written down.** Areas bind
   to each other by name at call time, so a call whose target nothing defines
   does not conflict in git, does not fail to compile, and either dies at run
@@ -68,7 +74,9 @@ section 2 lists the state-file formats).
   code the TOOL returned (a child `pwsh -Command` discards it), and the tool's
   own words quoted rather than distilled into a phrase; never summarise an error
   into something that has to be guessed at later. `docs/windows-install.md`
-  owns the full contract and what it cost to learn.
+  owns the full contract and what it cost to learn, including the one that is
+  easy to get wrong: **every PowerShell child gets `-NonInteractive`, and it is
+  NOT inherited**, so a grandchild needs its own.
 - Mark anything provable only on Windows with a `# WINDOWS-UNVERIFIED:` comment
   and a one-line reason. Where behaviour must differ by platform, branch on
   `$IsWindows`; the Linux path is a development convenience, not the product.

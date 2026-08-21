@@ -79,7 +79,11 @@ BeforeAll {
         )
         $psi = [System.Diagnostics.ProcessStartInfo]::new()
         $psi.FileName = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-        foreach ($a in (@('-NoProfile', '-File', (Join-Path $script:BinRoot $Script)) + $CliArgs)) {
+        # -NonInteractive because this child does NOT inherit its parent's: an
+        # entry point that prompts would ask on whatever console the suite was
+        # started from, which is the captain's own during an install. See
+        # Invoke-FmMachineSuite for the measurement.
+        foreach ($a in (@('-NoProfile', '-NonInteractive', '-File', (Join-Path $script:BinRoot $Script)) + $CliArgs)) {
             $psi.ArgumentList.Add([string]$a)
         }
         $psi.RedirectStandardOutput = $true
@@ -920,6 +924,64 @@ Describe 'Only one Firstmate module is ever loaded in a test process' {
             if ($text -notmatch 'InModuleScope') { continue }
             if ($text -notmatch 'Import-FmTestModule') {
                 $bad.Add("$($file.Name) uses InModuleScope but does not import through Import-FmTestModule")
+            }
+        }
+        ($bad -join '; ') | Should -Be ''
+    }
+}
+
+Describe 'No test silences a cmdlet for the tests that come after it' {
+    # WHY. A preference variable is dynamically scoped, so assigning one changes
+    # what every cmdlet called from that scope onward does - including cmdlets
+    # in other files' functions that the assigning test has never heard of. The
+    # dangerous ones are the SILENCERS: $WhatIfPreference makes a cmdlet report
+    # an intention and do nothing, which turns a test that meant to prove a
+    # write into one that proves nothing and still passes.
+    #
+    # MEASURED, Pester 6.1.0, 2026-08-21: a bare assignment inside an `It` dies
+    # with that `It`, but the SAME line in a `BeforeAll` suppresses every cmdlet
+    # in the WHOLE FILE, across every Describe in it. So the bare form is not
+    # safe, it is safe-for-now and one refactor away from silent - which is
+    # exactly how it reads to whoever adds the next test beside it.
+    # docs/windows-e2e-evidence.md section 39 has both measurements.
+    #
+    # $ErrorActionPreference is deliberately NOT on this list. Around 25 files
+    # set it to 'Stop' in their own BeforeAll, which is file setup rather than a
+    # silencer: it makes errors terminating, so it surfaces failures instead of
+    # hiding them.
+    It 'sets a silencing preference only in a scope that ends at the call needing it' {
+        $silencers = @('WhatIfPreference', 'ConfirmPreference', 'ProgressPreference',
+            'WarningPreference', 'InformationPreference')
+        # `& { ... }` is the only form here that ends the scope at the call.
+        # `. { ... }` deliberately does not, and a Pester block's own body is
+        # kept alive for everything nested under it.
+        $scopedToOneCall = {
+            param($Node)
+            $walk = $Node.Parent
+            while ($walk) {
+                if ($walk -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) {
+                    $owner = $walk.Parent
+                    return ($owner -is [System.Management.Automation.Language.CommandAst] -and
+                        $owner.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand -and
+                        $owner.CommandElements.Count -gt 0 -and
+                        [object]::ReferenceEquals($owner.CommandElements[0], $walk))
+                }
+                $walk = $walk.Parent
+            }
+            return $false
+        }
+        # Every .ps1 here, not only *.Tests.ps1: a shared TestHelpers file is
+        # dot-sourced into whichever suite loads it, so one there is worse.
+        $bad = [System.Collections.Generic.List[string]]::new()
+        foreach ($file in (Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File | Sort-Object Name)) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+            foreach ($assignment in $ast.FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                        $n.Left -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)) {
+                $name = $assignment.Left.VariablePath.UserPath
+                if ($name -notin $silencers) { continue }
+                if (& $scopedToOneCall $assignment) { continue }
+                $bad.Add("$($file.Name):$($assignment.Extent.StartLineNumber) sets `$$name where the tests after it inherit it - wrap the one call that needs it in an & { } block instead")
             }
         }
         ($bad -join '; ') | Should -Be ''

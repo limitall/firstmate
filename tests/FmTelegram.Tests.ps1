@@ -160,7 +160,11 @@ BeforeAll {
         )
         $psi = [System.Diagnostics.ProcessStartInfo]::new()
         $psi.FileName = $script:Pwsh
-        foreach ($a in (@('-NoProfile', '-File', $Script) + $CliArgs)) { $psi.ArgumentList.Add($a) }
+        # -NonInteractive because this child does NOT inherit its parent's: an
+        # entry point that prompts would ask on whatever console the suite was
+        # started from, which is the captain's own during an install. See
+        # Invoke-FmMachineSuite for the measurement.
+        foreach ($a in (@('-NoProfile', '-NonInteractive', '-File', $Script) + $CliArgs)) { $psi.ArgumentList.Add($a) }
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
         $psi.UseShellExecute = $false

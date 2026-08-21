@@ -431,7 +431,12 @@ Both are backends this port cannot drive, so they now answer as tmux already did
 The rest of the class is either already answered or named.
 `Install-Module` is asked with `-Force`, which answers the untrusted-PSGallery question that a machine nobody has configured otherwise will ask, and `-Confirm:$false`, which refuses the other route to the same halt.
 The child shell is started `-NonInteractive`, so PowerShell's own prompts do not wait on a person who is not there; a native program's prompt is its own business and is answered by that program's flags, which is what the winget flags above are.
+**That applies to EVERY PowerShell child this repo starts, not only a route's**, and the switch is NOT inherited: each child decides from its own command line, so a grandchild started inside a child that has it can still prompt.
+The suite child was the one that did not have it, and `-NoNewWindow` gave it the captain's own console to ask on: an install stopped dead on a mandatory parameter that `tests/FmBridge.Tests.ps1` leaves off on purpose to prove a refusal, under a bare `Supply values for the following parameters:` with no test name against it.
+Measured 2026-08-21, the same call in a console child: it hangs indefinitely without the switch and raises `MissingMandatoryParameter` with it, which makes any prompt this suite can reach one named test failure in the report the captain is already reading.
+`docs/windows-e2e-evidence.md` section 39 has the captain's screen and both measurements, and `tests/FmToolInstall.Tests.ps1` proves the launch from inside the process it starts.
 `install.ps1`'s two questions are the deliberate exception, and both take the safe default under `-Unattended` or a redirected stdin rather than waiting.
+The line between the two: an installer may ask a question IT composed and printed, and must never let a child it started for verification ask one.
 `gh auth login` genuinely needs a human, and bootstrap reports `NEEDS_GH_AUTH` instead of trying to run it.
 
 **A launch this machine refuses is an outcome, not a crash.**

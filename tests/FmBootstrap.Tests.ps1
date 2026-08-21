@@ -175,8 +175,16 @@ Describe 'Get-FmBootstrapMissingDiagnostic' {
         # herdr used to be listed as a manual install. Measured 2026-08-17:
         # herdr.dev publishes install.ps1 and install.sh, so telling the captain
         # to go and read a web page was sending them the long way round.
+        #
+        # THE ROUTE THEN MOVED AND THIS ASSERTION DID NOT. Any tool this repo
+        # installs from a release archive now names install.ps1, because the
+        # vendor one-liner was measured failing its own verification on two
+        # clean VMs - docs/windows-e2e-evidence.md section 38.4. herdr has a
+        # portable release, so Get-FmBootstrapMissingDiagnostic answers with the
+        # command that actually does it. What this test still holds is the
+        # shape: MISSING with a command, never MISSING_MANUAL with a web page.
         Get-FmBootstrapMissingDiagnostic -Tool 'herdr' |
-            Should -Be 'MISSING: herdr (install: irm https://herdr.dev/install.ps1 | iex)'
+            Should -Be 'MISSING: herdr (install: powershell -ExecutionPolicy Bypass -File .\install.ps1)'
     }
 }
 

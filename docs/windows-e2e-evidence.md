@@ -6554,3 +6554,167 @@ The `MISSING: <tool> (install: <cmd>)` shape the diagnostics skill matches on is
 - **A machine whose LocalMachine policy is `Restricted` was not used.** The refusal was reproduced by giving children the clean-machine policy through `PSExecutionPolicyPreference`, and by running the README command under `-ExecutionPolicy Restricted` in Windows PowerShell 5.1. That is the same mechanism, not the same machine.
 - **No guarded location was installed into.** See 38.3.
 - **The Windows-on-ARM Node.js zip was not fetched.** The route picks `arm64` from `PROCESSOR_ARCHITECTURE`, and only the x64 asset was downloaded and run here.
+
+## 39. The install hung forever on a question nobody could see - `PROVEN (Windows 11)`
+
+Dated 2026-08-21, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\2\firstmate-win`,
+PowerShell 7.6.4, Pester 6.1.0, Windows 11 Pro 10.0.26200, branched from `main` at `feb2c2d`.
+The two fixes were committed alone as `2f4d97e`, landed on `main` and pushed while the captain was still blocked on a fresh VM; this section is the second commit.
+
+Section 38 closed the last of the five things that stopped a clean machine.
+The captain then ran the installer on a fresh VM and it got all the way to its final step, the one that PROVES the install.
+It never came back.
+
+### 39.1 What the captain met
+
+After `Installing what is missing, and proving the result`, their screen, verbatim:
+
+```
+What if: Performing the operation "create AGENTS.md and link CLAUDE.md to it" on target "...\Temp\Pester_zdxw\..."
+What if: Performing the operation "materialize the CLAUDE.md link git left as text" on target "..."
+What if: Performing the operation "type 'claude' and submit it after 1s unless touched" on target "default:w1:p2"
+What if: Performing the operation "run: npm install -g tasks-axi" on target "tasks-axi"
+
+cmdlet Step-FmSpeechCaptureState at command pipeline position 1
+Supply values for the following parameters:
+State:
+```
+
+And there it sat.
+No test name, no file, nothing on screen to say what wanted an answer or what typing one would do.
+The install was not slow and it was not crashed: it was waiting, and it would have waited forever.
+
+### 39.2 The chain, measured
+
+The report that opened this task proposed a chain in which a leaked `$WhatIfPreference` suppressed whatever builds the speech-capture state, and a `$null` state then reached a mandatory parameter.
+Two of its links do not survive measurement.
+The load-bearing ones are the last two, and the first three are not what they looked like.
+
+1. `tests/FmBridge.Tests.ps1`, `requires a state rather than inventing one`, is `{ Step-FmSpeechCaptureState -Step 'Start' } | Should -Throw`.
+   The mandatory `-State` is left off ON PURPOSE, because leaving it off is how that test proves the refusal.
+   Nothing produced a `$null` state; no state was ever passed.
+2. `Step-FmSpeechCaptureState` declares `-State` as `[Parameter(Mandatory)]`.
+   Given no value at all, PowerShell decides what to do from the HOST: a host that can prompt binds the parameter by ASKING, and a host that cannot raises `MissingMandatoryParameter`.
+3. `Invoke-FmMachineSuite` starts the suite child with `Start-Process -NoNewWindow`, which hands that child the captain's own console, and did not pass `-NonInteractive`.
+   So the child was a host that could prompt, and it asked - on the console the install was composing its report on.
+
+Measured here, running that same call in a child with a real console, once with the switch and once without:
+
+```
+interactive     : STILL RUNNING after 30s - HUNG, killed
+noninteractive  : EXITED, code 0
+```
+
+The non-interactive child's own log:
+
+```
+interactive-host=False
+THREW: MissingMandatoryParameter,Step-FmSpeechCaptureState
+DONE
+```
+
+That is the whole defect.
+The test is correct, `Step-FmSpeechCaptureState` is correct, and the mandatory parameter is correct.
+What was wrong is that the installer gave a child the power to ask a question.
+
+### 39.3 The four `What if:` lines were not a leak
+
+They are ordinary output from four tests that pass `-WhatIf` on purpose, printed in the order Pester runs the files:
+
+| line | the test that printed it |
+| --- | --- |
+| `create AGENTS.md and link CLAUDE.md to it` | `tests/FmAgentsMemory.Tests.ps1`, `creates nothing under -WhatIf` |
+| `materialize the CLAUDE.md link git left as text` | `tests/FmAgentsMemory.Tests.ps1`, `writes nothing under -WhatIf` |
+| `type 'claude' and submit it after 1s unless touched` | `tests/FmAutolaunch.Tests.ps1`, `types nothing under -WhatIf` |
+| `run: npm install -g tasks-axi` | `tests/FmBootstrap.Tests.ps1`, `runs nothing under -WhatIf even when approved` |
+
+Reproduced here: a run stopped before it ever reaches `tests/FmToolInstall.Tests.ps1` prints all four, in that order.
+`FmToolInstall` sorts after `FmBridge`, so nothing in it can have suppressed anything the bridge tests did.
+The Herdr pane line is `FmAutolaunch`'s own test proving that `-WhatIf` types nothing into a pane, which is exactly what it should print.
+
+They reached the captain's console for a different reason worth writing down.
+The runner sets `Output.Verbosity = 'None'`, which silences Pester's own output but not a host's `What if:` messages, and `-NoNewWindow` makes the child's console the captain's.
+So the only thing the captain could see of a 50-file suite was the handful of lines Pester does not control.
+
+### 39.4 The bare preference assignment was a trap, not the cause
+
+`tests/FmToolInstall.Tests.ps1` set `$WhatIfPreference = $true` bare inside an `It`, to prove that the location probe still detects under `-WhatIf`.
+The reason that test exists is right, and section 38.3 records it.
+The assignment was still wrong, and measuring it says exactly how wrong.
+
+Measured, Pester 6.1.0, with a `SupportsShouldProcess` probe called from each position:
+
+| where `$WhatIfPreference = $true` is written | rest of that `It` | the next `It` | a later `Describe`, same file | a later FILE |
+| --- | --- | --- | --- | --- |
+| bare, inside an `It` | suppressed | not suppressed | not suppressed | not suppressed |
+| in the file's top-level `BeforeAll` | suppressed | suppressed | SUPPRESSED | not suppressed |
+| `& { $WhatIfPreference = $true; <call> }` | that one call only | not suppressed | not suppressed | not suppressed |
+
+So the bare form was not leaking, and could not have caused 39.2.
+It was one refactor away from silence: the same line moved up into a `BeforeAll` suppresses every cmdlet in the whole file, and a test whose write is quietly skipped still passes.
+It is now scoped to the one call that needs it, with an assertion under it that fails if the preference outlives that call.
+
+Swept for the same shape across all 50 test files: that was the only assignment to a silencing preference in the suite.
+The roughly 25 `$ErrorActionPreference = 'Stop'` lines are file setup rather than silencers - they make errors terminating, which surfaces failures instead of hiding them - and are deliberately left alone.
+A test in `tests/FmModuleAssembly.Tests.ps1` now parses every `*.Tests.ps1` and fails on a silencing preference written anywhere a later test can inherit it.
+
+### 39.5 What each fix buys
+
+**`-NonInteractive` on the suite child** is the one that matters.
+It does not fix this prompt; it fixes the CLASS.
+Any prompt this suite can reach - a mandatory parameter, a `Read-Host` someone adds later, a confirmation - now fails instantly and arrives as one named test failure in the report the captain is already reading, instead of stopping the install with nothing on screen.
+
+The same switch was then given to every other place in this repo that starts a PowerShell child to run a real entry point.
+It matters because `-NonInteractive` is NOT inherited: a grandchild started from inside the suite decides its own interactivity from its own command line, so the four remaining entry-point helpers were each a second route to the same hang.
+Three helpers already passed it, so this closed an inconsistency rather than introducing a rule.
+
+`install.ps1` itself is deliberately NOT given the switch.
+It is the captain's front door and legitimately asks two questions with `Read-Host`.
+The rule this section establishes is narrower than "an installer never prompts": an installer may ask a question IT composed and printed, and must never let a child it started for verification ask one.
+
+**Scoping the preference** buys nothing today and removes a trap for tomorrow, which is the honest description of it.
+
+`Step-FmSpeechCaptureState` was left alone.
+The prompt came from the parameter being OMITTED, not from being handed `$null`, so a null guard would not have prevented any of this - it would have turned one refusal into a different refusal on a path nobody took.
+
+### 39.6 Both guards were checked against the code they guard
+
+A guard test that has never been seen to fail is not yet a guard.
+Each was run once with the thing it protects removed, and once with it back.
+
+| guard | with the fix reverted | restored |
+| --- | --- | --- |
+| `tests/FmToolInstall.Tests.ps1`, `starts that child as a host that cannot ask the captain anything` | fails, naming the child's own failing test: `the host this suite was given.cannot prompt` | passes |
+| `tests/FmToolInstall.Tests.ps1`, the escape assertion under `still detects under -WhatIf` | fails: `Expected $false, because the preference must not outlive the one call that needed it, but got $true` | passes |
+| `tests/FmModuleAssembly.Tests.ps1`, `sets a silencing preference only in a scope that ends at the call needing it` | fails, naming file and line: `FmToolInstall.Tests.ps1:1943 sets $WhatIfPreference where the tests after it inherit it` | passes |
+
+The first of those is worth one more note.
+With the switch removed, the fixture's SECOND test - the one that binds a mandatory parameter - still passed, because the parent running it here has a redirected stdin and so the grandchild had no console to ask on.
+Only the first assertion, which reads the child's own command line, fails in every environment.
+That is why the launch is checked directly and not left to be inferred from the consequence.
+
+### 39.7 One stale test found on the way, and fixed
+
+`tests/FmBootstrap.Tests.ps1` still asserted `MISSING: herdr (install: irm https://herdr.dev/install.ps1 | iex)`.
+Section 38.4 moved every release-archive tool onto `install.ps1`, and `Get-FmBootstrapMissingDiagnostic` has answered with that ever since.
+
+Proven pre-existing rather than assumed, because "it was already broken" is exactly the claim that should not be taken on trust.
+`git archive feb2c2d` was extracted to a scratch directory holding none of this branch's work, and that one test run there:
+
+```
+MAIN feb2c2d: PASSED=0 FAILED=1
+  Expected: 'MISSING: herdr (install: irm https://herdr.dev/install.ps1 | iex)'
+  But was:  'MISSING: herdr (install: powershell -ExecutionPolicy Bypass -File .\install.ps1)'
+```
+
+`git log -S` places the two sides exactly: the `install.ps1` answer arrived in `feb2c2d`, and the assertion was last written in `835bc53` on 2026-08-18 and never revisited.
+So `main` landed red one commit before this branch existed, and the suite has been one test short of green since.
+The assertion now matches the landed route, and still holds the part that was the point: `MISSING` with a command the captain can paste, never `MISSING_MANUAL` with a web page.
+
+### 39.8 Not proven
+
+- **The captain's own VM was not used.** The hang was reproduced here by giving a child a real console, which is the same mechanism, not the same machine. No clean-machine install has been run end to end from this seat; that remains true after this section as it was after 33 through 38.
+- **The captain's screen shows four `What if:` lines where a full run here prints five.** `tests/FmBacklog.Tests.ps1` prints a `move to ...backlog.md` line between the third and fourth. Their transcript was trimmed, or that test did not run for them; nothing here needed to tell the two apart.
+- **Only one prompting shape was measured.** A missing mandatory parameter was measured hanging without the switch and failing with it. That `Read-Host`, `Get-Credential` and `PromptForChoice` fail the same way under `-NonInteractive` is PowerShell's documented behavior, taken rather than measured.
+- **The four entry-point helpers were never observed hanging.** They are a route to the same defect by the same mechanism, closed by inspection. None of them reaches a prompt today, so there was nothing to reproduce.
+- **39.7 fixed a stale assertion, not a route.** That `powershell -ExecutionPolicy Bypass -File .\install.ps1` actually installs herdr on a clean machine is section 38.4's claim and is untouched here; herdr's own install verification was explicitly out of this task's scope. What is proven is which of the two strings `Get-FmBootstrapMissingDiagnostic` returns.

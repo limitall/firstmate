@@ -806,6 +806,48 @@ Describe 'demo' {
         # NAMED, not counted: "1 failed" tells the captain nothing to act on.
         ($result.FailedNames -join ' ') | Should -Match 'fails on purpose'
     }
+
+    It 'starts that child as a host that cannot ask the captain anything' {
+        # THE INSTALL THAT HUNG FOREVER, and the reason this is a test rather
+        # than a habit. A suite proves a refusal by leaving a mandatory
+        # parameter off on purpose; on a host that CAN prompt, PowerShell binds
+        # it by ASKING instead of failing. This child is started -NoNewWindow,
+        # so the host it would ask on is the captain's own console, mid-install,
+        # under a bare "Supply values for the following parameters:" with no
+        # test name against it and nothing on screen to say what wants an
+        # answer. The whole install sat there. docs/windows-e2e-evidence.md
+        # section 39 has the captain's screen and the measurement.
+        #
+        # Both halves are observed from INSIDE the process this function
+        # actually started, never read off the source that starts it: the child
+        # says what it was launched with, and then proves the consequence by
+        # binding a mandatory parameter it was never given.
+        $fake = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path (Join-Path $fake 'tests') -Force
+        [System.IO.File]::WriteAllText((Join-Path $fake 'tests' 'Prompt.Tests.ps1'), @'
+Describe 'the host this suite was given' {
+    It 'cannot prompt' {
+        [Environment]::GetCommandLineArgs() | Should -Contain '-NonInteractive'
+    }
+    It 'fails a missing mandatory parameter rather than asking for it' {
+        function Test-FmPromptBait {
+            [CmdletBinding()]
+            param([Parameter(Mandatory)][string]$Needed)
+            $Needed
+        }
+        { Test-FmPromptBait } | Should -Throw -ErrorId 'MissingMandatoryParameter,Test-FmPromptBait'
+    }
+}
+'@)
+        # Bounded on purpose: with the switch gone the second test PROMPTS, and
+        # this call then returns on its own timeout instead of hanging the suite
+        # that is checking it - the regression reads as "did not finish", which
+        # is a reportable failure rather than a second wedged run.
+        $result = Invoke-FmMachineSuite -RepoRoot $fake -TimeoutSeconds 180
+        $result.Ran | Should -BeTrue -Because $result.Detail
+        $result.Failed | Should -Be 0 -Because ($result.FailedNames -join '; ')
+        $result.Passed | Should -Be 2
+    }
 }
 
 Describe 'Install-FmMachine' {
@@ -1115,7 +1157,11 @@ Describe 'a launch this machine refuses' {
 
         $psi = [System.Diagnostics.ProcessStartInfo]::new()
         $psi.FileName = $windowsPowerShell
-        foreach ($argument in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        # -NonInteractive because this child does NOT inherit its parent's, and
+        # install.ps1 is the one entry point here that legitimately asks the
+        # captain questions. Under test nobody is at that console, so a route
+        # that reaches one must fail and be reported rather than sit waiting.
+        foreach ($argument in @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
                 (Join-Path $script:RepoRoot 'install.ps1'), '-DetectOnly')) {
             $psi.ArgumentList.Add($argument)
         }
