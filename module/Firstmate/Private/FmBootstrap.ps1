@@ -205,18 +205,24 @@ function Test-FmBootstrapInstallNeedsAdministrator {
 # exactly that shape on the captain's machine today, which is why this is the
 # pattern to prefer generally rather than a special case for one tool.
 #
-# HERDR IS HERE BECAUSE ITS OWN INSTALLER IS NOT USABLE, and this is the answer
-# to that rather than a workaround inside it. MEASURED on the captain's clean
-# Windows 11 VMs, twice: `irm https://herdr.dev/install.ps1 | iex` downloads the
-# release and then fails ITS OWN verification -
+# HERDR IS HERE BECAUSE ITS OWN INSTALLER LEFT NO HERDR ON THE MACHINE, which is
+# not the same as its installer being broken and this comment used to say it was.
+# MEASURED on the captain's clean Windows 11 VMs, twice: `irm
+# https://herdr.dev/install.ps1 | iex` downloads the release and then fails ITS
+# OWN verification -
 #
 #   Downloaded Herdr command failed verification:
 #   C:\Users\...\.herdr\packages\standalone\releases\.staging.0.8.2-...\herdr.exe --version
 #
-# so herdr was the one required tool no clean machine ended up with. Nothing here
-# fixes someone else's script. What this does instead is READ that script and
-# take the same two facts out of it - where the release is, and which version is
-# current - then install it the way gh already is.
+# so herdr was the one required tool no clean machine ended up with. THAT CHECK
+# WAS RIGHT: this repo's own route later placed the same bytes correctly on the
+# same kind of machine and got a herdr that answers nothing either. Taking the
+# release directly is still the better route - it needs no administrator, it is
+# the same route gh uses, and it puts the tool where this installer can prove it
+# - but it does not and cannot fix the reason the binary will not run there.
+# Nothing here fixes someone else's script. What this does instead is READ that
+# script and take the same two facts out of it - where the release is, and which
+# version is current - then install it the way gh already is.
 #
 # WHAT THEIR INSTALLER DOES, read from https://herdr.dev/install.ps1 on
 # 2026-08-21 rather than guessed at:
@@ -233,8 +239,17 @@ function Test-FmBootstrapInstallNeedsAdministrator {
 # latest.json answers version 0.8.2 and points at
 # github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-windows-x86_64.zip;
 # that zip holds herdr.exe at its root beside a conpty/ directory; and the
-# expanded herdr.exe answers `--version` with "herdr 0.8.2" and exit code 0. The
-# binary was never the problem - their staging step was.
+# expanded herdr.exe answers `--version` with "herdr 0.8.2" and exit code 0.
+#
+# THAT LAST FACT IS ABOUT THIS MACHINE, NOT ABOUT THE BINARY, and reading it as
+# "their staging step was the problem" was WRONG. The captain's clean VM ran this
+# repo's own route, placed the same bytes in the right place, and got a herdr
+# that answers nothing - so their verification step was reporting a real fault
+# rather than failing spuriously. herdr.exe imports VCRUNTIME140.dll, which is
+# not part of Windows, and a machine without it stops the process before its
+# first instruction. docs/windows-e2e-evidence.md section 40 owns the evidence.
+# Nothing in this route can supply that DLL without administrator, so what this
+# area does about it is report the cause instead of guessing at it.
 #
 # Only these three are listed: treehouse and Claude Code publish their OWN
 # installers that work, and re-deriving their release layout here would be a

@@ -106,6 +106,10 @@ function Get-FmMachineInstallPlan {
             Required          = $entry.Required
             Present           = $status.Present
             Launchable        = $status.Launchable
+            # What the tool RETURNED, kept beside what it printed. A tool that
+            # started, died before its own code ran and printed nothing leaves
+            # this as the only evidence of why.
+            ExitCode          = $status.ExitCode
             Path              = $status.Path
             Version           = $status.Version
             Latest            = $latest
@@ -154,8 +158,11 @@ function Get-FmMachineInstallPlan {
             # A module is imported, never started as a program, so the launch
             # question does not arise - but the field is here because both kinds
             # of requirement flow into ONE set of consumers, and a record that is
-            # a field short throws under strict mode rather than degrading.
+            # a field short throws under strict mode rather than degrading. The
+            # exit code is here for the same reason and for the same non-reason:
+            # nothing started, so there is no code to carry.
             Launchable        = $status.Present
+            ExitCode          = 0
             Path              = $status.Path
             Version           = $status.Version
             Latest            = $latest

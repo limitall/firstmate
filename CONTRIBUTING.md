@@ -35,8 +35,16 @@ section 2 lists the state-file formats).
   and `Write-Error` **terminates**. A function that returns a verdict must
   either `throw` deliberately or use `Write-Error -ErrorAction Continue`; name
   hard-requirement checks `Assert-*`, not `Test-*`.
-- Every public function gets Pester tests. Run them: `pwsh -NoProfile -Command
-  'Invoke-Pester -Path ./tests/'`. Do not hand back unexecuted PowerShell.
+- Every public function gets Pester tests. Run them: `pwsh -NoProfile
+  -NonInteractive -Command 'Invoke-Pester -Path ./tests/'`. Do not hand back
+  unexecuted PowerShell.
+  **The `-NonInteractive` in that line is load-bearing** - it is the same rule
+  the bullet below states for every child this repo starts, and it applies to
+  the suite you run BY HAND for the same reason. Several tests prove a refusal
+  by omitting a mandatory parameter; without the flag that binds by ASKING, and
+  a redirected pipe swallows the prompt, so the run blocks with no output and no
+  failure rather than reporting one named `ParameterBindingException`.
+  Measured twice: `docs/windows-e2e-evidence.md` sections 39 and 40.7a.
   **Run the whole directory, never one file.** Pester containers share one
   process, so an `$env:FM_*` override left set by one file decides another
   file's behaviour; that has already produced two failures that passed in
@@ -553,7 +561,9 @@ before touching a state file or a lock.
 ## Checks
 
 ```powershell
-Invoke-Pester -Path ./tests
+# -NonInteractive so a prompt is a named failure rather than a silent hang;
+# see the rules section above for what it cost twice without it.
+pwsh -NoProfile -NonInteractive -Command 'Invoke-Pester -Path ./tests'
 Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
 ```
 

@@ -835,10 +835,19 @@ function Get-FmInstallToolFix {
     ''
 }
 
-# One run of `<command> --version`, reported as the three facts that decide what
-# is said about it: was it on PATH, did Windows let it START, and what did it
-# print. Running it twice to learn two of them would double every detection pass,
-# so both callers come through here and the version-only caller drops the rest.
+# One run of `<command> --version`, reported as the four facts that decide what
+# is said about it: was it on PATH, did Windows let it START, what code did it
+# return, and what did it print. Running it twice to learn two of them would
+# double every detection pass, so both callers come through here and the
+# version-only caller drops the rest.
+#
+# THE EXIT CODE IS CARRIED RATHER THAN DISCARDED, and it cost a clean machine to
+# learn why. herdr was installed correctly on the captain's clean Windows 11 VM
+# and reported only as "answers nothing to --version" - a sentence that names a
+# symptom and no cause. The code it returned was 0xC0000135, which says exactly
+# what happened, and this function had already thrown it away by the time
+# anything printed. `CONTRIBUTING.md` states the rule that was broken: report the
+# code the TOOL returned, never a phrase that has to be guessed at later.
 function Get-FmInstallCommandProbe {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -856,6 +865,7 @@ function Get-FmInstallCommandProbe {
     [pscustomobject]@{
         Found    = [bool]$res.Found
         Launched = [bool]$res.Launched
+        ExitCode = [int]$res.ExitCode
         Version  = $version
     }
 }

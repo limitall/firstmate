@@ -6382,8 +6382,12 @@ Install-FmToolPortable -Portable (Get-FmBootstrapPortableRelease -Tool herdr)
   proof  : herdr 0.8.2   exit=0
 ```
 
-**The binary was never the problem.**
-Their staging step was, and it is not on the path this repo now takes.
+**CORRECTED BY SECTION 39, AND THE CORRECTION IS THE POINT.**
+This section originally read "The binary was never the problem - their staging step was", on the strength of the binary running here.
+That was wrong.
+The binary runs HERE because this machine has something the captain's clean VM does not, their staging step was reporting a real fault on that machine, and the same release installed by this repo's own route failed the captain's VM in exactly the same way.
+Section 39 has the cause, the reproduction and the evidence against the alternatives; read it before trusting anything else in this subsection about WHY their installer failed.
+What stands here is what was measured here: their manifest contract, the release layout, and that this seat's expanded `herdr.exe` answers `--version`.
 `Get-FmToolLatestVersion -Tool 'herdr'` reads the same manifest, so "is it current" and "what would be installed" cannot disagree - and it replaces a GitHub prerelease scan whose newest tag is a date stamp that nothing can rank against the `herdr 0.8.2` the tool itself prints.
 Where a channel publishes a checksum the download is verified against it; the stable channel publishes none, and an absent checksum is never treated as a passing one.
 
@@ -6718,3 +6722,460 @@ The assertion now matches the landed route, and still holds the part that was th
 - **Only one prompting shape was measured.** A missing mandatory parameter was measured hanging without the switch and failing with it. That `Read-Host`, `Get-Credential` and `PromptForChoice` fail the same way under `-NonInteractive` is PowerShell's documented behavior, taken rather than measured.
 - **The four entry-point helpers were never observed hanging.** They are a route to the same defect by the same mechanism, closed by inspection. None of them reaches a prompt today, so there was nothing to reproduce.
 - **39.7 fixed a stale assertion, not a route.** That `powershell -ExecutionPolicy Bypass -File .\install.ps1` actually installs herdr on a clean machine is section 38.4's claim and is untouched here; herdr's own install verification was explicitly out of this task's scope. What is proven is which of the two strings `Get-FmBootstrapMissingDiagnostic` returns.
+## 40. herdr installs correctly and will not run, and the vendor's verification was right all along - `PROVEN (Windows 11) FOR THE FAILURE SHAPE, THE REPRODUCTION AND THE REPORTING FIX; THE CAUSE ON THE CAPTAIN'S VM IS UNCONFIRMED AND THE DIAGNOSTIC BELOW IS WHAT CONFIRMS IT`
+
+The captain's clean Windows 11 VM, with this repo's own direct install in place:
+
+```
+[missing] tool herdr - 'herdr' resolves to
+          C:\Users\higet\AppData\Local\Programs\herdr\herdr.exe but answers
+          nothing to --version, so it is not verified as the real tool
+
+summary: herdr  installed  C:\Users\higet\AppData\Local\Programs\herdr
+```
+
+The download worked, the placement worked, and the program produces nothing when run.
+This section is what that means, what it does not mean, and which part of it this seat could not settle.
+
+### 40.1 The correction: "the binary was never the problem" was wrong
+
+Section 37.3 concluded, on 2026-08-21, that herdr's own installer had a broken verification step, because the same release ran here and printed `herdr 0.8.2`.
+It said so in this document and in `Get-FmBootstrapPortableRelease`'s comment, and both have been corrected in place rather than left standing.
+
+The evidence that overturns it is the captain's own log above.
+This repo's route does not use their staging directory, does not use their script, and placed the file where it belongs - and the binary still answers nothing.
+So the thing their installer refused to certify was a binary that genuinely does not run on that machine, and their check was reporting a real fault.
+
+**This matters beyond one comment.** The wrong conclusion was drawn from a single machine's success and generalised to every machine, and it is exactly the kind of inference this document exists to stop: `herdr --version` answering here is a fact about THIS SEAT, not about the release.
+
+### 40.2 The report shape rules out everything that blocks a LAUNCH
+
+`Get-FmToolClassification` has two separate classes for a tool that prints no version, and which one the captain got is evidence.
+
+- `unusable` means Windows would not START it - `Invoke-FmSessionCommandLine` caught an exception and reported `Launched = $false`.
+- `unknown-version` means it STARTED and printed nothing readable.
+
+The captain's line is the `unknown-version` wording, so the process was created.
+
+**MEASURED here, 2026-08-21, through the real detection rather than by reading the source:**
+
+| what was put on PATH as `herdr` | `Launchable` | classification |
+| --- | --- | --- |
+| a file that is not a program at all | `False` | `unusable` |
+| an ARM64 `OpenConsole.exe` on this x64 machine | `False` | `unusable` |
+| the real herdr 0.8.2 with one imported DLL name rewritten | `True` | `unknown-version` |
+| the real herdr 0.8.2, untouched | `True` | `current` |
+
+Everything that stops a process being CREATED - a wrong-architecture image, a corrupt file, and by the same mechanism Smart App Control, WDAC, AppLocker or antivirus refusing the launch - lands in `unusable`.
+The captain's machine did not report `unusable`.
+It reported the class that means **the process started and died before it said anything**.
+
+### 40.3 The one thing herdr needs that Windows does not ship
+
+The real release was downloaded from the manifest their own installer reads, and its import table was read directly:
+
+```
+https://herdr.dev/latest.json  ->  version 0.8.2
+                                   github.com/herdrdev/herdr/releases/download/
+                                   v0.8.2/herdr-windows-x86_64.zip   (8,382,621 bytes)
+
+herdr.exe   x64, 22,400,512 bytes, Authenticode NotSigned
+imports     ADVAPI32 bcryptprimitives combase imm32 KERNEL32 ntdll ole32
+            oleaut32 propsys shell32 USER32 ws2_32
+            api-ms-win-core-synch-l1-2-0, api-ms-win-crt-{environment,heap,
+            locale,math,runtime,stdio,string,time}
+            VCRUNTIME140.dll
+```
+
+Every name on that list is part of Windows **except one**.
+The `api-ms-win-*` entries are OS API sets, and the `bcryptprimitives`/`combase`/`propsys` family are inbox system DLLs.
+`VCRUNTIME140.dll` is not: it comes from the Microsoft Visual C++ 2015-2022 Redistributable, which is a separate download and is not part of a Windows installation.
+
+**Why it works on this seat, stated as a fact about this seat:**
+
+```
+C:\WINDOWS\System32\VCRUNTIME140.dll      v14.42.34438.0
+uninstall entry  Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.42.34438
+                 installed 2025-05-12
+```
+
+That is the difference between the two machines: something installed the redistributable here on 2025-05-12, and a clean Windows 11 VM has had nothing put it there.
+A fresh VM is precisely the machine least likely to have it, because it arrives as a dependency of software nobody has installed yet.
+
+### 40.4 The reproduction, on the real binary
+
+A copy of the real 0.8.2 `herdr.exe` had the sixteen bytes `VCRUNTIME140.dll` in its import directory rewritten to `VCRUNTIMEZZZ.dll` - the same length, so nothing else in the image moves.
+That is a machine without the runtime, simulated from the other side, using the actual release rather than a stand-in.
+
+```
+& herdr.exe --version
+  output lines : 0
+  LASTEXITCODE : -1073741515  (0xC0000135)
+
+Start-Process, streams captured to files
+  exit code    : -1073741515  (0xC0000135)
+  stdout bytes : 0
+  stderr bytes : 0
+```
+
+No exception, no dialog, no text on either stream, and `0xC0000135` is `STATUS_DLL_NOT_FOUND`.
+Through the real detection:
+
+```
+Get-FmToolStatus -Command 'herdr'
+  Present    : True
+  Version    : ''
+  Launchable : True
+  ExitCode   : -1073741515
+  -> classification: unknown-version
+```
+
+That is the captain's log, reproduced: the same class, the same empty version, the same sentence.
+
+### 40.5 The alternatives, and what is against each
+
+None of these was assumed away; each has evidence.
+
+| possibility | evidence against it |
+| --- | --- |
+| a fresh machine's defences refusing an unsigned downloaded binary | Any refusal to START lands in `unusable`, measured twice in 40.2. The captain got `unknown-version`. Smart App Control also cannot be the whole story on a machine that reported the tool as started. |
+| the mark a browser or download API puts on a file from the internet | Our route does not create one. `Invoke-WebRequest -OutFile` then `Expand-Archive` leaves `:$DATA` and nothing else on both the zip and the expanded `herdr.exe` - measured. And a `Zone.Identifier` added deliberately to a working copy here did not stop it: it printed `herdr 0.8.2`, exit 0. There is nothing for the install to clear. |
+| an architecture mismatch between what we fetch and what the machine is | The asset is x64 and Windows 11 on ARM64 runs x64 under emulation. A genuine mismatch is `unusable` anyway - measured with a real ARM64 image on this x64 box. |
+| a runtime component present here and absent there | **This one.** One non-OS import, present here from a redistributable installed 2025-05-12, and its absence reproduces the exact symptom and the exact report text. |
+| the process starting and dying before it writes anything | True, and this is the family the cause belongs to. `0xC0000135` says which member: it died in the loader, before its own first instruction. |
+
+**The honest limit.** What is proven is that a missing dependency produces exactly what the captain saw, and that `VCRUNTIME140.dll` is the only dependency herdr has that a clean Windows 11 machine can be missing.
+What is NOT proven is that the captain's VM is missing it, because this seat cannot reach that machine.
+That is what 40.7 is for.
+
+### 40.6 What the install says now, and what it will not say
+
+Two things were wrong in the report itself, independently of the cause.
+
+**The exit code was thrown away.** `Get-FmInstallCommandProbe` ran the tool, read `$res.ExitCode` to decide whether the output was a version, and then discarded it.
+`0xC0000135` was returned on the captain's machine and never printed, so the log named a symptom and no cause - the exact thing `CONTRIBUTING.md` forbids ("report the code the TOOL returned ... never summarise an error into something that has to be guessed at later").
+It is now carried through `Get-FmToolStatus` and into the requirement record, and `Get-FmToolExitCodeMeaning` names the codes Windows itself chooses for a process that never reached its own code.
+That function already existed for winget's HRESULTs and was extended rather than duplicated; a second one with the same name was written first and caught, which is the hazard `CONTRIBUTING.md` describes as silent.
+
+Before and after, for the captain's own case:
+
+```
+before  'herdr' resolves to C:\...\herdr.exe but answers nothing to --version,
+        so it is not verified as the real tool
+
+after   'herdr' resolves to C:\...\herdr.exe but answers nothing to --version,
+        so it is not verified as the real tool - it exited 0xC0000135, which
+        means a DLL it needs is not on this machine, so Windows stopped it
+        before it ran any of its own code
+```
+
+**The summary said `installed` for a tool that will not run.** The command route has ended by reaching what it installed since section 37.2; the portable route ended at "the bytes are on disk", which is why the captain's report contained `[missing] tool herdr` and `summary: herdr installed` in the same run.
+`Invoke-FmToolRoute` now proves a portable install by RUNNING the tool, and reports `failed` - naming where the files went, and why the tool does not run - when it cannot.
+
+**What did NOT change is the bar.** `unknown-version` is still not a pass, a required tool that fails it still ends the run NOT READY, and naming a cause never turns a failure into a success.
+A test pins that specifically: the sentence carrying `0xC0000135` still ends "so it is not verified as the real tool".
+
+### 40.7 What this seat cannot do, and the one paste that settles it
+
+**We cannot confirm the cause from here, and we cannot fix it from here.**
+
+- The captain's VM is unreachable from this seat, so whether `VCRUNTIME140.dll` is absent there is inference, not measurement.
+- The redistributable that supplies it needs administrator, which this brief puts out of scope and this installer refuses on principle.
+- Extracting the single DLL from Microsoft's own bundle without administrator does not work - **MEASURED, 2026-08-21**: `vc_redist.x64.exe` (25,635,768 bytes, Authenticode `Valid`, `CN=Microsoft Corporation`) run unelevated as `/extract:<dir> /quiet /norestart` produced an empty directory and had to be killed at 90 seconds.
+
+So what this task produces instead is a diagnostic that answers it in one paste.
+It runs in **Windows PowerShell 5.1 and PowerShell 7** - the captain's clean-VM log shows them in 5.1, so a `pwsh`-only script would be a trap - needs no administrator, installs nothing, changes nothing, and prints a verdict rather than evidence to interpret.
+
+```powershell
+# ---------------------------------------------------------------------------
+# firstmate: why will a tool that is on this machine not run?
+# Paste this whole block into a PowerShell window - Windows PowerShell 5.1 or
+# PowerShell 7, either works. It needs no administrator, installs nothing,
+# changes nothing, and prints what it finds.
+# ---------------------------------------------------------------------------
+$tool = 'herdr'
+
+function Show($label, $value) { Write-Host ("  {0,-22} {1}" -f $label, $value) }
+function Head($text) { Write-Host ''; Write-Host $text -ForegroundColor Cyan }
+$verdict = @()
+
+Head "1. this machine"
+Show 'windows' ((Get-CimInstance Win32_OperatingSystem).Caption + ' build ' + [Environment]::OSVersion.Version.Build)
+Show 'processor' $env:PROCESSOR_ARCHITECTURE
+Show 'shell' ("PowerShell " + $PSVersionTable.PSVersion)
+
+Head "2. where '$tool' resolves"
+$cmd = Get-Command -Name $tool -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $cmd) {
+    Show 'result' "NOT ON PATH - nothing else below can be answered"
+    $verdict += "'$tool' is not on PATH at all."
+    Write-Host ''; Write-Host 'VERDICT' -ForegroundColor Yellow; $verdict | ForEach-Object { Write-Host "  $_" }
+    return
+}
+$exe = $cmd.Source
+$file = Get-Item -LiteralPath $exe
+Show 'path' $exe
+Show 'bytes' $file.Length
+Show 'modified' $file.LastWriteTime
+Show 'sha256' (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+
+Head "3. what happens when it is run"
+# The .NET API rather than Start-Process: Windows PowerShell 5.1 hands back a
+# process object whose ExitCode is EMPTY after a timed WaitForExit, and the exit
+# code is the single most important line in this whole report.
+$code = $null; $out = ''; $err = ''
+try {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = '--version'
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $out = $proc.StandardOutput.ReadToEnd()
+    $err = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    $code = $proc.ExitCode
+} catch {
+    Show 'result' 'WINDOWS REFUSED TO START IT'
+    Show 'refusal' $_.Exception.Message
+    $verdict += "Windows would not start $exe at all. That is the machine declining the launch, not the program failing."
+}
+if ($null -ne $code) {
+    Show 'exit code' ('{0} (0x{1:X8})' -f $code, $code)
+    Show 'stdout bytes' $out.Length
+    Show 'stderr bytes' $err.Length
+    foreach ($line in @(($out + $err) -split "`r?`n")) {
+        if ($line.Trim()) { Show 'printed' $line.Trim() }
+    }
+    $known = @{
+        -1073741515 = 'STATUS_DLL_NOT_FOUND - a DLL it needs is not on this machine'
+        -1073741502 = 'STATUS_DLL_INIT_FAILED - a DLL it needs failed to start up'
+        -1073741701 = 'STATUS_INVALID_IMAGE_FORMAT - built for a different processor'
+        -1073741795 = 'STATUS_ILLEGAL_INSTRUCTION - built for a newer CPU than this one'
+        -1073741790 = 'STATUS_ACCESS_DENIED - this machine denied it as it started'
+    }
+    if ($known.ContainsKey($code)) { Show 'meaning' $known[$code] }
+    if ($code -eq 0 -and $out.Trim()) { $verdict += "It RUNS. '$tool --version' answered and exited 0, so this is not where the problem is." }
+    if ($code -ne 0 -and -not ($out + $err).Trim()) { $verdict += "It started, printed NOTHING on either stream, and exited 0x$('{0:X8}' -f $code). A program that reaches its own code says something; this one did not." }
+}
+
+Head "4. what the file is, and what it needs"
+$b = [System.IO.File]::ReadAllBytes($exe)
+$peOff = if ($b.Length -gt 0x40) { [BitConverter]::ToInt32($b, 0x3C) } else { 0 }
+$isPe = ($b.Length -gt 0x40 -and $b[0] -eq 0x4D -and $b[1] -eq 0x5A -and
+         $peOff -gt 0 -and ($peOff + 250) -lt $b.Length -and
+         $b[$peOff] -eq 0x50 -and $b[$peOff + 1] -eq 0x45)
+if (-not $isPe) {
+    Show 'result' 'THIS IS NOT A WINDOWS PROGRAM - it has no PE header, so Windows cannot run it whatever else is true'
+    $verdict += "$exe is not a Windows executable at all. Whatever put it there did not put a program there."
+}
+$machine = if ($isPe) { [BitConverter]::ToUInt16($b, $peOff + 4) } else { 0 }
+$arch = switch ($machine) { 0x8664 { 'x64' } 0x14c { 'x86' } 0xAA64 { 'arm64' } default { ('0x{0:X}' -f $machine) } }
+if ($isPe) { Show 'built for' $arch }
+$numSec = if ($isPe) { [BitConverter]::ToUInt16($b, $peOff + 6) } else { 0 }
+$optOff = $peOff + 24
+$plus = ($isPe -and [BitConverter]::ToUInt16($b, $optOff) -eq 0x20B)
+$dd = $optOff + $(if ($plus) { 112 } else { 96 })
+$impRva = if ($isPe) { [BitConverter]::ToUInt32($b, $dd + 8) } else { 0 }
+$secOff = $optOff + $(if ($plus) { 240 } else { 224 })
+$sections = @()
+for ($i = 0; $i -lt $numSec; $i++) {
+    $s = $secOff + ($i * 40)
+    $sections += New-Object psobject -Property @{
+        VA = [BitConverter]::ToUInt32($b, $s + 12); VSize = [BitConverter]::ToUInt32($b, $s + 8); Raw = [BitConverter]::ToUInt32($b, $s + 20)
+    }
+}
+function ToOffset($rva) {
+    foreach ($s in $sections) { if ($rva -ge $s.VA -and $rva -lt ($s.VA + [Math]::Max($s.VSize, 1))) { return $s.Raw + ($rva - $s.VA) } }
+    return 0
+}
+$needed = @()
+if ($impRva -ne 0) {
+    $p = ToOffset $impRva
+    while ($true) {
+        $nameRva = [BitConverter]::ToUInt32($b, $p + 12)
+        if ($nameRva -eq 0) { break }
+        $n = ToOffset $nameRva; $end = $n
+        while ($b[$end] -ne 0) { $end++ }
+        $needed += [Text.Encoding]::ASCII.GetString($b, $n, $end - $n)
+        $p += 20
+    }
+}
+$dirs = @([System.IO.Path]::GetDirectoryName($exe), (Join-Path $env:SystemRoot 'System32'), $env:SystemRoot) +
+        (($env:PATH -split ';') | Where-Object { $_ })
+$missing = @()
+foreach ($dll in ($needed | Sort-Object -Unique)) {
+    # api-ms-win-* and ext-ms-* are API SETS: Windows resolves them itself and
+    # there is no file to find, so an absent file is not an absent dependency.
+    if ($dll -like 'api-ms-win-*' -or $dll -like 'ext-ms-*') { Show $dll 'OS api-set'; continue }
+    $found = ''
+    foreach ($d in $dirs) {
+        try { $c = Join-Path $d $dll } catch { continue }
+        if (Test-Path -LiteralPath $c -PathType Leaf) { $found = $c; break }
+    }
+    if ($found) { Show $dll $found } else { Show $dll '*** MISSING ON THIS MACHINE ***'; $missing += $dll }
+}
+if ($missing.Count -gt 0) {
+    $verdict += ("$tool cannot start because this machine does not have: " + ($missing -join ', ') + '.')
+    if ($missing -contains 'VCRUNTIME140.dll' -or $missing -contains 'MSVCP140.dll' -or $missing -contains 'VCRUNTIME140_1.dll') {
+        $verdict += 'Those come from the Microsoft Visual C++ 2015-2022 Redistributable, which is not part of Windows.'
+    }
+}
+if ($arch -eq 'arm64' -and $env:PROCESSOR_ARCHITECTURE -eq 'AMD64') { $verdict += 'The file is an ARM64 build and this is an x64 machine, which cannot run it.' }
+
+Head "5. the marks on the file"
+$streams = @()
+try { $streams = @(Get-Item -LiteralPath $exe -Stream '*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Stream) } catch { }
+Show 'streams' (($streams | Where-Object { $_ -ne ':$DATA' }) -join ', ')
+if ($streams -contains 'Zone.Identifier') {
+    Show 'zone' ((Get-Content -LiteralPath $exe -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue) -join ' / ')
+    $verdict += 'The file carries a download mark (Zone.Identifier). Clear it with: Unblock-File -LiteralPath "' + $exe + '"'
+} else { Show 'zone' 'none - this file carries no download mark' }
+$sig = Get-AuthenticodeSignature -LiteralPath $exe
+Show 'signature' $sig.Status
+Show 'signer' $(if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { '<unsigned>' })
+
+Head "6. what could be refusing to run it"
+$sac = 'not set (off)'
+try {
+    $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Name 'VerifiedAndReputablePolicyState' -ErrorAction Stop).VerifiedAndReputablePolicyState
+    $sac = switch ($v) { 0 { 'OFF' } 1 { 'ON - ENFORCED' } 2 { 'EVALUATION MODE' } default { "state $v" } }
+} catch { }
+Show 'Smart App Control' $sac
+if ($sac -like 'ON*') { $verdict += 'Smart App Control is ENFORCED. It blocks unsigned programs, and this one is ' + $sig.Status + '.' }
+try {
+    $dg = Get-CimInstance -Namespace 'root\Microsoft\Windows\DeviceGuard' -ClassName 'Win32_DeviceGuard' -ErrorAction Stop
+    Show 'WDAC enforcement' $dg.CodeIntegrityPolicyEnforcementStatus
+} catch { Show 'WDAC enforcement' 'could not be read from this session' }
+try {
+    $al = Get-AppLockerPolicy -Effective -ErrorAction Stop
+    Show 'AppLocker' $(if ($al.RuleCollections.Count -gt 0) { 'rules are configured' } else { 'no rules' })
+} catch { Show 'AppLocker' 'no policy readable from this session' }
+try {
+    $mp = Get-MpComputerStatus -ErrorAction Stop
+    Show 'Defender realtime' $mp.RealTimeProtectionEnabled
+} catch { Show 'Defender realtime' 'needs administrator to read' }
+
+Write-Host ''
+Write-Host 'VERDICT' -ForegroundColor Yellow
+if ($verdict.Count -eq 0) { $verdict += 'Nothing above explains a failure. Send this whole output back.' }
+$verdict | ForEach-Object { Write-Host "  $_" }
+Write-Host ''
+```
+
+**It was run here against all three cases, in both shells, before being written down.**
+
+Against the reproduction, in Windows PowerShell 5.1:
+
+```
+1. this machine
+  windows                Microsoft Windows 11 Pro build 26200
+  processor              AMD64
+  shell                  PowerShell 5.1.26100.8115
+
+3. what happens when it is run
+  exit code              -1073741515 (0xC0000135)
+  stdout bytes           0
+  stderr bytes           0
+  meaning                STATUS_DLL_NOT_FOUND - a DLL it needs is not on this machine
+
+4. what the file is, and what it needs
+  built for              x64
+  ADVAPI32.dll           C:\WINDOWS\System32\ADVAPI32.dll
+  api-ms-win-crt-runtime-l1-1-0.dll OS api-set
+  ...
+  VCRUNTIMEZZZ.dll       *** MISSING ON THIS MACHINE ***
+  ws2_32.dll             C:\WINDOWS\System32\ws2_32.dll
+
+VERDICT
+  herdr cannot start because this machine does not have: VCRUNTIMEZZZ.dll.
+```
+
+Against the untouched 0.8.2 release, in PowerShell 7.6.4:
+
+```
+3. what happens when it is run
+  exit code              0 (0x00000000)
+  stdout bytes           12
+
+VERDICT
+  It RUNS. 'herdr --version' answered and exited 0, so this is not where the problem is.
+```
+
+Against a file that is not a program, in Windows PowerShell 5.1:
+
+```
+  result                 WINDOWS REFUSED TO START IT
+  refusal                Exception calling "Start" with "1" argument(s): "The specified
+                         executable is not a valid application for this OS platform."
+  result                 THIS IS NOT A WINDOWS PROGRAM - it has no PE header, so Windows
+                         cannot run it whatever else is true
+
+VERDICT
+  Windows would not start C:\...\herdr.exe at all. That is the machine declining the
+  launch, not the program failing.
+```
+
+**One detail in it was a defect found by running it.** The first version used `Start-Process -PassThru`, and Windows PowerShell 5.1 returns a process object whose `ExitCode` is EMPTY after a timed `WaitForExit` - measured, and it printed nothing at all where the exit code should have been.
+The exit code is the single most valuable line in the whole report, so it uses `System.Diagnostics.Process` directly, which behaves identically in both shells.
+
+**A second detail matters for reading section 4 of its output.** `api-ms-win-*` names are API sets that Windows resolves internally and that have NO file in `System32` - measured on this Windows 11 build - so a file check reports every one of them missing unless it knows that.
+It knows.
+
+### 40.7a The prompt-hang bug, hit again while fixing this one
+
+**MEASURED here, 2026-08-21, on this task's own working session, and it is the same bug commit 2f4d97e fixed for the installer.**
+
+The first version of the reporting change called `Get-FmToolExitCodeMeaning -ExitCode $code` without `-Command`, because a second function of that name was written before the existing one was found.
+`-Command` is `[Parameter(Mandatory)]`, so PowerShell did not fail the call.
+**It asked for a value.**
+
+Which of those two things happened depended entirely on how the suite was started:
+
+| how the suite was run | what a missing mandatory parameter did |
+| --- | --- |
+| `pwsh -NoProfile -NonInteractive -Command "Invoke-Pester ..."` | threw `ParameterBindingException`, one named test failure, visible immediately |
+| `pwsh -NoProfile -Command "Invoke-Pester -Path ./tests"` | printed `Supply values for the following parameters:` into a redirected pipe and blocked indefinitely - **two runs produced 0 bytes of output and had to be killed after 10 and 15 minutes** |
+
+That is commit 2f4d97e's finding reproduced from the other side.
+Its fix put `-NonInteractive` on the suite child that `Invoke-FmMachineSuite` starts, so any prompt the suite can reach becomes a named test failure instead of a dead install.
+The same flag was missing from the shell this task used to run the suite by hand, and it cost the same two things it cost on the clean VM: no output, and no clue why.
+
+**Two things came out of it beyond a lesson.**
+
+`Get-FmToolUnprovenDetail`'s string parameters now all carry `[AllowEmptyString()]`, matching `Get-FmToolExitCodeMeaning` and `Get-FmToolRunFailureDetail`, which already did.
+A mandatory `[string]` without it REJECTS `''` and prompts for a replacement, and this function composes a report line on a console nobody is watching.
+A line built from an empty command name is wrong and readable; a line that stops to ask for one hangs the install.
+A test pins it.
+
+**And the duplicate name is the second hazard, which `CONTRIBUTING.md` already names: two areas defining one function name is silent, not an error.**
+The second `Get-FmToolExitCodeMeaning` was never called - the later definition in the same file won - so the symptom was not "duplicate function" but "the function I just wrote has a parameter I did not give it".
+The existing one was extended instead, which is also what the one-owner rule required.
+
+### 40.8 What the captain does with the answer, and what is not ours to decide
+
+If the diagnostic names `VCRUNTIME140.dll` as missing, the remedy is the Microsoft Visual C++ 2015-2022 Redistributable, and it needs administrator once:
+
+```
+winget install --id Microsoft.VCRedist.2015+.x64 --source winget
+```
+
+or the same installer from Microsoft directly at `https://aka.ms/vs/17/release/vc_redist.x64.exe`.
+Then re-run `install.ps1`, which needs no administrator and will prove herdr by running it.
+
+**This installer does not do that itself, and the reason is the boundary rather than the difficulty.** It needs elevation, and nothing here installs a machine-wide Microsoft runtime on the captain's machine without being asked.
+
+If the diagnostic instead reports Smart App Control enforced, that is the captain's machine refusing an unsigned program, and it stays their call.
+Nothing here turns a protection off, and nothing here should: herdr 0.8.2 is `NotSigned` - measured - so a machine set to run only signed and reputable programs is behaving correctly, and the options are theirs to weigh.
+
+**What must not happen either way is a looser check.** A herdr that cannot run means no worker can be dispatched, so a report that called that machine ready would be worse than the honest failure it prints today.
+
+### 40.9 What was NOT proven here
+
+- **The captain's VM was never touched.** Every measurement in this section was taken on a machine that HAS the Visual C++ runtime. That `VCRUNTIME140.dll` is what is missing there is the strongest available inference, not a measurement, and 40.7 exists because of that gap.
+- **The missing runtime was simulated, not removed.** `VCRUNTIME140.dll` was not uninstalled from this machine; a copy of the real binary was given an import name that does not resolve. The loader path, the exit code, the empty streams and the classification are all real; the DLL's absence is staged.
+- **No fix for the dependency was implemented, because none exists without administrator.** The unelevated extraction attempt in 40.7 is the measurement behind that statement, not an assumption.
+- **The `install.ps1` report was not watched end to end on a clean machine.** The changed lines were exercised through their own functions and through the suite, including the portable route running for real against an archive containing a tool that answers `--version` and one that does not.
+- **Smart App Control was never observed blocking anything.** This machine reports it OFF, so the branch that names it in the diagnostic is written and unexercised against a machine where it is on.

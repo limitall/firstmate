@@ -183,6 +183,10 @@ Describe 'Get-FmBootstrapMissingDiagnostic' {
         # portable release, so Get-FmBootstrapMissingDiagnostic answers with the
         # command that actually does it. What this test still holds is the
         # shape: MISSING with a command, never MISSING_MANUAL with a web page.
+        #
+        # Section 40 is why that vendor failure was a REAL signal rather than a
+        # broken check, which does not change this line: the reason to name
+        # install.ps1 is that a printed fix has to be one the captain can paste.
         Get-FmBootstrapMissingDiagnostic -Tool 'herdr' |
             Should -Be 'MISSING: herdr (install: powershell -ExecutionPolicy Bypass -File .\install.ps1)'
     }

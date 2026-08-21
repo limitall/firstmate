@@ -375,9 +375,21 @@ So the machine install now reads every route from that one owner, and the regres
 A route is only correct if the installed command runs and prints something `Get-FmToolVersionNumber` can parse.
 A command that resolves but answers nothing to `--version` is reported as unverified, never as installed, because that is the exact shape a wrong package takes.
 
+**And "answers nothing" is a symptom, so the code it returned is carried with it.**
+`Get-FmInstallCommandProbe` used to read the exit code to decide whether the output was a version and then discard it, which left a clean VM reporting a correctly installed herdr as "answers nothing to --version" and nothing more.
+The code was `0xC0000135` and says exactly what happened: a DLL it needs is missing, so Windows stopped it before its own first instruction and it had no chance to print anything.
+`Get-FmToolStatus` now carries the code, `Get-FmToolExitCodeMeaning` names the ones Windows itself chooses for a process that never ran, and `Get-FmToolUnprovenDetail` is the single owner of the sentence both the plan and the proving pass print.
+Naming a cause never softens the verdict: an unproven tool is still unproven, and a required one still ends the run NOT READY.
+`docs/windows-e2e-evidence.md` section 40 has the reproduction and the evidence against the alternatives.
+
+**A portable install is not finished until the tool RUNS.**
+The command route has ended by reaching what it installed since the Claude CLI was reported missing by the run that installed it; the portable route ended at "the bytes are on disk", so one clean-VM report contained `[missing] tool herdr` and `summary: herdr installed` together.
+`Invoke-FmToolRoute` now proves a portable install by running the tool and reports `failed` - naming where the files went, and why it does not run - when it cannot.
+
 **No step needs administrator.**
 Every preferred route writes into the user's own profile: the vendor's per-user installer (Claude Code, treehouse, PowerShell 7) or a release archive expanded under `%LOCALAPPDATA%\Programs` with its directory added to the USER PATH (gh, herdr).
-herdr is on the archive route for a second reason: its own installer fails its OWN verification on a clean machine, twice measured, so `Get-FmBootstrapPortableRelease` takes the release that installer points at - read out of it, not guessed - and installs it directly.
+herdr is on the archive route for a second reason: its own installer leaves no herdr on a clean machine, twice measured, so `Get-FmBootstrapPortableRelease` takes the release that installer points at - read out of it, not guessed - and installs it directly.
+That is not a claim that their installer is broken, and this file used to imply it was: their step refuses to certify a binary that will not run, and section 40 of `docs/windows-e2e-evidence.md` records that on the captain's VM the binary genuinely does not run, for a reason no install route here can fix without administrator.
 `choco install gh` was measured failing with "Access to the path 'C:\ProgramData\chocolatey\lib-bad' is denied" on an unelevated session; the portable zip needed nothing.
 The routes that genuinely need elevation are the winget packages, which run machine-scope MSIs.
 Those are DECLARED by `Test-FmBootstrapInstallNeedsAdministrator`, named in the report, and skipped - never attempted, and never allowed to stop the rest of the run.
@@ -392,7 +404,7 @@ Those are DECLARED by `Test-FmBootstrapInstallNeedsAdministrator`, named in the 
 | `older` | the captain is ASKED, once, with the installed and published versions and the cost of declining. The default is no, and declining never stops the run. |
 | `unsupported` | the captain is TOLD, the step is SKIPPED, nothing is installed over the top, and the run reports the machine as NOT READY. |
 | `superseded` | below the same kind of stated minimum, but what this repo needs installs BESIDE it rather than over it. Installed, without asking, and the older copy is left alone. |
-| `unknown-version` | present but prints no readable version, so nothing about it is proven. |
+| `unknown-version` | present, STARTED, and printed no readable version, so nothing about it is proven. The exit code is reported with it, because a process stopped by the loader prints nothing on either stream and the code is the only evidence there is. |
 | `unknown-latest` | present, but no vendor answered, so currency is unknown rather than assumed. |
 
 A minimum only exists where this repo STATES one, and `Get-FmToolMinimum` names where each comes from: the axi-family floors bootstrap already enforces, Pester 5 for the suite, and treehouse's `get --lease`, which is a capability rather than a number.

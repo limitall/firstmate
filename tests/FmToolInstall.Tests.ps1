@@ -1698,6 +1698,247 @@ Describe 'herdr, installed rather than advised' {
     }
 }
 
+Describe 'a tool that starts, dies before its own code, and prints nothing' {
+    # THE DEFECT, MEASURED on the captain's clean Windows 11 VM 2026-08-21. herdr
+    # was downloaded and placed correctly and the run said only this:
+    #
+    #   [missing] tool herdr - 'herdr' resolves to ...\herdr.exe but answers
+    #             nothing to --version, so it is not verified as the real tool
+    #
+    # That sentence is true and names no cause, so the first diagnosis drawn from
+    # it was wrong: the vendor's installer had failed the SAME check and was
+    # called a broken verification step, when it was reporting a real fault on
+    # that machine. The code the tool returned - 0xC0000135 - said what happened
+    # and was discarded before anything printed.
+    #
+    # A .cmd that exits non-zero without printing is the seam. It reproduces the
+    # SHAPE that matters here - started, said nothing, returned a code - on any
+    # machine, without needing one that is missing a runtime.
+
+    BeforeAll {
+        $script:QuietBin = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $script:QuietBin -Force
+        Set-Content -LiteralPath (Join-Path $script:QuietBin 'fm-quietly-dead.cmd') `
+            -Value "@echo off`r`nexit /b 5"
+        $script:SavedQuietPath = $env:PATH
+    }
+    AfterEach { $env:PATH = $script:SavedQuietPath }
+
+    It 'names what Windows means by the codes it chooses, for any command' {
+        # These are the codes a program never got to choose: the loader stopped
+        # it, so stdout and stderr are empty and the code is the only evidence.
+        # They mean the same thing whatever was being started, so they are asked
+        # about for every command rather than for one.
+        foreach ($command in @('herdr', 'winget', '')) {
+            Get-FmToolExitCodeMeaning -Command $command -ExitCode -1073741515 | Should -Match 'DLL it needs is not on this machine'
+            Get-FmToolExitCodeMeaning -Command $command -ExitCode -1073741502 | Should -Match 'would not initialise'
+            Get-FmToolExitCodeMeaning -Command $command -ExitCode -1073741701 | Should -Match 'different processor architecture'
+            Get-FmToolExitCodeMeaning -Command $command -ExitCode -1073741795 | Should -Match 'newer CPU'
+        }
+        # A code the PROGRAM chose is the program saying something about itself,
+        # and putting Windows' words in its mouth would be a guess.
+        Get-FmToolExitCodeMeaning -Command 'herdr' -ExitCode 1 | Should -Be ''
+        Get-FmToolExitCodeMeaning -Command 'herdr' -ExitCode 0 | Should -Be ''
+    }
+
+    It 'still gives winget its own verdicts, which the OS codes must not have displaced' {
+        Get-FmToolExitCodeMeaning -Command 'winget install demo' -ExitCode -1978335212 |
+            Should -Match 'no package matching'
+        Get-FmToolExitCodeMeaning -Command 'winget install demo' -ExitCode -1978335230 |
+            Should -Match 'rejected the command line'
+    }
+
+    It 'carries the exit code into the sentence, and never softens the verdict' {
+        $detail = Get-FmToolUnprovenDetail -Command 'herdr' -Path 'C:\p\herdr.exe' -ExitCode -1073741515
+        $detail | Should -Match 'not verified as the real tool' -Because 'naming a cause must never turn a failure into a pass'
+        $detail | Should -Match '0xC0000135'
+        $detail | Should -Match 'DLL it needs is not on this machine'
+    }
+
+    It 'says the code and nothing more when Windows did not choose it' {
+        $detail = Get-FmToolUnprovenDetail -Command 'demo' -Path 'C:\p\demo.exe' -ExitCode 5
+        $detail | Should -Match '0x00000005'
+        $detail | Should -Not -Match 'which means'
+    }
+
+    It 'leaves the code out altogether for a tool that exited 0 and merely said nothing' {
+        $detail = Get-FmToolUnprovenDetail -Command 'demo' -Path 'C:\p\demo.exe' -ExitCode 0
+        $detail | Should -Match 'answers nothing to --version'
+        $detail | Should -Not -Match '0x0'
+    }
+
+    It 'builds a line from empty strings rather than stopping to ask for them' {
+        # A REPORT LINE MUST NEVER BE ABLE TO ASK A QUESTION. A mandatory
+        # parameter that refuses the value it is handed does not fail, it
+        # prompts - and this is composed on a console nobody is watching, so a
+        # prompt is a hung install rather than an error. Commit 2f4d97e is that
+        # exact bug in the install's own self-check.
+        { Get-FmToolUnprovenDetail -Command '' -Path '' -ExitCode -1073741515 } | Should -Not -Throw
+        $detail = Get-FmToolUnprovenDetail -Command '' -Path '' -ExitCode -1073741515
+        $detail | Should -Match 'not verified as the real tool'
+        $detail | Should -Match '0xC0000135'
+    }
+
+    It 'carries the code out of the real detection rather than dropping it' -Skip:(-not $IsWindows) {
+        # The producer's own record goes into the consumer untouched. Nothing
+        # here builds a status by hand, which is how the last defect in this area
+        # survived a green suite.
+        $env:PATH = $script:QuietBin + [System.IO.Path]::PathSeparator + $script:SavedQuietPath
+        $status = Get-FmToolStatus -Command 'fm-quietly-dead'
+        $status.Present | Should -BeTrue
+        $status.Launchable | Should -BeTrue -Because 'it started - this is not the refused-launch case'
+        $status.Version | Should -Be ''
+        $status.ExitCode | Should -Be 5
+        Get-FmToolClassification -Present $status.Present -Installed $status.Version -Launchable $status.Launchable |
+            Should -Be 'unknown-version'
+    }
+
+    It 'reports the cause in the proving pass, through the real detection' -Skip:(-not $IsWindows) {
+        # The pass the captain actually read. It has to name the code, and it has
+        # to keep saying the tool is not proven.
+        Mock Update-FmToolSessionPath { $env:PATH }
+        $env:PATH = $script:QuietBin
+        try {
+            foreach ($entry in (Get-FmToolCatalog)) {
+                Copy-Item -LiteralPath (Join-Path $script:QuietBin 'fm-quietly-dead.cmd') `
+                    -Destination (Join-Path $script:QuietBin ($entry.Command + '.cmd')) -Force
+            }
+            $herdr = @(Get-FmMachineToolVerification | Where-Object { $_.Name -eq 'tool herdr' })
+            $herdr.Count | Should -Be 1
+            $herdr[0].Status | Should -Be 'missing' -Because 'a required tool that printed no version is not a proven install'
+            $herdr[0].Detail | Should -Match 'not verified as the real tool'
+            $herdr[0].Detail | Should -Match '0x00000005'
+            $herdr[0].Detail | Should -Not -Match 'refused to start' -Because 'this one started; that wording belongs to the launch refusal'
+        } finally {
+            $env:PATH = $script:SavedQuietPath
+            Get-ChildItem -LiteralPath $script:QuietBin -Filter '*.cmd' |
+                Where-Object { $_.Name -ne 'fm-quietly-dead.cmd' } | Remove-Item -Force
+        }
+    }
+
+    It 'says the same thing in the plan as in the proving pass' {
+        # One sentence, one owner. Two wordings for one fact is the drift that
+        # leaves only one of them corrected.
+        $requirement = [pscustomobject]@{
+            Classification    = 'unknown-version'
+            Command           = 'herdr'
+            Path              = 'C:\p\herdr.exe'
+            ExitCode          = -1073741515
+            Why               = 'the tests'
+            Version           = ''
+            Latest            = ''
+            Minimum           = ''
+            MinimumSource     = ''
+            MinimumCapability = ''
+        }
+        Get-FmToolClassificationReason -Requirement $requirement |
+            Should -Be (Get-FmToolUnprovenDetail -Command 'herdr' -Path 'C:\p\herdr.exe' -ExitCode -1073741515)
+    }
+}
+
+Describe 'a portable install is not finished until the tool RUNS' {
+    # THE DEFECT, MEASURED in the captain's clean-VM log 2026-08-21: the same run
+    # printed `[missing] tool herdr` and `summary: herdr installed
+    # C:\Users\...\Programs\herdr`. Both were true - the files were placed and
+    # the tool would not run - and the summary is the line they read last.
+    #
+    # The command route already ends by reaching what it installed; this one
+    # ended at "the bytes are on disk".
+
+    BeforeAll {
+        # A zip shaped like a real release: the tool at its root, and nothing
+        # stubbed between the archive and the verdict. Everything except the
+        # download runs for real, which is the only reason these are worth
+        # having.
+        function New-RunnableToolArchive {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+                Justification = 'Test helper: builds a disposable archive under TestDrive.')]
+            param(
+                [Parameter(Mandatory)][string]$Path,
+                [Parameter(Mandatory)][string]$Tool,
+                [string]$Body = '',
+                [switch]$NotAProgram
+            )
+            $staging = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+            $null = New-Item -ItemType Directory -Path $staging -Force
+            if ($NotAProgram) {
+                Set-Content -LiteralPath (Join-Path $staging "$Tool.exe") -Value 'this file is not a program' -NoNewline
+            } elseif ($Body) {
+                Set-Content -LiteralPath (Join-Path $staging "$Tool.cmd") -Value $Body
+            } else {
+                Set-Content -LiteralPath (Join-Path $staging 'README.txt') -Value 'no tool in here' -NoNewline
+            }
+            Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $Path -Force
+            $Path
+        }
+
+        function New-PortableRoute {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+                Justification = 'Test helper: builds an in-memory route record and changes nothing.')]
+            param([Parameter(Mandatory)][string]$Tool)
+            [pscustomobject]@{
+                Tool               = $Tool
+                Kind               = 'portable'
+                Command            = "expand the demo/demo release asset into `$env:LOCALAPPDATA\Programs\$Tool"
+                NeedsAdministrator = $false
+                Instructions       = ''
+                Portable           = [pscustomobject]@{
+                    Tool = $Tool; Source = 'github'; Repository = 'demo/demo'; ManifestUrl = ''; AssetKey = ''
+                    AssetPattern = '*.zip'; BinSubdirectory = ''; StripRoot = $false
+                    ExtraPath = @(); ConfigPath = ''; ConfigContent = ''
+                }
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:PathBefore = $env:PATH
+        $script:Root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+    }
+    AfterEach { $env:PATH = $script:PathBefore }
+
+    It 'reports FAILED for a release that expands and then will not run' -Skip:(-not $IsWindows) {
+        # The archive carries no runnable fm-deadtool at all, so the expansion
+        # succeeds and the proof cannot - which is the shape of a release that
+        # lands correctly and produces a tool this machine cannot run.
+        $archive = New-RunnableToolArchive -Path (Join-Path $TestDrive 'dead.zip') -Tool 'fm-deadtool'
+        $result = Invoke-FmToolRoute -Route (New-PortableRoute -Tool 'fm-deadtool') `
+            -InstallRoot $script:Root -ArchivePath $archive -PathScope 'Process' -Confirm:$false
+
+        $result.Action | Should -Be 'failed' -Because 'a summary that says installed for a tool that will not run is the defect'
+        $result.Detail | Should -Match 'fm-deadtool'
+        $result.Detail | Should -Match ([regex]::Escape((Join-Path $script:Root 'fm-deadtool'))) -Because 'where the files went is still worth saying'
+        # And the files really are there, so the report is not calling a failed
+        # download a failed install.
+        Test-Path -LiteralPath (Join-Path $script:Root 'fm-deadtool' 'README.txt') | Should -BeTrue
+    }
+
+    It 'reports installed for a release whose tool answers --version' -Skip:(-not $IsWindows) {
+        # The other direction, and the one that matters most: over-rejecting
+        # would report a working install as failed.
+        $archive = New-RunnableToolArchive -Path (Join-Path $TestDrive 'live.zip') -Tool 'fm-livetool' `
+            -Body "@echo off`r`necho fm-livetool 1.0.0"
+        $result = Invoke-FmToolRoute -Route (New-PortableRoute -Tool 'fm-livetool') `
+            -InstallRoot $script:Root -ArchivePath $archive -PathScope 'Process' -Confirm:$false
+
+        $result.Action | Should -Be 'installed'
+        $result.Detail | Should -Be (Join-Path $script:Root 'fm-livetool')
+    }
+
+    It 'reports FAILED, and says the machine refused it, for a release Windows will not start' -Skip:(-not $IsWindows) {
+        # Three outcomes, not two. "It ran and said nothing" and "it never ran"
+        # are different findings and the wording must not blur them.
+        $archive = New-RunnableToolArchive -Path (Join-Path $TestDrive 'refused.zip') `
+            -Tool 'fm-refusedtool' -NotAProgram
+        $result = Invoke-FmToolRoute -Route (New-PortableRoute -Tool 'fm-refusedtool') `
+            -InstallRoot $script:Root -ArchivePath $archive -PathScope 'Process' -Confirm:$false
+
+        $result.Action | Should -Be 'failed'
+        $result.Detail | Should -Match 'refused to start'
+        $result.Detail | Should -Not -Match 'answers nothing to --version'
+    }
+}
+
 Describe 'a condition this run detected does not also escape as noise' {
     # THE DEFECT, MEASURED on the captain's clean Windows 11 VM 2026-08-21: the
     # plan said cleanly that Pester 3.4.0 was below the floor, and eight lines

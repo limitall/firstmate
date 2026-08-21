@@ -722,7 +722,7 @@ function Get-FmMachineToolVerification {
             }
             'unknown-version' {
                 $checks += New-FmInstallCheck -Name $name -Status $status_ -Required:$entry.Required `
-                    -Detail "'$($entry.Command)' resolves to $($status.Path) but answers nothing to --version, so it is not verified as the real tool" `
+                    -Detail (Get-FmToolUnprovenDetail -Command $entry.Command -Path $status.Path -ExitCode $status.ExitCode) `
                     -Fix $fix
             }
             # NOT the same finding as the one above, and saying so matters: that

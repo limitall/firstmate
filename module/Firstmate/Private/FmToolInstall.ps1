@@ -94,6 +94,20 @@ function Get-FmToolCatalog {
     $entries
 }
 
+# The command a tool is RUN as, which is not always what it is called. Every
+# entry in the catalog above answers for itself; a tool that is not in it - a
+# route exercised by the suite under a made-up name - is run as its own name,
+# which is the only answer available and the right one for every real case.
+function Get-FmToolCommandName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Tool)
+
+    $entry = @(Get-FmToolCatalog | Where-Object { $_.Tool -eq $Tool } | Select-Object -First 1)
+    if ($entry.Count -gt 0) { return $entry[0].Command }
+    $Tool
+}
+
 # Tools this installer will NOT install, and the reason, so their absence is an
 # answer rather than a hole. Read by Install-FmMachine and printed once.
 function Get-FmToolExcluded {
@@ -478,6 +492,42 @@ function Get-FmToolClassification {
     'current'
 }
 
+# THE ONE SENTENCE FOR A TOOL THAT IS THERE AND PROVES NOTHING, said in one place
+# because two places were saying it differently and neither said enough.
+#
+# The proving pass said "'herdr' resolves to <path> but answers nothing to
+# --version" and the plan said "installed at <path>, but it prints no version
+# this installer can read" - two wordings for one fact, and the drift the
+# one-owner rule exists to stop. Both now come through here, and both now carry
+# the code the tool returned.
+#
+# EVERY STRING HERE ACCEPTS EMPTY, and that is a safety property rather than
+# tidiness. A mandatory parameter that refuses the value it is handed does not
+# fail - it ASKS, and this function is only ever called while composing a report
+# on a console nobody is watching. Commit 2f4d97e is that bug in the install's
+# own self-check, and `CONTRIBUTING.md` states the rule it broke: a command this
+# repo runs for the captain must complete with nobody at the keyboard. A report
+# line built from an empty command name is wrong and readable; a report line that
+# stops to ask for one hangs the install.
+function Get-FmToolUnprovenDetail {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Command,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Path,
+        [int]$ExitCode = 0
+    )
+
+    $where = if ($Path) { " resolves to $Path but" } else { '' }
+    $text = "'$Command'$where answers nothing to --version, so it is not verified as the real tool"
+    if ($ExitCode -ne 0) {
+        $text += (' - it exited 0x{0:X8}' -f $ExitCode)
+        $meaning = Get-FmToolExitCodeMeaning -Command $Command -ExitCode $ExitCode
+        if ($meaning) { $text += ", which means $meaning" }
+    }
+    $text
+}
+
 function Get-FmToolClassificationReason {
     [CmdletBinding()]
     [OutputType([string])]
@@ -504,7 +554,10 @@ function Get-FmToolClassificationReason {
                 "($($Requirement.MinimumSource)), so this run installs it into your own module directory BESIDE that copy, " +
                 'which is left exactly as it is')
         }
-        'unknown-version' { return "installed at $($Requirement.Path), but it prints no version this installer can read, so nothing about it is proven" }
+        'unknown-version' {
+            return (Get-FmToolUnprovenDetail -Command $Requirement.Command -Path $Requirement.Path `
+                    -ExitCode $Requirement.ExitCode)
+        }
         'unknown-latest' { return "$($Requirement.Version) is installed; the published version could not be read, so whether it is current is unknown" }
         default { return '' }
     }
@@ -747,7 +800,7 @@ function Get-FmToolStatus {
     $resolved = Get-Command -Name $Command -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if (-not $resolved) {
-        return [pscustomobject]@{ Command = $Command; Present = $false; Path = ''; Version = ''; Launchable = $false }
+        return [pscustomobject]@{ Command = $Command; Present = $false; Path = ''; Version = ''; Launchable = $false; ExitCode = 0 }
     }
     # THE VERSION IS THE PROOF, not the presence. A command that resolves but
     # answers nothing to --version is reported with an empty version, and the
@@ -757,6 +810,11 @@ function Get-FmToolStatus {
     # A file on PATH that Windows declines to launch prints no version either,
     # and calling that "prints no version this installer can read" describes the
     # wrong thing entirely: nothing was read because nothing ran.
+    #
+    # THE EXIT CODE COMES WITH IT, because between those two there is a third
+    # thing a program can do: START, die before its own code runs, and print
+    # nothing. That looks identical to an empty version and is a completely
+    # different fault, and the code is the only place it is written down.
     $probe = Get-FmInstallCommandProbe -Command $Command
     [pscustomobject]@{
         Command    = $Command
@@ -764,6 +822,7 @@ function Get-FmToolStatus {
         Path       = [string]$resolved.Source
         Version    = $probe.Version
         Launchable = [bool]$probe.Launched
+        ExitCode   = [int]$probe.ExitCode
     }
 }
 
@@ -1378,6 +1437,14 @@ function Format-FmToolFailureOutput {
 # unrecognised code returns '' so the report carries the tool's own text instead
 # of a meaning invented for it. Guessing at a cause is the defect this whole
 # area exists to stop repeating.
+#
+# TWO KINDS OF CODE ARRIVE HERE, and only one of them is the program speaking.
+# A code in the 0x8A15xxxx range is winget's own verdict about what it was asked
+# to do. A code in the 0xC00000xx range is an NTSTATUS: WINDOWS chose it, for a
+# process that never reached its own first instruction. That second kind is worth
+# naming for every command rather than for one, because the program had no chance
+# to say anything at all - stdout and stderr are both empty and the code is the
+# only evidence there is.
 function Get-FmToolExitCodeMeaning {
     [CmdletBinding()]
     [OutputType([string])]
@@ -1403,10 +1470,25 @@ function Get-FmToolExitCodeMeaning {
             # that cannot be reached - a TLS-inspecting proxy or a clock skew on
             # the machine itself, not a package problem.
             -1978335138 { return "a source's server certificate did not match what winget expected" }
-            default { return '' }
+            # NOT a return: winget can fail to start for the same OS reasons
+            # anything else can, and those are named below.
+            default { }
         }
     }
-    ''
+
+    # MEASURED, 2026-08-21, on the real herdr 0.8.2 release binary with one of its
+    # imported DLL names rewritten to a name this machine does not have: exit
+    # 0xC0000135, zero bytes on stdout, zero bytes on stderr, and no launch
+    # exception - which is exactly the shape the captain's clean Windows 11 VM
+    # reported as "answers nothing to --version" and nothing more.
+    switch ($ExitCode) {
+        -1073741515 { return 'a DLL it needs is not on this machine, so Windows stopped it before it ran any of its own code' }
+        -1073741502 { return 'a DLL it needs is on this machine but would not initialise, so it stopped before it ran any of its own code' }
+        -1073741701 { return 'Windows could not load it as a program - the usual cause is a build for a different processor architecture' }
+        -1073741795 { return 'it used a processor instruction this machine does not have, so the build is for a newer CPU than this one' }
+        -1073741790 { return 'this machine denied it access as it started' }
+        default { return '' }
+    }
 }
 
 # One failed run, reported so the reader can act without guessing: what was run,
@@ -1497,7 +1579,11 @@ function Invoke-FmToolRoute {
         # The suite's seam, forwarded whole to Invoke-FmToolShellCommand: a shell
         # that cannot be started, so the refusal this function must survive is
         # exercised end to end without a machine that refuses anything.
-        [string]$ShellPath = ''
+        [string]$ShellPath = '',
+        # The same idea for the portable route, forwarded whole to
+        # Install-FmToolPortable: a local archive instead of a download, so the
+        # expansion, the PATH edit and the proof below all run for real.
+        [string]$ArchivePath = ''
     )
 
     $result = [pscustomobject]@{ Tool = $Route.Tool; Action = 'skipped'; Detail = '' }
@@ -1522,12 +1608,42 @@ function Invoke-FmToolRoute {
             }
             try {
                 $installed = Install-FmToolPortable -Portable $Route.Portable -InstallRoot $InstallRoot `
-                    -PathScope $PathScope -Confirm:$false
-                $result.Action = 'installed'
-                $result.Detail = $installed.Detail
+                    -ArchivePath $ArchivePath -PathScope $PathScope -Confirm:$false
             } catch {
                 $result.Action = 'failed'
                 $result.Detail = [string]$_.Exception.Message
+                return $result
+            }
+            # PLACING THE FILES IS NOT INSTALLING THE TOOL, and the captain's
+            # clean Windows 11 VM printed both halves of that on 2026-08-21:
+            #
+            #   [missing] tool herdr - 'herdr' resolves to ...\herdr.exe but
+            #             answers nothing to --version
+            #   summary:  herdr  installed  C:\Users\...\Programs\herdr
+            #
+            # Both lines were true and the summary was the one they read last.
+            # The command route already ends by reaching what it installed; this
+            # one ended at "the bytes are on disk", so a tool that would never
+            # run was reported as installed. It is proved the same way everything
+            # else in this repo is - by RUNNING it - and a failure here is a
+            # failed install rather than a footnote further down the report.
+            $result.Detail = $installed.Detail
+            $name = Get-FmToolCommandName -Tool $Route.Tool
+            $proof = Get-FmToolStatus -Command $name
+            if ($proof.Version) {
+                $result.Action = 'installed'
+                return $result
+            }
+            $result.Action = 'failed'
+            $result.Detail = if (-not $proof.Present) {
+                "the release was expanded into $($installed.Detail) but '$name' is still not reachable, so nothing was proved"
+            } elseif (-not $proof.Launchable) {
+                (Get-FmToolLaunchRefusal -Program $proof.Path `
+                        -Consequence "the release expanded into $($installed.Detail) could not be exercised" `
+                        -Remedy "Open a new window and run '$name --version' yourself.")
+            } else {
+                "the release was expanded into $($installed.Detail), and " +
+                (Get-FmToolUnprovenDetail -Command $name -Path $proof.Path -ExitCode $proof.ExitCode)
             }
             return $result
         }
