@@ -598,8 +598,20 @@ $failed = @($result.Failed | ForEach-Object { [string]$_.ExpandedPath })
             # 7 never passes through the relaunch that would hand it down - so
             # without this, the step that PROVES the install is the one thing a
             # locked-down machine declines to run.
+            # -NonInteractive BECAUSE AN INSTALLER MUST NEVER BE ABLE TO ASK A
+            # QUESTION. -NoNewWindow hands this child the captain's own console,
+            # so a host that CAN prompt will: a test that omits a mandatory
+            # parameter on purpose - which is how the suite proves a refusal -
+            # binds by prompting instead of failing, and the install stops dead
+            # on "Supply values for the following parameters:" with nothing on
+            # screen to say what is being asked or why. MEASURED, and recorded
+            # in docs/windows-e2e-evidence.md section 39: the same call in a
+            # console child hangs forever without this switch and throws
+            # MissingMandatoryParameter with it. It turns any prompt this suite
+            # can reach - not only that one - from a dead install into one named
+            # test failure the captain can read.
             $process = Start-Process -FilePath $pwsh -NoNewWindow -PassThru -RedirectStandardError $errorPath -ArgumentList @(
-                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $runner, '-Tests', $testsPath, '-ResultPath', $resultPath)
+                '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $runner, '-Tests', $testsPath, '-ResultPath', $resultPath)
         } catch {
             Write-Debug "could not start the suite process: $_"
             return [pscustomobject]@{

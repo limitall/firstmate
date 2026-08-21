@@ -1885,8 +1885,18 @@ Describe 'where this checkout is, asked before anything is attempted' {
         # removes what it makes.
         # $WhatIfPreference is the mechanism that broke it: Install-FmMachine
         # -WhatIf sets it, and it reaches every cmdlet called below there.
-        $WhatIfPreference = $true
-        $result = Get-FmMachineLocationCheck -Path $TestDrive
+        #
+        # SET IN A CHILD SCOPE, NEVER BARE. A bare assignment here changes a
+        # global preference and then relies on Pester ending the enclosing scope
+        # to put it back - a trap for whoever adds the next test beside this
+        # one, and for anyone who later moves this line up into a BeforeAll,
+        # where it silently suppresses every cmdlet in the whole FILE.
+        # `& { }` binds it to the one call that needs it: the callee still
+        # inherits it, because preferences are dynamically scoped, and the
+        # assertion below fails if it ever outlives that call.
+        $result = & { $WhatIfPreference = $true; Get-FmMachineLocationCheck -Path $TestDrive }
+        $WhatIfPreference |
+            Should -BeFalse -Because 'the preference must not outlive the one call that needed it'
         $result.Usable | Should -BeTrue
         $result.Reason | Should -Match 'accepted a write'
         @(Get-ChildItem -LiteralPath $TestDrive -Force -Filter '.fm-location-probe-*').Count |
