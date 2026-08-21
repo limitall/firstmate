@@ -292,6 +292,206 @@ function Get-FmMachineShellLine {
 
 # --- the suite -----------------------------------------------------------------
 
+# --- where this checkout is ------------------------------------------------------
+#
+# THE FIFTH THING THE CAPTAIN STILL DID BY HAND. A clone in the wrong place is
+# refused before any of this runs, and the refusal never says "wrong place" - it
+# says "access is denied" two thirds of the way through, from whichever step
+# happened to be the first one to write something. This asks the question at the
+# top, in one place, and answers it by WRITING rather than by guessing: the only
+# proof that a directory can be installed into is a write it accepted.
+#
+# THREE THINGS MAKE A LOCATION UNUSABLE, and they are told apart because the
+# remedy differs:
+#
+#   a refused write   proved here, by doing it. Nothing else can be established
+#                     about a directory this machine will not let us touch.
+#   a network or
+#   removable drive   the per-user command this install writes points at the
+#                     checkout's own start.ps1, and a drive that is not always
+#                     there makes that command intermittent.
+#   a synced folder   OneDrive replaces files with placeholders on demand and
+#                     does not carry a junction or a symlink. This repo commits
+#                     two links and VERIFIES them at the end of every install, so
+#                     a checkout under OneDrive fails a check nothing here can
+#                     fix from inside.
+#
+# AND ONE MAKES IT A WARNING, not a refusal. Controlled folder access protects
+# Documents, Desktop and the other known folders, and it is OFF by default - so a
+# checkout there works on most machines and is refused on some, which is exactly
+# the case that must be NAMED rather than either ignored or refused outright.
+function Get-FmMachineLocationCheck {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][string]$Path)
+
+    $suggestion = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE 'firstmate-win' } else { 'a directory in your own profile' }
+    $concerns = [System.Collections.Generic.List[string]]::new()
+    $result = [pscustomobject]@{
+        Path       = $Path
+        Usable     = $true
+        Reason     = ''
+        Suggestion = $suggestion
+        Concerns   = @()
+    }
+
+    $full = $Path
+    try { $full = [System.IO.Path]::GetFullPath($Path) } catch { Write-Debug "could not normalize '$Path': $_" }
+    $result.Path = $full
+
+    # 1. a place that is not always there.
+    if ($full.StartsWith('\\')) {
+        $result.Usable = $false
+        $result.Reason = ('this checkout is on a network share. The one-word command this install writes points straight ' +
+            'at start.ps1 here, so it works only while the share is mounted, and Windows applies a stricter execution ' +
+            'policy to scripts that come from one.')
+        $result.Concerns = @($result.Reason)
+        return $result
+    }
+    if ($IsWindows) {
+        try {
+            $drive = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($full))
+            if ($drive.DriveType -ne [System.IO.DriveType]::Fixed) {
+                # IN THE CAPTAIN'S WORDS, NOT .NET'S. "NoRootDirectory" is the
+                # enum name for a drive letter nothing is mounted on, and
+                # printing it tells a person nothing about what to do.
+                $what = switch ($drive.DriveType) {
+                    ([System.IO.DriveType]::NoRootDirectory) { 'a drive letter with nothing mounted on it' }
+                    ([System.IO.DriveType]::Removable) { 'a removable drive' }
+                    ([System.IO.DriveType]::Network) { 'a network drive' }
+                    ([System.IO.DriveType]::CDRom) { 'a disc, which cannot be written to' }
+                    ([System.IO.DriveType]::Ram) { 'a RAM disk, which does not survive a restart' }
+                    default { "a $($drive.DriveType) drive" }
+                }
+                $result.Usable = $false
+                $result.Reason = ("this checkout is on $what. The one-word command this install writes points straight " +
+                    'at start.ps1 here, so it stops working the moment that drive is not there.')
+                $result.Concerns = @($result.Reason)
+                return $result
+            }
+        } catch {
+            Write-Debug "could not read the drive behind '$full': $_"
+        }
+    }
+
+    # 2. a folder something else is syncing.
+    $syncRoots = @($env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer) | Where-Object { $_ }
+    $inSync = @($syncRoots | Where-Object { Test-FmMachinePathUnder -Path $full -Parent $_ }).Count -gt 0
+    if (-not $inSync) {
+        $inSync = @(($full -split '[\\/]') | Where-Object { $_ -ieq 'OneDrive' -or $_ -imatch '^OneDrive - ' }).Count -gt 0
+    }
+    if ($inSync) {
+        $result.Usable = $false
+        $result.Reason = ('this checkout is inside a OneDrive folder. OneDrive turns files into placeholders it fetches on ' +
+            'demand and does not carry a junction or a symlink, and this repo commits two links that every install ' +
+            'repairs and then verifies - so that verification fails here for a reason nothing in this repo can fix.')
+        $result.Concerns = @($result.Reason)
+        return $result
+    }
+
+    # 3. a folder Windows guards when the captain has switched that guard on.
+    foreach ($known in @('MyDocuments', 'Desktop', 'MyPictures', 'MyVideos', 'MyMusic', 'Favorites')) {
+        $folder = ''
+        try { $folder = [System.Environment]::GetFolderPath($known) } catch { Write-Debug "no known folder '$known': $_" }
+        if (-not $folder) { continue }
+        if (-not (Test-FmMachinePathUnder -Path $full -Parent $folder)) { continue }
+        $concerns.Add(("this checkout is inside $folder, which Controlled folder access protects when it is switched on. " +
+                'It is off by default, so this usually works - and where it is on, the write below is what finds out.'))
+    }
+
+    # 4. THE ONLY PROOF: a write this machine accepted. A directory as well as a
+    #    file, because the install creates both and a guard can allow one.
+    # NOTHING IS CREATED TO ANSWER A QUESTION ABOUT WHAT IS THERE. The probe
+    # below uses -Force, which would build the whole missing chain - so a path
+    # that does not exist is answered rather than brought into being by a
+    # function whose entire job is to look.
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) {
+        $result.Usable = $false
+        $result.Reason = 'there is no directory at this path, so there is nothing to install into.'
+        $concerns.Add($result.Reason)
+        $result.Concerns = @($concerns)
+        return $result
+    }
+
+    # -WhatIf:$false ON BOTH HALVES, and this is not a liberty taken lightly.
+    # A WhatIf run still has to DETECT, and this probe is detection: it makes a
+    # directory and a file and removes both, so it changes nothing to report on.
+    # Half-honouring WhatIf is what breaks it - New-Item obeys the preference and
+    # creates nothing, the raw .NET write beneath it does not obey anything and
+    # fails on the directory that was never made, and the run then reports the
+    # captain's perfectly good checkout as one this machine REFUSED. Measured
+    # here: Install-FmMachine -WhatIf called this checkout unusable.
+    $probe = Join-Path $full ('.fm-location-probe-' + [guid]::NewGuid().ToString('N'))
+    try {
+        $null = New-Item -ItemType Directory -Path $probe -Force -ErrorAction Stop -WhatIf:$false -Confirm:$false
+        [System.IO.File]::WriteAllText((Join-Path $probe 'probe.txt'), 'probe')
+    } catch {
+        $result.Usable = $false
+        $result.Reason = ("this machine refused a write into the checkout: $($_.Exception.Message) Nothing can be installed " +
+            'into a directory that will not accept a file. Security software and Controlled folder access, which protects ' +
+            'Documents, are the two that refuse a write this way.')
+        $concerns.Add($result.Reason)
+        $result.Concerns = @($concerns)
+        return $result
+    } finally {
+        # The same, for the same reason: a removal that WhatIf skipped would
+        # leave the probe behind in the captain's own checkout.
+        if (Test-Path -LiteralPath $probe) {
+            Remove-Item -LiteralPath $probe -Recurse -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
+        }
+    }
+
+    $result.Concerns = @($concerns)
+    if ($concerns.Count -eq 0) {
+        $result.Reason = 'a plain local directory, and this machine accepted a write into it'
+    } else {
+        $result.Reason = 'this machine accepted a write into it, and the note above says what could still guard it'
+    }
+    $result
+}
+
+# Is $Path inside $Parent? Compared as normalized full paths with a trailing
+# separator, so C:\Users\me\Documents2 is not read as being under
+# C:\Users\me\Documents.
+function Test-FmMachinePathUnder {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Parent
+    )
+
+    if (-not $Parent) { return $false }
+    try {
+        $separator = [System.IO.Path]::DirectorySeparatorChar
+        $child = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/') + $separator
+        $root = [System.IO.Path]::GetFullPath($Parent).TrimEnd('\', '/') + $separator
+        return $child.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        Write-Debug "could not compare '$Path' against '$Parent': $_"
+        return $false
+    }
+}
+
+# The location, as one line of the install's own verification vocabulary.
+function Get-FmMachineLocationVerification {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)]$Location)
+
+    if (-not $Location.Usable) {
+        return New-FmInstallCheck -Name 'checkout location' -Status 'missing' -Required `
+            -Detail "$($Location.Path) - $($Location.Reason)" `
+            -Fix "clone it somewhere the machine does not guard, and run install.ps1 there: git clone <this repo> `"$($Location.Suggestion)`""
+    }
+    if (@($Location.Concerns).Count -gt 0) {
+        return New-FmInstallCheck -Name 'checkout location' -Status 'warn' `
+            -Detail "$($Location.Path) - $(@($Location.Concerns)[0])" `
+            -Fix "if anything below is refused, clone into `"$($Location.Suggestion)`" instead"
+    }
+    New-FmInstallCheck -Name 'checkout location' -Status 'ok' -Detail "$($Location.Path) - $($Location.Reason)"
+}
+
 # CAN THE SUITE RUN AT ALL, decided before a process is started for it.
 #
 # THE VERSION, NOT MERELY THE NAME. Windows ships Pester 3.4.0 on every machine,
@@ -391,8 +591,15 @@ $failed = @($result.Failed | ForEach-Object { [string]$_.ExpandedPath })
             # failure arrived in the captain's log as a raw error with a
             # source-line caret. Whatever it says is read back below and folded
             # into this function's own verdict instead.
+            # -ExecutionPolicy Bypass because the runner IS A FILE, and a file
+            # is the one thing Windows' default policy refuses. install.ps1's
+            # documented first command carries the same switch for the same
+            # reason, and a run started from a window that is already PowerShell
+            # 7 never passes through the relaunch that would hand it down - so
+            # without this, the step that PROVES the install is the one thing a
+            # locked-down machine declines to run.
             $process = Start-Process -FilePath $pwsh -NoNewWindow -PassThru -RedirectStandardError $errorPath -ArgumentList @(
-                '-NoProfile', '-File', $runner, '-Tests', $testsPath, '-ResultPath', $resultPath)
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $runner, '-Tests', $testsPath, '-ResultPath', $resultPath)
         } catch {
             Write-Debug "could not start the suite process: $_"
             return [pscustomobject]@{

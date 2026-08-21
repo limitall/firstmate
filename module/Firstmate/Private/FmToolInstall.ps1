@@ -311,6 +311,31 @@ function Get-FmToolNpmLatestVersion {
     }
 }
 
+# ONE READING OF THE NODE DIST INDEX, because two consumers ask about it and they
+# must not disagree: the currency check asks "is the installed Node.js behind?",
+# and the per-user install route asks "which build am I fetching?". A route that
+# installed the newest CURRENT release while the check ranked against the newest
+# LTS would report the machine older the moment it finished.
+function Get-FmToolNodeLatestVersion {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([int]$TimeoutSeconds = 20)
+
+    try {
+        # No @(): see Get-FmToolGitHubLatestVersion. The dist index is one JSON
+        # array, and wrapping it hid a thousand versions inside a single element.
+        $index = Invoke-RestMethod -Uri 'https://nodejs.org/dist/index.json' -TimeoutSec $TimeoutSeconds -ErrorAction Stop
+        # LTS is what a working machine should be on; the newest current release
+        # is not what `winget install OpenJS.NodeJS` gives either.
+        $lts = @($index | Where-Object { $_.lts } | Select-Object -First 1)
+        if ($lts.Count -eq 0) { return '' }
+        return [string]$lts[0].version
+    } catch {
+        Write-Debug "could not read the latest Node.js release: $_"
+        return ''
+    }
+}
+
 function Get-FmToolLatestVersion {
     [CmdletBinding()]
     [OutputType([string])]
@@ -346,22 +371,7 @@ function Get-FmToolLatestVersion {
                 return ''
             }
         }
-        'node' {
-            try {
-                # Again no @(): see Get-FmToolGitHubLatestVersion. The dist index
-                # is one JSON array, and wrapping it hid a thousand versions
-                # inside a single element.
-                $index = Invoke-RestMethod -Uri 'https://nodejs.org/dist/index.json' -TimeoutSec $TimeoutSeconds -ErrorAction Stop
-                # LTS is what a working machine should be on; the newest current
-                # release is not what `winget install OpenJS.NodeJS` gives either.
-                $lts = @($index | Where-Object { $_.lts } | Select-Object -First 1)
-                if ($lts.Count -eq 0) { return '' }
-                return [string]$lts[0].version
-            } catch {
-                Write-Debug "could not read the latest Node.js release: $_"
-                return ''
-            }
-        }
+        'node' { return (Get-FmToolNodeLatestVersion -TimeoutSeconds $TimeoutSeconds) }
         { $_ -in 'gh-axi', 'chrome-devtools-axi', 'lavish-axi', 'tasks-axi', 'quota-axi' } {
             return (Get-FmToolNpmLatestVersion -Package $_ -TimeoutSeconds $TimeoutSeconds)
         }
@@ -905,6 +915,29 @@ function Get-FmToolPortableAsset {
         return Get-FmToolManifestAsset -Manifest $manifest -AssetKey $Portable.AssetKey -Origin $Portable.ManifestUrl
     }
 
+    # 'nodejs' IS NEITHER OF THE OTHER TWO. nodejs.org publishes a dist index and
+    # a predictable path under it, and the nodejs/node GitHub releases carry no
+    # Windows zip at all - so asking GitHub for one would fail on an asset that
+    # was never there. The version comes from the SAME reader the currency check
+    # uses, so "is it current" and "what would be installed" cannot disagree.
+    if ($Portable.Source -eq 'nodejs') {
+        $version = Get-FmToolNodeLatestVersion -TimeoutSeconds $TimeoutSeconds
+        if (-not $version) {
+            throw 'error: nodejs.org did not answer which release is current, so there is nothing to download'
+        }
+        # node-v24.19.0-win-x64.zip, under https://nodejs.org/dist/v24.19.0/.
+        # Built from the route's own pattern, which already carries this
+        # machine's architecture, rather than from a second copy of the naming
+        # convention.
+        $name = $Portable.AssetPattern -replace '\*', $version.TrimStart('v')
+        return [pscustomobject]@{
+            Name    = $name
+            Url     = "https://nodejs.org/dist/$version/$name"
+            Version = $version
+            Sha256  = ''
+        }
+    }
+
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$($Portable.Repository)/releases/latest" `
         -Headers @{ 'User-Agent' = 'firstmate-win' } -TimeoutSec $TimeoutSeconds -ErrorAction Stop
     $asset = Get-FmToolReleaseAsset -Release $release -AssetPattern $Portable.AssetPattern
@@ -1029,7 +1062,7 @@ function Install-FmToolPortable {
     $binDirectory = if ($Portable.BinSubdirectory) { Join-Path $destination $Portable.BinSubdirectory } else { $destination }
 
     if (-not $PSCmdlet.ShouldProcess($destination, "install $($Portable.Tool) from $($Portable.Repository)")) {
-        return [pscustomobject]@{ Tool = $Portable.Tool; Action = 'skipped'; Detail = 'WhatIf'; BinDirectory = $binDirectory }
+        return [pscustomobject]@{ Tool = $Portable.Tool; Action = 'skipped'; Detail = 'WhatIf'; BinDirectory = $binDirectory; OnPath = @() }
     }
 
     $archive = $ArchivePath
@@ -1060,12 +1093,46 @@ function Install-FmToolPortable {
     if (-not (Test-Path -LiteralPath $binDirectory -PathType Container)) {
         throw "error: '$($Portable.Tool)' expanded into '$destination' but '$binDirectory' is not there; the release layout is not what this route expects"
     }
-    $null = Add-FmToolUserPath -Directory $binDirectory -Scope $PathScope -Confirm:$false
+
+    # THE CONFIG GOES INSIDE THE TREE THAT WAS JUST REPLACED, so every install
+    # rewrites it rather than one install leaving it behind. Node.js is the case:
+    # the builtin npmrc is what keeps globally installed packages OUT of the
+    # directory the next update deletes.
+    if ($Portable.ConfigPath) {
+        $configFile = Join-Path $destination $Portable.ConfigPath
+        $configParent = Split-Path -Parent $configFile
+        if ($configParent -and -not (Test-Path -LiteralPath $configParent -PathType Container)) {
+            $null = New-Item -ItemType Directory -Path $configParent -Force
+        }
+        [System.IO.File]::WriteAllText($configFile, $Portable.ConfigContent + [System.Environment]::NewLine)
+    }
+
+    # A directory the tool WRITES INTO rather than one it ships. It need not
+    # exist yet - npm creates its prefix on the first global install - so it is
+    # created here, because a PATH entry pointing at nothing would leave the
+    # tools it is about to hold unreachable for the rest of this run.
+    $onPath = @($binDirectory)
+    foreach ($extra in @($Portable.ExtraPath)) {
+        if (-not $extra) { continue }
+        $expanded = [System.Environment]::ExpandEnvironmentVariables($extra)
+        if ($expanded -match '%\w+%') {
+            Write-Debug "skipping the extra PATH entry '$extra': this environment does not define it"
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $expanded -PathType Container)) {
+            $null = New-Item -ItemType Directory -Path $expanded -Force
+        }
+        $onPath += $expanded
+    }
+    foreach ($directory in $onPath) {
+        $null = Add-FmToolUserPath -Directory $directory -Scope $PathScope -Confirm:$false
+    }
     [pscustomobject]@{
         Tool         = $Portable.Tool
         Action       = 'installed'
         Detail       = $destination
         BinDirectory = $binDirectory
+        OnPath       = $onPath
     }
 }
 
@@ -1075,7 +1142,7 @@ function Install-FmToolPortable {
 # to start raised a raw .NET error, took the whole run down with it, and printed
 #
 #   Program 'pwsh.exe' failed to run: An error occurred trying to start process
-#   '...\PowerShell7\pwsh.exe' with working directory '...irstmate'.
+#   '...\PowerShell7\pwsh.exe' with working directory '...\firstmate'.
 #   Access is denied.
 #
 # followed by a stack trace. MEASURED on the captain's machine, 2026-08-20. That
@@ -1211,7 +1278,19 @@ function Invoke-FmToolShellCommand {
         # rather than here. Whatever this cannot answer, the verification pass
         # still catches: a route that returned without installing anything is
         # reported by the check that looks for the tool afterwards.
-        $out = @(& $shell -NoProfile -NonInteractive -Command (Get-FmToolShellCommandText -Command $Command) 2>&1 |
+        #
+        # -ExecutionPolicy Bypass, STATED RATHER THAN INHERITED. The documented
+        # first command carries it, and PowerShell does hand it down through the
+        # PSExecutionPolicyPreference environment variable - MEASURED here,
+        # 2026-08-21: a child of `pwsh -ExecutionPolicy Bypass` reports Bypass.
+        # But that inheritance only exists when the parent got the switch, and a
+        # run started from a window that is ALREADY PowerShell 7 never passes
+        # through the relaunch that supplies it. A vendor one-liner that
+        # downloads a .ps1 and runs it is then refused for the very reason the
+        # first command needs the switch: Windows ships script execution
+        # switched off. A child of that command must not put it back.
+        $out = @(& $shell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+                -Command (Get-FmToolShellCommandText -Command $Command) 2>&1 |
                 ForEach-Object { [string]$_ })
     } catch {
         # Kept for a -Debug run and never shown to the captain: this is the exact

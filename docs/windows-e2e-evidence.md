@@ -6395,3 +6395,162 @@ Where a channel publishes a checksum the download is verified against it; the st
 - **The Claude CLI recovery was exercised against a stand-in, not against the Claude installer.** `Resolve-FmToolAfterInstall` was run for real against a disposable directory holding a dummy command, with `-PathScope Process`. Whether `%USERPROFILE%\.local\bin` is where that installer puts it on a CLEAN machine rests on it being where it is on this one.
 - **herdr was installed to a scratch directory, not to `%LOCALAPPDATA%\Programs`.** The download, the manifest read, the expansion, the layout check, the PATH edit and `herdr --version` all ran; what did not run is the same route landing on a machine that has no herdr at all.
 - **The whole-run report has not been seen end to end.** The lines this section changes were exercised through their own functions and through the suite, not by watching an install print them.
+
+## 38. Closing the last three of the five: elevation, the execution policy, and where the clone is - `PROVEN (Windows 11) FOR EACH MECHANISM; NO CLEAN MACHINE HAS RUN THE WHOLE COMMAND`
+
+Section 37 did the three things the captain's 00:22 clean-VM log exposed.
+This does the rest of the original five, and its subject is the gap between "the installer works" and "ONE command takes a clean machine all the way".
+
+### 38.1 Node.js was the last required tool behind administrator, and five more depended on it
+
+The captain's log shows the winget route SUCCEEDING - `[created] Node.js`, then all five axi tools `[created]` after it.
+That run was elevated: its prompt starts at `C:\WINDOWS\system32` and Node landed in `C:\Program Files\nodejs`.
+
+That is the whole problem.
+`Test-FmBootstrapInstallNeedsAdministrator` correctly declares the winget routes as needing elevation, and `Invoke-FmToolRoute` correctly names and skips them on an unelevated run - so on a clean machine where the captain simply opens PowerShell, Node.js is skipped, npm never appears, and all five axi tools come back BLOCKED with "install Node.js first and re-run this installer".
+A sixth manual step and a second run, reached by doing nothing wrong.
+
+nodejs.org publishes the same build as a plain zip, so the per-user pattern this repo already uses for gh removes both.
+
+**MEASURED, 2026-08-21, against the real release:**
+
+```
+https://nodejs.org/dist/index.json     newest LTS  v24.19.0 (Krypton), files include win-x64-zip
+HEAD .../v24.19.0/node-v24.19.0-win-x64.zip        200, 35.6 MB
+zip layout      2454 entries under ONE root, node-v24.19.0-win-x64
+                at its top level: node.exe, npm, npm.cmd, npm.ps1, npx, npx.cmd,
+                corepack, LICENSE, README.md - and NO node_modules/npm/npmrc
+```
+
+so `StripRoot` is true, `BinSubdirectory` is empty, and the expansion itself is what goes on PATH.
+
+**And then the whole route was run:**
+
+```
+Install-FmToolPortable -Portable (Get-FmBootstrapPortableRelease -Tool node)
+    -InstallRoot <scratch> -PathScope Process
+  action      : installed
+  node -v     : v24.19.0
+  npm -v      : 11.11.0
+  npm root -g : C:\Users\ADMIN\AppData\Roaming\npm\node_modules
+```
+
+**The npmrc is not decoration, and this is the measurement that settles it.**
+The same zip, expanded bare with nothing written into it:
+
+```
+npm root -g : <expansion>\node-v24.19.0-win-x64\node_modules
+```
+
+That is INSIDE the directory this route replaces wholesale on the next Node.js update - so updating Node would silently delete the five axi tools installed into it.
+With `node_modules\npm\npmrc` holding `prefix=${APPDATA}\npm`, the same command answers `C:\Users\ADMIN\AppData\Roaming\npm\node_modules`.
+npm expands `${APPDATA}` itself; this is what the official MSI writes, not an invention here.
+It is also exactly where the captain's own clean VM already has them - their log reads `C:\Users\higet\AppData\Roaming\npm\gh-axi.cmd` - so the zip route and the MSI route put globals in the same place.
+
+**What is left behind administrator, swept rather than asserted:**
+
+```
+foreach ($entry in Get-FmToolCatalog) { (Get-FmToolRoute -Tool $entry.Tool).NeedsAdministrator }
+  -> git, and nothing else
+```
+
+git's route is winget and does need elevation - and a machine that has this checkout already has git, because the documented first command is `git clone`.
+So no requirement a clean machine can actually reach demands administrator, and the one that would is named rather than silent.
+`tests/FmToolInstall.Tests.ps1` pins that list to exactly `@('git')`, so a future winget route added to a required tool fails there.
+
+### 38.2 The execution policy, on the path the one command actually takes
+
+The README's first command carries `-ExecutionPolicy Bypass`, and section 33 established why.
+The question this closes is the brief's: does the one-command path REINTRODUCE the refusal further in?
+
+Two places start a child PowerShell, and one of them runs a FILE - which is the only thing Windows' default policy refuses:
+
+- `Invoke-FmToolShellCommand`, which runs each vendor one-liner
+- `Invoke-FmMachineSuite`, which runs a generated `.ps1` through `Start-Process`
+
+**The first hop was already proven, and it is proven on every suite run.**
+`tests/FmModuleAssembly.Tests.ps1` reads the command out of README's first code block and RUNS it in Windows PowerShell 5.1 with `-ExecutionPolicy Restricted` - which is what a clean Windows client has - alongside a negative control that runs the bare form.
+Both ran here rather than skipping (38 passed, 0 skipped), and re-run by hand:
+
+```
+README command, powershell.exe 5.1, -ExecutionPolicy Restricted
+    exit 0, reaches "what this machine has:" and
+    "-DetectOnly: nothing was installed and nothing was left changed."
+the bare .\install.ps1, same shell
+    "...because running scripts is disabled on this system."
+```
+
+**The SECOND hop was not, and it was genuinely broken.**
+`-ExecutionPolicy Bypass` is inherited by child processes through the `PSExecutionPolicyPreference` environment variable, so the documented path carried it down - but that only happens when the parent got the switch, and a run started from a window that is ALREADY PowerShell 7 never passes through the relaunch that supplies it.
+`Invoke-FmMachineSuite` runs a generated `.ps1` FILE, and a file is the one thing the default policy refuses.
+
+MEASURED, 2026-08-21, with `$env:PSExecutionPolicyPreference` set to `Restricted` so every child sees a clean machine's policy:
+
+```
+child running a .ps1 FILE, launched as the suite runner used to be
+    SecurityError: File ...\fm-restricted-<guid>.ps1 cannot be loaded because
+    running scripts is disabled on this system.
+the same child, launched as it is now (-ExecutionPolicy Bypass -File)
+    the child ran
+Invoke-FmMachineSuite against a throwaway repo, same inherited policy
+    Ran: True     1 passed, 1 failed, 0 skipped     Failed: demo.fails on purpose
+```
+
+So on a machine at the Windows default, the step that PROVES the install was the one thing that would have been declined - silently reported as "the suite process produced no result file".
+Both child launches now state the switch themselves, and the first block above is the negative control showing the refusal is real rather than hypothetical.
+
+### 38.3 A clone in a place the machine guards
+
+`Get-FmMachineLocationCheck` answers before anything is attempted, and the plan prints it first.
+It tells three refusals apart from one warning, because the remedy differs:
+
+| what | verdict | why |
+| --- | --- | --- |
+| a network share (`\\host\share\...`) | refused | the one-word command written into `%LOCALAPPDATA%\Programs\firstmate` points straight at this `start.ps1`, so it works only while the share is mounted |
+| a drive that is not there | refused | same, and it stops working the moment the drive is detached |
+| a OneDrive folder | refused | OneDrive replaces files with placeholders and carries neither a junction nor a symlink, and this repo commits two links that every install repairs and then VERIFIES |
+| Documents, Desktop and the other known folders | warned | Controlled folder access protects them WHEN IT IS ON, and it is off by default - so this works on most machines and is refused on some |
+| a write this machine refuses | refused | proved by doing it, which is the only proof there is |
+
+**MEASURED here, 2026-08-21:**
+
+```
+this checkout                              usable, "accepted a write into it"          [ok]
+C:\Users\ADMIN\Documents                   usable, with the Controlled-folder note     [warn]
+\\somehost\share\firstmate                 refused, "on a network share"               [missing]
+Z:\firstmate-win  (no such drive)          refused, "a drive letter with nothing
+                                           mounted on it"                              [missing]
+C:\Users\ADMIN\OneDrive\firstmate-win      refused, naming the two committed links     [missing]
+```
+
+Two things that had to be got right and were checked rather than assumed:
+
+- **The probe cleans up after itself.** It creates a directory and a file, then removes both in a `finally`. A probe left behind would appear in the captain's own `git status`.
+- **A prefix is not a parent.** `Documents2` is not inside `Documents`; `Test-FmMachinePathUnder` compares normalized full paths with a trailing separator, and a test pins it.
+
+**A DEFECT THIS SECTION FOUND IN ITSELF, and it is the reason to run the thing rather than only its tests.**
+`Install-FmMachine -Approved -WhatIf` reported THIS checkout as one the machine had refused a write into.
+`New-Item` honours the WhatIf preference and created nothing; the raw `[System.IO.File]::WriteAllText` beneath it honours nothing and failed on the directory that was never made; and the probe read that as a refusal.
+A WhatIf run still has to DETECT, and this probe changes nothing to report on because it removes what it makes - so both halves now pass `-WhatIf:$false`, and a removal WhatIf skipped can no longer leave a probe in the captain's own checkout either.
+Pinned by a test, and the test was checked against a reverted guard: with the flag removed exactly that one test fails, and with it restored the file is 139 passed, 0 failed.
+
+The location is a REQUIRED check, so an unusable one makes the run end NOT READY rather than on a cheerful note - and it is named at the TOP of the plan as well, before several minutes of installing.
+The run still does everything else it can: tools install into `%LOCALAPPDATA%` regardless of where the checkout is, so the captain gets a full report rather than an early exit.
+
+**Not proven:** no OneDrive folder, network share or Controlled-folder-access-protected directory was actually installed into. The classification is proven; the consequence it predicts is not, and cannot be from a machine where Controlled folder access is off.
+
+### 38.4 The digest stopped naming a command that does not work
+
+`Get-FmBootstrapMissingDiagnostic` printed `MISSING: herdr (install: irm https://herdr.dev/install.ps1 | iex)` - the installer measured failing its own verification on two clean VMs.
+Any tool this repo installs from a release archive now names `install.ps1` instead, which is the thing that actually does it.
+The `MISSING: <tool> (install: <cmd>)` shape the diagnostics skill matches on is unchanged.
+
+### 38.5 What was NOT proven here, and still needs the captain's VM
+
+- **No clean machine has run the one command end to end.** That remains true after this section, as it was after 33, 34, 35, 36 and 37. Every mechanism below it is proven; the whole is not.
+- **Node.js was installed to a scratch directory, not to `%LOCALAPPDATA%\Programs`, and not on a machine without Node.** The download URL was proved by a `HEAD` and the install by expanding the real 35.6 MB zip, but the route has never run on a machine that needed it.
+- **No axi tool was installed through the zip's npm.** `npm root -g` proves WHERE a global install would land, both with and without the npmrc. That one of the five then resolves on PATH afterwards is inference from that location, not a measurement.
+- **The unelevated skip was not watched.** This seat cannot easily run the installer unelevated against a machine missing Node. What is measured is the route table: `NeedsAdministrator` is now false for Node.js and true only for git.
+- **A machine whose LocalMachine policy is `Restricted` was not used.** The refusal was reproduced by giving children the clean-machine policy through `PSExecutionPolicyPreference`, and by running the README command under `-ExecutionPolicy Restricted` in Windows PowerShell 5.1. That is the same mechanism, not the same machine.
+- **No guarded location was installed into.** See 38.3.
+- **The Windows-on-ARM Node.js zip was not fetched.** The route picks `arm64` from `PROCESSOR_ARCHITECTURE`, and only the x64 asset was downloaded and run here.

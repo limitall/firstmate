@@ -142,15 +142,13 @@ Describe 'where a tool actually comes from' {
         $route.Portable.BinSubdirectory | Should -Be 'bin'
     }
 
-    It 'declares the only two routes that need administrator, and no others' -Skip:(-not $IsWindows) {
-        # winget runs a machine-scope MSI for both, which fails late and
-        # unhelpfully on an unelevated session. Declaring it is what lets the
-        # installer name the step and carry on with everything else.
-        foreach ($tool in @('git', 'node')) {
-            (Get-FmToolRoute -Tool $tool).NeedsAdministrator |
-                Should -BeTrue -Because "$tool comes from winget, which installs machine-wide"
-        }
-        foreach ($tool in @('claude', 'herdr', 'treehouse', 'gh', 'gh-axi')) {
+    It 'declares the one route that needs administrator, and no others' -Skip:(-not $IsWindows) {
+        # winget runs a machine-scope MSI, which fails late and unhelpfully on an
+        # unelevated session. Declaring it is what lets the installer name the
+        # step and carry on with everything else.
+        (Get-FmToolRoute -Tool 'git').NeedsAdministrator |
+            Should -BeTrue -Because 'git comes from winget, which installs machine-wide'
+        foreach ($tool in @('node', 'claude', 'herdr', 'treehouse', 'gh', 'gh-axi')) {
             (Get-FmToolRoute -Tool $tool).NeedsAdministrator |
                 Should -BeFalse -Because "$tool installs into the user's own profile"
         }
@@ -195,7 +193,7 @@ Describe 'where a tool actually comes from' {
             $update | Should -Match '\s--accept-package-agreements(\s|$)'
             $update | Should -Match '\s-e\s+--id\s+\S+'
         }
-        $wingetRoutes.Count | Should -BeGreaterThan 0 -Because 'git and Node.js come from winget, so this sweep is not vacuous'
+        $wingetRoutes.Count | Should -BeGreaterThan 0 -Because 'git comes from winget, so this sweep is not vacuous'
     }
 
     It 'pins the one source these packages come from, so an unused one cannot fail the install' -Skip:(-not $IsWindows) {
@@ -412,12 +410,22 @@ Describe 'what the captain is asked' {
 Describe 'the no-administrator portable install' {
     BeforeEach {
         $script:InstallRoot = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        # THE WHOLE SHAPE, DECLARED. Install-FmToolPortable runs under strict
+        # mode, where reading a field a record does not carry is a terminating
+        # error - which is how a first real install died. A test record that
+        # declared less than the real one would hide exactly that.
         $script:Portable = [pscustomobject]@{
             Tool            = 'demotool'
+            Source          = 'github'
             Repository      = 'demo/demo'
+            ManifestUrl     = ''
+            AssetKey        = ''
             AssetPattern    = 'demo_*_windows_amd64.zip'
             BinSubdirectory = 'bin'
             StripRoot       = $false
+            ExtraPath       = @()
+            ConfigPath      = ''
+            ConfigContent   = ''
         }
     }
 
@@ -446,8 +454,9 @@ Describe 'the no-administrator portable install' {
     It 'strips the single versioned root an archive like node ships' {
         $archive = New-ToolArchive -Path (Join-Path $TestDrive 'demo-rooted.zip') -RootDirectory 'demo-v1.2.3-win-x64'
         $portable = [pscustomobject]@{
-            Tool = 'rootedtool'; Repository = 'demo/demo'; AssetPattern = '*.zip'
-            BinSubdirectory = 'bin'; StripRoot = $true
+            Tool = 'rootedtool'; Source = 'github'; Repository = 'demo/demo'; ManifestUrl = ''; AssetKey = ''
+            AssetPattern = '*.zip'; BinSubdirectory = 'bin'; StripRoot = $true
+            ExtraPath = @(); ConfigPath = ''; ConfigContent = ''
         }
         $null = Install-FmToolPortable -Portable $portable -InstallRoot $script:InstallRoot `
             -ArchivePath $archive -PathScope Process -Confirm:$false
@@ -1442,6 +1451,19 @@ Describe 'a fix line the captain can actually paste' {
         }
     }
 
+    It 'never hands the captain a description as the line that replaces a tool' -Skip:(-not $IsWindows) {
+        # UpdateCommand is printed as "Update it yourself, then re-run: <line>".
+        # A portable route's own Command is a description of what this installer
+        # does - "expand the cli/cli release asset ... into ..." - so the plan
+        # builds this one through Get-FmToolFixCommand. Swept across the whole
+        # plan so a route added later cannot reintroduce it.
+        $plan = Get-FmMachineInstallPlan -Offline
+        foreach ($requirement in $plan.Requirements) {
+            $requirement.UpdateCommand | Should -Not -Match '^expand ' `
+                -Because "$($requirement.Label) would hand the captain a sentence instead of a command"
+        }
+    }
+
     It 'answers a portable route with a command, never with a description of one' -Skip:(-not $IsWindows) {
         # Get-FmToolRoute's Command for a portable route is "expand the cli/cli
         # release asset ... into ...", which is a true statement of what this
@@ -1657,5 +1679,230 @@ Describe 'a condition this run detected does not also escape as noise' {
         $prerequisite = Get-FmMachineSuitePrerequisite -Available @([version]'3.4.0', [version]'6.1.0')
         $prerequisite.CanRun | Should -BeTrue
         $prerequisite.Newest | Should -Be '6.1.0'
+    }
+}
+
+Describe 'nothing a clean machine needs is behind administrator' {
+    # THE GAP THIS CLOSES. Node.js came from winget, winget runs a machine-scope
+    # MSI, and an unelevated run therefore named it and SKIPPED it - which left
+    # npm absent and all five axi tools BLOCKED with "install Node.js first and
+    # re-run this installer". That is a sixth manual step and a second run, for
+    # the one command that is supposed to finish the job.
+
+    It 'leaves exactly one route needing elevation, and it is one a clean machine cannot reach' -Skip:(-not $IsWindows) {
+        $elevated = @()
+        foreach ($entry in (Get-FmToolCatalog)) {
+            if ((Get-FmToolRoute -Tool $entry.Tool).NeedsAdministrator) { $elevated += $entry.Tool }
+        }
+        # git alone, and the documented path clones this repo with git - so a
+        # machine that has this checkout already has it, and the route is never
+        # taken. Every other requirement installs with no elevation at all.
+        $elevated | Should -Be @('git')
+    }
+
+    It 'takes Node.js from the per-user zip, not from the machine-scope MSI' -Skip:(-not $IsWindows) {
+        $route = Get-FmToolRoute -Tool 'node'
+        $route.Kind | Should -Be 'portable'
+        $route.NeedsAdministrator | Should -BeFalse
+        $route.Portable.Source | Should -Be 'nodejs'
+        # MEASURED against the real v24.19.0 zip, 2026-08-21: node.exe, npm.cmd
+        # and npx.cmd sit at the top level of one versioned root directory.
+        $route.Portable.StripRoot | Should -BeTrue
+        $route.Portable.BinSubdirectory | Should -BeNullOrEmpty
+    }
+
+    It 'still prints the winget line for a captain who wants Node.js machine-wide' -Skip:(-not $IsWindows) {
+        # The published one-liner is not wrong, it is just not what this
+        # installer takes - and it says so rather than looking like an oversight.
+        $command = Get-FmBootstrapInstallCommand -Tool 'node'
+        $command | Should -Match 'winget install -e --id OpenJS\.NodeJS'
+        $command | Should -Match 'install\.ps1'
+    }
+
+    It 'keeps global npm packages out of the directory the next update deletes' -Skip:(-not $IsWindows) {
+        # MEASURED on the real zip, 2026-08-21. Expanded bare, `npm root -g`
+        # answers <expansion>\node_modules - INSIDE the tree this route replaces
+        # wholesale on the next Node.js update, which would take the five axi
+        # tools with it. With the builtin npmrc below it answers
+        # %APPDATA%\npm\node_modules, which is where the MSI puts them and where
+        # the captain's own clean VM already has them.
+        $portable = Get-FmBootstrapPortableRelease -Tool 'node'
+        $portable.ConfigPath | Should -Be 'node_modules\npm\npmrc'
+        $portable.ConfigContent | Should -Be 'prefix=${APPDATA}\npm'
+        $portable.ExtraPath | Should -Contain '%APPDATA%\npm'
+    }
+
+    It 'builds the dist URL for this machine from the release the currency check ranks against' -Skip:(-not $IsWindows) {
+        # A route that installed the newest CURRENT release while the check
+        # ranked against the newest LTS would report the machine older the
+        # moment it finished, forever.
+        $portable = Get-FmBootstrapPortableRelease -Tool 'node'
+        $portable.AssetPattern | Should -Match '^node-v\*-win-(x64|arm64)\.zip$'
+    }
+}
+
+Describe 'the portable install honours the whole record' {
+    BeforeEach {
+        $script:PathBefore = $env:PATH
+        $script:Root = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+    }
+    AfterEach { $env:PATH = $script:PathBefore }
+
+    It 'writes the builtin config inside the tree, so every install rewrites it' {
+        $archive = New-ToolArchive -Path (Join-Path $TestDrive 'cfg.zip') -BinDirectory ''
+        $portable = [pscustomobject]@{
+            Tool = 'cfgtool'; Source = 'github'; Repository = 'demo/demo'; ManifestUrl = ''; AssetKey = ''
+            AssetPattern = '*.zip'; BinSubdirectory = ''; StripRoot = $false
+            ExtraPath = @(); ConfigPath = 'sub\dir\tool.conf'; ConfigContent = 'prefix=here'
+        }
+        $result = Install-FmToolPortable -Portable $portable -InstallRoot $script:Root `
+            -ArchivePath $archive -PathScope Process -Confirm:$false
+
+        $config = Join-Path $result.Detail 'sub\dir\tool.conf'
+        Test-Path -LiteralPath $config | Should -BeTrue -Because 'the config directory is created when the archive has none'
+        (Get-Content -LiteralPath $config -Raw).Trim() | Should -Be 'prefix=here'
+    }
+
+    It 'creates and adds an extra PATH directory the tool will write into later' {
+        # npm's prefix does not exist until the first global install, and a PATH
+        # entry pointing at nothing would leave the tools it is about to hold
+        # unreachable for the rest of this run.
+        $extra = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        Test-Path -LiteralPath $extra | Should -BeFalse
+        $archive = New-ToolArchive -Path (Join-Path $TestDrive 'extra.zip')
+        $portable = [pscustomobject]@{
+            Tool = 'extratool'; Source = 'github'; Repository = 'demo/demo'; ManifestUrl = ''; AssetKey = ''
+            AssetPattern = '*.zip'; BinSubdirectory = 'bin'; StripRoot = $false
+            ExtraPath = @($extra); ConfigPath = ''; ConfigContent = ''
+        }
+        $result = Install-FmToolPortable -Portable $portable -InstallRoot $script:Root `
+            -ArchivePath $archive -PathScope Process -Confirm:$false
+
+        Test-Path -LiteralPath $extra -PathType Container | Should -BeTrue
+        Test-FmToolOnPath -Directory $extra -Scope Process | Should -BeTrue
+        $result.OnPath | Should -Contain $extra
+        $result.OnPath | Should -Contain $result.BinDirectory
+    }
+
+    It 'leaves PATH alone for an entry naming a variable this machine does not set' {
+        $archive = New-ToolArchive -Path (Join-Path $TestDrive 'novar.zip')
+        $portable = [pscustomobject]@{
+            Tool = 'novartool'; Source = 'github'; Repository = 'demo/demo'; ManifestUrl = ''; AssetKey = ''
+            AssetPattern = '*.zip'; BinSubdirectory = 'bin'; StripRoot = $false
+            ExtraPath = @('%FM_NO_SUCH_VARIABLE%\bin'); ConfigPath = ''; ConfigContent = ''
+        }
+        $result = Install-FmToolPortable -Portable $portable -InstallRoot $script:Root `
+            -ArchivePath $archive -PathScope Process -Confirm:$false
+        # Only the tool's own directory. An unexpanded %VAR% is skipped rather
+        # than turned into a literal directory with a percent sign in its name.
+        $result.OnPath.Count | Should -Be 1
+        $env:PATH | Should -Not -Match 'FM_NO_SUCH_VARIABLE'
+    }
+}
+
+Describe 'where this checkout is, asked before anything is attempted' {
+    # THE FIFTH THING THE CAPTAIN STILL DID BY HAND. A clone in the wrong place
+    # is refused, and the refusal never says "wrong place" - it says access is
+    # denied, two thirds of the way through, from whichever step happened to
+    # write first.
+
+    It 'accepts a plain local directory, and proves it by writing to it' {
+        $result = Get-FmMachineLocationCheck -Path $TestDrive
+        $result.Usable | Should -BeTrue
+        $result.Reason | Should -Match 'accepted a write'
+        # And it cleans up after itself - a probe left behind would show up in
+        # the captain's own `git status`.
+        @(Get-ChildItem -LiteralPath $TestDrive -Force -Filter '.fm-location-probe-*').Count | Should -Be 0
+    }
+
+    It 'refuses a network share, because the command it writes points here' -Skip:(-not $IsWindows) {
+        $separator = [string][char]92
+        $unc = ($separator * 2) + 'somehost' + $separator + 'share' + $separator + 'firstmate'
+        $result = Get-FmMachineLocationCheck -Path $unc
+        $result.Usable | Should -BeFalse
+        $result.Reason | Should -Match 'network share'
+    }
+
+    It 'refuses a drive that is not there, in words rather than in a .NET enum name' -Skip:(-not $IsWindows) {
+        # 'NoRootDirectory' is what [System.IO.DriveType] calls a drive letter
+        # with nothing mounted on it, and printing that at a captain tells them
+        # nothing about what to do.
+        $unmounted = @(90..68 | ForEach-Object { [char]$_ } |
+                Where-Object { -not (Test-Path -LiteralPath "${_}:\") } | Select-Object -First 1)
+        if ($unmounted.Count -eq 0) { Set-ItResult -Skipped -Because 'this machine has every drive letter mounted' ; return }
+        $result = Get-FmMachineLocationCheck -Path "$($unmounted[0]):\firstmate-win"
+        $result.Usable | Should -BeFalse
+        $result.Reason | Should -Not -Match 'NoRootDirectory'
+        $result.Reason | Should -Match 'nothing mounted on it'
+    }
+
+    It 'refuses a OneDrive folder, because the links this repo commits do not survive there' -Skip:(-not $IsWindows) {
+        $separator = [string][char]92
+        $result = Get-FmMachineLocationCheck -Path ($env:USERPROFILE + $separator + 'OneDrive' + $separator + 'firstmate-win')
+        $result.Usable | Should -BeFalse
+        $result.Reason | Should -Match 'OneDrive'
+        $result.Reason | Should -Match 'junction or a symlink'
+    }
+
+    It 'names a directory to use instead, rather than only what is wrong' -Skip:(-not $IsWindows) {
+        $separator = [string][char]92
+        $result = Get-FmMachineLocationCheck -Path ($env:USERPROFILE + $separator + 'OneDrive' + $separator + 'firstmate-win')
+        $result.Suggestion | Should -Not -BeNullOrEmpty
+        $check = Get-FmMachineLocationVerification -Location $result
+        $check.Status | Should -Be 'missing'
+        $check.Fix | Should -Match 'git clone'
+        $check.Fix | Should -Match ([regex]::Escape($result.Suggestion))
+    }
+
+    It 'answers a path that is not there, rather than creating it to find out' {
+        # The probe uses -Force, which would build the whole missing chain. A
+        # function whose entire job is to LOOK must not bring its subject into
+        # being.
+        $absent = Join-Path $TestDrive 'no-such-checkout'
+        $result = Get-FmMachineLocationCheck -Path $absent
+        $result.Usable | Should -BeFalse
+        $result.Reason | Should -Match 'no directory at this path'
+        Test-Path -LiteralPath $absent | Should -BeFalse -Because 'looking must not create'
+    }
+
+    It 'does not read one directory as being inside another that merely shares a prefix' {
+        $parent = Join-Path $TestDrive 'Documents'
+        $sibling = Join-Path $TestDrive 'Documents2'
+        $null = New-Item -ItemType Directory -Path $parent -Force
+        $null = New-Item -ItemType Directory -Path $sibling -Force
+        Test-FmMachinePathUnder -Path $sibling -Parent $parent | Should -BeFalse
+        Test-FmMachinePathUnder -Path (Join-Path $parent 'inside') -Parent $parent | Should -BeTrue
+        # An empty parent is not a match for everything.
+        Test-FmMachinePathUnder -Path $sibling -Parent '' | Should -BeFalse
+    }
+
+    It 'still detects under -WhatIf, instead of calling a good checkout refused' {
+        # THE DEFECT, MEASURED: New-Item honours the WhatIf preference and made
+        # no directory, the raw .NET write beneath it honours nothing and failed
+        # on the directory that was never there, and the run reported this very
+        # checkout as one the machine REFUSED a write into. A WhatIf run still
+        # has to detect; this probe changes nothing to report on, because it
+        # removes what it makes.
+        # $WhatIfPreference is the mechanism that broke it: Install-FmMachine
+        # -WhatIf sets it, and it reaches every cmdlet called below there.
+        $WhatIfPreference = $true
+        $result = Get-FmMachineLocationCheck -Path $TestDrive
+        $result.Usable | Should -BeTrue
+        $result.Reason | Should -Match 'accepted a write'
+        @(Get-ChildItem -LiteralPath $TestDrive -Force -Filter '.fm-location-probe-*').Count |
+            Should -Be 0 -Because 'a removal WhatIf skipped would leave the probe in the captain''s checkout'
+    }
+
+    It 'carries the answer into the plan, and into the verdict the captain reads' -Skip:(-not $IsWindows) {
+        $plan = Get-FmMachineInstallPlan -Offline -RepoRoot $script:RepoRoot
+        $plan.Location | Should -Not -BeNullOrEmpty
+        $plan.Location.Usable | Should -BeTrue -Because 'this checkout is a plain local directory'
+        $check = Get-FmMachineLocationVerification -Location $plan.Location
+        $check.Status | Should -Be 'ok'
+        # It is a REQUIRED check, so an unusable location makes the run report
+        # the machine NOT READY rather than ending on a cheerful note.
+        (Get-FmMachineLocationVerification -Location ([pscustomobject]@{
+                    Path = 'C:\nope'; Usable = $false; Reason = 'refused'; Suggestion = 'C:\good'; Concerns = @('refused')
+                })).Required | Should -BeTrue
     }
 }

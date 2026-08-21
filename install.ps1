@@ -51,7 +51,13 @@ an instruction to you.
 NO STEP NEEDS ADMINISTRATOR. Every tool comes from a per-user installer or a
 release archive expanded under %LOCALAPPDATA%\Programs. A route that genuinely
 needs elevation is named and skipped on an unelevated run, and everything else
-still installs.
+still installs. Only git's route is in that state, and a machine that cloned
+this repo already has git.
+
+WHERE THE CHECKOUT IS, ASKED FIRST. A clone somewhere Windows guards refuses a
+write two thirds of the way in, with a message about whichever step happened to
+write first rather than about the location. This asks before anything is
+attempted, and answers by WRITING rather than by guessing.
 
 WHAT IT INSTALLS, YOU CAN FIND. A per-user install registers nothing by itself,
 so this run adds PowerShell 7 to your own Start menu and prints where the
@@ -81,7 +87,9 @@ Do not ask any vendor what it publishes. Nothing is then classified as older,
 and the report says currency was not checked.
 
 .PARAMETER DetectOnly
-Print what this machine has and what it needs, and change nothing.
+Print what this machine has and what it needs, and change nothing. It still
+writes one probe directory into the checkout and removes it again, because
+whether this location can be installed into cannot be answered any other way.
 
 .EXAMPLE
 powershell -ExecutionPolicy Bypass -File .\install.ps1
@@ -249,7 +257,7 @@ Say '  FIRSTMATE - install'
 Say ''
 
 # ---- 1. what this machine has, and what it needs ----------------------------
-$plan = Get-FmMachineInstallPlan -SkipOptional:$SkipOptional -Offline:$Offline
+$plan = Get-FmMachineInstallPlan -SkipOptional:$SkipOptional -Offline:$Offline -RepoRoot $PSScriptRoot
 foreach ($line in $plan.Lines) { Say $line }
 Say ''
 
@@ -293,7 +301,7 @@ foreach ($requirement in $plan.Unusable) {
 }
 
 if ($DetectOnly) {
-    Say '  -DetectOnly: nothing was changed.'
+    Say '  -DetectOnly: nothing was installed and nothing was left changed.'
     Say ''
     exit 0
 }

@@ -522,7 +522,11 @@ Describe 'the first command README gives a newcomer' {
         $result = Invoke-CleanMachineShell -Command "$($script:ReadmeCommand) -DetectOnly -Offline"
         $result.Text | Should -Not -Match 'running scripts is disabled'
         $result.Text | Should -Match 'what this machine has'
-        $result.Text | Should -Match '-DetectOnly: nothing was changed'
+        $result.Text | Should -Match '-DetectOnly: nothing was installed and nothing was left changed'
+        # The location preflight is the first thing that runs, and it is the one
+        # part of detection that WRITES - a probe directory it then removes. If
+        # that write were refused here, this is where it would surface.
+        $result.Text | Should -Not -Match 'THIS CHECKOUT IS SOMEWHERE THE INSTALL CANNOT FINISH'
         $result.ExitCode | Should -Be 0
     }
 

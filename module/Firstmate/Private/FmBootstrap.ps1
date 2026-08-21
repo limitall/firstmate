@@ -110,7 +110,11 @@ function Get-FmBootstrapInstallCommand {
 
     if ($IsWindows) {
         switch ($Tool) {
-            'node' { return (Get-FmBootstrapWingetCommand -PackageId 'OpenJS.NodeJS') }
+            # The MSI winget runs is machine-scope here too, so this is the
+            # line for a captain who wants Node.js on the machine generally.
+            # firstmate's own installer prefers the per-user zip from nodejs.org,
+            # which needs no administrator - see Get-FmBootstrapPortableRelease.
+            'node' { return (Get-FmBootstrapWingetCommand -PackageId 'OpenJS.NodeJS' -Note 'or ./install.ps1, which uses the per-user zip and needs no administrator') }
             'git' { return (Get-FmBootstrapWingetCommand -PackageId 'Git.Git') }
             # The MSI winget runs is machine-scope, so it needs administrator.
             # firstmate's own installer prefers the portable zip from the same
@@ -244,12 +248,17 @@ function Test-FmBootstrapInstallNeedsAdministrator {
 #
 #   Source            'github'   the repository's own latest release
 #                     'manifest' a vendor-published JSON pointing at the release
+#                     'nodejs'   the nodejs.org dist index
 #   ManifestUrl       for 'manifest': where that JSON is
 #   AssetKey          for 'manifest': which asset in it is this machine's
 #   AssetPattern      for 'github': which asset of the release is this machine's
 #   BinSubdirectory   what goes on PATH, relative to the expansion; '' means the
 #                     expansion itself
 #   StripRoot         the archive holds one versioned directory to unwrap
+#   ExtraPath         directories to put on PATH beside the tool's own, with
+#                     %VAR% references expanded at install time
+#   ConfigPath        a file to write INSIDE the expanded tree, relative to it
+#   ConfigContent     what to write into it
 function Get-FmBootstrapPortableRelease {
     [OutputType([pscustomobject])]
     [CmdletBinding()]
@@ -270,6 +279,9 @@ function Get-FmBootstrapPortableRelease {
             # install directory and bin/ under it is what goes on PATH.
             BinSubdirectory = 'bin'
             StripRoot       = $false
+            ExtraPath       = @()
+            ConfigPath      = ''
+            ConfigContent   = ''
         }
     }
 
@@ -288,6 +300,41 @@ function Get-FmBootstrapPortableRelease {
             # what goes on PATH - and conpty/ has to stay beside it.
             BinSubdirectory = ''
             StripRoot       = $false
+            ExtraPath       = @()
+            ConfigPath      = ''
+            ConfigContent   = ''
+        }
+    }
+
+    if ($Tool -eq 'node') {
+        $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+        return [pscustomobject]@{
+            Tool            = 'node'
+            Source          = 'nodejs'
+            Repository      = 'nodejs.org/dist'
+            ManifestUrl     = 'https://nodejs.org/dist/index.json'
+            AssetKey        = ''
+            AssetPattern    = "node-v*-win-$arch.zip"
+            # MEASURED against the real v24.19.0 zip, 2026-08-21: node.exe,
+            # npm.cmd and npx.cmd all sit at the top level, so the expansion
+            # itself is what goes on PATH...
+            BinSubdirectory = ''
+            # ...under one versioned directory, node-v24.19.0-win-x64, which is
+            # stripped so the next version lands in the same place.
+            StripRoot       = $true
+            # WHERE GLOBAL npm PACKAGES GO, PINNED AWAY FROM THE INSTALL TREE.
+            # MEASURED on that same expansion: with no npmrc, `npm root -g`
+            # answers <expansion>\node_modules - INSIDE the directory this route
+            # replaces wholesale on the next Node.js update, which would take
+            # the five axi tools with it. With the builtin npmrc below it
+            # answers %APPDATA%\npm\node_modules, which is where the MSI route
+            # puts them and where the captain's own clean VM already has them
+            # (their log: C:\Users\higet\AppData\Roaming\npm\gh-axi.cmd).
+            # npm expands ${APPDATA} itself; this is Node's own convention
+            # rather than an invention here.
+            ExtraPath       = @('%APPDATA%\npm')
+            ConfigPath      = 'node_modules\npm\npmrc'
+            ConfigContent   = 'prefix=${APPDATA}\npm'
         }
     }
 
@@ -327,6 +374,11 @@ function Get-FmBootstrapInstalledLocation {
     }
 }
 
+# THE LINE THIS DIGEST PRINTS IS A LINE SOMEONE WILL RUN, so it must be one that
+# works. Where this repo has a route of its own that the vendor's published
+# one-liner cannot match, the installer is what gets named - herdr above all,
+# whose own installer fails its own verification on a clean machine and whose
+# release this repo now takes directly.
 function Get-FmBootstrapMissingDiagnostic {
     [OutputType([string])]
     [CmdletBinding()]
@@ -334,6 +386,9 @@ function Get-FmBootstrapMissingDiagnostic {
 
     $instructions = Get-FmBootstrapManualInstallUrl -Tool $Tool
     if ($instructions) { return "MISSING_MANUAL: $Tool (instructions: $instructions)" }
+    if (Get-FmBootstrapPortableRelease -Tool $Tool) {
+        return "MISSING: $Tool (install: powershell -ExecutionPolicy Bypass -File .\install.ps1)"
+    }
     $cmd = Get-FmBootstrapInstallCommand -Tool $Tool
     if (-not $cmd) { return "MISSING_MANUAL: $Tool (instructions: unknown tool - no install route is registered)" }
     return "MISSING: $Tool (install: $cmd)"

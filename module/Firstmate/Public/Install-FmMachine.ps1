@@ -7,12 +7,17 @@ Set-StrictMode -Version Latest
     missing one genuinely comes from.
 
 .DESCRIPTION
-    Detection only. Nothing on disk is written, so it is safe to run at any time,
-    and it is what install.ps1 shows the captain before asking anything. The one
-    thing it does change is THIS process's PATH, which it reloads from the
-    persisted environment first: a tool installed into a per-user directory by an
-    earlier run is on the durable PATH and not on this shell's copy of it, so a
-    plan that skipped that step would report a tool that is present as missing.
+    Detection, and it is what install.ps1 shows the captain before asking
+    anything. Nothing on disk is left changed, so it is safe to run at any time.
+
+    TWO THINGS IT DOES TOUCH, both stated because "nothing is written" would not
+    be true. It reloads THIS process's PATH from the persisted environment: a
+    tool installed into a per-user directory by an earlier run is on the durable
+    PATH and not on this shell's copy of it, so a plan that skipped that step
+    would report a tool that is present as missing. And it writes one probe
+    directory and file into the checkout and removes them again, because whether
+    a location can be installed into is only answerable by writing to it -
+    Get-FmMachineLocationCheck owns that, and its removal is in a finally.
 
     ASSUMES NOTHING IS ALREADY THERE. Every requirement is checked, including the
     shell version and the two enablers the installer would itself USE - winget
@@ -66,10 +71,18 @@ function Get-FmMachineInstallPlan {
     [OutputType([pscustomobject])]
     param(
         [switch]$SkipOptional,
-        [switch]$Offline
+        [switch]$Offline,
+        [string]$RepoRoot = ''
     )
 
+    if (-not $RepoRoot) { $RepoRoot = Get-FmInstallRepoRoot }
     $null = Update-FmToolSessionPath -Confirm:$false
+    # WHERE THE CHECKOUT IS, ASKED FIRST. A location this machine guards refuses
+    # the install two thirds of the way through, with a message about whichever
+    # step happened to write first rather than about the location - so the
+    # question is answered before anything is attempted, and the answer is
+    # carried all the way to the final report.
+    $location = Get-FmMachineLocationCheck -Path $RepoRoot
     $requirements = @()
 
     foreach ($entry in (Get-FmToolCatalog)) {
@@ -108,7 +121,14 @@ function Get-FmMachineInstallPlan {
             # What the CAPTAIN should run to replace what is there, which is not
             # always what installs it fresh: `winget install` on an installed
             # package says "already installed" and upgrades nothing.
-            UpdateCommand     = (Get-FmToolUpdateCommand -Command $route.Command)
+            #
+            # Through Get-FmToolFixCommand first, because a portable route's
+            # Command is a DESCRIPTION - "expand the cli/cli release asset ..." -
+            # and this line is printed to the captain as something to run. No
+            # portable tool carries a stated minimum today, so the line is not
+            # reachable yet; giving one a floor later must not silently turn it
+            # into a sentence.
+            UpdateCommand     = (Get-FmToolUpdateCommand -Command (Get-FmToolFixCommand -Route $route))
             Reason            = ''
             Question          = ''
         }
@@ -170,7 +190,18 @@ function Get-FmMachineInstallPlan {
     $enablers = @(Get-FmToolEnablerStatus)
     $excluded = @(Get-FmToolExcluded)
 
-    $lines = @('  what this machine has:')
+    $lines = @()
+    if (-not $location.Usable) {
+        $lines += @("  THIS CHECKOUT IS SOMEWHERE THE INSTALL CANNOT FINISH: $($location.Path)",
+            "    $($location.Reason)",
+            "    Clone it here instead, and run install.ps1 from there: $($location.Suggestion)",
+            '')
+    } elseif (@($location.Concerns).Count -gt 0) {
+        $lines += @("  where this checkout is: $($location.Path)")
+        foreach ($concern in @($location.Concerns)) { $lines += "    $concern" }
+        $lines += ''
+    }
+    $lines += '  what this machine has:'
     foreach ($enabler in $enablers) {
         $mark = if ($enabler.Satisfied) { '[ok]' } else { '[missing]' }
         $detail = if ($enabler.Satisfied -and $enabler.Version) { $enabler.Version } else { "needed for $($enabler.Enables)" }
@@ -197,6 +228,8 @@ function Get-FmMachineInstallPlan {
         Requirements = $requirements
         Enablers     = $enablers
         Excluded     = $excluded
+        Location     = $location
+        RepoRoot     = $RepoRoot
         Missing      = @($requirements | Where-Object { $_.Classification -eq 'missing' })
         Older        = @($requirements | Where-Object { $_.Classification -in @('older', 'unknown-version') })
         Unsupported  = @($requirements | Where-Object { $_.Classification -eq 'unsupported' })
@@ -373,7 +406,7 @@ function Install-FmMachine {
     # persisted PATH and not on this shell's copy of it, so detection has to read
     # the environment before it reads PATH.
     $null = Update-FmToolSessionPath -Confirm:$false
-    $plan = if ($Plan) { $Plan } else { Get-FmMachineInstallPlan -SkipOptional:$SkipOptional -Offline:$Offline }
+    $plan = if ($Plan) { $Plan } else { Get-FmMachineInstallPlan -SkipOptional:$SkipOptional -Offline:$Offline -RepoRoot $RepoRoot }
 
     if (-not $Approved) {
         return [pscustomobject]@{
@@ -563,6 +596,7 @@ function Install-FmMachine {
     # healthy, where an absent herdr is a warning, and this asks whether the
     # INSTALL delivered what it promised, where a required tool that cannot print
     # a version is a failure.
+    $locationCheck = @(Get-FmMachineLocationVerification -Location $plan.Location)
     $toolChecks = @(Get-FmMachineToolVerification -SkipOptional:$SkipOptional)
     $moduleChecks = @(Get-FmMachineModuleVerification)
     $doctor = Invoke-FmDoctor -RepoRoot $RepoRoot
@@ -588,7 +622,7 @@ function Install-FmMachine {
         }
     }
 
-    $checks = $toolChecks + $moduleChecks + @($doctor.Checks) + $suiteCheck
+    $checks = $locationCheck + $toolChecks + $moduleChecks + @($doctor.Checks) + $suiteCheck
     $blocking = @($checks | Where-Object { $_.Status -eq 'missing' })
     $warnings = @($checks | Where-Object { $_.Status -eq 'warn' })
     $unsupported = @($outcomes | Where-Object { $_.Outcome -eq 'unsupported-skipped' })
@@ -599,6 +633,8 @@ function Install-FmMachine {
 
     $lines = @("install: $RepoRoot", '')
     $lines += @($steps | ForEach-Object { Format-FmInstallStepLine -Step $_ })
+    $lines += @('', 'verification - where this checkout is:')
+    $lines += @($locationCheck | ForEach-Object { Format-FmInstallCheckLine -Check $_ })
     $lines += @('', 'verification - tools:')
     $lines += @($toolChecks + $moduleChecks | ForEach-Object { Format-FmInstallCheckLine -Check $_ })
     $lines += @('', 'verification - home, wiring and instructions:')
