@@ -89,6 +89,17 @@ section 2 lists the state-file formats).
   fact removed - pointing `$env:LOCALAPPDATA` and `$env:ProgramFiles` at empty
   directories is a machine with no engine - and pair it with the negative
   control that puts the old failure back.
+- **And a test must not WRITE to the machine it runs on either - above all, not
+  to its screen.** The captain stopped every suite run on their laptop because an
+  unstartable-exe fixture in `tests/FmToolInstall.Tests.ps1` raises a Windows
+  modal dialog each time it runs, and repeated runs were putting windows in front
+  of them. That is the same defect as the bullet above pointed outward: the suite
+  is supposed to be runnable unattended on the machine being proved, and a check
+  that interrupts whoever is sitting there is not. `-NonInteractive` does not
+  help - it governs PowerShell's own prompts, not a dialog Windows raises for an
+  image it will not load. Whether a fixture opens a window is answerable from the
+  process table without a person watching, which is how to check it.
+  `docs/windows-e2e-evidence.md` section 41.9 records it.
 - **An absent by-name owner is a DECISION, and it is written down.** Areas bind
   to each other by name at call time, so a call whose target nothing defines
   does not conflict in git, does not fail to compile, and either dies at run

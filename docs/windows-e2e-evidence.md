@@ -7313,7 +7313,9 @@ The `.scr` and `.pif` extensions are guarded by the lint on the same reasoning a
 Nothing here addresses the same exposure in PRODUCT code: `Invoke-FmSessionCommandLine` would raise this dialog on the captain's desktop if a tool on their real PATH were a truncated or corrupt `.exe`, and that is a live gap this task did not touch.
 ## 42. Ten tests that only passed where they were written - `PROVEN (Windows 11) BY REPRODUCING ALL TEN ON THIS SEAT; THE CLEAN VM ITSELF IS STILL THE CAPTAIN'S`
 
-Dated 2026-08-21, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\9\firstmate-win`, PowerShell 7.6.4, git 2.49, Windows 11 Pro 10.0.26200, against `main` at `2f4d97e`.
+Dated 2026-08-21 and 2026-08-22, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\9\firstmate-win`, PowerShell 7.6.4, git 2.49, Windows 11 Pro 10.0.26200.
+Written against `main` at `2f4d97e` and rebased twice while in flight, onto `f1e9e18` and then `7a324cb`; the branch is `98c53c8`.
+Both of those landed on the same clean-VM report from the other side, which is why 41.4 and 41.5 hand two of their findings to sections 39 and 40 rather than restating them.
 
 The install's own self-check runs the whole suite, and on the captain's clean VM it said:
 
