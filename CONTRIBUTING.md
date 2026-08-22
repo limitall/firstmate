@@ -45,6 +45,17 @@ section 2 lists the state-file formats).
   a redirected pipe swallows the prompt, so the run blocks with no output and no
   failure rather than reporting one named `ParameterBindingException`.
   Measured twice: `docs/windows-e2e-evidence.md` sections 39 and 40.7a.
+  **It does not cover a dialog the OPERATING SYSTEM raises, though.** A fixture
+  that is not a program needs an executable extension to be found on PATH, and
+  64-bit Windows reads anything behind one that is not a valid image as an
+  MS-DOS program - then raises the refusal as a modal dialog on the captain's
+  desktop, underneath PowerShell, where the switch above cannot reach it. It
+  does not fail the run and an agent harness's error mode hides it, so it is
+  loud only for the captain. Build such a fixture with
+  `New-FmUnstartableFixture`, which writes it empty; a lint in
+  `tests/FmModuleAssembly.Tests.ps1` fails any test that writes one by hand.
+  `tests/FmUnstartable.TestHelpers.ps1` owns the reasoning and
+  `docs/windows-e2e-evidence.md` section 41 has the run.
   **Run the whole directory, never one file.** Pester containers share one
   process, so an `$env:FM_*` override left set by one file decides another
   file's behaviour; that has already produced two failures that passed in

@@ -7179,3 +7179,135 @@ Nothing here turns a protection off, and nothing here should: herdr 0.8.2 is `No
 - **No fix for the dependency was implemented, because none exists without administrator.** The unelevated extraction attempt in 40.7 is the measurement behind that statement, not an assumption.
 - **The `install.ps1` report was not watched end to end on a clean machine.** The changed lines were exercised through their own functions and through the suite, including the portable route running for real against an archive containing a tool that answers `--version` and one that does not.
 - **Smart App Control was never observed blocking anything.** This machine reports it OFF, so the branch that names it in the diagnostic is written and unexercised against a machine where it is on.
+
+## 41. A test put a Windows dialog on the captain's desktop, and every guard this repo has sailed past it - `PROVEN (Windows 11)`
+
+The captain, with a suite running for unrelated work:
+
+```
+Unsupported 16-Bit Application
+
+The program or feature "\??\C:\Users\ADMIN\AppData\Local\Temp\Pester_pczs\
+rwwmay2m.zsj\fm-unstartable.exe" cannot start or run due to incompatibility
+with 64-bit versions of Windows. Please contact the software vendor to ask if
+a 64-bit Windows compatible version is available.
+```
+
+`fm-unstartable.exe` is this suite's own fixture.
+`tests/FmToolInstall.Tests.ps1` wrote the text `this file is not a program` into a file with an executable extension so that a launch would genuinely fail, and used that to separate "not on PATH" from "would not start" from "ran and answered".
+The seam was right and is kept.
+What nobody had checked was what Windows DOES with a launch that fails that way.
+
+### 41.1 The mechanism
+
+`CreateProcess` reads the file to decide what kind of image it is.
+Content that is not a valid PE is not rejected as rubbish - it is taken for an MS-DOS program.
+64-bit Windows has no NTVDM to run one, so the loader raises the refusal as a **hard error**, and a hard error is a modal dialog on the interactive desktop.
+
+Reproduced deliberately here, 2026-08-22, by launching the fixture and enumerating top-level windows:
+
+```
+NEW class=#32770 ownerPid=13004 title=[Unsupported 16-Bit Application]
+NEW class=#32770 ownerPid=13004 title=[Unsupported 16-Bit Application]
+```
+
+The owning process is the `pwsh` running the tests, not a helper: nothing separate is spawned.
+**There is no `ntvdm` and no `WerFault` process** - checked while a dialog was on screen, and again after - so nothing lingers and nothing re-raises it.
+
+### 41.2 Three things about it that matter more than the window
+
+**It is not covered by `-NonInteractive`.**
+That switch governs PowerShell's own host prompting, and section 39 relied on it to close an install that stopped to ask a question nobody could see.
+This dialog is raised by the operating system, underneath PowerShell, so every guard this repo has against a test blocking on a person goes straight past it.
+**This is the point a future reader will most need**: the suite's non-interactive contract does not make it silent.
+
+**It does not fail the run, which is worse than if it did.**
+The launch returns its error, the assertion passes, the suite goes green.
+The dialog stays on the desktop for as long as the process that raised it lives - the best part of an hour for a full run - and a run that ends leaves its dialogs behind only until that process exits.
+
+**An agent running the suite cannot see it.**
+A process inherits its parent's error mode, and an agent harness sets `SEM_FAILCRITICALERRORS`, measured here as `0x8003`.
+The captain's own interactive shell runs at `0`.
+Measured both ways with the same fixture:
+
+| error mode of the launching process | dialog |
+| --- | --- |
+| `0x8003` (an agent harness, and everything it starts) | none |
+| `0x0` (the captain's shell, and everything it starts) | raised |
+
+So the fixture was silent for every agent that ever "checked", and loud for the one person who could not fix it.
+That asymmetry is why this survived a long run of green suites.
+
+### 41.3 Why the captain saw it again after clicking OK
+
+Two dialogs are raised per failed launch, and the suite fails a great many launches on purpose.
+`Get-FmMachineInstallPlan` probes every command in `Get-FmToolCatalog` - **11 tools** - against a PATH narrowed to copies of the fixture, and two separate tests do that, with further single-launch sites beside them.
+
+Nothing re-raises anything.
+It is a **stack** of identical dialogs, so dismissing the top one uncovers the next, which is indistinguishable from one that will not go away.
+
+### 41.4 The fix is the bytes, and the candidates were measured
+
+Every candidate below was launched with the error mode forced to `0` while the desktop was watched.
+All of them are real refused launches - none is a mock.
+
+| fixture | launch refused | dialog | error text |
+| --- | --- | --- | --- |
+| **empty `.exe`** | yes | **none** | not a valid application for this OS platform |
+| `.exe` holding text (what this replaced) | yes | **raised** | not a valid application for this OS platform |
+| `.exe` holding only `MZ` | yes | **raised** | not a valid application for this OS platform |
+| `.com` holding text | yes | **raised** | not a valid application for this OS platform |
+| `.exe` holding one NUL byte | yes | none | the file or directory is corrupted and unreadable |
+| a valid PE with an unrunnable machine type | yes | none | not a valid application for this OS platform |
+| a DIRECTORY named `.exe` | n/a | none | not found at all - the wrong classification entirely |
+
+The empty file wins on every count that matters.
+It is refused just as genuinely, it keeps the **exact** error the text file produced (`ERROR_BAD_EXE_FORMAT` either way, so nothing downstream of the refusal changes meaning), and `Get-Command -CommandType Application` still finds it, so `Found` and `Present` stay true.
+The one-NUL and hand-built-PE candidates are also quiet but each costs something - a different error, or 1KB of header to maintain - for no added truth.
+
+`New-FmUnstartableFixture` in `tests/FmUnstartable.TestHelpers.ps1` is now the only way this suite builds one, and the three sites that hand-wrote these bytes use it.
+
+### 41.5 Suppression works, and was deliberately not used
+
+Setting `SEM_FAILCRITICALERRORS` around the launch does silence the dialog - that is exactly what 41.2 measures, and it would have been a one-line change.
+
+It was rejected because it hides the class of defect rather than removing it.
+A reintroduced text fixture would then be invisible to the suite while the captain still collected the dialog on their own interactive run - which is precisely the failure this had in the first place.
+The bytes are fixed instead, and a lint guards them.
+
+### 41.6 The guard
+
+`tests/FmModuleAssembly.Tests.ps1` carries two checks beside its other cross-cutting rules.
+
+- The helper's own output is asserted to be zero-length, so the one file exempt from the lint cannot drift.
+- A parse of every `tests/*.ps1` fails any write of a file whose path ends in `.exe`, `.com`, `.scr` or `.pif` outside that helper.
+  A path that reaches the write through a variable is resolved one hop, to the **most recent** assignment above the write - `$fake` names a `.cmd` in one bridge test and a `.exe` in another, and a file-wide answer flags the innocent one.
+  `.cmd` and `.bat` are deliberately not on the list: `cmd.exe` runs those as text and never reaches the image loader.
+
+Checked the way CONTRIBUTING requires of a guard - that it still fails when the code it guards is reverted:
+
+```
+against the fixed tree                      findings: 0
+against a copy with the original fixtures   findings: 3
+    FmBridge.Tests.ps1:679
+    FmToolInstall.Tests.ps1:942
+    FmToolInstall.Tests.ps1:1875
+```
+
+All three original sites, including the bridge one that no test launches today.
+
+### 41.7 What was run
+
+The proof cannot be run from an agent session, for the reason 41.2 gives: at `0x8003` no dialog could appear whatever the fixture contained.
+So the full suite was run from a keeper that clears the error mode to `0` first, with a watcher enumerating every new top-level window for the whole run.
+
+```
+pwsh -NoProfile -NonInteractive -Command 'Invoke-Pester -Path ./tests'
+  started by a keeper at error mode 0x0, watched throughout
+```
+
+### 41.8 What this does not claim
+
+The captain's own machine has not been watched through a full run since the fix; the run recorded here is this seat's.
+The `.scr` and `.pif` extensions are guarded by the lint on the same reasoning as `.exe` and `.com` but were not separately launched and measured.
+Nothing here addresses the same exposure in PRODUCT code: `Invoke-FmSessionCommandLine` would raise this dialog on the captain's desktop if a tool on their real PATH were a truncated or corrupt `.exe`, and that is a live gap this task did not touch.

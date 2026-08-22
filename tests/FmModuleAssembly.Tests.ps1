@@ -987,3 +987,155 @@ Describe 'No test silences a cmdlet for the tests that come after it' {
         ($bad -join '; ') | Should -Be ''
     }
 }
+
+Describe 'No test fixture can make Windows talk to the captain' {
+    # WHY. A test needs a file Windows will genuinely refuse to launch, so the
+    # separation between "not on PATH", "would not start" and "ran and answered"
+    # runs its real refusal path. The obvious way to build one - put text in a
+    # .exe - is the wrong way. 64-bit Windows reads any non-image content behind
+    # an executable extension as an MS-DOS program, finds no NTVDM to run it,
+    # and raises the refusal as a HARD ERROR, which is a modal dialog on the
+    # interactive desktop:
+    #
+    #     Unsupported 16-Bit Application
+    #     The program or feature "\??\...\fm-unstartable.exe" cannot start or
+    #     run due to incompatibility with 64-bit versions of Windows.
+    #
+    # THREE THINGS MAKE THIS WORTH A LINT RATHER THAN A COMMENT.
+    #
+    #   - The suite's -NonInteractive switch does NOT cover it. That switch
+    #     governs PowerShell's own prompting; this comes from underneath
+    #     PowerShell, so every guard this repo has against a test stopping to
+    #     ask a question sails straight past it.
+    #   - It does not fail the run. The suite goes green and the dialog stays on
+    #     the desktop as long as the process that raised it lives - the best
+    #     part of an hour for a full run. One is raised per failed launch, twice
+    #     over, so the captain gets a STACK of them and dismissing the top one
+    #     only uncovers the next.
+    #   - An agent cannot see it. A process inherits its parent's error mode and
+    #     an agent harness sets SEM_FAILCRITICALERRORS - measured here as
+    #     0x8003 - so the dialog is suppressed for the agent and raised for the
+    #     captain, whose own shell runs at 0.
+    #
+    # A reintroduction would therefore be invisible to everything except the
+    # captain, which is exactly how this survived once already.
+    # docs/windows-e2e-evidence.md section 41 has the measurements.
+
+    BeforeAll {
+        . (Join-Path $PSScriptRoot 'FmUnstartable.TestHelpers.ps1')
+        # The one file allowed to write these bytes, because it owns the rule.
+        # The first test below pins what it actually writes, so the exemption
+        # cannot quietly become a hole.
+        $script:UnstartableOwner = 'FmUnstartable.TestHelpers.ps1'
+        # The extensions Windows hands to the image loader, and so to the DOS
+        # fallback behind it. .cmd and .bat are absent on purpose: cmd.exe runs
+        # those as text and never reaches the loader.
+        $script:ImageExtension = '\.(exe|com|scr|pif)$'
+    }
+
+    It 'builds its unstartable fixture empty, which is what keeps the loader quiet' {
+        $fixture = New-FmUnstartableFixture -Path (Join-Path $TestDrive 'fm-guard-probe.exe')
+        Test-Path -LiteralPath $fixture | Should -BeTrue
+        (Get-Item -LiteralPath $fixture).Length | Should -Be 0 `
+            -Because 'anything at all behind an executable extension is read as an MS-DOS program and raises a dialog'
+    }
+
+    It 'writes no fixture with an executable extension outside that helper' {
+        $writeCommand = @('Set-Content', 'Add-Content', 'Out-File', 'Write-FmTextFileLf', 'Add-FmTextLineLf')
+        $writeMember = @('WriteAllText', 'WriteAllBytes', 'WriteAllLines', 'AppendAllText', 'AppendAllLines')
+        $pathParameter = @('path', 'literalpath', 'filepath', 'destination')
+
+        # A literal anywhere under this node that NAMES an executable file.
+        # ExpandableStringExpressionAst covers "$Tool.exe", whose Value keeps the
+        # unexpanded text and so still ends in the extension.
+        $namesImage = {
+            param($Node)
+            if (-not $Node) { return $false }
+            @($Node.FindAll({ param($n)
+                        ($n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
+                        $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst]) -and
+                        $n.Value -match $script:ImageExtension }, $true)).Count -gt 0
+        }
+
+        $bad = [System.Collections.Generic.List[string]]::new()
+        foreach ($file in (Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File | Sort-Object Name)) {
+            if ($file.Name -eq $script:UnstartableOwner) { continue }
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+
+            # A path that reaches the write through a VARIABLE is the shape that
+            # hid one of these in the bridge suite, so one hop is resolved. It is
+            # resolved to the MOST RECENT assignment above the write, not to any
+            # assignment in the file: `$fake` here names a .cmd in one test and a
+            # .exe in another, and a file-wide answer flags the innocent one.
+            $assignmentsFor = @{}
+            foreach ($assignment in $ast.FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                        $n.Left -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)) {
+                $name = $assignment.Left.VariablePath.UserPath
+                if (-not $assignmentsFor.ContainsKey($name)) {
+                    $assignmentsFor[$name] = [System.Collections.Generic.List[object]]::new()
+                }
+                $assignmentsFor[$name].Add([pscustomobject]@{
+                        Line       = $assignment.Extent.StartLineNumber
+                        NamesImage = [bool](& $namesImage $assignment.Right)
+                    })
+            }
+            $variableNamesImage = {
+                param($Name, $Line)
+                if (-not $assignmentsFor.ContainsKey($Name)) { return $false }
+                $prior = @($assignmentsFor[$Name] | Where-Object { $_.Line -le $Line } | Sort-Object Line)
+                if ($prior.Count -eq 0) { return $false }
+                return $prior[-1].NamesImage
+            }
+            $targetsImage = {
+                param($Node, $Line)
+                if (-not $Node) { return $false }
+                if (& $namesImage $Node) { return $true }
+                foreach ($reference in $Node.FindAll({ param($n)
+                            $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)) {
+                    if (& $variableNamesImage $reference.VariablePath.UserPath $Line) { return $true }
+                }
+                return $false
+            }
+
+            foreach ($command in $ast.FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+                if ($command.GetCommandName() -notin $writeCommand) { continue }
+                $line = $command.Extent.StartLineNumber
+                # Only the PATH arguments are inspected. A .exe inside the CONTENT
+                # being written is ordinary test data - a recorded command line, a
+                # metadata value - and flagging that would make the lint noise.
+                $elements = @($command.CommandElements)
+                $suspect = $false
+                for ($i = 1; $i -lt $elements.Count; $i++) {
+                    $element = $elements[$i]
+                    if ($element -is [System.Management.Automation.Language.CommandParameterAst]) {
+                        if ($element.ParameterName.ToLowerInvariant() -notin $pathParameter) { continue }
+                        $argument = if ($element.Argument) { $element.Argument }
+                        elseif ($i + 1 -lt $elements.Count) { $elements[$i + 1] }
+                        else { $null }
+                        if (& $targetsImage $argument $line) { $suspect = $true }
+                    } elseif ($i -eq 1 -and (& $targetsImage $element $line)) {
+                        # The positional path, as in `Set-Content $p -Value x`.
+                        $suspect = $true
+                    }
+                }
+                if ($suspect) {
+                    $bad.Add("$($file.Name):$line writes a file with an executable extension - use New-FmUnstartableFixture, which writes it empty so Windows never reads it as a DOS program")
+                }
+            }
+
+            foreach ($invocation in $ast.FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true)) {
+                if ($invocation.Member -isnot [System.Management.Automation.Language.StringConstantExpressionAst]) { continue }
+                if ($invocation.Member.Value -notin $writeMember) { continue }
+                $line = $invocation.Extent.StartLineNumber
+                $first = if ($invocation.Arguments -and @($invocation.Arguments).Count -gt 0) { @($invocation.Arguments)[0] } else { $null }
+                if (& $targetsImage $first $line) {
+                    $bad.Add("$($file.Name):$line writes a file with an executable extension - use New-FmUnstartableFixture, which writes it empty so Windows never reads it as a DOS program")
+                }
+            }
+        }
+        ($bad -join '; ') | Should -Be ''
+    }
+}
