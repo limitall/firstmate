@@ -34,6 +34,7 @@ BeforeAll {
     $script:Root = Split-Path -Parent $PSScriptRoot
     $env:PSModulePath = "$(Join-Path $script:Root 'module')$([IO.Path]::PathSeparator)$env:PSModulePath"
     Import-Module Firstmate -Force
+    . (Join-Path $PSScriptRoot 'FmUnstartable.TestHelpers.ps1')
 }
 
 Describe 'ConvertTo-FmBridgePlainText' {
@@ -668,8 +669,13 @@ Describe 'Invoke-FmSpeechCapture' {
     It 'refuses when the app is installed but not running, rather than starting one' {
         # A real path that no process is named after, so Running is false for the
         # reason under test rather than because the file is missing.
-        $fake = Join-Path ([IO.Path]::GetTempPath()) ('fm-no-such-engine-' + [guid]::NewGuid().ToString('N') + '.exe')
-        Set-Content -LiteralPath $fake -Value 'not an engine' -NoNewline
+        # Empty, because only its EXISTENCE is under test here and a .exe with
+        # anything in it is read by Windows as an MS-DOS program the moment
+        # something does try to launch it. New-FmUnstartableFixture has the
+        # measurement; this test does not launch it today, and the next edit
+        # that does must not be the one that discovers this.
+        $fake = New-FmUnstartableFixture -Path (Join-Path ([IO.Path]::GetTempPath()) `
+            ('fm-no-such-engine-' + [guid]::NewGuid().ToString('N') + '.exe'))
         try {
             Mock -CommandName Get-FmSpeechEngine -MockWith { $fake } -ModuleName Firstmate
             $r = Invoke-FmSpeechCapture -Action Toggle

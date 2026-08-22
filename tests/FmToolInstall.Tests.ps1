@@ -37,6 +37,8 @@ BeforeAll {
             Sort-Object Name | ForEach-Object { . $_.FullName }
     }
 
+    . (Join-Path $PSScriptRoot 'FmUnstartable.TestHelpers.ps1')
+
     # PATH is process-wide, and these tests add directories to it on purpose.
     $script:SavedPath = $env:PATH
 
@@ -927,11 +929,16 @@ Describe 'a launch this machine refuses' {
     # A file that is not a program is the seam: CreateProcess refuses it for
     # real, so every one of these runs the true refusal path on any machine,
     # without needing a machine that refuses things.
+    #
+    # THE FIXTURE IS EMPTY, AND MUST STAY EMPTY. Filling it with text made
+    # Windows read it as an MS-DOS program and put "Unsupported 16-Bit
+    # Application" on the captain's desktop, where it outlived the run. The
+    # refusal is identical either way. New-FmUnstartableFixture owns that whole
+    # story; do not hand-write these bytes here.
     BeforeAll {
         $script:BadBin = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
         $null = New-Item -ItemType Directory -Path $script:BadBin -Force
-        $script:BadExe = Join-Path $script:BadBin 'fm-unstartable.exe'
-        Set-Content -LiteralPath $script:BadExe -Value 'this file is not a program' -NoNewline
+        $script:BadExe = New-FmUnstartableFixture -Path (Join-Path $script:BadBin 'fm-unstartable.exe')
     }
 
     It 'separates "not on PATH" from "would not start" from "ran and answered"' -Skip:(-not $IsWindows) {
@@ -1862,7 +1869,9 @@ Describe 'a portable install is not finished until the tool RUNS' {
             $staging = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
             $null = New-Item -ItemType Directory -Path $staging -Force
             if ($NotAProgram) {
-                Set-Content -LiteralPath (Join-Path $staging "$Tool.exe") -Value 'this file is not a program' -NoNewline
+                # Empty, not text - see New-FmUnstartableFixture for why the
+                # bytes matter more than they look like they should.
+                $null = New-FmUnstartableFixture -Path (Join-Path $staging "$Tool.exe")
             } elseif ($Body) {
                 Set-Content -LiteralPath (Join-Path $staging "$Tool.cmd") -Value $Body
             } else {
