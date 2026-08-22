@@ -7314,8 +7314,8 @@ Nothing here addresses the same exposure in PRODUCT code: `Invoke-FmSessionComma
 ## 42. Ten tests that only passed where they were written - `PROVEN (Windows 11) BY REPRODUCING ALL TEN ON THIS SEAT; THE CLEAN VM ITSELF IS STILL THE CAPTAIN'S`
 
 Dated 2026-08-21 and 2026-08-22, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\9\firstmate-win`, PowerShell 7.6.4, git 2.49, Windows 11 Pro 10.0.26200.
-Written against `main` at `2f4d97e` and rebased twice while in flight, onto `f1e9e18` and then `7a324cb`; the branch is `98c53c8`.
-Both of those landed on the same clean-VM report from the other side, which is why 41.4 and 41.5 hand two of their findings to sections 39 and 40 rather than restating them.
+Written against `main` at `2f4d97e` and rebased three times while in flight, onto `f1e9e18`, `7a324cb` and `8b9e7f0`.
+All three of those lanes were reading the SAME clean-VM report from a different side, which is why 42.4 and 42.5 hand findings to sections 39 and 40 rather than restating them, and why 42.9 is four lines pointing at section 41 instead of the section it was drafted as.
 
 The install's own self-check runs the whole suite, and on the captain's clean VM it said:
 
@@ -7446,7 +7446,7 @@ Invoke-Pester ./tests/FmBrief.Tests.ps1     22 passed, 0 failed
 ```
 
 Both runs are of the file as it stood BEFORE this lane touched it, so 15+7 and 22+0 are the same twenty-two tests answering differently about the same commit - which is the whole claim.
-41.8 has the number for the tree that actually ships.
+42.8 has the number for the tree that actually ships.
 
 Two things had to be checked rather than assumed.
 
@@ -7503,15 +7503,11 @@ That VM's real fault was herdr installed correctly and stopped by Windows before
 No test in `tests/` could have found that: nothing here starts a session, and the suite that ended the install `NOT READY` was silent on the one requirement the machine actually failed.
 What DID find it is the install's own tool verification, one line, running the tool and reading back what it returned - which is exactly the shape 42.7 argues the proof should have.
 
-### 42.6 A defect found here and deliberately NOT fixed: the brief names a bash script this port does not have
 **None of the ten is caused by herdr being unusable, and that was checked rather than assumed.**
 The only one that names herdr, `Get-FmBootstrapMissingDiagnostic`, renders a string from a route table and never runs the binary; every other herdr test in this suite drives a synthetic `state/<id>.meta` or a mocked CLI.
 Section 40 has since found what that machine's herdr fault actually was, and it is not reachable from any of the ten.
 
-
-**None of the ten is caused by herdr being unusable, and that was checked rather than assumed.**
-The only one that names herdr, `Get-FmBootstrapMissingDiagnostic`, renders a string from a route table and never runs the binary; every other herdr test in this suite drives a synthetic `state/<id>.meta` or a mocked CLI.
-So that defect belongs entirely to the task that owns it, and nothing here waits on it.
+### 42.6 A defect found here and deliberately NOT fixed: the brief names a bash script this port does not have
 
 Every ship brief this port scaffolds carries:
 
@@ -7540,3 +7536,10 @@ The one test still genuinely pinned to the reference implementation keeps `bash 
 The suite's job is to defend this repo's contracts against a CHANGE, and a fresh install has made none; anything it says about a machine it says by accident. Ten failures, and not one was a fact about the VM: three were defects that had been in the tree for days and seven were a missing line of repo configuration, so a machine with every tool correctly installed was told `NOT READY` for reasons that would have been identical on any machine. The failure runs the other way too, and section 40 measured it rather than leaving it as an argument: that VM's one real fault was a herdr the machine could not start at all, and the suite never dispatches a worker, never opens a pane and never reaches herdr - so with these ten fixed it would have said `READY` on a machine that cannot do the job. The check that caught herdr was a one-line tool probe in the verification pass, which is the kind of proof this step needs. What a fresh install needs proving is smaller and nameable: this checkout is somewhere usable, the home resolves, the module and the contract load, an entry point runs in a shell with no profile, and every required tool answers with a version - which `Install-FmMachine` already checks, one line each, every one of them a fact about the machine and actionable by the captain - and section 40.6 is what that set looks like when it is made to carry the tool's own exit code instead of a symptom. The suite should keep running, because it is nearly free and it did surface three real defects here, but it should report as a FINDING beside that verdict rather than as the verdict: `these checks did not pass here` is what a suite failure honestly means on a machine that changed nothing, and `NOT READY` should stay reserved for a requirement the machine itself failed. **This has not been changed** - it is a recommendation, because which failures may end an install is the captain's call and not a worker's, and the ten resolved above are the evidence it is worth making.
 
 ### 42.8 The suite and the analyzer
+
+### 42.9 The fixture that stopped this section's own runs - section 41 owns it
+
+Between the fix and the gate above, the captain stopped every suite run on this machine: an unstartable-exe fixture was raising a modal dialog on their desktop, once per failed launch, for as long as each run lived.
+**Section 41 owns that entirely** - the bytes, the loader path, the measurement table, and the reason a `-NonInteractive` suite and an agent checking it both sail straight past it.
+It is named here only for the connection, which is this section's own thesis one turn further out: the ten above READ the machine they ran on and called it a behaviour, and that one WROTE to it.
+Both were invisible until the suite ran somewhere other than where it was written - for the ten a clean VM, for the dialog a seat whose error mode was not an agent's.

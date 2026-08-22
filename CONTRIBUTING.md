@@ -35,7 +35,7 @@ section 2 lists the state-file formats).
   `*.cmd`/`*.bat` are pinned to CRLF because that is a batch file's native form.
   Committed symlinks are unaffected - git never eol-filters a symlink blob, so
   `CLAUDE.md` and `.claude/skills` still arrive as the 9- and 17-byte
-  placeholders setup repairs. `docs/windows-e2e-evidence.md` section 41.3 has the
+  placeholders setup repairs. `docs/windows-e2e-evidence.md` section 42.3 has the
   measurement, both ways.
 - Use `Join-Path`, never a hard-coded separator. Compare paths through
   `Test-FmPathEqual`, which is case-insensitive on Windows and case-sensitive on
@@ -89,17 +89,11 @@ section 2 lists the state-file formats).
   fact removed - pointing `$env:LOCALAPPDATA` and `$env:ProgramFiles` at empty
   directories is a machine with no engine - and pair it with the negative
   control that puts the old failure back.
-- **And a test must not WRITE to the machine it runs on either - above all, not
-  to its screen.** The captain stopped every suite run on their laptop because an
-  unstartable-exe fixture in `tests/FmToolInstall.Tests.ps1` raises a Windows
-  modal dialog each time it runs, and repeated runs were putting windows in front
-  of them. That is the same defect as the bullet above pointed outward: the suite
-  is supposed to be runnable unattended on the machine being proved, and a check
-  that interrupts whoever is sitting there is not. `-NonInteractive` does not
-  help - it governs PowerShell's own prompts, not a dialog Windows raises for an
-  image it will not load. Whether a fixture opens a window is answerable from the
-  process table without a person watching, which is how to check it.
-  `docs/windows-e2e-evidence.md` section 41.9 records it.
+  The mirror of this rule - a test that WRITES to the machine, up to putting a
+  dialog on the captain's screen - is the `-NonInteractive` bullet above and
+  `tests/FmUnstartable.TestHelpers.ps1`, which own it. Same disease, one turn
+  further out, and both were found the same way: by the suite being run somewhere
+  other than where it was written.
 - **An absent by-name owner is a DECISION, and it is written down.** Areas bind
   to each other by name at call time, so a call whose target nothing defines
   does not conflict in git, does not fail to compile, and either dies at run
@@ -582,15 +576,13 @@ an agent harness tends to be killed long before the end instead. What works is a
 keeper: one process that runs no tests itself, starts the suite as its child, and
 waits for it.
 
-**Start that child `-NonInteractive`.** The `-NonInteractive` rule above is not
-only for children this repo starts - it applies to the one YOU start to run the
-suite, for the same reason and with a worse symptom: the run stops dead with no
-CPU, no children, no error and nothing on the redirected stdout anyone is
-reading, so it looks exactly like a slow test. Measured here: two independent
-keeper runs both stopped at
+**Start that child `-NonInteractive`** - the rule is stated at the top of this
+file; what a KEEPER adds is the symptom. The run stops dead with no CPU, no
+children, no error and nothing on the redirected stdout anyone is reading, so it
+looks exactly like a slow test rather than a wedged one. Measured here: two
+independent keeper runs both stopped at
 `Step-FmSpeechCaptureState.requires a state rather than inventing one`, one of
-them for 36 minutes before it was noticed. `docs/windows-e2e-evidence.md`
-section 41.8 has all three launcher failure shapes together.
+them for 36 minutes before it was noticed.
 
 ## Module foundation
 
