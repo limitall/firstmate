@@ -2349,6 +2349,13 @@ Describe 'the runtime is found before a tool fails to start, and installed from 
         $herdr[0].Fix | Should -Match 'ADMINISTRATOR'
     }
 
+    # NOT TESTED HERE, AND THAT IS THE DECISION: Start-FmToolElevated itself.
+    # Even a -WhatIf call would trip the lint that keeps a consent dialog off
+    # the captain's desktop, and weakening that lint to let one test through is
+    # a worse trade than leaving one PowerShell built-in gate unexercised. What
+    # it guards is covered above, at the level that decides whether it is
+    # called at all. docs/windows-e2e-evidence.md section 44.6 says so out loud.
+
     It 'builds the elevated arguments and the pasteable line from one definition' {
         # The elevated child cannot be handed a command string to parse, so it
         # takes an argument array - and a second copy of the flags is exactly the

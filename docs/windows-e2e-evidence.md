@@ -7787,6 +7787,7 @@ That is the known instruction-surface artefact - a Windows clone gets `CLAUDE.md
 ### 44.6 What was NOT proven here
 
 - **The elevated install has never actually run.** Every test mocks `Start-FmToolElevated`, deliberately: a suite that raises a real consent dialog is section 41 with the stakes raised, and a lint now stops one. So `Start-Process -Verb RunAs` reaching winget, winget installing the package, and the re-read finding it afterwards are UNRUN on any machine.
+  **Not even under `-WhatIf`.** A `-WhatIf` call would exercise the `ShouldProcess` gate and trip the lint, and weakening the lint to admit one test is a worse trade than leaving one PowerShell built-in gate unexercised - what it guards is covered at `Invoke-FmToolRuntimeStep`, which decides whether it is called at all.
 - **This machine has the runtime**, so the install path could not be exercised against a machine that lacks it even by hand - `winget install` would report it already present, which proves nothing. Section 43.5's second bullet stands unchanged.
 - **Error 1223 was not observed.** The decline path is written from Windows' documented `ERROR_CANCELLED` and exercised through a mock; no dialog was dismissed to produce it here.
 - **The paragraph printed before the dialog has not been read on a clean machine.** It was checked as text; whether it lands as an explanation at the moment the dialog appears is the captain's run to judge.

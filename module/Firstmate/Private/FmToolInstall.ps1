@@ -1094,6 +1094,16 @@ function Start-FmToolElevated {
     }
 
     $result.Started = $true
+    # WAITED FOR TWICE, ON PURPOSE. -Wait is the documented waiter, and this is
+    # the belt: the caller decides by RE-READING the machine, so returning
+    # before the installer has finished writing would read as "still missing"
+    # on an install that was about to succeed. A refusal to wait is caught with
+    # everything else below rather than raised.
+    try {
+        if ($process) { $process.WaitForExit() }
+    } catch {
+        Write-Debug "could not wait on the elevated process: $_"
+    }
     # A parent cannot always read an elevated child's exit code, so this is
     # reported as known or not rather than defaulted to 0 - which would be
     # indistinguishable from success.
