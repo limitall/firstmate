@@ -275,7 +275,15 @@ function Test-FmBootstrapInstallNeedsAdministrator {
 # Nothing in this route can supply that DLL without administrator, so what this
 # area does about it is report the cause instead of guessing at it.
 #
-# Only these three are listed: treehouse and Claude Code publish their OWN
+# HANDY IS THE FOURTH, AND IT IS THE ONE THAT IS NOT AN ARCHIVE. It publishes no
+# zip at all - MEASURED against its own release listing on 2026-08-25, the only
+# Windows assets on v0.9.6 are `Handy_0.9.6_x64-setup.exe`, its arm64 twin and
+# two machine-scope MSIs. So this route downloads the vendor's own installer and
+# RUNS it, which is what `Placement` below exists to say. The fetch, the checksum
+# check and the cleanup are the same ones every other route uses; only the last
+# step differs, because there is nothing to expand.
+#
+# Only these four are listed: treehouse and Claude Code publish their OWN
 # installers that work, and re-deriving their release layout here would be a
 # second copy of a contract those vendors already own.
 #
@@ -291,8 +299,16 @@ function Test-FmBootstrapInstallNeedsAdministrator {
 #   ManifestUrl       for 'manifest': where that JSON is
 #   AssetKey          for 'manifest': which asset in it is this machine's
 #   AssetPattern      for 'github': which asset of the release is this machine's
+#   Placement         what the downloaded file IS, and so what is done with it:
+#                     'archive'   expand it into %LOCALAPPDATA%\Programs\<tool>
+#                     'installer' run it; the VENDOR chooses where it lands, and
+#                                 Get-FmBootstrapInstalledLocation is what says
+#                                 where that is
+#   InstallerArgument for 'installer': the arguments that make it silent. What is
+#                     ABSENT matters as much as what is present - see the handy
+#                     record below.
 #   BinSubdirectory   what goes on PATH, relative to the expansion; '' means the
-#                     expansion itself
+#                     expansion itself. Unused by 'installer'.
 #   StripRoot         the archive holds one versioned directory to unwrap
 #   ExtraPath         directories to put on PATH beside the tool's own, with
 #                     %VAR% references expanded at install time
@@ -314,6 +330,8 @@ function Get-FmBootstrapPortableRelease {
             ManifestUrl     = ''
             AssetKey        = ''
             AssetPattern    = "gh_*_windows_$arch.zip"
+            Placement       = 'archive'
+            InstallerArgument = @()
             # The gh zip's root holds bin/ and LICENSE, so the expansion IS the
             # install directory and bin/ under it is what goes on PATH.
             BinSubdirectory = 'bin'
@@ -335,6 +353,8 @@ function Get-FmBootstrapPortableRelease {
             # too - it maps both Windows architectures to the same triple.
             AssetKey        = 'windows-x86_64'
             AssetPattern    = 'herdr-windows-x86_64.zip'
+            Placement       = 'archive'
+            InstallerArgument = @()
             # herdr.exe sits at the root of that zip, so the expansion itself is
             # what goes on PATH - and conpty/ has to stay beside it.
             BinSubdirectory = ''
@@ -342,6 +362,40 @@ function Get-FmBootstrapPortableRelease {
             ExtraPath       = @()
             ConfigPath      = ''
             ConfigContent   = ''
+        }
+    }
+
+    if ($Tool -eq 'handy') {
+        # Handy ships a NATIVE arm64 build, so this is not gh's amd64-or-emulate
+        # choice: an ARM64 machine takes the arm64 setup.
+        $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+        return [pscustomobject]@{
+            Tool              = 'handy'
+            Source            = 'github'
+            Repository        = 'cjpais/Handy'
+            ManifestUrl       = ''
+            AssetKey          = ''
+            AssetPattern      = "Handy_*_$arch-setup.exe"
+            Placement         = 'installer'
+            # `/S` IS SILENT, AND `/R` IS DELIBERATELY NOT HERE. Read from their
+            # own NSIS template (src-tauri/nsis/installer.nsi) rather than
+            # guessed: `.onInstSuccess` starts the app after a silent install
+            # ONLY when `/R` is passed. Leaving it off is what keeps installing
+            # the engine from starting it - which is the whole point of this
+            # step, because AGENTS.md section 9 says the microphone is never
+            # opened without config/voice, and this task does not create one.
+            #
+            # THE SETUP IS THE NSIS ONE, NOT THE MSI. Their tauri.conf.json sets
+            # no `installMode`, so it takes Tauri's default `currentUser`, whose
+            # template emits `RequestExecutionLevel user` and installs into
+            # $LOCALAPPDATA\Handy. The two .msi assets beside it are machine-scope
+            # and would need administrator, so they are not the route.
+            InstallerArgument = @('/S')
+            BinSubdirectory   = ''
+            StripRoot         = $false
+            ExtraPath         = @()
+            ConfigPath        = ''
+            ConfigContent     = ''
         }
     }
 
@@ -354,6 +408,8 @@ function Get-FmBootstrapPortableRelease {
             ManifestUrl     = 'https://nodejs.org/dist/index.json'
             AssetKey        = ''
             AssetPattern    = "node-v*-win-$arch.zip"
+            Placement       = 'archive'
+            InstallerArgument = @()
             # MEASURED against the real v24.19.0 zip, 2026-08-21: node.exe,
             # npm.cmd and npx.cmd all sit at the top level, so the expansion
             # itself is what goes on PATH...
@@ -378,6 +434,63 @@ function Get-FmBootstrapPortableRelease {
     }
 
     $null
+}
+
+# THE SPEECH MODEL THE ENGINE IS USELESS WITHOUT, pinned to one exact file.
+#
+# AN ENGINE WITH NO MODEL IS NOT A DELIVERABLE. Handy downloads a model on first
+# use FROM ITS OWN WINDOW, so a machine that has only the engine sends the
+# captain into a settings screen the first time they turn voice on. This names
+# the one the captain asked for so the installer can place it without that trip.
+#
+# WHICH MODEL, AND WHY THIS EXACT FILE. Their catalog
+# (src-tauri/src/catalog/catalog.json, catalog_version 2) carries one entry per
+# model and several quantisations per entry, and it declares which quant it
+# surfaces: `default_quant`. For Qwen3-ASR 1.7B that is Q5_K_M at 1517290464
+# bytes - which is the "1.4 GB" the captain's screenshot showed, 1.41 GiB, and is
+# how this was confirmed to be the file behind that screen rather than one of the
+# five other quants of the same model.
+#
+# THE ID IS NOT THE REPOSITORY. Their ModelDescriptor::render_model_info builds a
+# Hugging Face model's id as "{repo_id}/{filename}", so the string `--model` and
+# `settings.selected_model` both take carries the file on the end. MEASURED
+# against a real installed engine on 2026-08-25: `handy.exe --list-models` prints
+# exactly the Id below, and that machine's settings_store.json holds the same
+# string in `settings.selected_model`.
+#
+# TWO SOURCES, ONE CONTENT HASH. Their catalog mirrors the Hugging Face layout
+# on a plain static host - their own comment: the file URL is
+# "{mirror}/{repo_id}/{revision}/{filename}", the same three values that form the
+# HF resolve URL. Both are recorded so a blocked or failing host is not the end
+# of the run, and the SHA256 is what makes either answer trustworthy: it is the
+# catalog's own, and MEASURED on 2026-08-25 Hugging Face returns that identical
+# value as the X-Linked-ETag of the file, and both hosts report the byte count
+# below. The revision is pinned, so this names one immutable file and not
+# "whatever is current".
+function Get-FmBootstrapSpeechModel {
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param()
+
+    $repository = 'handy-computer/Qwen3-ASR-1.7B-gguf'
+    $revision = '92282af1610a2db19d66f2bef1e260f5deca782d'
+    $file = 'Qwen3-ASR-1.7B-Q5_K_M.gguf'
+    [pscustomobject]@{
+        Id         = "$repository/$file"
+        Name       = 'Qwen3-ASR 1.7B'
+        Repository = $repository
+        Revision   = $revision
+        FileName   = $file
+        SizeBytes  = 1517290464L
+        Sha256     = '034c557fe92ff8fcd9a9c041cbdaad347be0a86a58d3a348f63cf3f0180879d0'
+        # The mirror first: it is a plain static host with no rate limit and no
+        # redirect chain. Hugging Face is the same bytes and answers when the
+        # mirror does not.
+        Url        = @(
+            "https://blob.handy.computer/$repository/$revision/$file"
+            "https://huggingface.co/$repository/resolve/$revision/$file"
+        )
+    }
 }
 
 # WHERE A VENDOR'S OWN INSTALLER PUTS THE TOOL, when it does not leave it
@@ -409,6 +522,14 @@ function Get-FmBootstrapInstalledLocation {
         'claude' { return [string[]]@('%USERPROFILE%\.local\bin') }
         'herdr' { return [string[]]@('%LOCALAPPDATA%\Programs\Herdr\bin', '%USERPROFILE%\.herdr\bin') }
         'treehouse' { return [string[]]@('%LOCALAPPDATA%\treehouse') }
+        # HANDY IS NOT A LAST RESORT HERE, IT IS THE ONLY ANSWER. Its installer
+        # puts nothing on PATH at all - MEASURED on this machine 2026-08-25,
+        # where handy.exe sits in %LOCALAPPDATA%\Handy and `Get-Command handy`
+        # finds nothing - so the route ALWAYS needs this to reach what it
+        # installed. Both scopes are named because a machine that already has
+        # the per-machine MSI keeps it in %ProgramFiles%, and Get-FmSpeechEngine
+        # already looks in exactly these two places.
+        'handy' { return [string[]]@('%LOCALAPPDATA%\Handy', '%ProgramFiles%\Handy') }
         default { return [string[]]@() }
     }
 }

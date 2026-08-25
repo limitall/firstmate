@@ -698,7 +698,7 @@ function Get-FmMachineToolVerification {
     $checks = @()
     foreach ($entry in (Get-FmToolCatalog)) {
         if ($SkipOptional -and -not $entry.Required) { continue }
-        $status = Get-FmToolStatus -Command $entry.Command
+        $status = Get-FmToolStatus -Command $entry.Command -Tool $entry.Tool
         $minimum = Get-FmToolMinimum -Tool $entry.Tool
         $capabilityMet = if ($status.Present -and $status.Launchable) { Test-FmToolCapability -Tool $entry.Tool } else { $true }
         $classification = Get-FmToolClassification -Present $status.Present -Installed $status.Version `
@@ -736,7 +736,7 @@ function Get-FmMachineToolVerification {
                 $checks += New-FmInstallCheck -Name $name -Status $status_ -Required:$entry.Required `
                     -Detail (Get-FmToolLaunchRefusal -Program $status.Path `
                         -Consequence "'$($entry.Command)' could not be exercised, so this install is not proven" `
-                        -Remedy "Open a new window and run '$($entry.Command) --version' yourself.") `
+                        -Remedy "Open a new window and run '$($entry.Command) $((Get-FmToolProof -Tool $entry.Tool).Flag)' yourself.") `
                     -Fix $fix
             }
             default {

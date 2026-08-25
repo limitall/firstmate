@@ -7792,3 +7792,232 @@ That is the known instruction-surface artefact - a Windows clone gets `CLAUDE.md
 - **Error 1223 was not observed.** The decline path is written from Windows' documented `ERROR_CANCELLED` and exercised through a mock; no dialog was dismissed to produce it here.
 - **The paragraph printed before the dialog has not been read on a clean machine.** It was checked as text; whether it lands as an explanation at the moment the dialog appears is the captain's run to judge.
 - **The clean VM is still the captain's.** That `VCRUNTIME140.dll` is what is missing there remains the strongest available inference, as 40.9 and 43.5 both say.
+## 45. The speech engine and its model, installed the way everything else here is - `PROVEN (Windows 11) FOR THE SOURCE, THE PUBLISHER, THE RUN-PROOF AND THE MODEL MECHANISM; NO CLEAN MACHINE HAS RUN THE INSTALL ITSELF`
+
+The captain asked for speech-to-text in the installer, and then for its model too.
+This section records where Handy genuinely comes from, how it was verified to be the right software rather than something that merely shares a name, and which parts of the new route have and have not been executed.
+
+**All measurements below are from 2026-08-25 on the captain's Windows 11 seat**, which already had Handy installed by hand.
+That is what made the run-proof and the model mechanism measurable without touching a clean machine, and it is also why the install step itself is still unproven - see 45.10.
+
+### 45.1 The source, and how it was checked rather than assumed
+
+`module/Firstmate/Public/FmBridge.ps1` knew three things: the engine is `handy.exe`, it holds a local speech model, and it lives at `%LOCALAPPDATA%\Handy\handy.exe` or `%ProgramFiles%\Handy\handy.exe`.
+That is a description, not a source.
+This repo has already paid for the difference: `treehouse` and `herdr` were installed from npm packages that were entirely different software and nothing noticed.
+**A package name is not evidence.**
+
+What was established, in order:
+
+- The project is `cjpais/Handy`, MIT, a Tauri app, published from `handy.computer`.
+- Its `src-tauri/tauri.conf.json` declares `"identifier": "com.pais.handy"`.
+  That is the same identifier this repo was **already** reading, in `Get-FmSpeechEngineStatus`, as `%APPDATA%\com.pais.handy\settings_store.json`.
+  So the software this repo was written against and the software at that repository are the same software, corroborated by a string neither side chose for the other's benefit.
+- Its release assets for Windows on `v0.9.6` are `Handy_0.9.6_x64-setup.exe`, `Handy_0.9.6_arm64-setup.exe`, and two `_en-US.msi` files.
+  **There is no zip.**
+  That is why this route runs an installer instead of expanding an archive, and why `Placement` exists in the route table at all.
+- Their `tauri.conf.json` sets no `nsis.installMode`, so their NSIS template takes Tauri's `currentUser` default, which emits `RequestExecutionLevel user` and installs into `$LOCALAPPDATA\${PRODUCTNAME}`.
+  **That prediction was then confirmed against the real machine:** the engine is at `C:\Users\ADMIN\AppData\Local\Handy\handy.exe`, and `C:\Program Files\Handy\handy.exe` does not exist.
+  The `.msi` assets are machine-scope and would need administrator, so they are not the route.
+
+### 45.2 The publisher, cryptographically
+
+The strongest available identity check on Windows is the one the vendor signs with, so it was run:
+
+```
+ProductName    : Handy
+ProductVersion : 0.9.5
+CompanyName    : pais
+SigStatus      : Valid
+Signer         : CN=YNYNG LLC, O=YNYNG LLC, L=Sacramento, S=California, C=US
+Issuer         : CN=Microsoft ID Verified CS EOC CA 03, O=Microsoft Corporation, C=US
+```
+
+`Get-AuthenticodeSignature` reports **Valid**, through Microsoft's ID-Verified code-signing CA - which is the Azure Trusted Signing their `tauri.conf.json` configures a custom signing command for.
+The signer is the legal entity `YNYNG LLC` rather than the string "cjpais", and that is recorded as measured rather than smoothed over.
+`CompanyName: pais` ties the binary back to the `com.pais.handy` identifier above.
+
+Also measured, and worth keeping: the install directory ships `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll` and their neighbours beside the exe.
+**Handy therefore does not have the fault section 40 records for herdr**, whose missing `VCRUNTIME140.dll` stopped it in the loader on a clean VM.
+Handy carries its own.
+
+### 45.3 It has no `--version`, and what it is asked instead
+
+Their CLI is a clap parser, `src-tauri/src/cli.rs`, declared:
+
+```rust
+#[command(name = "handy", about = "Handy - Speech to Text")]
+```
+
+There is no `version` in that attribute, so **clap never generates a `--version` flag**; asking for one is an unknown argument, which exits non-zero having printed nothing.
+This repo's bar is "proved by RUNNING it and reading back a version, never by finding a file", and the literal `--version` was hard-coded in four places.
+Asking this engine that question and reporting the silence as "answers nothing to --version, so it is not verified as the real tool" would have been the installer libelling a correctly installed engine.
+
+So the question is now per-tool - `Get-FmToolProof` - and Handy's is `--list-models`.
+**Measured, on the real engine:**
+
+```
+handy.exe --list-models     exit 0, 678 ms, 11178 bytes on stdout
+  ✓  handy-computer/Qwen3-ASR-1.7B-gguf/Qwen3-ASR-1.7B-Q5_K_M.gguf   Qwen3-ASR 1.7B
+```
+
+That is a stronger identity check than a version string, not a weaker one: the binary has to start, build its own model registry and exit 0, and the 83 `handy-computer/...` ids it prints are ones no other program on this machine produces.
+
+**Which build was it, though?**
+`--list-models` says nothing about that, and this repo wants a version to rank against what the vendor publishes.
+So for such a tool the version is read from the executable's own `ProductVersion` - **but only after the run above has already succeeded**.
+That order is the whole point and is not "finding a file": presence proves nothing, the process must start and answer first, and the file metadata then merely labels the thing that just passed.
+End to end, measured:
+
+```
+Command    : handy
+Present    : True
+Path       : C:\Users\ADMIN\AppData\Local\Handy\handy.exe
+Version    : 0.9.5
+Launchable : True
+classification against the published v0.9.6 : older
+```
+
+### 45.4 "Installed" versus "running", and why the report means the first
+
+`Get-FmSpeechEngineStatus` in `FmBridge.ps1` already distinguishes an engine that is INSTALLED from one that is RUNNING, because a resident instance is what holds a warm model and that is the entire cost of dictation.
+The install report deliberately does **not** use that question.
+
+For an install, "installed" means the binary starts, answers for itself and exits.
+Requiring a resident instance would report a correctly installed engine as missing on every machine where the captain has simply not opened it yet - and starting one to satisfy the check would be the installer launching a speech engine nobody asked it to launch.
+`--list-models` suits this exactly because their `lib.rs` **skips single-instance forwarding for it**: it runs as its own process rather than poking the instance the captain has open.
+Measured: the engine was running throughout the tests above, and the headless call returned its own output in 678 ms without disturbing it.
+
+### 45.5 The microphone stays shut, by the engine's own design
+
+The flag this installer runs puts Handy in `headless_mode`, whose setup in their `lib.rs` carries this comment:
+
+> Deliberately skips the window, tray, overlay, audio recorder (so it never opens the mic, even with always_on_microphone), signal handlers, and autostart.
+
+That is the vendor's own guarantee about the exact flag used, not an inference drawn from behaviour.
+
+The install itself is equally deliberate.
+Their NSIS template's `.onInstSuccess` starts the app after a silent install **only when `/R` is passed**, so the route passes `/S` and not `/R`.
+Installing the engine therefore does not start the engine.
+
+And the firstmate side is unchanged: `config/voice` is not created, voice is not enabled, and `Get-FmMachineOptionalLine` still prints `[off] voice - no config/voice, so nothing is spoken and the microphone is never opened`.
+`tests/FmSpeechInstall.Tests.ps1` pins that through a full model install and settings write.
+
+### 45.6 The model: which file, and how it was identified
+
+The captain's screenshot showed `Qwen3-ASR 1.7B`, `30 languages`, `1.4 GB`.
+The engine's own catalog - `src-tauri/src/catalog/catalog.json`, `catalog_version 2` - carries **six** quantisations of that model, so "Qwen3-ASR 1.7B" alone does not name a file.
+It declares which one it surfaces, `"default_quant": "Q5_K_M"`, at `1517290464` bytes, which is 1.41 GiB.
+**That is the 1.4 GB on the screen**, and it is how the right file of six was chosen rather than guessed.
+
+The id is not the repository: their `render_model_info` builds a Hugging Face model's id as `{repo_id}/{filename}`, so the string that both `--model` and `settings.selected_model` take is
+`handy-computer/Qwen3-ASR-1.7B-gguf/Qwen3-ASR-1.7B-Q5_K_M.gguf`.
+Confirmed twice on the real machine: `--list-models` prints exactly that, and that machine's `settings_store.json` holds exactly that in `settings.selected_model`.
+
+**Both hosts measured, and they agree with the catalog:**
+
+```
+HEAD https://blob.handy.computer/handy-computer/Qwen3-ASR-1.7B-gguf/92282af.../Qwen3-ASR-1.7B-Q5_K_M.gguf
+  HTTP/1.1 200 OK        Content-Length: 1517290464
+
+HEAD https://huggingface.co/handy-computer/Qwen3-ASR-1.7B-gguf/resolve/92282af.../Qwen3-ASR-1.7B-Q5_K_M.gguf
+  X-Linked-Size: 1517290464
+  X-Linked-ETag: "034c557fe92ff8fcd9a9c041cbdaad347be0a86a58d3a348f63cf3f0180879d0"
+```
+
+Hugging Face's `X-Linked-ETag` **is** the sha256 the catalog publishes, byte for byte, and both hosts report the catalog's byte count.
+That is three independent sources agreeing on one immutable file, and it is what makes the checksum in `Install-FmSpeechModel` a trust anchor rather than a formality.
+The revision is pinned, so neither host can serve something else under the same name.
+
+### 45.7 How a model is installed without touching the engine's window
+
+The screenshot is their UI; what mattered was what that UI drives.
+Read from `ModelManager::update_download_status`, a Hugging Face-sourced model is marked downloaded when it is in the shared HF cache **or** when the file is simply sitting in the models directory - their own comment on that second branch says it is what "makes manual drop-ins of catalog files work".
+`models_dir` is `app_data_dir/models`, that is `%APPDATA%\com.pais.handy\models`.
+
+**That branch was proven rather than trusted.**
+The captain's real store could not be used - its `models` directory is empty, because that machine's copy lives in the shared Hugging Face cache - so an isolated engine was needed.
+Redirecting `APPDATA` for a child process **did not work**, and it is recorded here so nobody repeats it: Tauri resolves its data directory through the Windows known-folder API rather than the environment variable, and the child read the real store regardless.
+What worked was a copy of the install directory with a `portable` marker file beside it, which their `portable.rs` honours by putting all data in `Data/` next to the exe:
+
+```
+BEFORE:  (blank)  handy-computer/whisper-tiny-gguf/whisper-tiny-Q8_0.gguf   Whisper Tiny
+   drop a file named whisper-tiny-Q8_0.gguf into Data\models\
+AFTER:      ✓     handy-computer/whisper-tiny-gguf/whisper-tiny-Q8_0.gguf   Whisper Tiny
+```
+
+So the mechanism this installer relies on - place the catalog's file under its own name in the models directory - **flips the engine's own answer**, measured, with no UI and no click.
+
+Selecting it is one key in the engine's own settings file, `settings.selected_model`, merged into whatever is already there.
+The merge matters: `paste_method` and `external_script_path` live in the same object and are the two `Get-FmSpeechEngineStatus` reads to decide whether dictation reaches firstmate at all, so writing a fresh object would silently un-wire dictation.
+Their `AppSettings` carries a container-level `#[serde(default)]`, so an object holding only this key loads with every other field at its default - which is what the engine would have written anyway.
+
+**The merge was measured against the captain's real settings file**, not only against fixtures.
+A byte copy of their live `settings_store.json` - 59 keys under `settings`, including the `paste_method` and `external_script_path` that dictation depends on - was put through `Set-FmSpeechActiveModel` in a scratch directory:
+
+```
+run against the copy as-is        : Ok=True  Action=present   (already the active model; nothing written)
+run with selected_model altered   : Ok=True  Action=selected
+  keys before / after : 59 / 59
+  keys LOST           : 0
+  values CHANGED      : 1
+      selected_model : ["something-else-entirely"] -> ["handy-computer/.../Qwen3-ASR-1.7B-Q5_K_M.gguf"]
+  top-level keys after: settings
+```
+
+Both halves matter: the first is the re-run case doing nothing at all, and the second is the write case changing exactly one value out of fifty-nine and losing none.
+
+### 45.8 The 1.4 GB, and what silence means
+
+It is the largest thing this installer ever fetches; everything else is a few megabytes.
+The judgement, stated rather than buried:
+
+- **It goes in, because the captain asked for it.**
+  An engine with no model drops them into a settings screen the first time they turn voice on, which is the trip this was meant to remove.
+- **The engine is OPTIONAL in the catalog, not required.**
+  Required means "firstmate cannot dispatch a worker without it", and it dispatches perfectly well with voice off.
+  A machine without Handy must not report NOT READY, and a 1.4 GB download must not be what decides whether a machine counts as ready.
+- **The size is printed before anything starts**, with what declining costs, because somebody on a metered connection is entitled to know first.
+- **Declining is safe and honest.**
+  The run continues, the machine works, and the summary says the model is absent rather than pretending.
+  `-SkipSpeechModel` is the explicit form.
+- **Silence means fetch**, which is the opposite of `Confirm-Update` beside it, and deliberate.
+  That question is "may I change something that already works", where the safe answer is always no.
+  This one is "may I finish the thing you asked for".
+  An unattended run is precisely the "one command does everything" case the captain's standing instruction is about, and skipping there would quietly produce the half-installed machine this step exists to prevent.
+  Nobody is surprised: a run with nobody at the keyboard is a script somebody wrote, and that script says no with `-SkipSpeechModel`.
+
+### 45.9 A defect this found on the way
+
+Detection asked PATH and nothing else, and **Handy's installer puts nothing on PATH at all**.
+Measured on this seat: `handy.exe` is installed and working, and `Get-Command handy` finds nothing.
+So a machine that already had the engine - the captain's, right now - was classified `missing`, and a re-run would have downloaded and re-run the vendor installer to repair a machine that was already right.
+
+`Get-FmBootstrapInstalledLocation` already held the answer but was consulted only as the install's last resort.
+`Find-FmToolInstalledCommand` now asks it during detection too, and it can only ever turn a false `missing` into a true `present`: it is reached only when PATH has already failed, and what it finds is still RUN before anything is claimed about it.
+With it, this machine detects `handy 0.9.5`, classifies it `older` against the published `v0.9.6`, and installs nothing.
+
+**It is scoped to vendor-placed routes, and the runtime work landing beside it is why.**
+The first version asked the vendor directory for every tool, and that quietly broke three of section 44's tests.
+`Get-FmToolRuntimeStatus` decides whether the Visual C++ runtime is present by first asking whether a tool that IMPORTS it runs on this machine, and its tests neutralise that stage by emptying `PATH` - so widening what "on this machine" means widened the runtime answer too, and a staged-empty machine started reporting the runtime present off a herdr the test had tried to hide.
+The fix was to scope the lookup rather than to weaken the test: an `archive` route is placed on PATH by THIS installer, so for herdr an empty PATH is a truthful "not installed", while an `installer` route hands that choice to the vendor and Handy's vendor never touches PATH.
+Both halves are pinned - section 44's three tests pass unchanged, and `tests/FmSpeechInstall.Tests.ps1` asserts that `herdr` and `gh` are NOT looked up this way.
+
+### 45.10 What was NOT proven
+
+- **No clean machine has run the install.**
+  The route was never executed end to end, because this seat already has Handy and installing over it would have destroyed the very state that made 45.3 to 45.7 measurable - and the brief forbids changing anything outside the worktree.
+  What is proven is every input to that route: the asset pattern against the real release listing, the silent-flag semantics against their own NSIS template, the install location against a real installation, and the exit-code handling against a real child process in the suite.
+- **The 1.4 GB model was never downloaded by this code.**
+  The URLs, the byte count and the sha256 were verified by `HEAD` against both hosts; the transfer itself was not performed.
+  The placement, the hashing, the atomic move and the re-run behaviour all run for real in the suite against small payloads.
+- **`Set-FmSpeechActiveModel` was never run against the captain's live settings file in place**, only against a byte copy of it.
+  That copy is the real thing though, and 45.7 records the result: 59 real keys in, 59 out, one value changed.
+- **A running engine may overwrite the selection.**
+  `tauri-plugin-store` holds settings in memory, so if Handy is running when this writes, its own later save could win.
+  On the path this installer takes that cannot arise - `/S` without `/R` leaves the engine not running - but on a machine where the captain already has it open, the selection may need the engine restarted.
+  This is inferred from their use of the store plugin, not measured.
+- **The arm64 asset was never fetched.**
+  The pattern selects it from `PROCESSOR_ARCHITECTURE`, and its existence is confirmed from the release listing only.
+- **Nothing here was run on a machine with no speech engine at all.**
+  The `[off]` half of the report is covered by tests that construct that status; a real engine-less machine has not read it.

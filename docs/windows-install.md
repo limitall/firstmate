@@ -375,6 +375,19 @@ So the machine install now reads every route from that one owner, and the regres
 A route is only correct if the installed command runs and prints something `Get-FmToolVersionNumber` can parse.
 A command that resolves but answers nothing to `--version` is reported as unverified, never as installed, because that is the exact shape a wrong package takes.
 
+**Which flag proves a tool is the TOOL'S answer, not a literal.**
+That rule above was written as `--version` in four places, and Handy does not have one: its CLI is a clap parser declared with no `version`, so the flag is never generated and asking for it is an unknown argument that exits non-zero having printed nothing.
+Reporting that silence as "not verified as the real tool" would libel a correctly installed engine, so `Get-FmToolProof` owns the question per tool and Handy's is `--list-models` - which is a stronger identity check, because the binary must start, build its own model registry and exit 0.
+A tool that proves itself that way has its VERSION read from the executable's `ProductVersion`, and only after that run has already succeeded: presence still proves nothing, and a binary that will not run still has no version.
+`docs/windows-e2e-evidence.md` section 45 has the measurements.
+
+**Detection asks PATH, and then asks where the vendor actually put it.**
+`Get-FmBootstrapInstalledLocation` was the install's last resort, for a vendor installer that reported success and left nothing this session could reach.
+The same machine state arrives another way entirely - a captain who installed the tool themselves, before firstmate ever ran - and Handy is exactly that case, because its installer puts nothing on `PATH` at all.
+Without `Find-FmToolInstalledCommand`, detection calls a working tool `missing` and the run reinstalls over a machine that was already right, which is the opposite of "re-running changes nothing".
+It can only ever turn a false `missing` into a true `present`: it is reached only after `PATH` has failed, it writes nothing, and what it finds is still run before anything is claimed about it.
+It is also scoped to `installer` routes, where the VENDOR chose the location - an `archive` route is placed on PATH by this installer, so for those a missing PATH entry is a truthful "not installed", and the runtime check above reads that same answer to decide whether the Visual C++ runtime is present.
+
 **And "answers nothing" is a symptom, so the code it returned is carried with it.**
 `Get-FmInstallCommandProbe` used to read the exit code to decide whether the output was a version and then discard it, which left a clean VM reporting a correctly installed herdr as "answers nothing to --version" and nothing more.
 The code was `0xC0000135` and says exactly what happened: a DLL it needs is missing, so Windows stopped it before its own first instruction and it had no chance to print anything.
@@ -560,6 +573,19 @@ It never adds a second entry: both the user and the machine-wide Start Menu fold
 **None of that has actually executed on the captain's machine**, and nothing here may imply it has.
 The shortcut is step 4 of the install, and both of their runs died in step 1 - the first on the record-shape defect section 33 fixed, the second on the refused launch above.
 The mechanism is proven against disposable directories, and against this machine's real Start menu read-only, which is a different claim from "the captain's Start menu was repaired".
+
+**A route may RUN what it downloads, and the speech engine is why.**
+Handy publishes no archive - only an NSIS `-setup.exe` and two machine-scope MSIs - so there is nothing to expand.
+Rather than a second way to fetch, the route record gained `Placement`: `archive` expands into `%LOCALAPPDATA%\Programs\<tool>`, `installer` runs the downloaded file and lets the vendor choose where it lands.
+Everything before that last step - resolving the asset, downloading it, checking the publisher's checksum, cleaning up - is the same code either way.
+The arguments are the route's own, and what is ABSENT matters: `/S` makes it silent, and `/R` is deliberately not passed, because their NSIS template starts the app after a silent install only when it is.
+Installing the engine therefore does not start the engine.
+
+**Installing a speech engine is not turning voice on, and the report keeps them apart.**
+`config/voice` is the only thing that opens a microphone (`AGENTS.md` section 9), and nothing in the install writes it: a machine that has just gained Handy still reports `[off] voice`.
+The summary prints the engine and its model as two lines because they genuinely differ - the 1.4 GB model can be declined or fail and leave a perfectly good engine with nothing to transcribe with, and one "speech: ok" line would hide exactly that.
+The engine is OPTIONAL in the catalog, because "required" means firstmate cannot dispatch a worker without it and it dispatches perfectly well with voice off.
+`FmSpeechInstall.ps1` owns the model, the selection and both lines; section 45 of the evidence has the reasoning about the download's size and what silence means.
 
 **It ends by proving itself.**
 `Install-FmMachine` finishes with a verification pass rather than a success message: every catalogued tool is run and made to print a version, `Invoke-FmDoctor` re-reads the home and the instruction surface (including the skills count and the contract's byte length), and the repository's own Pester suite is executed in a bounded child process.

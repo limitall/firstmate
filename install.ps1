@@ -85,6 +85,11 @@ skipped and reported as skipped, never raised where nobody can answer it.
 .PARAMETER SkipOptional
 Install only what firstmate cannot run without.
 
+.PARAMETER SkipSpeechModel
+Install the speech engine but not its 1.4 GB model. The machine still works and
+the summary reports the model as absent rather than pretending it is there;
+re-run without this switch to fetch it. Voice is off either way.
+
 .PARAMETER SkipSuite
 Do not run the test suite at the end. The verdict then says the install is
 unproven rather than claiming a pass it did not take.
@@ -112,6 +117,7 @@ param(
     [Alias('Yes')]
     [switch]$Unattended,
     [switch]$SkipOptional,
+    [switch]$SkipSpeechModel,
     [switch]$SkipSuite,
     [switch]$Offline,
     [switch]$DetectOnly
@@ -265,6 +271,55 @@ function Confirm-Update {
     return ($answer -match '^(y|yes)$')
 }
 
+# THE ONE BIG DOWNLOAD, AND THE ONLY QUESTION HERE WHOSE DEFAULT IS YES.
+#
+# WHY IT IS ASKED AT ALL. Everything else this installer fetches is a few
+# megabytes; the speech model is 1.4 GB, which is a real cost on a metered or
+# slow connection and the kind of thing somebody is entitled to be told about
+# BEFORE it starts rather than to discover from a progress bar. So the size, and
+# what declining costs, are printed first.
+#
+# WHY THE DEFAULT IS YES, unlike Confirm-Update above. That question is "may I
+# change something that already works", where the safe answer is always no. This
+# one is "may I finish the thing you asked for": the captain asked for speech in
+# the installer, and an engine with no model is not that - it drops them into a
+# settings screen the first time they turn voice on. Declining is safe and
+# reversible; the machine works, and re-running fetches it.
+#
+# WHY SILENCE MEANS FETCH. -Unattended and a redirected stdin take the DEFAULT,
+# and here the default is yes - which is the opposite of Confirm-Update and is
+# deliberate. An unattended run is precisely the "one command does everything"
+# case the captain's standing instruction is about, and skipping there would
+# quietly produce the half-installed machine this step exists to prevent. Nobody
+# is being surprised: a run with nobody at the keyboard is a script somebody
+# wrote, and -SkipSpeechModel is how that script says no.
+function Confirm-SpeechModel {
+    # WHAT IS BEING DOWNLOADED IS THE PLAN'S ANSWER, not a second copy of it
+    # here. The size in particular: a number retyped into a warning is a number
+    # that goes stale the day the pinned model changes, and this one is the whole
+    # reason the question is being asked.
+    param([Parameter(Mandatory)]$Speech)
+
+    if ($SkipSpeechModel) { return $false }
+    Say ''
+    Say '  The speech engine needs a model, and it is a LARGE download:'
+    Say ''
+    Say ("    {0}   {1}   30 languages, auto language detection" -f $Speech.ModelName, $Speech.ModelSizeText)
+    Say ''
+    Say '  Without it the engine is installed but has nothing to transcribe with.'
+    Say '  Declining is safe: the machine still works, the summary says the model is'
+    Say '  absent, and re-running this script fetches it. Either way voice stays OFF -'
+    Say '  no microphone is opened until you create config/voice.'
+    if (-not (Test-CaptainPresent)) {
+        Say ''
+        Say '  Nobody is at the keyboard, so this is taking the default and fetching it.'
+        Say '  Pass -SkipSpeechModel to install the engine without it.'
+        return $true
+    }
+    $answer = Read-Host '  Download it now? [Y/n]'
+    return ($answer -notmatch '^(n|no)$')
+}
+
 . (Join-Path $PSScriptRoot 'bin' 'fm-module-load.ps1') -RequiredCommand 'Install-FmMachine'
 
 Say ''
@@ -375,6 +430,22 @@ if (-not $plan.Runtime.Present) {
     }
 }
 
+# ---- 3b. the one large download, asked before it starts ---------------------
+# Only when the engine is going to be there to use it: -SkipOptional drops the
+# engine, and 1.4 GB for a program that will not be installed is pure waste.
+#
+# AND ONLY WHEN THERE IS SOMETHING TO DOWNLOAD. A machine that already has the
+# model must not be asked about fetching it - the answer would change nothing,
+# and a question whose answer changes nothing trains the captain to stop reading
+# them. Install-FmMachine asks the engine again and is the authority; this asks
+# only to decide whether the QUESTION is worth putting.
+$speechWanted = @($plan.Requirements | Where-Object { $_.Name -eq 'handy' }).Count -gt 0
+$speechModel = 'skip'
+if ($speechWanted) {
+    if ($plan.Speech.ModelReady -or (Confirm-SpeechModel -Speech $plan.Speech)) { $speechModel = 'fetch' }
+    Say ''
+}
+
 # ---- 4. install ---------------------------------------------------------------
 # Running this script IS the consent to install what is missing; that is the
 # whole job it was invoked for, so it is not re-asked one tool at a time.
@@ -384,7 +455,8 @@ Say ''
 # what it publishes, and asking them a second time would double the slowest part
 # of the run for an answer that cannot have changed since the prompt above.
 $report = Install-FmMachine -Approved -Plan $plan -UpdateTool $agreed -InstallRuntime:$installRuntime `
-    -SkipOptional:$SkipOptional -SkipSuite:$SkipSuite -Offline:$Offline -RepoRoot $PSScriptRoot -Confirm:$false
+    -SkipOptional:$SkipOptional -SkipSuite:$SkipSuite -Offline:$Offline -RepoRoot $PSScriptRoot `
+    -SpeechModel $speechModel -Confirm:$false
 
 foreach ($line in $report.Lines) { Say ([string]$line) }
 Say ''

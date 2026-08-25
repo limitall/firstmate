@@ -93,7 +93,7 @@ function Get-FmMachineInstallPlan {
 
     foreach ($entry in (Get-FmToolCatalog)) {
         if ($SkipOptional -and -not $entry.Required) { continue }
-        $status = Get-FmToolStatus -Command $entry.Command
+        $status = Get-FmToolStatus -Command $entry.Command -Tool $entry.Tool
         $minimum = Get-FmToolMinimum -Tool $entry.Tool
         # Nothing is asked of the vendor, and no capability probe is run, for a
         # tool this machine will not START: both questions are about a program
@@ -256,6 +256,10 @@ function Get-FmMachineInstallPlan {
         $lines += ('    {0,-14}{1,-24}{2}' -f '[skipped]', $item.Tool, $item.Reason)
     }
 
+    # Asked once, here, and only when there is an engine to ask - on a machine
+    # with none this costs nothing and answers "not ready", which is correct.
+    $speech = Get-FmSpeechStatus
+
     [pscustomobject]@{
         Requirements = $requirements
         Enablers     = $enablers
@@ -268,6 +272,12 @@ function Get-FmMachineInstallPlan {
         Unsupported  = @($requirements | Where-Object { $_.Classification -eq 'unsupported' })
         Superseded   = @($requirements | Where-Object { $_.Classification -eq 'superseded' })
         Unusable     = @($requirements | Where-Object { $_.Classification -eq 'unusable' })
+        # WHAT THE SPEECH ENGINE ALREADY HAS, so install.ps1 can decide whether
+        # the 1.4 GB question is worth putting at all. It is part of the plan
+        # because the plan is the owner of "what does this machine have"; asking
+        # it here also means the engine is run once for the report rather than
+        # once per caller that wants the answer.
+        Speech       = $speech
         Lines        = $lines
     }
 }
@@ -444,7 +454,15 @@ function Install-FmMachine {
         [switch]$Offline,
         [string]$RepoRoot = '',
         [string]$InstallRoot = '',
-        [ValidateSet('User', 'Process')][string]$PathScope = 'User'
+        [ValidateSet('User', 'Process')][string]$PathScope = 'User',
+        # WHETHER TO FETCH THE 1.4 GB SPEECH MODEL, decided by the caller and
+        # never here. install.ps1 asks the captain, tells them the size before
+        # anything starts, and passes the answer down. 'skip' leaves a working
+        # machine whose report says the model is absent - see
+        # Get-FmSpeechInstallLine - rather than one that pretends.
+        [ValidateSet('fetch', 'skip')][string]$SpeechModel = 'fetch',
+        # The suite's seam for that download: a local file to place instead.
+        [string]$SpeechModelPath = ''
     )
 
     if (-not $RepoRoot) { $RepoRoot = Get-FmInstallRepoRoot }
@@ -590,6 +608,72 @@ function Install-FmMachine {
         $steps += New-FmInstallStep -Name $requirement.Label -Action $stepAction -Detail ($prefix + $outcome.Detail)
     }
 
+    # --- 2a. the speech engine's model, and which one it loads ------------------
+    #
+    # THE ENGINE IS NOT THE DELIVERABLE ON ITS OWN. Handy with no model sends the
+    # captain into a settings screen the first time they turn voice on, so the
+    # model is fetched and made active here. It is a SEPARATE step from the tool
+    # loop above because it can be declined and because failing it must not fail
+    # the run: voice is off by default, so a machine with no model is a working
+    # machine and says so.
+    #
+    # NOTHING HERE TURNS VOICE ON. Selecting a model is engine configuration; the
+    # microphone still needs config/voice, which nothing in this file writes.
+    if ($performed) {
+        $engine = Get-FmSpeechEngine
+        if (-not $engine) {
+            # No engine means nothing to hold the model, and 1.4 GB fetched for a
+            # program that is not there would be pure waste.
+            $steps += New-FmInstallStep -Name 'speech model' -Action 'skipped' `
+                -Detail 'no speech engine on this machine, so there is nothing to hold a model'
+        } else {
+            # ASK THE ENGINE BEFORE FETCHING ANYTHING. A model counts as present
+            # when it is in the models directory OR in the shared Hugging Face
+            # cache, and only the engine knows about both - MEASURED on a real
+            # machine 2026-08-25, where the model is ready and the models
+            # directory is EMPTY because that copy lives in the shared cache.
+            # Testing for the file alone would re-download 1.4 GB the machine
+            # already has, which is the exact opposite of "re-running changes
+            # nothing".
+            $speech = Get-FmSpeechStatus
+            $fetched = if ($speech.ModelReady) {
+                [pscustomobject]@{ Ok = $true; Action = 'present'; Path = ''; Detail = "$($speech.ModelName) is already downloaded" }
+            } elseif ($SpeechModel -eq 'skip') {
+                $null
+            } else {
+                try {
+                    Install-FmSpeechModel -SourcePath $SpeechModelPath -Confirm:$false
+                } catch {
+                    [pscustomobject]@{ Ok = $false; Action = 'failed'; Path = ''; Detail = [string]$_.Exception.Message }
+                }
+            }
+
+            if ($null -eq $fetched) {
+                # DECLINED. Nothing is fetched and nothing is selected: pointing
+                # the engine at a model that is not there would be the pretending
+                # this step exists to avoid.
+                $steps += New-FmInstallStep -Name 'speech model' -Action 'skipped' `
+                    -Detail 'declined - the machine works without it, and the summary reports the model as absent'
+            } elseif (-not $fetched.Ok) {
+                # A FAILED DOWNLOAD IS NOT A FAILED INSTALL. It is reported by
+                # name and the run carries on, because nothing else depends on it.
+                $steps += New-FmInstallStep -Name 'speech model' -Action 'skipped' `
+                    -Detail ('FAILED: ' + $fetched.Detail)
+            } else {
+                # THE MODEL IS THERE, SO MAKE IT THE ONE THE ENGINE LOADS. Done
+                # on the already-present path too: a machine can hold the model
+                # and still have something else selected.
+                $selected = Set-FmSpeechActiveModel -Confirm:$false
+                $detail = "$($fetched.Detail); $($selected.Detail)"
+                if (-not $selected.Ok) { $detail = 'FAILED: ' + $detail }
+                $action = if (-not $selected.Ok) { 'skipped' }
+                elseif ($fetched.Action -eq 'installed' -or $selected.Action -eq 'selected') { 'created' }
+                else { 'already' }
+                $steps += New-FmInstallStep -Name 'speech model' -Action $action -Detail $detail
+            }
+        }
+    }
+
     # --- 3. the home, the symlinks, the protection, the hooks -------------------
     if ($performed) {
         # SAME RULE AS THE TOOL LOOP. Setup writes into the checkout and into the
@@ -725,7 +809,18 @@ function Install-FmMachine {
         $shellLines = @(Get-FmMachineShellLine -Shortcut $shortcut)
         if ($shellLines.Count) { $lines += @('') + $shellLines }
     }
-    $lines += @('') + @(Get-FmMachineOptionalLine -FirstmateHome $doctor.FirstmateHome)
+    # THE SPEECH PAIR JOINS THE OPTIONAL BLOCK, and the adjacency is the point:
+    # the engine and its model can both read `[on]` while the voice line two
+    # above them still reads `[off]`, and seeing the three together is what stops
+    # "the speech engine is installed" being misread as "firstmate is listening".
+    # Lines rather than checks, so an absent engine or a declined model never
+    # colours the verdict.
+    #
+    # KEPT OUT OF Get-FmMachineOptionalLine deliberately. That function reads
+    # files and nothing else; this one RUNS the engine, which is a far more
+    # expensive question and one its callers do not all want asked.
+    $lines += @('') + @(Get-FmMachineOptionalLine -FirstmateHome $doctor.FirstmateHome) +
+    @(Get-FmSpeechInstallLine)
     $lines += @('') + (Get-FmMachineSummaryLine -Outcomes $outcomes)
     $lines += ''
     if (-not $performed) {

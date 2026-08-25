@@ -57,6 +57,16 @@ Set-StrictMode -Version Latest
 # set firstmate cannot dispatch a worker without; optional is everything that
 # makes it pleasant and that -SkipOptional drops.
 #
+# HANDY IS OPTIONAL, AND THAT IS A JUDGEMENT RATHER THAN AN OVERSIGHT. Required
+# means "firstmate cannot dispatch a worker without it", and firstmate dispatches
+# workers perfectly well with no speech engine on the machine at all - voice is
+# OFF until the captain creates config/voice, so a machine without Handy is a
+# working machine and must not be reported NOT READY. Making it required would
+# also put a 1.4 GB model download on the critical path of every clean install,
+# and a download that large deciding whether a machine counts as ready is the
+# wrong trade. It installs by default and -SkipOptional drops it, which is the
+# existing shape for "wanted, not load-bearing".
+#
 # no-mistakes IS DELIBERATELY ABSENT and must stay absent. Its delivery mode is
 # refused by name on this port (AGENTS.md section 14), so installing the
 # validation pipeline would leave a machine carrying a tool nothing here may use.
@@ -71,6 +81,13 @@ Set-StrictMode -Version Latest
 # the tool that has the import, so the day herdr links it statically this row
 # changes and nothing else does. Get-FmToolRuntimeRequirement owns what the
 # runtime IS; this owns which tools need it.
+#
+# HANDY IMPORTS THE SAME RUNTIME AND STILL ANSWERS $false, which is not an
+# oversight. MEASURED on a real installation 2026-08-25: its installer ships
+# vcruntime140.dll, vcruntime140_1.dll and msvcp140.dll INTO ITS OWN DIRECTORY
+# beside handy.exe, and Windows resolves those from there. So it cannot hit the
+# fault section 40 records for herdr, and marking it would make this installer
+# elevate for a dependency that tool already carries.
 $script:FmToolCatalog = @(
     @{ Tool = 'git';                 Command = 'git';                 Label = 'git';                 Why = 'isolated copies for workers';     Required = $true;  Runtime = $false }
     @{ Tool = 'node';                Command = 'node';                Label = 'Node.js';             Why = 'carries the npm-published axi tools'; Required = $true;  Runtime = $false }
@@ -78,6 +95,7 @@ $script:FmToolCatalog = @(
     @{ Tool = 'herdr';               Command = 'herdr';               Label = 'herdr';               Why = 'worker sessions';                 Required = $true;  Runtime = $true }
     @{ Tool = 'treehouse';           Command = 'treehouse';           Label = 'treehouse';           Why = 'isolated worktrees, leased';      Required = $true;  Runtime = $false }
     @{ Tool = 'gh';                  Command = 'gh';                  Label = 'gh';                  Why = 'pull requests';                   Required = $false; Runtime = $false }
+    @{ Tool = 'handy';               Command = 'handy';               Label = 'Handy';               Why = 'local speech-to-text, off until you turn voice on'; Required = $false; Runtime = $false }
     @{ Tool = 'gh-axi';              Command = 'gh-axi';              Label = 'gh-axi';              Why = 'GitHub, ergonomically';           Required = $false; Runtime = $false }
     @{ Tool = 'chrome-devtools-axi'; Command = 'chrome-devtools-axi'; Label = 'chrome-devtools-axi'; Why = 'browser work';                    Required = $false; Runtime = $false }
     @{ Tool = 'lavish-axi';          Command = 'lavish-axi';          Label = 'lavish-axi';          Why = 'visual reviews';                  Required = $false; Runtime = $false }
@@ -371,6 +389,7 @@ function Get-FmToolLatestVersion {
     switch ($Tool) {
         'git' { return (Get-FmToolGitHubLatestVersion -Repository 'git-for-windows/git' -TimeoutSeconds $TimeoutSeconds) }
         'gh' { return (Get-FmToolGitHubLatestVersion -Repository 'cli/cli' -TimeoutSeconds $TimeoutSeconds) }
+        'handy' { return (Get-FmToolGitHubLatestVersion -Repository 'cjpais/Handy' -TimeoutSeconds $TimeoutSeconds) }
         'treehouse' { return (Get-FmToolGitHubLatestVersion -Repository 'kunchenguid/treehouse' -TimeoutSeconds $TimeoutSeconds) }
         # THE VENDOR'S OWN ANSWER, from the same manifest their installer reads
         # and this repo's route installs from - so "is it current" and "what
@@ -529,7 +548,11 @@ function Get-FmToolUnprovenDetail {
     )
 
     $where = if ($Path) { " resolves to $Path but" } else { '' }
-    $text = "'$Command'$where answers nothing to --version, so it is not verified as the real tool"
+    # The flag this tool is actually asked, not a literal - Handy has no
+    # --version and naming one would send the captain to a flag that does not
+    # exist. Get-FmToolProof owns which it is.
+    $flag = (Get-FmToolProof -Tool $Command).Flag
+    $text = "'$Command'$where answers nothing to $flag, so it is not verified as the real tool"
     if ($ExitCode -ne 0) {
         $text += (' - it exited 0x{0:X8}' -f $ExitCode)
         $meaning = Get-FmToolExitCodeMeaning -Command $Command -ExitCode $ExitCode
@@ -548,7 +571,7 @@ function Get-FmToolClassificationReason {
         'unusable' {
             return (Get-FmToolLaunchRefusal -Program $Requirement.Path `
                     -Consequence 'it could not be run and nothing about it is proven' `
-                    -Remedy "Open it yourself in a new window - if '$($Requirement.Command) --version' answers there, the refusal is this machine's and not the tool's.")
+                    -Remedy "Open it yourself in a new window - if '$($Requirement.Command) $((Get-FmToolProof -Tool $Requirement.Command).Flag)' answers there, the refusal is this machine's and not the tool's.")
         }
         'current' { return "$($Requirement.Version) is the latest published version" }
         'older' { return "$($Requirement.Version) is installed; $($Requirement.Latest) is published" }
@@ -989,7 +1012,7 @@ function Get-FmToolRuntimeStatus {
     # imports the runtime is on this machine.
     $ran = @()
     foreach ($entry in @(Get-FmToolCatalog | Where-Object { $_.Runtime })) {
-        $status = Get-FmToolStatus -Command $entry.Command
+        $status = Get-FmToolStatus -Command $entry.Command -Tool $entry.Tool
         if (-not $status.Present) { continue }
         if (Get-FmToolExitCodeRemedy -ExitCode $status.ExitCode) {
             $answer.Source = 'the loader'
@@ -1264,14 +1287,156 @@ function Invoke-FmToolRuntimeStep {
 
 # --- what is here, and what version ---------------------------------------------
 
+# HOW ONE TOOL IS MADE TO PROVE IT IS REAL, when `--version` is not the answer.
+#
+# Rule 3 at the top of this file is that a route is only correct if RUNNING the
+# installed command prints something this file then reads back. Every tool here
+# but one answers `--version`, so that was written in as a literal in four
+# places. Handy does not, and it is not an omission on their part: its CLI is a
+# clap parser (src-tauri/src/cli.rs) declared `#[command(name = "handy", about =
+# "Handy - Speech to Text")]` with no `version`, so clap never generates the flag
+# and `handy --version` is an UNKNOWN ARGUMENT - it exits non-zero having printed
+# nothing. Asking it that question and reporting the silence as "not verified as
+# the real tool" would be this file libelling a correctly installed engine.
+#
+# So the question is per-tool, and Handy's is `--list-models`. That is a better
+# proof than a version string rather than a weaker one: it makes the binary
+# execute, enumerate its own model registry and exit 0, and the ids it prints
+# (`handy-computer/...`) are ones no other program on this machine could produce.
+# It is also SAFE to ask - see Get-FmSpeechStatus for why it opens no microphone.
+#
+# VersionFromFile IS THE HONEST HALF OF IT. `--list-models` proves the engine
+# runs; it says nothing about WHICH build ran, and this repo still wants a
+# version to rank against what the vendor publishes. So for such a tool the
+# version is read from the executable's own ProductVersion - but ONLY after the
+# run above has already succeeded. That order is the whole point and is not
+# "finding a file": presence proves nothing here, the process must start, exit 0
+# and print its registry first, and the file metadata then merely LABELS the
+# thing that just passed. A binary that will not run has no version, exactly as
+# before.
+function Get-FmToolProof {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    # ACCEPTS EMPTY, for the reason Get-FmToolUnprovenDetail states at length: it
+    # is reached while composing a report on a console nobody is watching, and a
+    # mandatory parameter handed '' does not fail there - it ASKS, and hangs the
+    # install. An empty name is not a tool, so it takes the ordinary answer.
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Tool)
+
+    if ($Tool -eq 'handy') {
+        return [pscustomobject]@{
+            Argument        = [string[]]@('--list-models')
+            Flag            = '--list-models'
+            VersionFromFile = $true
+        }
+    }
+    [pscustomobject]@{
+        Argument        = [string[]]@('--version')
+        Flag            = '--version'
+        VersionFromFile = $false
+    }
+}
+
+# The ProductVersion Windows itself records against an executable, or '' when
+# there is none. Never a proof on its own - Get-FmToolProof states the order this
+# is allowed to be read in.
+function Get-FmToolFileVersion {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+    try {
+        $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+        $version = [string]$info.ProductVersion
+        if (-not $version) { $version = [string]$info.FileVersion }
+        return $version.Trim()
+    } catch {
+        Write-Debug "could not read the file version of $Path`: $($_.Exception.Message)"
+        return ''
+    }
+}
+
+# The tool's own executable in the directory its vendor installer uses, or ''.
+#
+# DETECTION HAS TO ASK THIS TOO, not only the install. Get-FmBootstrapInstalledLocation
+# was written as the install's last resort - consulted when a route reported
+# success and the command still would not resolve - but the same machine state
+# arrives a completely different way: a captain who installed the tool THEMSELVES,
+# before firstmate ever ran. MEASURED on this machine 2026-08-25, Handy is exactly
+# that: installed at %LOCALAPPDATA%\Handy, working, and `Get-Command handy` finds
+# nothing, because its installer puts nothing on PATH at all.
+#
+# Without this, detection calls a tool that is present and working 'missing', and
+# the run downloads and re-runs a vendor installer to fix a machine that was
+# already right - which is the opposite of "re-running changes nothing".
+#
+# IT ONLY EVER TURNS A FALSE 'MISSING' INTO A TRUE 'PRESENT'. It is reached only
+# when PATH has already failed, it returns '' for a tool with no such directory
+# or a directory that is not there, and what it finds is still RUN before
+# anything is claimed about it. It writes nothing - putting that directory on
+# PATH belongs to the install, not to a detection pass that promises to leave the
+# machine alone.
+#
+# AND IT IS SCOPED TO THE ROUTES THAT NEED IT, for a reason that is not caution:
+# Get-FmToolRuntimeStatus decides whether the Visual C++ runtime is present by
+# first asking whether a tool that imports it RUNS on this machine, and widening
+# what "on this machine" means silently widens that answer too. herdr reaches its
+# PATH entry through this installer, so for herdr an empty PATH is a truthful
+# "not installed"; Handy never reaches one at all. The Placement check below is
+# what keeps those two apart.
+function Find-FmToolInstalledCommand {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Tool,
+        [Parameter(Mandatory)][string]$Command
+    )
+
+    # ONLY FOR A ROUTE WHERE THE VENDOR CHOSE THE LOCATION, which is what makes
+    # this a correction rather than a general loosening of what "on this machine"
+    # means. An 'archive' route is placed by THIS installer, into
+    # %LOCALAPPDATA%\Programs\<tool>, and put on PATH by the same step - so for
+    # those, not being on PATH genuinely means not installed, and looking
+    # elsewhere would start answering a different question than the one detection
+    # asks. An 'installer' route hands that choice to the vendor, and Handy's
+    # vendor chooses a directory it never puts on PATH.
+    $portable = Get-FmBootstrapPortableRelease -Tool $Tool
+    if (-not $portable) { return '' }
+    if (-not ($portable.PSObject.Properties.Name -contains 'Placement')) { return '' }
+    if ($portable.Placement -ne 'installer') { return '' }
+
+    foreach ($candidate in @(Get-FmBootstrapInstalledLocation -Tool $Tool)) {
+        $directory = [System.Environment]::ExpandEnvironmentVariables($candidate)
+        if ($directory -match '%\w+%') { continue }
+        if (-not (Test-Path -LiteralPath $directory -PathType Container)) { continue }
+        $executable = @(Get-ChildItem -LiteralPath $directory -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.BaseName -ieq $Command -and $_.Extension -in @('.exe', '.cmd', '.bat') } |
+                Select-Object -First 1)
+        if ($executable.Count -gt 0) { return [string]$executable[0].FullName }
+    }
+    ''
+}
+
 function Get-FmToolStatus {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
-    param([Parameter(Mandatory)][string]$Command)
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        # Which CATALOG entry this command belongs to, when the two differ.
+        # Defaults to the command's own name, which is the answer for every tool
+        # in the catalog today and the only available one for a name that is not
+        # in it at all.
+        [string]$Tool = ''
+    )
 
+    $tool = if ($Tool) { $Tool } else { $Command }
     $resolved = Get-Command -Name $Command -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
-    if (-not $resolved) {
+    # PATH first, then the directory this tool's own installer uses. See
+    # Find-FmToolInstalledCommand for why detection needs the second question.
+    $runAs = if ($resolved) { [string]$resolved.Source } else { Find-FmToolInstalledCommand -Tool $tool -Command $Command }
+    if (-not $runAs) {
         return [pscustomobject]@{ Command = $Command; Present = $false; Path = ''; Version = ''; Launchable = $false; ExitCode = 0 }
     }
     # THE VERSION IS THE PROOF, not the presence. A command that resolves but
@@ -1287,12 +1452,23 @@ function Get-FmToolStatus {
     # thing a program can do: START, die before its own code runs, and print
     # nothing. That looks identical to an empty version and is a completely
     # different fault, and the code is the only place it is written down.
-    $probe = Get-FmInstallCommandProbe -Command $Command
+    #
+    # WHAT IT IS ASKED IS NOT ALWAYS `--version` - Get-FmToolProof owns that
+    # decision and the reason for it.
+    $proof = Get-FmToolProof -Tool $tool
+    $probe = Get-FmInstallCommandProbe -Command $runAs -Arguments $proof.Argument
+    $version = [string]$probe.Version
+    # Only ever reached through a run that already succeeded, so a tool that
+    # cannot start still has no version. See Get-FmToolProof.
+    if ($proof.VersionFromFile -and $version) {
+        $fromFile = Get-FmToolFileVersion -Path $runAs
+        if ($fromFile) { $version = $fromFile }
+    }
     [pscustomobject]@{
         Command    = $Command
         Present    = $true
-        Path       = [string]$resolved.Source
-        Version    = $probe.Version
+        Path       = $runAs
+        Version    = $version
         Launchable = [bool]$probe.Launched
         ExitCode   = [int]$probe.ExitCode
     }
@@ -1328,10 +1504,15 @@ function Get-FmToolRoute {
 
     $portable = Get-FmBootstrapPortableRelease -Tool $Tool
     if ($portable) {
+        $what = if ($portable.Placement -eq 'installer') {
+            "run the $($portable.Repository) release asset $($portable.AssetPattern) with $($portable.InstallerArgument -join ' ')"
+        } else {
+            "expand the $($portable.Repository) release asset $($portable.AssetPattern) into `$env:LOCALAPPDATA\Programs\$Tool"
+        }
         return [pscustomobject]@{
             Tool               = $Tool
             Kind               = 'portable'
-            Command            = "expand the $($portable.Repository) release asset $($portable.AssetPattern) into `$env:LOCALAPPDATA\Programs\$Tool"
+            Command            = $what
             Portable           = $portable
             NeedsAdministrator = $false
             Instructions       = ''
@@ -1592,12 +1773,89 @@ function Expand-FmToolArchive {
     $Destination
 }
 
+# Run a vendor's own installer and wait for it, for the 'installer' placement.
+#
+# SPLIT OUT SO THE SUITE CAN REACH IT. The interesting behaviour is not the
+# launch, it is what is done with the ANSWER: an installer that exits non-zero
+# has not installed anything, and a route that carried on would report a step
+# that failed as one that worked - which is the whole defect this area exists to
+# remove. Exercised against a real child process in tests/FmToolInstall.Tests.ps1
+# rather than against a mock.
+#
+# NOTHING IS PASSED THAT WOULD START THE PROGRAM. The arguments come from the
+# route record, which for Handy is `/S` and deliberately not `/R`.
+function Invoke-FmToolInstallerFile {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string[]]$Argument = @(),
+        [int]$TimeoutSeconds = 600
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "error: '$Path' is not a file; there is no installer to run"
+    }
+    if (-not $PSCmdlet.ShouldProcess($Path, 'run the vendor installer')) {
+        return [pscustomobject]@{ Ok = $true; ExitCode = 0; Detail = 'WhatIf' }
+    }
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $Path
+    foreach ($a in $Argument) { $psi.ArgumentList.Add($a) }
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+
+    try {
+        $process = [System.Diagnostics.Process]::Start($psi)
+    } catch {
+        # The machine refused the launch, which is a different fault from an
+        # installer that ran and failed. Said in the captain's words by the owner
+        # of that sentence rather than as a raw .NET exception.
+        return [pscustomobject]@{
+            Ok       = $false
+            ExitCode = -1
+            Detail   = (Get-FmToolLaunchRefusal -Program $Path `
+                    -Consequence 'the downloaded installer could not be started, so nothing was installed')
+        }
+    }
+    $null = $process.StandardOutput.ReadToEndAsync()
+    $errorText = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $process.Kill($true) } catch { Write-Debug 'the installer process had already gone' }
+        return [pscustomobject]@{
+            Ok       = $false
+            ExitCode = -1
+            Detail   = "the installer did not finish within $TimeoutSeconds seconds and was stopped, so nothing is proven about what it left behind"
+        }
+    }
+    if ($process.ExitCode -ne 0) {
+        $why = ''
+        try { $why = ([string]$errorText.Result).Trim() } catch { $why = '' }
+        $detail = "the installer exited with code $($process.ExitCode)"
+        if ($why) { $detail += ": $why" }
+        return [pscustomobject]@{ Ok = $false; ExitCode = [int]$process.ExitCode; Detail = $detail }
+    }
+    [pscustomobject]@{ Ok = $true; ExitCode = 0; Detail = '' }
+}
+
 # The whole no-administrator install for one tool, end to end.
 #
-# -ArchivePath is the suite's seam: it supplies a local archive so every step
-# except the download runs for real against a disposable install root. Nothing
-# about the expansion, the layout check or the PATH edit is stubbed, which is
-# what makes the test worth having.
+# TWO PLACEMENTS, ONE FETCH. Everything up to and including the checksum is the
+# same whatever the downloaded file turns out to be; only the last step differs.
+# 'archive' expands it into %LOCALAPPDATA%\Programs\<tool> and puts that on PATH.
+# 'installer' RUNS it and lets the vendor choose where it lands, then finds it
+# through the same recovery a vendor installer has always needed
+# (Resolve-FmToolAfterInstall). Get-FmBootstrapPortableRelease owns which is
+# which and why.
+#
+# -ArchivePath is the suite's seam: it supplies a local archive - or, for the
+# 'installer' placement, a local installer - so every step except the download
+# runs for real against a disposable install root. Nothing about the expansion,
+# the layout check, the installer run or the PATH edit is stubbed, which is what
+# makes the test worth having.
 function Install-FmToolPortable {
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([pscustomobject])]
@@ -1608,14 +1866,27 @@ function Install-FmToolPortable {
         [ValidateSet('User', 'Process')][string]$PathScope = 'User'
     )
 
+    # A record written before this field existed is an archive, which is what
+    # every route in the table was until Handy arrived.
+    $placement = if ($Portable.PSObject.Properties.Name -contains 'Placement' -and $Portable.Placement) {
+        [string]$Portable.Placement
+    } else { 'archive' }
+
     if (-not $InstallRoot) {
         if (-not $env:LOCALAPPDATA) { throw 'error: LOCALAPPDATA is not set, so there is no per-user place to install into' }
         $InstallRoot = Join-Path $env:LOCALAPPDATA 'Programs'
     }
-    $destination = Join-Path $InstallRoot $Portable.Tool
-    $binDirectory = if ($Portable.BinSubdirectory) { Join-Path $destination $Portable.BinSubdirectory } else { $destination }
+    # The vendor's installer chooses its own directory, so there is nothing to
+    # name here until it has run - see the 'installer' branch below.
+    $destination = if ($placement -eq 'installer') { '' } else { Join-Path $InstallRoot $Portable.Tool }
+    $binDirectory = if ($placement -eq 'installer') {
+        ''
+    } elseif ($Portable.BinSubdirectory) {
+        Join-Path $destination $Portable.BinSubdirectory
+    } else { $destination }
 
-    if (-not $PSCmdlet.ShouldProcess($destination, "install $($Portable.Tool) from $($Portable.Repository)")) {
+    $target = if ($destination) { $destination } else { "$($Portable.Tool) (wherever its own installer puts it)" }
+    if (-not $PSCmdlet.ShouldProcess($target, "install $($Portable.Tool) from $($Portable.Repository)")) {
         return [pscustomobject]@{ Tool = $Portable.Tool; Action = 'skipped'; Detail = 'WhatIf'; BinDirectory = $binDirectory; OnPath = @() }
     }
 
@@ -1637,10 +1908,43 @@ function Install-FmToolPortable {
             }
             $archive = $downloaded
         }
-        $null = Expand-FmToolArchive -ArchivePath $archive -Destination $destination -StripRoot:([bool]$Portable.StripRoot) -Confirm:$false
+        if ($placement -eq 'installer') {
+            $argument = @()
+            if ($Portable.PSObject.Properties.Name -contains 'InstallerArgument') {
+                $argument = @($Portable.InstallerArgument)
+            }
+            $ran = Invoke-FmToolInstallerFile -Path $archive -Argument $argument -Confirm:$false
+            if (-not $ran.Ok) {
+                throw "error: $($Portable.Tool) was downloaded from $($Portable.Repository) but $($ran.Detail); nothing was installed"
+            }
+        } else {
+            $null = Expand-FmToolArchive -ArchivePath $archive -Destination $destination -StripRoot:([bool]$Portable.StripRoot) -Confirm:$false
+        }
     } finally {
         if ($downloaded -and (Test-Path -LiteralPath $downloaded)) {
             Remove-Item -LiteralPath $downloaded -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # THE VENDOR'S INSTALLER EXITED 0, WHICH IS NOT THE SAME AS THIS SESSION
+    # BEING ABLE TO REACH WHAT IT WROTE - the exact gap that made
+    # Resolve-FmToolAfterInstall necessary for the Claude CLI. Handy is the worse
+    # case of it: MEASURED on this machine 2026-08-25, its installer puts
+    # handy.exe in %LOCALAPPDATA%\Handy and adds NOTHING to PATH, so the recovery
+    # below is the route rather than a fallback.
+    if ($placement -eq 'installer') {
+        $resolved = Resolve-FmToolAfterInstall -Tool $Portable.Tool `
+            -Command (Get-FmToolCommandName -Tool $Portable.Tool) -PathScope $PathScope -Confirm:$false
+        if (-not $resolved.Resolved) {
+            throw "error: $($Portable.Tool)'s own installer reported success and '$(Get-FmToolCommandName -Tool $Portable.Tool)' is still not reachable from this session; nothing was proved"
+        }
+        $where = if ($resolved.Directory) { $resolved.Directory } else { 'a directory already on PATH' }
+        return [pscustomobject]@{
+            Tool         = $Portable.Tool
+            Action       = 'installed'
+            Detail       = $where
+            BinDirectory = $resolved.Directory
+            OnPath       = @($resolved.Directory | Where-Object { $_ })
         }
     }
 
@@ -2207,25 +2511,35 @@ function Invoke-FmToolRoute {
             # failed install rather than a footnote further down the report.
             $result.Detail = $installed.Detail
             $name = Get-FmToolCommandName -Tool $Route.Tool
-            $proof = Get-FmToolStatus -Command $name
+            # "Expanded" is wrong for a route that ran a vendor installer, and a
+            # report that describes the wrong action sends the captain looking in
+            # the wrong place. Get-FmBootstrapPortableRelease owns which it was.
+            # Asked of the record rather than assumed onto it: a route built
+            # without the field - every one of them before Handy arrived, and the
+            # hand-built ones the suite uses - is an archive.
+            $placed = if (($Route.Portable.PSObject.Properties.Name -contains 'Placement') -and
+                ($Route.Portable.Placement -eq 'installer')) {
+                'installed by its own installer into'
+            } else { 'expanded into' }
+            $proof = Get-FmToolStatus -Command $name -Tool $Route.Tool
             if ($proof.Version) {
                 $result.Action = 'installed'
                 return $result
             }
             $result.Action = 'failed'
             $result.Detail = if (-not $proof.Present) {
-                "the release was expanded into $($installed.Detail) but '$name' is still not reachable, so nothing was proved"
+                "the release was $placed $($installed.Detail) but '$name' is still not reachable, so nothing was proved"
             } elseif (-not $proof.Launchable) {
                 (Get-FmToolLaunchRefusal -Program $proof.Path `
-                        -Consequence "the release expanded into $($installed.Detail) could not be exercised" `
-                        -Remedy "Open a new window and run '$name --version' yourself.")
+                        -Consequence "the release $placed $($installed.Detail) could not be exercised" `
+                        -Remedy "Open a new window and run '$name $((Get-FmToolProof -Tool $Route.Tool).Flag)' yourself.")
             } else {
                 # THIS IS THE MOMENT THE CAPTAIN NEEDS THE CURE, on the step that
                 # failed rather than only in the proving pass further down. A
                 # step reported 'failed' has no fix slot of its own, so the
                 # remedy is said in the detail - by the same owner, so the two
                 # can never disagree.
-                $said = "the release was expanded into $($installed.Detail), and " +
+                $said = "the release was $placed $($installed.Detail), and " +
                 (Get-FmToolUnprovenDetail -Command $name -Path $proof.Path -ExitCode $proof.ExitCode)
                 $remedy = Get-FmToolExitCodeRemedy -ExitCode $proof.ExitCode
                 if ($remedy) {
