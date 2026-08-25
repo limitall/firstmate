@@ -7156,16 +7156,11 @@ The existing one was extended instead, which is also what the one-owner rule req
 
 ### 40.8 What the captain does with the answer, and what is not ours to decide
 
-If the diagnostic names `VCRUNTIME140.dll` as missing, the remedy is the Microsoft Visual C++ 2015-2022 Redistributable, and it needs administrator once:
-
-```
-winget install --id Microsoft.VCRedist.2015+.x64 --source winget
-```
-
-or the same installer from Microsoft directly at `https://aka.ms/vs/17/release/vc_redist.x64.exe`.
+If the diagnostic names `VCRUNTIME140.dll` as missing, the remedy is the Microsoft Visual C++ 2015-2022 Redistributable, and it needs administrator once.
+**Since section 43 the installer prints that command itself**, built by `Get-FmToolExitCodeRemedy`, which is the one owner of its exact text; the same installer from Microsoft directly at `https://aka.ms/vs/17/release/vc_redist.x64.exe` is the alternative.
 Then re-run `install.ps1`, which needs no administrator and will prove herdr by running it.
 
-**This installer does not do that itself, and the reason is the boundary rather than the difficulty.** It needs elevation, and nothing here installs a machine-wide Microsoft runtime on the captain's machine without being asked.
+**This installer names that step and does not take it, and the reason is the boundary rather than the difficulty.** It needs elevation, and nothing here installs a machine-wide Microsoft runtime on the captain's machine without being asked.
 
 If the diagnostic instead reports Smart App Control enforced, that is the captain's machine refusing an unsigned program, and it stays their call.
 Nothing here turns a protection off, and nothing here should: herdr 0.8.2 is `NotSigned` - measured - so a machine set to run only signed and reputable programs is behaving correctly, and the options are theirs to weigh.
@@ -7176,7 +7171,7 @@ Nothing here turns a protection off, and nothing here should: herdr 0.8.2 is `No
 
 - **The captain's VM was never touched.** Every measurement in this section was taken on a machine that HAS the Visual C++ runtime. That `VCRUNTIME140.dll` is what is missing there is the strongest available inference, not a measurement, and 40.7 exists because of that gap.
 - **The missing runtime was simulated, not removed.** `VCRUNTIME140.dll` was not uninstalled from this machine; a copy of the real binary was given an import name that does not resolve. The loader path, the exit code, the empty streams and the classification are all real; the DLL's absence is staged.
-- **No fix for the dependency was implemented, because none exists without administrator.** The unelevated extraction attempt in 40.7 is the measurement behind that statement, not an assumption.
+- **No fix for the dependency was implemented, because none exists without administrator.** The unelevated extraction attempt in 40.7 is the measurement behind that statement, not an assumption. What was NOT done, and should have been, is print the elevated command as the fix line - section 43 is the two days that cost.
 - **The `install.ps1` report was not watched end to end on a clean machine.** The changed lines were exercised through their own functions and through the suite, including the portable route running for real against an archive containing a tool that answers `--version` and one that does not.
 - **Smart App Control was never observed blocking anything.** This machine reports it OFF, so the branch that names it in the diagnostic is written and unexercised against a machine where it is on.
 
@@ -7543,3 +7538,117 @@ Between the fix and the gate above, the captain stopped every suite run on this 
 **Section 41 owns that entirely** - the bytes, the loader path, the measurement table, and the reason a `-NonInteractive` suite and an agent checking it both sail straight past it.
 It is named here only for the connection, which is this section's own thesis one turn further out: the ten above READ the machine they ran on and called it a behaviour, and that one WROTE to it.
 Both were invisible until the suite ran somewhere other than where it was written - for the ten a clean VM, for the dialog a seat whose error mode was not an agent's.
+
+## 43. The diagnosis shipped without its remedy, and the captain was told the answer by hand - `PROVEN (Windows 11) FOR THE GAP, THE PACKAGE IDENTIFIER AND THE FIX; THE CLEAN VM ITSELF IS STILL THE CAPTAIN'S`
+
+Section 40 is a good piece of work.
+It found that a correctly installed herdr was dying in the Windows loader, it reproduced the failure shape here, it made the exit code survive into the report, and it worked out what the missing DLL almost certainly was.
+Then it printed this at the captain, on a fresh VM, for two days:
+
+```
+[missing] tool herdr - 'herdr' resolves to ...\herdr\herdr.exe but answers
+          nothing to --version ... it exited 0xC0000135, which means a DLL it
+          needs is not on this machine, so Windows stopped it before it ran
+          any of its own code
+          fix: powershell -ExecutionPolicy Bypass -File .\install.ps1
+               # installs it from the vendor's own release archive, no administrator
+```
+
+**Read the two halves together.**
+The diagnosis is right, and the fix is the run that produced it.
+Pasting it re-expands the same archive, reaches the same dead binary, and prints the same two lines - forever.
+
+**The answer already existed in this file when that shipped.**
+Section 40.8 has said since 2026-08-21 what the captain should run, and section 40.9 recorded that no fix was implemented "because none exists without administrator" - which was true of INSTALLING it and was quietly read as also true of SAYING it.
+So the knowledge was written down, in the right file, and the installer would not say it.
+**The captain was told by hand, in chat.**
+
+### 43.1 The lesson, which is not the command
+
+The command is the small part; `Get-FmToolExitCodeRemedy` owns it now and it can be read there.
+What is worth keeping is the failure mode, because it is cheap to repeat:
+
+**A diagnosis that names a cause is not finished until the line under it resolves that cause.**
+
+Every ingredient of the right answer was present - the exit code, its meaning, the DLL name, the package, the fact that it needs elevation - and they were in three different places, none of which was the fix line.
+The work that produced them stopped at "the report now says what is wrong", which felt like the end of the task and was one step short of it.
+
+**And the standard it broke was already written down.**
+The captain set it two days earlier: every fix line this installer prints must be one they can paste and have succeed.
+`Get-FmToolFixCommand` exists BECAUSE of that standard - it was added so a portable route printed something runnable instead of the sentence "expand the cli/cli release asset ... into ...".
+It was then given a case it answered wrongly, and answered it confidently, because it was only ever asked which ROUTE the tool has and never what the tool had just DONE.
+
+**A wrong fix line is worse than none.**
+No fix line leaves the captain to search; a wrong one sends them round a loop with the installer's authority behind it, and the loop looks like progress.
+
+### 43.2 What changed
+
+`Get-FmToolExitCodeRemedy` sits beside `Get-FmToolExitCodeMeaning`, and is asked the same question the meaning is asked: not "which tool is this" but "what did Windows return".
+Three codes carry the remedy - `0xC0000135` (the DLL is absent), `0xC0000139` and `0xC0000138` (it is present and older than the build importing from it) - and the last two were also given meanings, which they did not have.
+`0xC0000142` and `0xC000007B` deliberately carry none: a DLL that loaded and failed its own initialisation, and a build for another processor, are not cured by installing a runtime, and a fix line that MIGHT work is the thing this exists to stop.
+
+`Get-FmToolFixCommand` now takes the exit code alongside the route, and the remedy wins.
+The route answers "this tool is not on the machine"; it is the wrong question entirely for a binary that is present, in the right place, and dies in the loader.
+`Get-FmMachineToolVerification` passes the code through, and the failed portable step says the same thing at the moment it fails, from the same owner.
+
+**The package identifier was verified against winget rather than against this document.**
+MEASURED here, winget v1.29.290, 2026-08-25:
+
+```
+> winget search -e --id Microsoft.VCRedist.2015+.x64 --source winget
+Name                                           Id                           Version
+-----------------------------------------------------------------------------------
+Microsoft Visual C++ v14 Redistributable (x64) Microsoft.VCRedist.2015+.x64 14.51.36247.0
+```
+
+Exactly one package, from the source this repo pins.
+`Microsoft.VCRedist.2015+.arm64` also resolves, and is deliberately NOT what is printed: herdr publishes one Windows build, `windows-x86_64`, so an ARM64 machine runs it under emulation and an emulated x64 process loads x64 DLLs.
+Choosing the package by the MACHINE's architecture would hand an ARM64 captain the one package that cannot satisfy the program that failed.
+
+The line is built by `Get-FmBootstrapWingetCommand`, so it carries `-e --id`, `--source winget` and both agreement flags rather than a second copy of them - which is what stops it asking a question on a console nobody is watching, the failure section 35 measured.
+
+**And it was checked as a PASTED line, not only as a string.**
+MEASURED, 2026-08-25: the whole thing, trailing `# ...` note included, parses as exactly one command with the `+` intact inside an unquoted argument, and running it verbatim answers.
+A test pins that through the PowerShell parser, because "reads like a command" and "is a command" are different claims and only one of them was being made before.
+
+### 43.3 The prerequisite check that was considered and NOT added
+
+**Judged, and the answer is no.**
+
+The obvious alternative is to check for the Visual C++ runtime up front, as a requirement in its own right, so the machine is told before a tool fails to start rather than through one.
+Three reasons it is the wrong shape here:
+
+- **It is not our dependency.**
+  It is herdr's.
+  A prerequisite list is a statement about what firstmate needs, and putting a third party's runtime on it makes that list wrong the day herdr links it statically - and it would stay wrong, because nothing would fail to tell us.
+- **The check that exists is stronger.**
+  Running the tool tests the ACTUAL import set of the ACTUAL binary on this machine.
+  A presence probe tests one guessed DLL name and can be wrong in both directions: silent when the missing import is something else, and alarming when a machine lacks a runtime that nothing on it needs.
+- **A prerequisite nobody asked for has a cost of its own.**
+  It is one more line on every clean install, on every machine, forever - including all the ones where herdr starts perfectly.
+
+The cost of not checking is one extra line in the report, on the runs where it actually matters, and that line is now the right one.
+**That is the whole trade, and it is why the remedy went where the meaning is instead of into a new check.**
+
+### 43.4 The bar did not move
+
+A named remedy proves nothing about the tool, and this changes nothing about the verdict:
+
+- herdr that cannot run is still classified `unknown-version`, still reported `[missing]`, and the run still ends `NOT READY`.
+- The portable install that placed the files and could not run them is still `failed`, not `installed`.
+- The tool is still proved the way everything else here is - by running it and reading a version.
+
+Tests pin each of those beside the new fix line, in the same `It` where possible, so a future change that softens the verdict to match the friendlier remedy fails on the same assertion that checks the remedy.
+
+### 43.5 What was NOT proven here
+
+- **The captain's VM was still never touched.**
+  Section 40.9's first bullet stands unchanged: that `VCRUNTIME140.dll` is the missing import THERE remains the strongest available inference, not a measurement.
+- **The remedy was not run to completion on a machine that lacked the runtime.**
+  This machine has it, so `winget install` would report it already present, which proves nothing about a machine that does not.
+  What was measured is that the command resolves exactly one package from the pinned source and that the printed line parses and runs as written.
+- **The reproduction is a `.cmd` returning the NTSTATUS, not a binary with a missing import.**
+  That is deliberate and it is the same seam section 40 used: it reproduces the shape that reaches the report - present, launchable, no version, and the code as the only evidence - on any machine.
+  The loader behaviour itself is section 40's measurement, not this one's.
+- **No clean machine has read the new line.**
+  It was exercised through the real detection, the real catalog and the real portable route; the clean-VM run is still the captain's.

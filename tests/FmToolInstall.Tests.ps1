@@ -1843,6 +1843,206 @@ Describe 'a tool that starts, dies before its own code, and prints nothing' {
     }
 }
 
+Describe 'a fix line for a missing dependency installs the dependency' {
+    # THE DEFECT, MEASURED on the captain's clean Windows 11 VM and left standing
+    # for two days. The diagnosis above landed and was right; the line under it
+    # was not:
+    #
+    #   [missing] tool herdr - 'herdr' resolves to ...\herdr.exe but answers
+    #             nothing to --version ... it exited 0xC0000135, which means a
+    #             DLL it needs is not on this machine ...
+    #             fix: powershell -ExecutionPolicy Bypass -File .\install.ps1
+    #
+    # The fix is the run that produced the diagnosis. Pasting it re-expands the
+    # same archive and reaches the same dead binary, forever. The captain had to
+    # be told the real answer - install the Visual C++ redistributable - by hand,
+    # in chat, because nothing in the installer would say it.
+    #
+    # The whole point of these tests is that the fix line for this failure can
+    # never quietly become the installer again.
+
+    BeforeAll {
+        # A .cmd that returns the NTSTATUS and prints nothing reproduces the
+        # captain's shape end to end - present, launchable, no version, and the
+        # code as the only evidence - on any machine, with no need for one that
+        # is actually missing a runtime.
+        $script:DllBin = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $script:DllBin -Force
+        Set-Content -LiteralPath (Join-Path $script:DllBin 'fm-no-runtime.cmd') `
+            -Value "@echo off`r`nexit /b -1073741515"
+        $script:SavedDllPath = $env:PATH
+    }
+    AfterEach { $env:PATH = $script:SavedDllPath }
+
+    It 'answers the codes that mean a dependency is missing, and only those' {
+        # 0xC0000135 the DLL is absent; 0xC0000139 and 0xC0000138 it is present
+        # and older than the build that imports from it. One fault, one command.
+        foreach ($code in @(-1073741515, -1073741511, -1073741512)) {
+            $remedy = Get-FmToolExitCodeRemedy -ExitCode $code
+            $remedy | Should -Not -BeNullOrEmpty -Because "0x$('{0:X8}' -f $code) says a dependency is missing"
+            $remedy.NeedsAdministrator | Should -BeTrue -Because 'the redistributable installs machine-wide'
+        }
+        # 0xC0000142 found the DLL and it would not initialise, and 0xC000007B
+        # is a build for another processor. Installing a runtime answers
+        # neither, and a fix line that might not work is what this exists to
+        # stop.
+        # 1 and 127 are this repo's own sentinels for a launch that was REFUSED
+        # and a command that was never FOUND - see Invoke-FmSessionCommandLine -
+        # so neither may pick up a remedy meant for a process that really ran.
+        foreach ($code in @(-1073741502, -1073741701, -1073741795, -1073741790, 127, 5, 1, 0)) {
+            Get-FmToolExitCodeRemedy -ExitCode $code | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'names the package winget itself resolves, from the source this repo pins' {
+        # VERIFIED against winget v1.29.290, 2026-08-25: `winget search -e --id
+        # Microsoft.VCRedist.2015+.x64 --source winget` resolves to exactly one
+        # package, "Microsoft Visual C++ v14 Redistributable (x64)".
+        $command = (Get-FmToolExitCodeRemedy -ExitCode -1073741515).Command
+        $command | Should -Match '(?<![\w.])Microsoft\.VCRedist\.2015\+\.x64(?![\w.])'
+        $command | Should -Match '--source winget' -Because 'every route here pins the source it needs'
+        $command | Should -Match '-e --id' -Because 'a bare winget install is a search, and a search asks a question'
+        $command | Should -Match '--accept-source-agreements'
+        $command | Should -Match '--accept-package-agreements'
+        # Built by the one owner of this repo's winget flags rather than by a
+        # second copy of them.
+        $command | Should -Be (Get-FmBootstrapWingetCommand -PackageId 'Microsoft.VCRedist.2015+.x64')
+    }
+
+    It 'takes the x64 redistributable, which is what the failing build needs' -Skip:(-not $IsWindows) {
+        # herdr publishes one Windows build, windows-x86_64 - see
+        # Get-FmBootstrapPortableRelease - so an ARM64 machine runs it under
+        # emulation and an emulated x64 process loads x64 DLLs. Choosing by the
+        # MACHINE's architecture would hand an ARM64 captain the one package
+        # that cannot satisfy the program that failed.
+        (Get-FmBootstrapPortableRelease -Tool 'herdr').AssetKey | Should -Be 'windows-x86_64'
+        (Get-FmToolExitCodeRemedy -ExitCode -1073741515).Command | Should -Not -Match 'arm64'
+    }
+
+    It 'is not the re-run-the-installer line' -Skip:(-not $IsWindows) {
+        # THE ACCEPTANCE TEST. The route for herdr is portable, so its fix line
+        # is normally this installer - correct for a tool that is absent, and a
+        # loop for one that is present and dies in the loader.
+        $route = Get-FmToolRoute -Tool 'herdr'
+        $loop = Get-FmToolFixCommand -Route $route
+        $loop | Should -Match 'install\.ps1' -Because 'that is still the right answer for a tool that is simply not here'
+
+        $fix = Get-FmToolFixCommand -Route $route -ExitCode -1073741515
+        $fix | Should -Not -Match 'install\.ps1' -Because 'the line that produced the diagnosis cannot be its cure'
+        $fix | Should -Match 'Microsoft\.VCRedist\.2015\+\.x64'
+    }
+
+    It 'says out loud that it needs an administrator window' {
+        # AGENTS.md's pattern for a step that genuinely needs elevation: name it,
+        # say why, carry on. A captain who pastes this into their ordinary shell
+        # and watches it fail is back where they started.
+        $fix = Get-FmToolFixCommand -Route (Get-FmToolRoute -Tool 'herdr') -ExitCode -1073741515
+        $fix | Should -Match 'ADMINISTRATOR'
+        $fix | Should -Match 'Visual C\+\+' -Because 'the captain is owed what they are being asked to install'
+    }
+
+    It 'stays one pasteable line, with the advice as a comment the shell ignores' {
+        # This repo's convention for advice attached to a command - see
+        # Get-FmBootstrapInstallCommand - is a trailing "  # ...", which is a
+        # comment in the shell it is pasted into, so the whole line runs as
+        # written.
+        $fix = Get-FmToolFixCommand -Route (Get-FmToolRoute -Tool 'herdr') -ExitCode -1073741515
+        @($fix -split '\r?\n').Count | Should -Be 1
+        $fix | Should -Match '\s#\s'
+        # And it PARSES as the one command it claims to be, rather than only
+        # reading like one - the '+' in the package id sits in an unquoted
+        # argument, which is the part worth proving.
+        $errors = $null
+        $null = [System.Management.Automation.Language.Parser]::ParseInput($fix, [ref]$null, [ref]$errors)
+        @($errors).Count | Should -Be 0
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput($fix, [ref]$null, [ref]$null)
+        $commands = @($ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true))
+        $commands.Count | Should -Be 1 -Because 'the comment must not parse as a second command'
+        $commands[0].CommandElements[0].Value | Should -Be 'winget'
+        # The id survives argument parsing whole, rather than being split at the
+        # '+' or swallowed by an operator.
+        @($commands[0].CommandElements | ForEach-Object { $_.Extent.Text }) |
+            Should -Contain 'Microsoft.VCRedist.2015+.x64'
+    }
+
+    It 'belongs to the code and not to herdr, so the next tool gets the same answer' {
+        # The remedy is asked of the CODE. A route with no relation to herdr,
+        # returning the same code, gets the same cure - which is what stops the
+        # next native tool that ships without its runtime repeating this.
+        $unrelated = [pscustomobject]@{
+            Tool = 'fm-othertool'; Kind = 'command'; Command = 'irm https://example.invalid/install.ps1 | iex'
+            Portable = $null; NeedsAdministrator = $false; Instructions = ''
+        }
+        Get-FmToolFixCommand -Route $unrelated -ExitCode -1073741515 |
+            Should -Be (Get-FmToolFixCommand -Route (Get-FmToolRoute -Tool 'herdr') -ExitCode -1073741515)
+        # And a code with no remedy leaves every route exactly as it was.
+        Get-FmToolFixCommand -Route $unrelated -ExitCode 5 | Should -Be $unrelated.Command
+        Get-FmToolFixCommand -Route $unrelated | Should -Be $unrelated.Command
+    }
+
+    It 'names the two codes that were unnamed, without displacing the ones that were not' {
+        Get-FmToolExitCodeMeaning -Command 'herdr' -ExitCode -1073741511 |
+            Should -Match 'does not contain something it imports'
+        Get-FmToolExitCodeMeaning -Command 'herdr' -ExitCode -1073741512 |
+            Should -Match 'ordinal'
+        # The entry the diagnosis work landed, unchanged.
+        Get-FmToolExitCodeMeaning -Command 'herdr' -ExitCode -1073741515 |
+            Should -Match 'DLL it needs is not on this machine'
+        Get-FmToolExitCodeMeaning -Command 'winget install demo' -ExitCode -1978335212 |
+            Should -Match 'no package matching'
+    }
+
+    It 'gives the captain the cure in the proving pass they actually read' -Skip:(-not $IsWindows) {
+        # End to end, through the real detection and the real catalog, on the
+        # exact pass whose output the brief quotes.
+        Mock Update-FmToolSessionPath { $env:PATH }
+        $env:PATH = $script:DllBin
+        try {
+            foreach ($entry in (Get-FmToolCatalog)) {
+                Copy-Item -LiteralPath (Join-Path $script:DllBin 'fm-no-runtime.cmd') `
+                    -Destination (Join-Path $script:DllBin ($entry.Command + '.cmd')) -Force
+            }
+            $herdr = @(Get-FmMachineToolVerification | Where-Object { $_.Name -eq 'tool herdr' })
+            $herdr.Count | Should -Be 1
+
+            # THE BAR IS UNCHANGED. A named remedy never turns unproven into
+            # installed: the tool is still not proved, still reported missing,
+            # and the run still ends NOT READY.
+            $herdr[0].Status | Should -Be 'missing' -Because 'naming a cure proves nothing about the tool'
+            $herdr[0].Detail | Should -Match 'not verified as the real tool'
+            $herdr[0].Detail | Should -Match '0xC0000135'
+
+            # And the line under it is now one that works.
+            $herdr[0].Fix | Should -Not -Match 'install\.ps1'
+            $herdr[0].Fix | Should -Match 'Microsoft\.VCRedist\.2015\+\.x64'
+            $herdr[0].Fix | Should -Match 'ADMINISTRATOR'
+        } finally {
+            $env:PATH = $script:SavedDllPath
+            Get-ChildItem -LiteralPath $script:DllBin -Filter '*.cmd' |
+                Where-Object { $_.Name -ne 'fm-no-runtime.cmd' } | Remove-Item -Force
+        }
+    }
+
+    It 'leaves the fix line alone for a tool that merely printed nothing' -Skip:(-not $IsWindows) {
+        # The neighbouring failure, which the route line IS right for: a tool
+        # that ran, exited cleanly and said nothing is not a dependency problem,
+        # and must not be sent to winget for a runtime it does not need.
+        Mock Update-FmToolSessionPath { $env:PATH }
+        $quiet = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $quiet -Force
+        $env:PATH = $quiet
+        try {
+            foreach ($entry in (Get-FmToolCatalog)) {
+                Set-Content -LiteralPath (Join-Path $quiet ($entry.Command + '.cmd')) -Value "@echo off`r`nexit /b 0"
+            }
+            $herdr = @(Get-FmMachineToolVerification | Where-Object { $_.Name -eq 'tool herdr' })
+            $herdr[0].Status | Should -Be 'missing'
+            $herdr[0].Fix | Should -Match 'install\.ps1'
+            $herdr[0].Fix | Should -Not -Match 'VCRedist'
+        } finally { $env:PATH = $script:SavedDllPath }
+    }
+}
+
 Describe 'a portable install is not finished until the tool RUNS' {
     # THE DEFECT, MEASURED in the captain's clean-VM log 2026-08-21: the same run
     # printed `[missing] tool herdr` and `summary: herdr installed
@@ -1932,6 +2132,23 @@ Describe 'a portable install is not finished until the tool RUNS' {
 
         $result.Action | Should -Be 'installed'
         $result.Detail | Should -Be (Join-Path $script:Root 'fm-livetool')
+    }
+
+    It 'says the cure on the step that failed, not only in the pass further down' -Skip:(-not $IsWindows) {
+        # This is the moment on a clean VM: the archive lands, the tool is run,
+        # and it dies in the loader. A step reported 'failed' has no fix slot of
+        # its own, so the remedy has to be in what it says - otherwise the
+        # captain reads "installed ... failed" here and only meets the answer
+        # pages later, which is how the last two days went.
+        $archive = New-RunnableToolArchive -Path (Join-Path $TestDrive 'noruntime.zip') `
+            -Tool 'fm-noruntimetool' -Body "@echo off`r`nexit /b -1073741515"
+        $result = Invoke-FmToolRoute -Route (New-PortableRoute -Tool 'fm-noruntimetool') `
+            -InstallRoot $script:Root -ArchivePath $archive -PathScope 'Process' -Confirm:$false
+
+        $result.Action | Should -Be 'failed' -Because 'a cure is not a proof'
+        $result.Detail | Should -Match '0xC0000135'
+        $result.Detail | Should -Match 'Microsoft\.VCRedist\.2015\+\.x64'
+        $result.Detail | Should -Match 'ADMINISTRATOR'
     }
 
     It 'reports FAILED, and says the machine refused it, for a release Windows will not start' -Skip:(-not $IsWindows) {

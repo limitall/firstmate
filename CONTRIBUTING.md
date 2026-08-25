@@ -120,7 +120,14 @@ section 2 lists the state-file formats).
   plainly that the step needs a person. When one fails, report what was run, the
   code the TOOL returned (a child `pwsh -Command` discards it), and the tool's
   own words quoted rather than distilled into a phrase; never summarise an error
-  into something that has to be guessed at later. `docs/windows-install.md`
+  into something that has to be guessed at later. **A cause is only half of it:
+  the fix line printed under a diagnosis must be a command that resolves THAT
+  cause, and one the captain can paste and have succeed.** A wrong fix line is
+  worse than none - it sends them round a loop with this repo's authority behind
+  it - and the way it happens is a remedy chosen from what the step was trying to
+  do rather than from what actually failed. Where the step genuinely needs
+  elevation, name it and say so; that is a legitimate answer here and never a
+  reason to print something weaker. `docs/windows-install.md`
   owns the full contract and what it cost to learn, including the one that is
   easy to get wrong: **every PowerShell child gets `-NonInteractive`, and it is
   NOT inherited**, so a grandchild needs its own.

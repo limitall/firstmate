@@ -382,6 +382,14 @@ The code was `0xC0000135` and says exactly what happened: a DLL it needs is miss
 Naming a cause never softens the verdict: an unproven tool is still unproven, and a required one still ends the run NOT READY.
 `docs/windows-e2e-evidence.md` section 40 has the reproduction and the evidence against the alternatives.
 
+**And the cure belongs with the cause, or the diagnosis sends the captain round a loop.**
+That diagnosis shipped with `fix: ... install.ps1` under it - the run that had just produced it - and stood for two days while the captain was told the real answer by hand.
+So `Get-FmToolExitCodeRemedy` sits beside the meaning and is asked the same question the meaning is asked: what did WINDOWS return, not which tool was being started.
+The codes that mean a dependency is missing answer with the command that installs it, and `Get-FmToolFixCommand` prefers that over the tool's own route - because a route answers "this tool is not here", which is the wrong question for a binary that is here and dies in the loader.
+That remedy needs administrator, so it says so; naming an elevated step and carrying on is the pattern below, not an exception to it.
+The runtime is NOT checked as a prerequisite of its own: it is herdr's dependency rather than this port's, and running the tool tests the real binary's real imports where a presence probe would test one guessed DLL name.
+`docs/windows-e2e-evidence.md` section 43 has the measurement, the verified package identifier and that judgment in full.
+
 **A portable install is not finished until the tool RUNS.**
 The command route has ended by reaching what it installed since the Claude CLI was reported missing by the run that installed it; the portable route ended at "the bytes are on disk", so one clean-VM report contained `[missing] tool herdr` and `summary: herdr installed` together.
 `Invoke-FmToolRoute` now proves a portable install by running the tool and reports `failed` - naming where the files went, and why it does not run - when it cannot.
@@ -393,6 +401,7 @@ That is not a claim that their installer is broken, and this file used to imply 
 `choco install gh` was measured failing with "Access to the path 'C:\ProgramData\chocolatey\lib-bad' is denied" on an unelevated session; the portable zip needed nothing.
 The routes that genuinely need elevation are the winget packages, which run machine-scope MSIs.
 Those are DECLARED by `Test-FmBootstrapInstallNeedsAdministrator`, named in the report, and skipped - never attempted, and never allowed to stop the rest of the run.
+The Visual C++ runtime remedy above is named the same way and for the same reason: this run prints the elevated command and takes no elevated step itself.
 
 **Three outcomes per requirement, not two.**
 `Get-FmToolClassification` is the single owner of the decision, and `older` and `unsupported` must never be blurred into each other:

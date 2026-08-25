@@ -132,6 +132,14 @@ function Get-FmMachineInstallPlan {
             # portable tool carries a stated minimum today, so the line is not
             # reachable yet; giving one a floor later must not silently turn it
             # into a sentence.
+            #
+            # DELIBERATELY WITHOUT -ExitCode, unlike the proving pass. This line
+            # is only ever printed for 'unsupported' - a tool that RAN and
+            # printed a version below the floor, so its code is 0 and there is
+            # nothing to pass. Passing it anyway would let a missing-dependency
+            # remedy through Get-FmToolUpdateCommand, which rewrites `winget
+            # install` to `winget upgrade` - the wrong verb entirely for a
+            # package that is not installed.
             UpdateCommand     = (Get-FmToolUpdateCommand -Command (Get-FmToolFixCommand -Route $route))
             Reason            = ''
             Question          = ''

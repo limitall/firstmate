@@ -705,7 +705,12 @@ function Get-FmMachineToolVerification {
             -Minimum $minimum.Version -CapabilityMet $capabilityMet -Launchable $status.Launchable
         $name = "tool $($entry.Label)"
         $status_ = if ($entry.Required) { 'missing' } else { 'warn' }
-        $fix = Get-FmToolFixCommand -Route (Get-FmToolRoute -Tool $entry.Tool)
+        # THE CODE GOES IN WITH THE ROUTE, because for one class of failure the
+        # route is the wrong answer: a tool that is present and dies in the
+        # loader is not cured by installing it again, and this run printed
+        # exactly that at the captain for two days. A tool that never started
+        # carries 0 here and gets its route line unchanged.
+        $fix = Get-FmToolFixCommand -Route (Get-FmToolRoute -Tool $entry.Tool) -ExitCode $status.ExitCode
 
         switch ($classification) {
             'missing' {

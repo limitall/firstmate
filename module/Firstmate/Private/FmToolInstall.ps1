@@ -911,10 +911,33 @@ function Get-FmToolRoute {
 # Every fix line this repo prints has to be one that works when pasted, so a
 # route nobody can type by hand answers with the thing that DOES it: this
 # installer, which needs no administrator and is safe to run again.
+#
+# EXCEPT WHEN THE TOOL IS ALREADY THERE AND CANNOT START. The route answers "this
+# tool is not on the machine"; it is the wrong question entirely for a binary
+# that is on the machine, in the right place, and dies in the loader. Printing
+# the installer at that captain sends them round a loop: it re-expands the same
+# archive and reaches the same dead binary. So an exit code that names a missing
+# dependency takes precedence over the route, because the dependency is what has
+# to be installed before the route's own work can matter.
 function Get-FmToolFixCommand {
     [CmdletBinding()]
     [OutputType([string])]
-    param([Parameter(Mandatory)]$Route)
+    param(
+        [Parameter(Mandatory)]$Route,
+        # What the tool RETURNED, where one was run. 0 for a tool that was never
+        # started - which is every caller asking about a tool that is simply
+        # absent, and is why this defaults rather than being demanded.
+        [int]$ExitCode = 0
+    )
+
+    $remedy = Get-FmToolExitCodeRemedy -ExitCode $ExitCode
+    if ($remedy) {
+        # The trailing "  # ..." is this repo's convention for advice attached to
+        # a command - see Get-FmBootstrapInstallCommand - and it is a comment in
+        # the shell it is pasted into, so the whole line runs as written.
+        $where = if ($remedy.NeedsAdministrator) { 'run this in an ADMINISTRATOR window' } else { 'no administrator needed' }
+        return "$($remedy.Command)  # $where - $($remedy.Detail)"
+    }
 
     switch ($Route.Kind) {
         'portable' { return 'powershell -ExecutionPolicy Bypass -File .\install.ps1   # installs it from the vendor''s own release archive, no administrator' }
@@ -1483,11 +1506,88 @@ function Get-FmToolExitCodeMeaning {
     # reported as "answers nothing to --version" and nothing more.
     switch ($ExitCode) {
         -1073741515 { return 'a DLL it needs is not on this machine, so Windows stopped it before it ran any of its own code' }
+        # THE SAME FAULT ONE STEP LATER, and both belong here because both are
+        # answered by the same remedy: the DLL was found and is the wrong one, so
+        # the export the program imports is not in it. An old runtime beside a
+        # newer build produces these, and installing the current runtime is what
+        # replaces it.
+        -1073741511 { return 'a DLL it needs is on this machine but does not contain something it imports, so the copy here is older than the build that needs it' }
+        -1073741512 { return 'a DLL it needs is on this machine but does not contain something it imports by ordinal, so the copy here is older than the build that needs it' }
         -1073741502 { return 'a DLL it needs is on this machine but would not initialise, so it stopped before it ran any of its own code' }
         -1073741701 { return 'Windows could not load it as a program - the usual cause is a build for a different processor architecture' }
         -1073741795 { return 'it used a processor instruction this machine does not have, so the build is for a newer CPU than this one' }
         -1073741790 { return 'this machine denied it access as it started' }
         default { return '' }
+    }
+}
+
+# THE CURE, KEPT BESIDE THE CAUSE.
+#
+# THE DEFECT, MEASURED on the captain's clean Windows 11 VM 2026-08-21 and left
+# standing for two days. The run diagnosed herdr exactly right - "it exited
+# 0xC0000135, which means a DLL it needs is not on this machine" - and then
+# printed, as the fix, the installer that had just produced that line. Running it
+# again re-expands the same archive and reaches the same dead binary, forever.
+# The captain had to be told the actual answer by hand, in chat.
+#
+# WHY IT LIVES WITH THE MEANING RATHER THAN WITH herdr. The codes above are
+# Windows' verdicts about a process that never reached its own first
+# instruction; nothing about them is particular to which program was started. A
+# remedy hung off the herdr route would have to be written again for the next
+# native tool that ships without its runtime, and would be missed. So the answer
+# is asked of the CODE, exactly like the meaning is, and every tool that returns
+# one of these gets the same answer.
+#
+# WHY THE VISUAL C++ RUNTIME IS THE ANSWER. It is the one shared runtime a fresh
+# Windows install does not have and a native tool routinely imports. herdr.exe
+# imports VCRUNTIME140.dll from it - read out of the binary's import table, not
+# guessed - and that DLL ships with the redistributable rather than with Windows.
+# `docs/windows-e2e-evidence.md` section 40.9 is careful about what that is: the
+# import is measured, and that it is the MISSING one on the captain's VM is the
+# strongest available inference, because that machine was never instrumented. A
+# named remedy is the right weight for an inference this strong - it costs one
+# line, it is correct for every clean machine, and it proves nothing on its own.
+#
+# WHY x64 AND NOT THE MACHINE'S ARCHITECTURE. herdr publishes one Windows build,
+# `windows-x86_64` - see Get-FmBootstrapPortableRelease - so an ARM64 machine
+# runs the x64 binary under emulation, and an emulated x64 process loads x64
+# DLLs. Picking the redistributable by the MACHINE's architecture would hand an
+# ARM64 captain the one package that cannot satisfy the program that failed.
+#
+# THE IDENTIFIER WAS VERIFIED AGAINST winget ITSELF, v1.29.290, 2026-08-25:
+# `winget search -e --id Microsoft.VCRedist.2015+.x64 --source winget` resolves
+# to exactly one package, "Microsoft Visual C++ v14 Redistributable (x64)"
+# 14.51.36247.0. The command is built by Get-FmBootstrapWingetCommand so it
+# carries this repo's pinned source and both agreement flags rather than a second
+# set.
+#
+# 0xC0000142 IS NOT ON THIS LIST, deliberately. That DLL was found and loaded and
+# its own initialisation failed, which installing it does not answer, and a fix
+# line that might not work is the thing this function exists to stop. Nor is
+# 0xC000007B: a build for another processor is cured by a different build, not by
+# a runtime.
+#
+# THIS DOES NOT LOWER THE BAR. It names what to run; it proves nothing. The tool
+# is still unproven, still reported, and the run still ends NOT READY until the
+# tool itself answers --version.
+function Get-FmToolExitCodeRemedy {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([Parameter(Mandatory)][int]$ExitCode)
+
+    # 0xC0000135 the DLL is absent; 0xC0000139 and 0xC0000138 it is present and
+    # too old to carry what is imported. All three are one fault - the runtime
+    # this machine has is not the runtime the build needs - and one command
+    # replaces it.
+    if ($ExitCode -notin @(-1073741515, -1073741511, -1073741512)) { return $null }
+
+    [pscustomobject]@{
+        Command            = (Get-FmBootstrapWingetCommand -PackageId 'Microsoft.VCRedist.2015+.x64')
+        NeedsAdministrator = $true
+        # What the command is FOR, in the captain's terms, so the fix line says
+        # why it is being asked for something the rest of this installer never
+        # asks for.
+        Detail             = 'the Visual C++ 2015-2022 runtime it needs is missing from this machine'
     }
 }
 
@@ -1642,8 +1742,19 @@ function Invoke-FmToolRoute {
                         -Consequence "the release expanded into $($installed.Detail) could not be exercised" `
                         -Remedy "Open a new window and run '$name --version' yourself.")
             } else {
-                "the release was expanded into $($installed.Detail), and " +
+                # THIS IS THE MOMENT THE CAPTAIN NEEDS THE CURE, on the step that
+                # failed rather than only in the proving pass further down. A
+                # step reported 'failed' has no fix slot of its own, so the
+                # remedy is said in the detail - by the same owner, so the two
+                # can never disagree.
+                $said = "the release was expanded into $($installed.Detail), and " +
                 (Get-FmToolUnprovenDetail -Command $name -Path $proof.Path -ExitCode $proof.ExitCode)
+                $remedy = Get-FmToolExitCodeRemedy -ExitCode $proof.ExitCode
+                if ($remedy) {
+                    $said += [System.Environment]::NewLine +
+                    "run this once in an ADMINISTRATOR window, then re-run this installer: $($remedy.Command)"
+                }
+                $said
             }
             return $result
         }
