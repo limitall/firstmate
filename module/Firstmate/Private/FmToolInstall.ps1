@@ -62,18 +62,27 @@ Set-StrictMode -Version Latest
 # validation pipeline would leave a machine carrying a tool nothing here may use.
 # Get-FmToolExcluded records that decision so the installer can say so out loud
 # rather than letting the gap read as an oversight.
+#
+# RUNTIME NAMES THE ONE TOOL THAT IMPORTS A RUNTIME WINDOWS DOES NOT SHIP, and
+# it is a fact about that tool rather than about firstmate. MEASURED from
+# herdr.exe 0.8.2's own import table, not guessed - docs/windows-e2e-evidence.md
+# section 40.3 has the full list, and VCRUNTIME140.dll is the single name on it
+# that a clean Windows 11 install does not have. It lives here, on the row for
+# the tool that has the import, so the day herdr links it statically this row
+# changes and nothing else does. Get-FmToolRuntimeRequirement owns what the
+# runtime IS; this owns which tools need it.
 $script:FmToolCatalog = @(
-    @{ Tool = 'git';                 Command = 'git';                 Label = 'git';                 Why = 'isolated copies for workers';     Required = $true }
-    @{ Tool = 'node';                Command = 'node';                Label = 'Node.js';             Why = 'carries the npm-published axi tools'; Required = $true }
-    @{ Tool = 'claude';              Command = 'claude';              Label = 'Claude CLI';          Why = 'firstmate itself';                Required = $true }
-    @{ Tool = 'herdr';               Command = 'herdr';               Label = 'herdr';               Why = 'worker sessions';                 Required = $true }
-    @{ Tool = 'treehouse';           Command = 'treehouse';           Label = 'treehouse';           Why = 'isolated worktrees, leased';      Required = $true }
-    @{ Tool = 'gh';                  Command = 'gh';                  Label = 'gh';                  Why = 'pull requests';                   Required = $false }
-    @{ Tool = 'gh-axi';              Command = 'gh-axi';              Label = 'gh-axi';              Why = 'GitHub, ergonomically';           Required = $false }
-    @{ Tool = 'chrome-devtools-axi'; Command = 'chrome-devtools-axi'; Label = 'chrome-devtools-axi'; Why = 'browser work';                    Required = $false }
-    @{ Tool = 'lavish-axi';          Command = 'lavish-axi';          Label = 'lavish-axi';          Why = 'visual reviews';                  Required = $false }
-    @{ Tool = 'tasks-axi';           Command = 'tasks-axi';           Label = 'tasks-axi';           Why = 'shared backlog format';           Required = $false }
-    @{ Tool = 'quota-axi';           Command = 'quota-axi';           Label = 'quota-axi';           Why = 'model headroom before dispatch';  Required = $false }
+    @{ Tool = 'git';                 Command = 'git';                 Label = 'git';                 Why = 'isolated copies for workers';     Required = $true;  Runtime = $false }
+    @{ Tool = 'node';                Command = 'node';                Label = 'Node.js';             Why = 'carries the npm-published axi tools'; Required = $true;  Runtime = $false }
+    @{ Tool = 'claude';              Command = 'claude';              Label = 'Claude CLI';          Why = 'firstmate itself';                Required = $true;  Runtime = $false }
+    @{ Tool = 'herdr';               Command = 'herdr';               Label = 'herdr';               Why = 'worker sessions';                 Required = $true;  Runtime = $true }
+    @{ Tool = 'treehouse';           Command = 'treehouse';           Label = 'treehouse';           Why = 'isolated worktrees, leased';      Required = $true;  Runtime = $false }
+    @{ Tool = 'gh';                  Command = 'gh';                  Label = 'gh';                  Why = 'pull requests';                   Required = $false; Runtime = $false }
+    @{ Tool = 'gh-axi';              Command = 'gh-axi';              Label = 'gh-axi';              Why = 'GitHub, ergonomically';           Required = $false; Runtime = $false }
+    @{ Tool = 'chrome-devtools-axi'; Command = 'chrome-devtools-axi'; Label = 'chrome-devtools-axi'; Why = 'browser work';                    Required = $false; Runtime = $false }
+    @{ Tool = 'lavish-axi';          Command = 'lavish-axi';          Label = 'lavish-axi';          Why = 'visual reviews';                  Required = $false; Runtime = $false }
+    @{ Tool = 'tasks-axi';           Command = 'tasks-axi';           Label = 'tasks-axi';           Why = 'shared backlog format';           Required = $false; Runtime = $false }
+    @{ Tool = 'quota-axi';           Command = 'quota-axi';           Label = 'quota-axi';           Why = 'model headroom before dispatch';  Required = $false; Runtime = $false }
 )
 
 function Get-FmToolCatalog {
@@ -88,6 +97,7 @@ function Get-FmToolCatalog {
                 Label    = [string]$_.Label
                 Why      = [string]$_.Why
                 Required = [bool]$_.Required
+                Runtime  = [bool]$_.Runtime
             }
         })
     if ($RequiredOnly) { return @($entries | Where-Object { $_.Required }) }
@@ -788,6 +798,458 @@ function Get-FmToolEnablerStatus {
         Fix         = 'it arrives with Node.js, so it appears once Node.js is installed - re-run this installer afterwards'
     }
     $enablers
+}
+
+# --- the runtime a native tool needs, and the ONE step that asks for administrator ---
+#
+# WHY THIS EXISTS AT ALL, and why it reverses a decision recorded in
+# docs/windows-e2e-evidence.md section 43.3. That section considered checking for
+# the Visual C++ runtime up front and said no, on three grounds: it is herdr's
+# dependency rather than firstmate's, running the tool tests the ACTUAL imports
+# where a presence probe tests a guessed name, and a prerequisite nobody asked
+# for costs a line on every clean install forever. It printed the elevated
+# command instead and took no elevated step, because this installer's standing
+# rule is that nothing here needs administrator.
+#
+# THE CAPTAIN OVERRULED IT, and they were right. That rule was ours; their
+# instruction is that everything must be done from the script and nothing left
+# for them to run by hand. They had already run the printed line themselves on a
+# fresh VM, which is precisely what the rule was supposed to prevent.
+#
+# WHAT SURVIVES OF 43.3, because two thirds of it were never wrong:
+#
+#   - It is still herdr's dependency, so the FACT lives on herdr's catalog row
+#     (Runtime = $true, read out of its import table) rather than on a standing
+#     list of things firstmate needs. The day herdr links it statically, that
+#     row changes and this whole check goes quiet on its own.
+#   - Running the tool is still the stronger test, so it still WINS here:
+#     Get-FmToolRuntimeStatus asks the loader first and the filesystem only when
+#     no tool that imports the runtime has been run yet. The bar does not move -
+#     installing the runtime never certifies herdr, which is still proved by
+#     running it and reading a version back.
+#   - The cost is now paid for. The line on a clean install is no longer a
+#     prerequisite nobody asked for; it is the step that installs it.
+#
+# AND IT DOES NOT BREAK THE NO-PROMPTING RULE, which is a real rule with a real
+# measurement behind it. docs/windows-install.md draws that line exactly: an
+# installer may ask a question IT composed and printed, and must never let a
+# child it started for verification ask one. A Windows consent dialog raised
+# immediately under a printed paragraph saying what is about to be installed and
+# why is the first kind. install.ps1 prints that paragraph, and is also the only
+# caller that ever enables this - -Unattended and a redirected stdin both skip
+# it, because a dialog nobody is there to see is exactly the halt that rule is
+# about.
+
+# WHAT THE RUNTIME IS, in one place. The package id, the DLL and the machine
+# type are one fact about one Microsoft redistributable, and three callers need
+# parts of it: the detection, the elevated install, and the fix line printed
+# when a tool dies in the loader.
+#
+# VCRUNTIME140.dll is MEASURED, not guessed - docs/windows-e2e-evidence.md
+# section 40.3 read herdr.exe 0.8.2's import table and found it the one name on
+# it that a Windows installation does not supply.
+#
+# x64 AND NOT THE MACHINE'S ARCHITECTURE. herdr publishes one Windows build,
+# windows-x86_64, so an ARM64 machine runs it under emulation and an emulated
+# x64 process loads x64 DLLs. Both halves of this record follow from that: the
+# package is the x64 one, and a copy of the DLL that is not an x64 image does
+# not answer for it however present it looks.
+function Get-FmToolRuntimeRequirement {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param()
+
+    [pscustomobject]@{
+        Name      = 'vcredist'
+        Label     = 'Visual C++ runtime'
+        PackageId = 'Microsoft.VCRedist.2015+.x64'
+        Dll       = 'VCRUNTIME140.dll'
+        Machine   = 'x64'
+        Enables   = 'herdr, which is what worker sessions run in - it imports a runtime Windows does not ship'
+        Detail    = 'the Visual C++ 2015-2022 runtime it needs is missing from this machine'
+    }
+}
+
+# What processor a file on disk was built for, read out of its PE header.
+#
+# THIS IS WHAT STOPS THE PROBE LYING. "VCRUNTIME140.dll exists" is not the
+# question; "would an x64 process load THIS file" is. A machine carrying only
+# the 32-bit redistributable has the name in SysWOW64, and an ARM64 machine
+# carrying only the ARM64 one has it in System32 - both read as present to a
+# bare Test-Path, and neither can satisfy the emulated x64 build that failed.
+# Returns '' for anything that is not a PE image at all, which is the right
+# answer for a file that could not be loaded whatever else is true.
+function Get-FmToolImageMachine {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+    } catch {
+        Write-Debug "could not read '$Path' to identify it: $_"
+        return ''
+    }
+    try {
+        $dos = [byte[]]::new(0x40)
+        if ($stream.Read($dos, 0, 0x40) -lt 0x40) { return '' }
+        # 'MZ', and then the offset the DOS stub keeps to the real header.
+        if ($dos[0] -ne 0x4D -or $dos[1] -ne 0x5A) { return '' }
+        $peOffset = [System.BitConverter]::ToInt32($dos, 0x3C)
+        if ($peOffset -le 0 -or ($peOffset + 6) -gt $stream.Length) { return '' }
+        $stream.Position = $peOffset
+        $header = [byte[]]::new(6)
+        if ($stream.Read($header, 0, 6) -lt 6) { return '' }
+        # 'PE\0\0', then the machine field.
+        if ($header[0] -ne 0x50 -or $header[1] -ne 0x45 -or $header[2] -ne 0 -or $header[3] -ne 0) { return '' }
+        $machine = [System.BitConverter]::ToUInt16($header, 4)
+        switch ($machine) {
+            0x8664 { return 'x64' }
+            0x014C { return 'x86' }
+            0xAA64 { return 'arm64' }
+            default { return ('0x{0:X4}' -f $machine) }
+        }
+    } catch {
+        Write-Debug "could not identify '$Path': $_"
+        return ''
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+# Where an x64 process's loader would look for this DLL.
+#
+# The same list the diagnostic in docs/windows-e2e-evidence.md section 40.7 uses,
+# which was run against all three cases before it was written down: the system
+# directory, the Windows directory, then PATH. The exe's own directory is not on
+# it because this may run before any tool that needs the runtime is on the
+# machine at all - and a tool that shipped its own copy beside itself would
+# START, which is answered above this one and never reaches the files.
+function Get-FmToolRuntimeSearchPath {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+
+    $directories = @()
+    if ($env:SystemRoot) {
+        $directories += (Join-Path $env:SystemRoot 'System32')
+        $directories += $env:SystemRoot
+    }
+    if ($env:PATH) {
+        $directories += @($env:PATH -split [System.IO.Path]::PathSeparator | Where-Object { $_ })
+    }
+    [string[]]@($directories)
+}
+
+# Is the runtime on this machine, and what says so.
+#
+# THE ORDER IS THE WHOLE DESIGN, and it is chosen so this can never report
+# present on a machine where the loader would still fail:
+#
+#   1. A tool that imports it and DIED in the loader. Windows has already
+#      answered the question and its answer beats any file on disk - this is the
+#      case a file probe cannot see, where the DLL is present and older than the
+#      build importing from it (0xC0000139 / 0xC0000138).
+#   2. A tool that imports it and RAN, printing a version. The loader resolved
+#      every import it has; nothing on disk can contradict that.
+#   3. Only then, the file: the DLL, in the directories an x64 loader searches,
+#      and an x64 image where one is found.
+#
+# 3 IS THE ONE THAT CAN STILL BE OPTIMISTIC, and it is named here rather than
+# hidden: a copy that is present, x64 and older than some future build needs
+# reads as present until a tool is actually run against it. That is exactly why
+# the tool proof stays the authority on whether this machine is ready, and why
+# the remedy line survives on every path below.
+#
+# -SearchPath is the suite's seam, and a test that uses it stages $env:PATH too:
+# stages 1 and 2 read the real PATH, so a machine with a working herdr on it
+# would otherwise answer before the files are ever looked at.
+function Get-FmToolRuntimeStatus {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([AllowEmptyCollection()][string[]]$SearchPath = @())
+
+    $requirement = Get-FmToolRuntimeRequirement
+    $answer = [pscustomobject]@{
+        Label   = $requirement.Label
+        Dll     = $requirement.Dll
+        Present = $false
+        Path    = ''
+        Machine = ''
+        Source  = 'nothing'
+        Detail  = ''
+        # CARRIED ON THE RECORD so the one caller outside this module -
+        # install.ps1, which prints it before raising the consent dialog and
+        # again when it cannot - never builds a second copy of the line. It is
+        # here for the same reason a requirement carries UpdateCommand.
+        Command = (Get-FmBootstrapWingetCommand -PackageId $requirement.PackageId)
+    }
+
+    # 1 and 2: what the loader itself has already said, where a tool that
+    # imports the runtime is on this machine.
+    $ran = @()
+    foreach ($entry in @(Get-FmToolCatalog | Where-Object { $_.Runtime })) {
+        $status = Get-FmToolStatus -Command $entry.Command
+        if (-not $status.Present) { continue }
+        if (Get-FmToolExitCodeRemedy -ExitCode $status.ExitCode) {
+            $answer.Source = 'the loader'
+            $answer.Detail = ("$($entry.Label) is installed on this machine and Windows stopped it before it ran, " +
+                "which is what a missing or outdated $($requirement.Dll) does")
+            return $answer
+        }
+        if ($status.Version) { $ran += $entry.Label }
+    }
+    if ($ran.Count -gt 0) {
+        $answer.Present = $true
+        $answer.Source = 'the loader'
+        $answer.Detail = "$($ran[0]) runs on this machine, so every import it has, including $($requirement.Dll), resolved"
+        return $answer
+    }
+
+    # 3: the file, where an x64 loader would look for it.
+    $directories = if ($SearchPath.Count -gt 0) { @($SearchPath) } else { @(Get-FmToolRuntimeSearchPath) }
+    $wrongMachine = ''
+    foreach ($directory in $directories) {
+        $candidate = ''
+        try { $candidate = Join-Path $directory $requirement.Dll } catch { continue }
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        $machine = Get-FmToolImageMachine -Path $candidate
+        if ($machine -eq $requirement.Machine) {
+            $answer.Present = $true
+            $answer.Path = $candidate
+            $answer.Machine = $machine
+            $answer.Source = 'the file'
+            $answer.Detail = "$($requirement.Dll) is on this machine, as an $machine build, at $candidate"
+            return $answer
+        }
+        if ($machine -and -not $wrongMachine) {
+            $wrongMachine = $machine
+            $answer.Path = $candidate
+        }
+    }
+
+    $answer.Source = 'the file'
+    $answer.Machine = $wrongMachine
+    $answer.Detail = if ($wrongMachine) {
+        ("the only $($requirement.Dll) on this machine is an $wrongMachine build, and the tools that need it are " +
+            "$($requirement.Machine) - so it cannot satisfy them")
+    } else {
+        "$($requirement.Dll) is not on this machine, and it is not part of Windows - it comes from a Microsoft redistributable"
+    }
+    $answer
+}
+
+# Start one program elevated, and never let the refusal escape.
+#
+# THE ONLY PLACE IN THIS REPO THAT RAISES A CONSENT DIALOG, deliberately kept to
+# one function so that the suite can mock it and so that there is exactly one
+# thing to read when asking what this installer can ask for. A test must never
+# reach the real one: docs/windows-e2e-evidence.md section 41 is what a suite
+# putting a Windows dialog on the captain's desktop costs, and a consent dialog
+# is that with the stakes raised.
+#
+# DECLINING IS NOT A FAILURE, and it does not arrive as a distinguishable one:
+# Windows reports a dismissed consent dialog as a plain Win32 error 1223, so it
+# is read from the exception's NativeErrorCode rather than from its message,
+# which is translated on the captain's machine and would match nothing.
+#
+# NO OUTPUT IS COLLECTED, and that is not an oversight. Elevation goes through
+# the shell, and .NET refuses to redirect the streams of a process started that
+# way - the same constraint Invoke-FmToolShellCommand records from the other
+# side. So the exit code is all there is, and the caller does not trust it: it
+# re-reads the machine afterwards, which is this repo's rule for every install.
+function Start-FmToolElevated {
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [AllowEmptyCollection()][string[]]$ArgumentList = @()
+    )
+
+    $result = [pscustomobject]@{
+        Started   = $false
+        Declined  = $false
+        ExitKnown = $false
+        ExitCode  = 0
+    }
+
+    if (-not $IsWindows) { return $result }
+    if (-not $PSCmdlet.ShouldProcess($FilePath, 'run elevated, which asks Windows for consent')) { return $result }
+
+    $start = @{ FilePath = $FilePath; Verb = 'RunAs'; Wait = $true; PassThru = $true; ErrorAction = 'Stop' }
+    if ($ArgumentList.Count -gt 0) { $start['ArgumentList'] = $ArgumentList }
+    try {
+        $process = Start-Process @start
+    } catch {
+        # 1223 is ERROR_CANCELLED: the captain saw the dialog and said no. Every
+        # other refusal is the machine declining the launch, which is a
+        # different sentence and a different outcome.
+        $exception = $_.Exception
+        while ($exception -and -not ($exception -is [System.ComponentModel.Win32Exception])) {
+            $exception = $exception.InnerException
+        }
+        if ($exception -and $exception.NativeErrorCode -eq 1223) { $result.Declined = $true }
+        Write-Debug "could not start '$FilePath' elevated: $_"
+        return $result
+    }
+
+    $result.Started = $true
+    # A parent cannot always read an elevated child's exit code, so this is
+    # reported as known or not rather than defaulted to 0 - which would be
+    # indistinguishable from success.
+    try {
+        if ($process) {
+            $result.ExitCode = [int]$process.ExitCode
+            $result.ExitKnown = $true
+        }
+    } catch {
+        Write-Debug "the elevated process did not hand back an exit code: $_"
+    }
+    $result
+}
+
+# Install the runtime, asking for administrator exactly once.
+#
+# THE CALLER HAS ALREADY TOLD THE CAPTAIN what is about to appear on their
+# screen: this is reached only from install.ps1, only after it has printed what
+# is being installed and why, and only when there is somebody at the keyboard.
+#
+# EVERY WAY OUT OF HERE IS SAFE. Declining, no winget, a refused launch and a
+# failed install all return an outcome and let the run carry on, and each one
+# carries the same command the captain can run themselves - which is what this
+# installer printed before it could take the step at all.
+#
+# IT PROVES ITSELF BY RE-READING THE MACHINE rather than by winget's exit code.
+# That is this repo's oldest rule about installs, and here it also covers the
+# case where an elevated child's code cannot be read back at all.
+function Install-FmToolRuntime {
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [OutputType([pscustomobject])]
+    param(
+        # What this run already found, so the machine is not re-read between the
+        # paragraph the captain was shown and the dialog it describes.
+        [object]$Status = $null,
+        # The suite's seam and the enabler's answer in one: winget resolved by
+        # its real location rather than by name.
+        [string]$WingetPath = ''
+    )
+
+    $requirement = Get-FmToolRuntimeRequirement
+    $command = Get-FmBootstrapWingetCommand -PackageId $requirement.PackageId
+    $result = [pscustomobject]@{ Action = 'skipped'; Detail = ''; Command = $command }
+
+    $before = if ($Status) { $Status } else { Get-FmToolRuntimeStatus }
+    if ($before.Present) {
+        $result.Action = 'already-present'
+        $result.Detail = $before.Detail
+        return $result
+    }
+
+    $winget = if ($WingetPath) { $WingetPath } else { Get-FmToolWingetPath }
+    if (-not $winget) {
+        $result.Action = 'blocked'
+        $result.Detail = ("winget is not on this machine, so this step could not run it. Install 'App Installer' from " +
+            'the Microsoft Store, or install the runtime yourself from https://aka.ms/vs/17/release/vc_redist.x64.exe')
+        return $result
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($requirement.Label, "install with: $command")) {
+        $result.Detail = 'WhatIf'
+        return $result
+    }
+
+    $run = Start-FmToolElevated -FilePath $winget `
+        -ArgumentList (Get-FmBootstrapWingetArgument -PackageId $requirement.PackageId) -Confirm:$false
+    if ($run.Declined) {
+        $result.Action = 'declined'
+        $result.Detail = ('you said no to the administrator prompt, so nothing was installed and the rest of this run ' +
+            "carried on. Run this in an ADMINISTRATOR window when you want it: $command")
+        return $result
+    }
+    if (-not $run.Started) {
+        $result.Action = 'blocked'
+        $result.Detail = (Get-FmToolLaunchRefusal -Program $winget `
+                -Consequence "$($requirement.Label) was not installed" `
+                -Remedy "Run this yourself in an ADMINISTRATOR window: $command")
+        return $result
+    }
+
+    # THE INSTALL IS WHAT THE MACHINE SAYS AFTERWARDS, not what the installer
+    # said about itself.
+    $after = Get-FmToolRuntimeStatus
+    if ($after.Present) {
+        $result.Action = 'installed'
+        $result.Detail = $after.Detail
+        return $result
+    }
+
+    $result.Action = 'failed'
+    $said = if ($run.ExitKnown) {
+        (Get-FmToolRunFailureDetail -Command $command -ExitCode $run.ExitCode -AsRun $winget)
+    } else {
+        "'$command' ran elevated and did not hand back an exit code this run could read"
+    }
+    $result.Detail = ($said + [System.Environment]::NewLine +
+        "$($requirement.Dll) is still not on this machine. Run that line yourself in an ADMINISTRATOR window.")
+    $result
+}
+
+# The whole of step 0 as one decision, so the switch that gates the consent
+# dialog is a thing the suite can hold rather than a branch nobody can reach
+# without a real install.
+#
+# THE SWITCH IS THE WHOLE POINT. -InstallRuntime is install.ps1 saying two
+# things at once: the captain has been shown what is about to appear on their
+# screen, and there is somebody at the keyboard to answer it. Without it nothing
+# is elevated and nothing is asked - the step is a skip that carries the command,
+# which is exactly what this installer did before it could take the step at all.
+function Invoke-FmToolRuntimeStep {
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [OutputType([pscustomobject])]
+    param(
+        # The plan's runtime record, so the machine is not re-read between the
+        # paragraph the captain was shown and the dialog it describes.
+        [Parameter(Mandatory)]$Runtime,
+        # The run is really doing things, rather than a -WhatIf pass.
+        [switch]$Performed,
+        # install.ps1's consent to raise the dialog. See above.
+        [switch]$InstallRuntime
+    )
+
+    $outcome = [pscustomobject]@{
+        Kind           = 'runtime'
+        Label          = $Runtime.Label
+        Classification = $(if ($Runtime.Present) { 'current' } else { 'missing' })
+        Outcome        = 'skipped'
+        Detail         = ''
+    }
+    $action = 'skipped'
+
+    if (-not $Performed) {
+        $outcome.Detail = 'WhatIf'
+    } elseif ($Runtime.Present) {
+        $outcome.Outcome = 'already-present'
+        $outcome.Detail = $Runtime.Detail
+        $action = 'already'
+    } elseif (-not $InstallRuntime) {
+        $outcome.Detail = ('nothing was elevated, because this run had nobody at the keyboard to answer an ' +
+            "administrator prompt. Run this yourself in an ADMINISTRATOR window: $($Runtime.Command)")
+    } else {
+        $install = Install-FmToolRuntime -Status $Runtime -Confirm:$false
+        $outcome.Outcome = $install.Action
+        $outcome.Detail = $install.Detail
+        if ($install.Action -eq 'installed') { $action = 'created' }
+    }
+
+    # A step that did not do what it set out to says so in its own line, in the
+    # transcript, rather than only in the summary at the end.
+    $prefix = if ($outcome.Outcome -in @('failed', 'blocked', 'declined')) {
+        $outcome.Outcome.ToUpperInvariant() + ': '
+    } else { '' }
+    [pscustomobject]@{
+        Outcome = $outcome
+        Step    = (New-FmInstallStep -Name $outcome.Label -Action $action -Detail ($prefix + $outcome.Detail))
+    }
 }
 
 # --- what is here, and what version ---------------------------------------------
@@ -1581,13 +2043,19 @@ function Get-FmToolExitCodeRemedy {
     # replaces it.
     if ($ExitCode -notin @(-1073741515, -1073741511, -1073741512)) { return $null }
 
+    # THE PACKAGE AND ITS DESCRIPTION COME FROM Get-FmToolRuntimeRequirement,
+    # which is the one owner of what this runtime is. This line is now the
+    # SECOND thing that acts on that fact - the installer takes the step itself
+    # since the captain asked for it - and the two agreeing has to be structural
+    # rather than remembered.
+    $requirement = Get-FmToolRuntimeRequirement
     [pscustomobject]@{
-        Command            = (Get-FmBootstrapWingetCommand -PackageId 'Microsoft.VCRedist.2015+.x64')
+        Command            = (Get-FmBootstrapWingetCommand -PackageId $requirement.PackageId)
         NeedsAdministrator = $true
         # What the command is FOR, in the captain's terms, so the fix line says
-        # why it is being asked for something the rest of this installer never
-        # asks for.
-        Detail             = 'the Visual C++ 2015-2022 runtime it needs is missing from this machine'
+        # why it is being asked for something the rest of this installer only
+        # asks for once.
+        Detail             = $requirement.Detail
     }
 }
 

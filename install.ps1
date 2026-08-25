@@ -48,11 +48,16 @@ is named, with the reason, and with whatever the tool itself said. A step you
 have to perform yourself for the machine to work is a defect in this script, not
 an instruction to you.
 
-NO STEP NEEDS ADMINISTRATOR. Every tool comes from a per-user installer or a
-release archive expanded under %LOCALAPPDATA%\Programs. A route that genuinely
-needs elevation is named and skipped on an unelevated run, and everything else
-still installs. Only git's route is in that state, and a machine that cloned
-this repo already has git.
+ONE STEP ASKS FOR ADMINISTRATOR, and it is the only one. Every TOOL comes from a
+per-user installer or a release archive expanded under %LOCALAPPDATA%\Programs,
+and none of those needs elevation; a route that would is named and skipped, and
+everything else still installs. What does need it is the Visual C++ runtime -
+not firstmate's, but herdr's, which Windows stops before it runs a line of its
+own code without it. This run tells you what it is and why, then lets Windows
+ask you to allow that one install. Saying no is safe: everything else still
+installs, the run still finishes, and it ends by telling you herdr could not be
+proven and naming the command. -Unattended skips the whole step and says so,
+because a consent dialog nobody is there to see is a run that stops forever.
 
 WHERE THE CHECKOUT IS, ASKED FIRST. A clone somewhere Windows guards refuses a
 write two thirds of the way in, with a message about whichever step happened to
@@ -72,8 +77,10 @@ RE-RUNNING IS SAFE. Nothing already current is touched.
 
 .PARAMETER Unattended
 Never ask anything: install what is missing and leave every older-but-working
-tool exactly as it is. This is the safe default for every question. `-Yes` is
-the same switch.
+tool exactly as it is. This is the safe default for every question, and it
+includes the administrator prompt for the Visual C++ runtime - that step is
+skipped and reported as skipped, never raised where nobody can answer it.
+`-Yes` is the same switch.
 
 .PARAMETER SkipOptional
 Install only what firstmate cannot run without.
@@ -237,13 +244,21 @@ function Say { param([string]$Text = '') [Console]::Out.WriteLine($Text) }
 function Warn { param([string]$Text) [Console]::Error.WriteLine($Text) }
 
 # A prompt is only legitimate when the captain is at the keyboard. A redirected
-# stdin, a CI run, or -Unattended all take the safe default instead of waiting
-# for an answer nobody is there to give.
+# stdin, a CI run, or -Unattended all mean nobody is there to answer.
+#
+# THE ADMINISTRATOR PROMPT ASKS THIS TOO, and it has to. -Unattended's documented
+# meaning is "never ask anything", and a Windows consent dialog is asking - one
+# nobody would ever see, on a run that has already gone on without a person.
+function Test-CaptainPresent {
+    if ($Unattended) { return $false }
+    if ([Console]::IsInputRedirected) { return $false }
+    $true
+}
+
 function Confirm-Update {
     param([Parameter(Mandatory)][string]$Question)
 
-    if ($Unattended) { return $false }
-    if ([Console]::IsInputRedirected) { return $false }
+    if (-not (Test-CaptainPresent)) { return $false }
     Say ''
     Say "  $Question"
     $answer = Read-Host '  Update it? [y/N]'
@@ -313,6 +328,53 @@ foreach ($requirement in $plan.Older) {
 }
 if ($plan.Older.Count -gt 0) { Say '' }
 
+# ---- 3a. the ONE step that needs administrator ------------------------------
+#
+# THE CAPTAIN'S INSTRUCTION, and it overrides a rule this installer set itself:
+# everything must be done from this script, with nothing left for them to run by
+# hand. This run used to print the command for the Visual C++ runtime and stop
+# there - and they ran it themselves on a fresh VM, which is exactly what the
+# rule was supposed to prevent.
+#
+# WINDOWS CAN ELEVATE ONE CHILD, so this run stays unelevated and one step asks.
+# What appears is the standard consent dialog, and it is raised immediately under
+# the paragraph below - because a consent dialog with no explanation above it is
+# indistinguishable from something going wrong.
+#
+# NOBODY AT THE KEYBOARD MEANS NOBODY TO SEE IT. -Unattended and a redirected
+# stdin both skip this entirely and say so; a dialog waiting on a person who is
+# not there is the halt this installer's no-prompting rule exists to prevent.
+$installRuntime = $false
+if (-not $plan.Runtime.Present) {
+    Say '  ONE THING ON THIS MACHINE NEEDS ADMINISTRATOR, and it is not firstmate:'
+    Say ''
+    Say "    $($plan.Runtime.Detail)"
+    Say ''
+    Say '  herdr - what worker sessions run in - imports it, and Windows stops a program'
+    Say '  that needs it before it runs a line of its own code. The runtime installs'
+    Say '  machine-wide, which is the whole reason this one step asks when nothing else'
+    Say '  in this run does.'
+    Say ''
+    if (Test-CaptainPresent) {
+        Say '  Windows is about to ask you to allow it. Everything else in this run is'
+        Say '  installed into your own profile and asks for nothing.'
+        Say ''
+        Say '  Saying no is safe: the rest still installs, this run still finishes, and it'
+        Say '  ends by telling you herdr could not be proven and naming the command below.'
+        Say ''
+        Say "    $($plan.Runtime.Command)"
+        Say ''
+        $installRuntime = $true
+    } else {
+        $why = if ($Unattended) { '-Unattended was given' } else { 'this run has no console to answer on' }
+        Warn "  SKIPPED, because $why - an administrator prompt needs somebody at the keyboard."
+        Warn '  Everything else still installs. Run this yourself in an ADMINISTRATOR window:'
+        Warn ''
+        Warn "    $($plan.Runtime.Command)"
+        Say ''
+    }
+}
+
 # ---- 4. install ---------------------------------------------------------------
 # Running this script IS the consent to install what is missing; that is the
 # whole job it was invoked for, so it is not re-asked one tool at a time.
@@ -321,8 +383,8 @@ Say ''
 # The plan is handed over rather than recomputed: it already asked every vendor
 # what it publishes, and asking them a second time would double the slowest part
 # of the run for an answer that cannot have changed since the prompt above.
-$report = Install-FmMachine -Approved -Plan $plan -UpdateTool $agreed -SkipOptional:$SkipOptional `
-    -SkipSuite:$SkipSuite -Offline:$Offline -RepoRoot $PSScriptRoot -Confirm:$false
+$report = Install-FmMachine -Approved -Plan $plan -UpdateTool $agreed -InstallRuntime:$installRuntime `
+    -SkipOptional:$SkipOptional -SkipSuite:$SkipSuite -Offline:$Offline -RepoRoot $PSScriptRoot -Confirm:$false
 
 foreach ($line in $report.Lines) { Say ([string]$line) }
 Say ''

@@ -7615,6 +7615,10 @@ A test pins that through the PowerShell parser, because "reads like a command" a
 
 **Judged, and the answer is no.**
 
+> **REVERSED BY THE CAPTAIN, 2026-08-25. Section 44 is the successor and this stays for the reasoning, two thirds of which survived.**
+> They had by then run the printed command by hand on a fresh VM, which is the thing they had ruled out days earlier: "all must be done from our script itself".
+> Read the three bullets below against 44.2, which says which of them the new check keeps and how.
+
 The obvious alternative is to check for the Visual C++ runtime up front, as a requirement in its own right, so the machine is told before a tool fails to start rather than through one.
 Three reasons it is the wrong shape here:
 
@@ -7652,3 +7656,138 @@ Tests pin each of those beside the new fix line, in the same `It` where possible
   The loader behaviour itself is section 40's measurement, not this one's.
 - **No clean machine has read the new line.**
   It was exercised through the real detection, the real catalog and the real portable route; the clean-VM run is still the captain's.
+
+## 44. The runtime is installed from the script now, with one explained consent dialog - `PROVEN (Windows 11) FOR THE DETECTION AND EVERY REFUSAL PATH; THE ELEVATED INSTALL ITSELF IS UNRUN AND THE CLEAN VM IS STILL THE CAPTAIN'S`
+
+Section 43 gave the captain a command to run.
+They ran it, by hand, on a fresh VM - and then said this:
+
+```
+does we can not add this `winget install -e --id Microsoft.VCRedist.2015+.x64
+--source winget --accept-source-agreements --accept-package-agreements` one
+line in our install file itself?
+```
+
+Which is the rule they had already set, days earlier:
+
+```
+add all things in script in don't want user have to execute any thing else
+manual or extra all must be done from our script itself
+```
+
+**The rule that stopped it was ours, not theirs.**
+`install.ps1` printed the line instead of running it because this installer's standing rule is that no step needs administrator - a rule this repo wrote for itself, and a good one, which the captain's instruction outranks.
+
+### 44.1 It was never all-or-nothing, and that is the whole design
+
+Windows can elevate ONE child.
+`Start-Process -Verb RunAs` raises the standard consent dialog for that one process; the run itself stays unelevated and everything else still installs into the user's own profile.
+
+`docs/windows-install.md` already drew the line this has to sit on: **an installer may ask a question it composed and printed, and must never let a child it started for verification ask one.**
+That line came out of section 39, where a suite child's prompt went into a pipe and two runs had to be killed after 10 and 15 minutes.
+A consent dialog raised immediately under a printed paragraph saying what is about to be installed, which tool needs it, and that declining is safe, is the first kind.
+A consent dialog with nothing above it is indistinguishable from something going wrong.
+
+`Start-FmToolElevated` is the only function in this repo that raises one, and `tests/FmModuleAssembly.Tests.ps1` now fails any test that calls it or passes `-Verb RunAs` to anything.
+That guard is the same shape as section 41's, and for the same reason: the suite's `-NonInteractive` contract does not reach a dialog the operating system raises, an agent's error mode hides it, and it does not fail the run - so a reintroduction would be loud only for the captain.
+Checked the way `CONTRIBUTING.md` requires, by putting the thing back:
+
+```
+against the tree as committed                       findings: 0
+with `Start-Process ... -Verb RunAs` in a test       findings: 2
+    FmToolInstall.Tests.ps1:30 starts a process elevated
+    FmToolInstall.Tests.ps1:31 calls Start-FmToolElevated
+```
+
+### 44.2 What 43.3 got right, kept
+
+43.3 gave three reasons not to check for the runtime up front. Two of them were correct and are still honoured.
+
+| 43.3's objection | what the check does about it |
+| --- | --- |
+| "It is not our dependency, it is herdr's - a firstmate prerequisite list would be wrong the day herdr links it statically, and stay wrong." | The fact lives on **herdr's catalog row** (`Runtime = $true`), read out of its import table in 40.3, not on a standing list. The day herdr links it statically that row changes and the check goes quiet on its own. |
+| "Running the tool is stronger: it tests the ACTUAL import set of the ACTUAL binary. A presence probe tests one guessed DLL name." | Running the tool still **WINS**. `Get-FmToolRuntimeStatus` asks the loader first in both directions and reaches the filesystem only when no tool that imports the runtime is on the machine yet. |
+| "A prerequisite nobody asked for costs a line on every clean install forever." | The captain asked for it, and the line is no longer a prerequisite nobody acts on - it is the step that installs it. |
+
+**And the bar did not move.** 43.4 stands unchanged: installing the runtime certifies nothing, herdr is still proved by running it and reading a version back, and the run still ends `NOT READY` when it cannot.
+The runtime step deliberately gets **no vote** in that verdict - a machine where herdr answers `--version` is ready whatever happened to a step it turned out not to need, and a machine where it mattered fails herdr's own check anyway, which names the same command.
+
+### 44.3 The detection, and why it is the file rather than the package list
+
+`winget list` is the obvious source and is the weaker one.
+It answers "is a package recorded as installed", and the loader's question is "would an x64 process load this file".
+Those come apart on two real machines: one carrying only the 32-bit redistributable, and an ARM64 one carrying only the ARM64 package - herdr publishes one Windows build, `windows-x86_64`, so an emulated x64 process there needs x64 DLLs.
+
+So the probe reads the PE header. **MEASURED here, 2026-08-25, against Microsoft's own files on this seat:**
+
+```
+Get-FmToolImageMachine C:\WINDOWS\System32\VCRUNTIME140.dll    ->  x64
+Get-FmToolImageMachine C:\WINDOWS\SysWOW64\VCRUNTIME140.dll    ->  x86
+```
+
+Two files of the same name, from the same redistributable, and only one of them can answer for herdr.
+A check that could not tell them apart would report this machine ready on a machine where herdr still would not start.
+
+The three stages, ordered so that can never happen:
+
+```
+1. a tool that imports it and DIED in the loader   -> NOT present, whatever is on disk
+2. a tool that imports it and RAN                  -> present, nothing on disk can contradict it
+3. otherwise the file, x64, where an x64 loader looks
+```
+
+Stage 1 is the case no file check can see: `0xC0000139` and `0xC0000138` mean the DLL is there and older than the build importing from it.
+**MEASURED on this seat, through the real detection**, with `$env:PATH` staged at a `.cmd` returning each of the three dependency codes and a real x64 `VCRUNTIME140.dll` copied into the search path: `Present: False`, `Source: the loader` for all three.
+
+Stage 3 against real Microsoft DLLs, with PATH staged empty so stages 1 and 2 cannot answer:
+
+```
+search staged at an empty directory            Present: False   "not part of Windows"
+the real System32 x64 copy staged into it      Present: True    Machine: x64
+the SysWOW64 x86 copy staged instead           Present: False   Machine: x86
+                                               "the only VCRUNTIME140.dll on this machine is an
+                                                x86 build, and the tools that need it are x64"
+```
+
+And on this seat untouched, which has both the runtime and a working herdr:
+
+```
+Present : True
+Source  : the loader
+Detail  : herdr runs on this machine, so every import it has, including
+          VCRUNTIME140.dll, resolved
+```
+
+**The remaining optimism is named rather than hidden.** A copy that is present, x64, and older than some future build needs reads as present until a tool is actually run against it. That is exactly why stage 2 exists, why the tool proof stays the authority, and why the remedy line survives on every path.
+
+### 44.4 Declining, and nobody at the keyboard
+
+Both had to be safe, and both reuse the path that already existed rather than a new one.
+
+Windows reports a dismissed consent dialog as a plain Win32 error `1223`, read from the exception's `NativeErrorCode` rather than from its message - the message is translated on the captain's machine and would match nothing.
+The step then reports `DECLINED at the administrator prompt`, everything else installs, the run finishes, and it ends where it ended before: herdr unproven, `NOT READY`, and `Get-FmToolExitCodeRemedy`'s line printed for them to run.
+
+`-Unattended` and a redirected stdin skip the step entirely and say so.
+That switch's documented meaning is "never ask anything", and a consent dialog is asking - one nobody would ever see, on a run that has already gone on without a person.
+`Install-FmMachine` cannot raise it at all without `-InstallRuntime`, which `install.ps1` passes only after printing the paragraph, to somebody who is there; `Invoke-FmToolRuntimeStep` exists so that gate is a thing the suite holds rather than a branch nothing can reach without a real install.
+
+### 44.5 What was run
+
+```
+Invoke-Pester ./tests/FmToolInstall.Tests.ps1   181 passed, 0 failed
+Invoke-Pester ./tests/FmModuleAssembly.Tests.ps1  42 passed, 0 failed
+Invoke-Pester ./tests/FmBootstrap.Tests.ps1       37 passed, 0 failed
+Invoke-Pester ./tests/FmInstall.Tests.ps1         83 passed, 0 failed  (second run - see below)
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1   0 findings
+```
+
+`FmInstall.Tests.ps1` failed 6 doctor assertions on the FIRST run in a fresh worktree and passed clean on the second, unchanged.
+That is the known instruction-surface artefact - a Windows clone gets `CLAUDE.md` and `.claude/skills` as placeholder text files, and the suite repairs them mid-run - not this change.
+
+### 44.6 What was NOT proven here
+
+- **The elevated install has never actually run.** Every test mocks `Start-FmToolElevated`, deliberately: a suite that raises a real consent dialog is section 41 with the stakes raised, and a lint now stops one. So `Start-Process -Verb RunAs` reaching winget, winget installing the package, and the re-read finding it afterwards are UNRUN on any machine.
+- **This machine has the runtime**, so the install path could not be exercised against a machine that lacks it even by hand - `winget install` would report it already present, which proves nothing. Section 43.5's second bullet stands unchanged.
+- **Error 1223 was not observed.** The decline path is written from Windows' documented `ERROR_CANCELLED` and exercised through a mock; no dialog was dismissed to produce it here.
+- **The paragraph printed before the dialog has not been read on a clean machine.** It was checked as text; whether it lands as an explanation at the moment the dialog appears is the captain's run to judge.
+- **The clean VM is still the captain's.** That `VCRUNTIME140.dll` is what is missing there remains the strongest available inference, as 40.9 and 43.5 both say.

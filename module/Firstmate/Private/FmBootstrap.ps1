@@ -90,6 +90,30 @@
 # cause, and firstmate read that as needing administrator - twice, wrongly. The
 # commit that made a failure carry its own exit code and the tool's own output
 # is why the log above says the cause out loud and this took five minutes.
+#
+# TWO RENDERINGS, ONE DEFINITION. The flags are declared once, as the argument
+# list, and the pasteable line is built from it. install.ps1 now RUNS one of
+# these itself - the Visual C++ runtime, the single step this installer elevates
+# - and a child started with -Verb RunAs cannot be given a command string to
+# parse, so it needs the arguments as an array. Keeping a second copy of the
+# flags for that caller is exactly the drift this function exists to stop.
+function Get-FmBootstrapWingetArgument {
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$PackageId)
+
+    [string[]]@(
+        'install'
+        '-e'
+        '--id'
+        $PackageId
+        '--source'
+        'winget'
+        '--accept-source-agreements'
+        '--accept-package-agreements'
+    )
+}
+
 function Get-FmBootstrapWingetCommand {
     [OutputType([string])]
     [CmdletBinding()]
@@ -98,7 +122,7 @@ function Get-FmBootstrapWingetCommand {
         [string]$Note = ''
     )
 
-    $command = "winget install -e --id $PackageId --source winget --accept-source-agreements --accept-package-agreements"
+    $command = 'winget ' + ((Get-FmBootstrapWingetArgument -PackageId $PackageId) -join ' ')
     if ($Note) { return "$command  # $Note" }
     $command
 }

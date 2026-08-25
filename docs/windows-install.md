@@ -386,22 +386,59 @@ Naming a cause never softens the verdict: an unproven tool is still unproven, an
 That diagnosis shipped with `fix: ... install.ps1` under it - the run that had just produced it - and stood for two days while the captain was told the real answer by hand.
 So `Get-FmToolExitCodeRemedy` sits beside the meaning and is asked the same question the meaning is asked: what did WINDOWS return, not which tool was being started.
 The codes that mean a dependency is missing answer with the command that installs it, and `Get-FmToolFixCommand` prefers that over the tool's own route - because a route answers "this tool is not here", which is the wrong question for a binary that is here and dies in the loader.
-That remedy needs administrator, so it says so; naming an elevated step and carrying on is the pattern below, not an exception to it.
-The runtime is NOT checked as a prerequisite of its own: it is herdr's dependency rather than this port's, and running the tool tests the real binary's real imports where a presence probe would test one guessed DLL name.
-`docs/windows-e2e-evidence.md` section 43 has the measurement, the verified package identifier and that judgment in full.
+That remedy needs administrator, so it says so, and **since the captain asked for it this installer also takes that step itself** - once, with one explained consent dialog, under the rules the section on it below states in full.
+The remedy line survives all of it: it is what a captain who declines, or whose install fails, still gets, and it is still what a tool dying in the loader prints.
+The runtime IS now checked as a requirement of its own, before anything needs it, which section 43.3 had judged against - read that judgment and the paragraph below it together, because two thirds of it survived: the fact that herdr needs the runtime lives on herdr's own catalog row rather than on a standing list of firstmate's prerequisites, and running the tool is still the stronger test and still wins over any file on disk.
+`docs/windows-e2e-evidence.md` sections 43 and 44 have the measurements, the verified package identifier and both judgments in full.
 
 **A portable install is not finished until the tool RUNS.**
 The command route has ended by reaching what it installed since the Claude CLI was reported missing by the run that installed it; the portable route ended at "the bytes are on disk", so one clean-VM report contained `[missing] tool herdr` and `summary: herdr installed` together.
 `Invoke-FmToolRoute` now proves a portable install by running the tool and reports `failed` - naming where the files went, and why it does not run - when it cannot.
 
-**No step needs administrator.**
+**No TOOL route needs administrator, and exactly one step does.**
 Every preferred route writes into the user's own profile: the vendor's per-user installer (Claude Code, treehouse, PowerShell 7) or a release archive expanded under `%LOCALAPPDATA%\Programs` with its directory added to the USER PATH (gh, herdr).
 herdr is on the archive route for a second reason: its own installer leaves no herdr on a clean machine, twice measured, so `Get-FmBootstrapPortableRelease` takes the release that installer points at - read out of it, not guessed - and installs it directly.
 That is not a claim that their installer is broken, and this file used to imply it was: their step refuses to certify a binary that will not run, and section 40 of `docs/windows-e2e-evidence.md` records that on the captain's VM the binary genuinely does not run, for a reason no install route here can fix without administrator.
 `choco install gh` was measured failing with "Access to the path 'C:\ProgramData\chocolatey\lib-bad' is denied" on an unelevated session; the portable zip needed nothing.
 The routes that genuinely need elevation are the winget packages, which run machine-scope MSIs.
 Those are DECLARED by `Test-FmBootstrapInstallNeedsAdministrator`, named in the report, and skipped - never attempted, and never allowed to stop the rest of the run.
-The Visual C++ runtime remedy above is named the same way and for the same reason: this run prints the elevated command and takes no elevated step itself.
+The Visual C++ runtime is the exception, and the section below owns it.
+
+**The one step that asks, and why it does not break the rule above it.**
+The Visual C++ runtime is not a tool and not a route: it is what herdr cannot start without, and no per-user install of it exists - measured, in `docs/windows-e2e-evidence.md` section 40.7, where Microsoft's own bundle run unelevated as `/extract` produced an empty directory and had to be killed.
+This installer printed the command for it and stopped there, on the standing rule that nothing here needs elevation.
+**That rule was ours and the captain overruled it**, in as many words: everything must be done from the script, with nothing left for them to run by hand.
+They had already run the printed line themselves on a fresh VM - which is precisely what the rule was supposed to prevent.
+
+It is not an all-or-nothing choice, because Windows can elevate ONE child.
+The run itself stays unelevated; `Start-FmToolElevated` starts one process with `-Verb RunAs`, which raises the standard consent dialog, and `Install-FmToolRuntime` is the only caller.
+
+**It sits on the right side of the line this file already drew.**
+That line is stated in the no-prompting section below: an installer may ask a question IT composed and printed, and must never let a child it started for verification ask one.
+`install.ps1` prints, before anything appears on screen, what the runtime is, which tool needs it, that Windows is about to ask permission, and that declining is safe.
+A consent dialog raised immediately under that paragraph is the first kind.
+A consent dialog with nothing above it is indistinguishable from something going wrong, which is why the paragraph is the requirement rather than a courtesy.
+
+**How to decline, and what it costs.**
+Say no to the Windows prompt.
+The run reports the step as `DECLINED at the administrator prompt`, everything else still installs, the run finishes, and it ends exactly where it ended before this step existed: herdr cannot be proven, the machine is `NOT READY`, and the same `winget install -e --id Microsoft.VCRedist.2015+.x64 ...` line is printed for you to run yourself.
+That path is reused rather than rewritten - it is `Get-FmToolExitCodeRemedy` and the herdr check, unchanged.
+`-Unattended` and a redirected stdin skip the step entirely and say so: that switch's documented meaning is "never ask anything", and a consent dialog is asking - one nobody would ever see, on a run that has already gone on without a person.
+`Install-FmMachine` will not raise it at all without `-InstallRuntime`, which `install.ps1` passes only after printing that paragraph to somebody who is there.
+
+**The bar did not move.**
+Installing the runtime does not certify herdr.
+herdr is still proved by running it and reading a version back, the run still ends `NOT READY` when it cannot, and the runtime step deliberately gets no vote in that verdict - a machine where herdr answers `--version` is ready whatever happened to a step it turned out not to need, and a machine where it mattered fails herdr's own check anyway.
+
+**And the detection is the file, not the package list.**
+`Get-FmToolRuntimeStatus` answers in three stages, ordered so it can never report present on a machine where the loader would still fail.
+A tool that imports the runtime and DIED in the loader wins first - that is the case no file check can see, where the DLL is present and older than the build importing from it.
+A tool that RAN wins next, because the loader resolved every import it has.
+Only then the file: `VCRUNTIME140.dll`, in the directories an x64 process searches, **and an x64 image when found** - `Get-FmToolImageMachine` reads the PE header, because "the file exists" is not the question.
+`winget list` is the obvious alternative and is the weaker one: a machine carrying only the 32-bit redistributable, or an ARM64 machine carrying only the ARM64 one, has the name on disk and reports a package installed, and neither can satisfy the x64 build herdr publishes.
+The remaining optimism is named rather than hidden: a copy that is present, x64 and too old reads as present until a tool is run against it, which is why the tool proof stays the authority.
+
+`docs/windows-e2e-evidence.md` section 44 has the measurements and section 43.3 the decision this reversed.
 
 **Three outcomes per requirement, not two.**
 `Get-FmToolClassification` is the single owner of the decision, and `older` and `unsupported` must never be blurred into each other:

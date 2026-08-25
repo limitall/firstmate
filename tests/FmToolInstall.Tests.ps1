@@ -2043,6 +2043,326 @@ Describe 'a fix line for a missing dependency installs the dependency' {
     }
 }
 
+Describe 'the runtime is found before a tool fails to start, and installed from here' {
+    # THE DEFECT, and it is one this repo had already decided to live with.
+    # docs/windows-e2e-evidence.md section 43.3 considered checking for the
+    # Visual C++ runtime up front and said no, then printed the elevated command
+    # under the tool that died instead. The captain ran that command by hand on a
+    # fresh VM - which is exactly the thing they had ruled out days earlier:
+    #
+    #   "add all things in script in don't want user have to execute any thing
+    #    else manual or extra all must be done from our script itself"
+    #
+    # So the runtime is now detected as its own requirement, before anything
+    # needs it, and installed from the script through the one consent dialog
+    # Windows raises for one elevated child.
+    #
+    # WHAT THESE PIN, and the first is the one that matters most:
+    #
+    #   1. THE DETECTION CANNOT SAY PRESENT WHERE THE LOADER WOULD STILL FAIL.
+    #      That is why it reads the DLL's own PE header rather than asking a
+    #      package manager what is installed, and why a tool that already died
+    #      in the loader outranks any file on disk.
+    #   2. NOTHING ELEVATES WITHOUT THE SWITCH. -InstallRuntime is install.ps1
+    #      saying the captain has read what is about to appear and is there to
+    #      answer it; without it nothing is asked, on any path.
+    #   3. DECLINING IS SAFE. It is an outcome, not a failure, and it carries the
+    #      same command this installer printed before it could take the step.
+    #   4. THE BAR DID NOT MOVE. Installing the runtime never certifies herdr.
+
+    BeforeAll {
+        # A file with a real PE header and a chosen machine type. The machine
+        # field is the whole question - "VCRUNTIME140.dll exists" is not - so
+        # these are built rather than copied off this seat, which would make
+        # every case below a fact about the machine the suite happens to run on.
+        function New-RuntimeDllFixture {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+                Justification = 'Test helper: writes a disposable fixture under TestDrive.')]
+            param(
+                [Parameter(Mandatory)][string]$Directory,
+                [ValidateSet('x64', 'x86', 'arm64', 'not-a-program')][string]$Machine = 'x64'
+            )
+            $null = New-Item -ItemType Directory -Path $Directory -Force
+            $path = Join-Path $Directory 'VCRUNTIME140.dll'
+            if ($Machine -eq 'not-a-program') {
+                [System.IO.File]::WriteAllText($path, 'this file is not a program')
+                return $path
+            }
+            $bytes = [byte[]]::new(0x100)
+            $bytes[0] = 0x4D  # M
+            $bytes[1] = 0x5A  # Z
+            [System.BitConverter]::GetBytes([int]0x80).CopyTo($bytes, 0x3C)
+            $bytes[0x80] = 0x50  # P
+            $bytes[0x81] = 0x45  # E
+            $value = switch ($Machine) { 'x64' { 0x8664 } 'x86' { 0x014C } 'arm64' { 0xAA64 } }
+            [System.BitConverter]::GetBytes([uint16]$value).CopyTo($bytes, 0x84)
+            [System.IO.File]::WriteAllBytes($path, $bytes)
+            $path
+        }
+
+        function New-EmptyDirectory {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+                Justification = 'Test helper: creates a disposable directory under TestDrive.')]
+            param()
+            $path = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+            $null = New-Item -ItemType Directory -Path $path -Force
+            $path
+        }
+
+        # A stand-in for the tool that imports the runtime, returning what
+        # Windows returns for a process stopped in the loader. Same seam the
+        # neighbouring fix-line tests use: it reproduces the shape that reaches
+        # the report on any machine, with nothing about the mechanism stubbed.
+        function New-RuntimeToolFixture {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+                Justification = 'Test helper: writes a disposable .cmd under TestDrive.')]
+            param([Parameter(Mandatory)][string]$Body)
+            $directory = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+            $null = New-Item -ItemType Directory -Path $directory -Force
+            foreach ($entry in @(Get-FmToolCatalog | Where-Object { $_.Runtime })) {
+                Set-Content -LiteralPath (Join-Path $directory ($entry.Command + '.cmd')) -Value $Body
+            }
+            $directory
+        }
+    }
+
+    BeforeEach { $script:RuntimePathBefore = $env:PATH }
+    AfterEach { $env:PATH = $script:RuntimePathBefore }
+
+    It 'reads what processor a file was built for, out of the file' {
+        $directory = New-EmptyDirectory
+        foreach ($machine in @('x64', 'x86', 'arm64')) {
+            Get-FmToolImageMachine -Path (New-RuntimeDllFixture -Directory $directory -Machine $machine) |
+                Should -Be $machine
+        }
+        # Not a program at all, and a file that is not there. Both are '' rather
+        # than an answer, because a file that could not be loaded whatever else
+        # is true must never read as the right one.
+        Get-FmToolImageMachine -Path (New-RuntimeDllFixture -Directory $directory -Machine 'not-a-program') | Should -Be ''
+        Get-FmToolImageMachine -Path (Join-Path $directory 'nothing-is-here.dll') | Should -Be ''
+    }
+
+    It 'says missing when the DLL is nowhere the loader looks' {
+        # PATH is staged empty for every case below: the loader stages read the
+        # real PATH, so a machine with a working herdr on it would answer before
+        # the files were ever looked at.
+        $empty = New-EmptyDirectory
+        $env:PATH = $empty
+        $status = Get-FmToolRuntimeStatus -SearchPath @($empty)
+        $status.Present | Should -BeFalse
+        $status.Detail | Should -Match 'not part of Windows'
+        # And it carries the line that installs it, so every caller prints the
+        # same one rather than building a second copy.
+        $status.Command | Should -Be (Get-FmBootstrapWingetCommand -PackageId 'Microsoft.VCRedist.2015+.x64')
+    }
+
+    It 'says present for an x64 copy where the loader would find it' {
+        $empty = New-EmptyDirectory
+        $env:PATH = $empty
+        $directory = New-EmptyDirectory
+        $path = New-RuntimeDllFixture -Directory $directory -Machine 'x64'
+        $status = Get-FmToolRuntimeStatus -SearchPath @($directory)
+        $status.Present | Should -BeTrue
+        $status.Machine | Should -Be 'x64'
+        $status.Path | Should -Be $path
+    }
+
+    It 'refuses a copy no x64 process could load, however present it looks' {
+        # THE ACCEPTANCE TEST FOR THE DETECTION. A machine carrying only the
+        # 32-bit redistributable has the name on disk, and an ARM64 machine
+        # carrying only the ARM64 one has it in System32. Both read as present
+        # to anything that asks whether the file is there - and neither can
+        # satisfy herdr, which publishes one Windows build and runs as x64 under
+        # emulation on ARM64. Asking a package manager what is installed has the
+        # same hole, which is why this asks the file what it is.
+        $empty = New-EmptyDirectory
+        $env:PATH = $empty
+        foreach ($machine in @('x86', 'arm64', 'not-a-program')) {
+            $directory = New-EmptyDirectory
+            $null = New-RuntimeDllFixture -Directory $directory -Machine $machine
+            $status = Get-FmToolRuntimeStatus -SearchPath @($directory)
+            $status.Present | Should -BeFalse -Because "an $machine file cannot answer for an x64 import"
+            $status.Command | Should -Match 'Microsoft\.VCRedist\.2015\+\.x64'
+        }
+    }
+
+    It 'lets the loader overrule the files, in both directions' -Skip:(-not $IsWindows) {
+        # THE CASE A FILE PROBE CANNOT SEE. 0xC0000139 and 0xC0000138 mean the
+        # DLL is on the machine and older than the build importing from it - so
+        # the file is present, the right architecture, and the tool still will
+        # not start. Windows has already answered the question and its answer
+        # beats any file on disk.
+        $good = New-EmptyDirectory
+        $null = New-RuntimeDllFixture -Directory $good -Machine 'x64'
+        foreach ($code in @(-1073741515, -1073741511, -1073741512)) {
+            $env:PATH = New-RuntimeToolFixture -Body "@echo off`r`nexit /b $code"
+            $status = Get-FmToolRuntimeStatus -SearchPath @($good)
+            $status.Present | Should -BeFalse -Because 'the loader stopped a tool that imports it, whatever is on disk'
+            $status.Source | Should -Be 'the loader'
+        }
+
+        # And the other way: a tool that RAN resolved every import it has, which
+        # nothing on disk can contradict. This is the case that keeps the check
+        # quiet on a machine where herdr works.
+        $empty = New-EmptyDirectory
+        $env:PATH = New-RuntimeToolFixture -Body "@echo off`r`necho herdr 9.9.9"
+        $status = Get-FmToolRuntimeStatus -SearchPath @($empty)
+        $status.Present | Should -BeTrue
+        $status.Source | Should -Be 'the loader'
+    }
+
+    It 'is one line in the plan, at the top, before anything needs it' {
+        # The captain met this the other way round: herdr installed correctly,
+        # died in the loader, and what it was missing was named at the bottom of
+        # the report as something for them to go and run.
+        $plan = Get-FmMachineInstallPlan -Offline
+        $plan.Runtime | Should -Not -BeNull
+        $rendered = @($plan.Lines)
+        $runtimeLine = @($rendered | Where-Object { $_ -match 'Visual C\+\+ runtime' })
+        $runtimeLine.Count | Should -Be 1
+        # Above the tools, in the block that says what this machine has.
+        $header = [array]::IndexOf($rendered, '  what this machine has:')
+        $header | Should -BeGreaterThan -1
+        [array]::IndexOf($rendered, $runtimeLine[0]) | Should -BeGreaterThan $header
+        # The tool ROW, matched on its label column rather than on the word
+        # anywhere in the line - the runtime's own detail names herdr too.
+        $toolLine = @($rendered | Where-Object { $_ -match '^\s{4}\[[^\]]+\]\s+herdr\s' })
+        if ($toolLine.Count -gt 0) {
+            [array]::IndexOf($rendered, $runtimeLine[0]) | Should -BeLessThan ([array]::IndexOf($rendered, $toolLine[0]))
+        }
+    }
+
+    Context 'the one step that asks for administrator' {
+        BeforeEach {
+            # NOTHING IN THIS SUITE MAY REACH THE REAL ONE. A modal dialog raised
+            # by a test is measured in docs/windows-e2e-evidence.md section 41; a
+            # CONSENT dialog is that with the stakes raised, and the switch this
+            # mock stands in for is the only thing between them.
+            Mock Start-FmToolElevated { [pscustomobject]@{ Started = $true; Declined = $false; ExitKnown = $true; ExitCode = 0 } }
+            $script:RuntimeMissing = [pscustomobject]@{
+                Label = 'Visual C++ runtime'; Dll = 'VCRUNTIME140.dll'; Present = $false; Path = ''
+                Machine = ''; Source = 'the file'; Detail = 'VCRUNTIME140.dll is not on this machine'
+                Command = (Get-FmBootstrapWingetCommand -PackageId 'Microsoft.VCRedist.2015+.x64')
+            }
+        }
+
+        It 'asks for nothing when the runtime is already here' {
+            $present = [pscustomobject]@{ Present = $true; Detail = 'herdr runs on this machine'; Command = 'x' }
+            $result = Install-FmToolRuntime -Status $present -Confirm:$false
+            $result.Action | Should -Be 'already-present'
+            Should -Invoke Start-FmToolElevated -Times 0 -Exactly -Because 'a dialog for something already installed is a dialog for nothing'
+        }
+
+        It 'asks for nothing when there is nobody at the keyboard to answer' {
+            # THE UNATTENDED CONTRACT. -Unattended means never ask anything, and a
+            # Windows consent dialog is asking - one nobody would ever see, on a
+            # run that has already gone on without a person. install.ps1 withholds
+            # the switch; this is what withholding it does.
+            $step = Invoke-FmToolRuntimeStep -Runtime $script:RuntimeMissing -Performed -Confirm:$false
+            Should -Invoke Start-FmToolElevated -Times 0 -Exactly
+            $step.Outcome.Outcome | Should -Be 'skipped'
+            $step.Outcome.Detail | Should -Match 'nobody at the keyboard'
+            $step.Outcome.Detail | Should -Match 'ADMINISTRATOR'
+            $step.Outcome.Detail | Should -Match 'Microsoft\.VCRedist\.2015\+\.x64' -Because 'a skipped step still hands over the command'
+        }
+
+        It 'asks for nothing on a run that is only saying what it would do' {
+            $step = Invoke-FmToolRuntimeStep -Runtime $script:RuntimeMissing -InstallRuntime -Confirm:$false
+            Should -Invoke Start-FmToolElevated -Times 0 -Exactly
+            $step.Outcome.Detail | Should -Be 'WhatIf'
+        }
+
+        It 'installs it when told it may, and proves it by re-reading the machine' {
+            # NOT BY winget'S EXIT CODE. That is this repo's oldest rule about
+            # installs, and here it also covers the case where an elevated
+            # child's code cannot be read back at all.
+            Mock Get-FmToolRuntimeStatus { [pscustomobject]@{ Present = $true; Detail = 'VCRUNTIME140.dll is on this machine, as an x64 build' } }
+            $step = Invoke-FmToolRuntimeStep -Runtime $script:RuntimeMissing -Performed -InstallRuntime -Confirm:$false
+            Should -Invoke Start-FmToolElevated -Times 1 -Exactly
+            $step.Outcome.Outcome | Should -Be 'installed'
+            $step.Step.Action | Should -Be 'created'
+        }
+
+        It 'reports FAILED when the machine still does not have it afterwards' {
+            Mock Get-FmToolRuntimeStatus { [pscustomobject]@{ Present = $false; Detail = 'still not here' } }
+            Mock Start-FmToolElevated { [pscustomobject]@{ Started = $true; Declined = $false; ExitKnown = $true; ExitCode = -1978335212 } }
+            $result = Install-FmToolRuntime -Status $script:RuntimeMissing -WingetPath 'C:\fixture\winget.exe' -Confirm:$false
+            $result.Action | Should -Be 'failed'
+            $result.Detail | Should -Match 'no package matching' -Because 'a failure is reported with its cause or it is not reported at all'
+            $result.Detail | Should -Match 'ADMINISTRATOR'
+        }
+
+        It 'treats a declined prompt as a choice, not a failure, and carries on' {
+            # Windows reports a dismissed consent dialog as Win32 error 1223.
+            # Declining has to be safe: everything else still installs, the run
+            # still finishes, and the command survives into the report.
+            Mock Start-FmToolElevated { [pscustomobject]@{ Started = $false; Declined = $true; ExitKnown = $false; ExitCode = 0 } }
+            $step = Invoke-FmToolRuntimeStep -Runtime $script:RuntimeMissing -Performed -InstallRuntime -Confirm:$false
+            $step.Outcome.Outcome | Should -Be 'declined'
+            $step.Outcome.Detail | Should -Match 'said no'
+            $step.Outcome.Detail | Should -Match 'carried on'
+            $step.Outcome.Detail | Should -Match 'Microsoft\.VCRedist\.2015\+\.x64'
+            $step.Step.Detail | Should -Match '^DECLINED: '
+            # And the summary the captain reads last says it as a choice too.
+            (Get-FmMachineSummaryLine -Outcomes @($step.Outcome)) -join "`n" | Should -Match 'DECLINED at the administrator prompt'
+        }
+
+        It 'reports a refused launch as an outcome and hands back the command' {
+            Mock Start-FmToolElevated { [pscustomobject]@{ Started = $false; Declined = $false; ExitKnown = $false; ExitCode = 0 } }
+            $result = Install-FmToolRuntime -Status $script:RuntimeMissing -WingetPath 'C:\fixture\winget.exe' -Confirm:$false
+            $result.Action | Should -Be 'blocked'
+            $result.Detail | Should -Match 'refused to start'
+            $result.Detail | Should -Match 'Microsoft\.VCRedist\.2015\+\.x64'
+        }
+
+        It 'blocks rather than elevates when winget is not on this machine' {
+            Mock Get-FmToolWingetPath { '' }
+            $result = Install-FmToolRuntime -Status $script:RuntimeMissing -Confirm:$false
+            $result.Action | Should -Be 'blocked'
+            $result.Detail | Should -Match 'App Installer'
+            Should -Invoke Start-FmToolElevated -Times 0 -Exactly
+        }
+
+        It 'does not get a vote on whether this machine is ready' {
+            # DELIBERATE, and not lenient. This step exists to REMOVE a cause of
+            # failure; whether the machine is ready is still decided by running
+            # the tools. A machine where the runtime mattered ends NOT READY
+            # through herdr's own check, which names the same command - and a
+            # machine where it did not is not reported broken by a step that was
+            # never needed.
+            Mock Start-FmToolElevated { [pscustomobject]@{ Started = $false; Declined = $true; ExitKnown = $false; ExitCode = 0 } }
+            $step = Invoke-FmToolRuntimeStep -Runtime $script:RuntimeMissing -Performed -InstallRuntime -Confirm:$false
+            $step.Outcome.Kind | Should -Be 'runtime' -Because 'the readiness gate excludes this step by its kind'
+        }
+    }
+
+    It 'does not lower the bar: installing the runtime never certifies herdr' -Skip:(-not $IsWindows) {
+        # The remedy line and the verdict, unchanged. A tool that dies in the
+        # loader is still unproven, still reported missing, and the run still
+        # ends NOT READY naming the same command this installer now runs itself.
+        $env:PATH = New-RuntimeToolFixture -Body "@echo off`r`nexit /b -1073741515"
+        Mock Update-FmToolSessionPath { $env:PATH }
+        $herdr = @(Get-FmMachineToolVerification | Where-Object { $_.Name -eq 'tool herdr' })
+        $herdr.Count | Should -Be 1
+        $herdr[0].Status | Should -Be 'missing' -Because 'the tool is still proved by running it'
+        $herdr[0].Fix | Should -Match 'Microsoft\.VCRedist\.2015\+\.x64'
+        $herdr[0].Fix | Should -Match 'ADMINISTRATOR'
+    }
+
+    It 'builds the elevated arguments and the pasteable line from one definition' {
+        # The elevated child cannot be handed a command string to parse, so it
+        # takes an argument array - and a second copy of the flags is exactly the
+        # drift Get-FmBootstrapWingetCommand exists to stop.
+        $arguments = Get-FmBootstrapWingetArgument -PackageId 'Microsoft.VCRedist.2015+.x64'
+        ($arguments -join ' ') | Should -Be ((Get-FmBootstrapWingetCommand -PackageId 'Microsoft.VCRedist.2015+.x64') -replace '^winget ', '')
+        $arguments[0] | Should -Be 'install'
+        # The id survives as ONE argument, rather than being split at the '+'.
+        $arguments | Should -Contain 'Microsoft.VCRedist.2015+.x64'
+        $arguments | Should -Contain '--accept-source-agreements'
+        $arguments | Should -Contain '--accept-package-agreements'
+    }
+}
+
 Describe 'a portable install is not finished until the tool RUNS' {
     # THE DEFECT, MEASURED in the captain's clean-VM log 2026-08-21: the same run
     # printed `[missing] tool herdr` and `summary: herdr installed

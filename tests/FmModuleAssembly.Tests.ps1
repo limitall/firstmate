@@ -1040,6 +1040,47 @@ Describe 'No test fixture can make Windows talk to the captain' {
             -Because 'anything at all behind an executable extension is read as an MS-DOS program and raises a dialog'
     }
 
+    It 'starts nothing elevated, which is the same disease one turn worse' {
+        # A CONSENT DIALOG IS EVERYTHING ABOVE PLUS A DECISION. The installer can
+        # now raise one - the Visual C++ runtime is the single step here that
+        # asks for administrator - and every reason the 16-bit dialog survived a
+        # long run of green suites applies to it unchanged: -NonInteractive does
+        # not cover it, it does not fail the run, and an agent harness's error
+        # mode means the agent "checking" would never see what the captain gets.
+        #
+        # So the raising is kept to one function and no test may reach it. A test
+        # that needs the outcome mocks Start-FmToolElevated, which is what the
+        # runtime tests do; Mock's target is an argument rather than a command
+        # name, so mocking it is not calling it.
+        $bad = [System.Collections.Generic.List[string]]::new()
+        foreach ($file in (Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File | Sort-Object Name)) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+            foreach ($command in $ast.FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+                $line = $command.Extent.StartLineNumber
+                if ($command.GetCommandName() -eq 'Start-FmToolElevated') {
+                    $bad.Add("$($file.Name):$line calls Start-FmToolElevated - mock it instead; it raises a Windows consent dialog")
+                    continue
+                }
+                # And the underlying verb, whatever it is pointed at.
+                $elements = @($command.CommandElements)
+                for ($i = 1; $i -lt $elements.Count; $i++) {
+                    $element = $elements[$i]
+                    if ($element -isnot [System.Management.Automation.Language.CommandParameterAst]) { continue }
+                    if ($element.ParameterName.ToLowerInvariant() -ne 'verb') { continue }
+                    $argument = if ($element.Argument) { $element.Argument }
+                    elseif ($i + 1 -lt $elements.Count) { $elements[$i + 1] }
+                    else { $null }
+                    if ($argument -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
+                        $argument.Value -match '^(?i)runas$') {
+                        $bad.Add("$($file.Name):$line starts a process elevated - a test must never put a consent dialog on the captain's desktop")
+                    }
+                }
+            }
+        }
+        ($bad -join '; ') | Should -Be ''
+    }
+
     It 'writes no fixture with an executable extension outside that helper' {
         $writeCommand = @('Set-Content', 'Add-Content', 'Out-File', 'Write-FmTextFileLf', 'Add-FmTextLineLf')
         $writeMember = @('WriteAllText', 'WriteAllBytes', 'WriteAllLines', 'AppendAllText', 'AppendAllLines')

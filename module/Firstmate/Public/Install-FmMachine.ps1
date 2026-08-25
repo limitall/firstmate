@@ -24,6 +24,11 @@ Set-StrictMode -Version Latest
     and npm - so an absent one is an explained skip rather than a "command not
     found" in the middle of a run.
 
+    AND INCLUDING THE VISUAL C++ RUNTIME, which is neither a tool nor an enabler:
+    it is what herdr cannot start without, and a clean Windows install does not
+    have it. Reported at the top as Runtime, so the captain learns it here rather
+    than through a tool that will not start.
+
     Each requirement lands in exactly one class, and the difference between the
     middle two is the whole point:
 
@@ -61,7 +66,8 @@ Set-StrictMode -Version Latest
     current on no evidence.
 
 .OUTPUTS
-    A plan record: Requirements, Enablers, Excluded, and the lines that render it.
+    A plan record: Requirements, Enablers, Runtime, Excluded, and the lines that
+    render them.
 
 .EXAMPLE
     (Get-FmMachineInstallPlan).Requirements | Where-Object Classification -eq 'missing'
@@ -204,6 +210,12 @@ function Get-FmMachineInstallPlan {
 
     $enablers = @(Get-FmToolEnablerStatus)
     $excluded = @(Get-FmToolExcluded)
+    # ASKED BEFORE ANYTHING NEEDS IT, which is the whole point of it being here
+    # rather than only in the line printed under a tool that would not start.
+    # The captain met this the other way round on a fresh VM: herdr installed
+    # correctly, died in the loader, and the runtime it was missing was named at
+    # the bottom of a report as something for them to go and run.
+    $runtime = Get-FmToolRuntimeStatus
 
     $lines = @()
     if (-not $location.Usable) {
@@ -222,6 +234,11 @@ function Get-FmMachineInstallPlan {
         $detail = if ($enabler.Satisfied -and $enabler.Version) { $enabler.Version } else { "needed for $($enabler.Enables)" }
         $lines += ('    {0,-14}{1,-24}{2}' -f $mark, $enabler.Name, $detail)
     }
+    # In the same block and the same column, because it is the same kind of fact:
+    # something that has to be true before a tool this run installs can start.
+    # It is NOT an enabler - nothing here uses it to install anything - so it is
+    # rendered beside them rather than added to their list.
+    $lines += ('    {0,-14}{1,-24}{2}' -f $(if ($runtime.Present) { '[ok]' } else { '[missing]' }), $runtime.Label, $runtime.Detail)
     $lines += ''
     foreach ($requirement in $requirements) {
         $mark = switch ($requirement.Classification) {
@@ -242,6 +259,7 @@ function Get-FmMachineInstallPlan {
     [pscustomobject]@{
         Requirements = $requirements
         Enablers     = $enablers
+        Runtime      = $runtime
         Excluded     = $excluded
         Location     = $location
         RepoRoot     = $RepoRoot
@@ -306,8 +324,13 @@ function Get-FmMachineQuestion {
     The whole of install.ps1, as a function, so every decision in it is testable
     and held to the same analyzer bar as the rest of the module.
 
-    It does five things, in this order:
+    It does six things, in this order:
 
+      0. installs the Visual C++ runtime when it is missing, which is the ONE
+         step here that asks for administrator - and only when -InstallRuntime
+         says the captain has been shown what is about to appear on their
+         screen. Declining is safe: everything else still installs, the run
+         finishes, and herdr's own check names the command,
       1. acts on each requirement's class - installs what is MISSING from its
          genuine source, updates only what the captain named in -UpdateTool, and
          SKIPS anything UNSUPPORTED or UNUSABLE rather than installing over the
@@ -326,9 +349,12 @@ function Get-FmMachineQuestion {
          doctor re-reads the home and the instruction surface, and the
          repository's own test suite is executed.
 
-    NO STEP REQUIRES ADMINISTRATOR. A route that truly does is named, skipped,
-    and reported with the exact command to run in an elevated shell; the rest of
-    the run continues.
+    EXACTLY ONE STEP CAN ASK FOR ADMINISTRATOR, and only when -InstallRuntime
+    says a person is there to answer it: the Visual C++ runtime, which is not a
+    tool but the thing herdr cannot start without. Every TOOL route still writes
+    into the user's own profile; a route that truly needs elevation is still
+    named, skipped, and reported with the exact command, and the rest of the run
+    continues either way.
 
     NEVER INSTALLS UNASKED. AGENTS.md section 3 is detect, ask, then install, so
     without -Approved this prints the plan and writes nothing. install.ps1 is
@@ -362,6 +388,14 @@ function Get-FmMachineQuestion {
     A plan Get-FmMachineInstallPlan already produced. install.ps1 passes the one
     it showed the captain, so the vendors are not asked what they publish a
     second time between the question and the answer. Omitted, one is computed.
+
+.PARAMETER InstallRuntime
+    Install the Visual C++ runtime when this machine does not have it, raising
+    the Windows consent dialog to do it. install.ps1 passes this only after it
+    has printed what is about to be installed and why, and never under
+    -Unattended or a redirected stdin - a consent dialog nobody is there to see
+    is the halt this installer's no-prompting rule exists to prevent. Without
+    it, a missing runtime is reported as skipped with the command to run.
 
 .PARAMETER SkipOptional
     Install only what firstmate cannot run without.
@@ -404,6 +438,7 @@ function Install-FmMachine {
         [switch]$Approved,
         [string[]]$UpdateTool = @(),
         [object]$Plan = $null,
+        [switch]$InstallRuntime,
         [switch]$SkipOptional,
         [switch]$SkipSuite,
         [switch]$Offline,
@@ -442,9 +477,27 @@ function Install-FmMachine {
     $steps = @()
     $outcomes = @()
 
+    # --- 0. the runtime a tool this run installs cannot start without ------------
+    #
+    # FIRST, because it is what herdr needs to run and herdr is installed and
+    # PROVED further down: putting it here means the proof has a chance of
+    # passing on a machine that did not have the runtime, instead of failing and
+    # naming a command for the captain to run afterwards.
+    #
+    # THE ONLY STEP IN THIS INSTALLER THAT ASKS FOR ADMINISTRATOR, and it only
+    # asks when install.ps1 says it may: -InstallRuntime means the captain has
+    # been shown what is about to appear on their screen and there is somebody
+    # at the keyboard to answer it. Without it, this is a skip with a reason and
+    # the command, exactly as it was before.
+    $runtimeStep = Invoke-FmToolRuntimeStep -Runtime $plan.Runtime -Performed:$performed `
+        -InstallRuntime:$InstallRuntime -Confirm:$false
+    $outcomes += $runtimeStep.Outcome
+    $steps += $runtimeStep.Step
+
     # --- 1 and 2. every requirement, by its class -------------------------------
     foreach ($requirement in $plan.Requirements) {
         $outcome = [pscustomobject]@{
+            Kind           = $requirement.Kind
             Label          = $requirement.Label
             Classification = $requirement.Classification
             Outcome        = ''
@@ -642,7 +695,15 @@ function Install-FmMachine {
     $warnings = @($checks | Where-Object { $_.Status -eq 'warn' })
     $unsupported = @($outcomes | Where-Object { $_.Outcome -eq 'unsupported-skipped' })
     $unusable = @($outcomes | Where-Object { $_.Outcome -eq 'unusable-skipped' })
-    $failed = @($outcomes | Where-Object { $_.Outcome -in @('failed', 'blocked', 'needs-administrator') })
+    # THE RUNTIME STEP DOES NOT GET A VOTE ON READINESS, and that is deliberate
+    # rather than lenient. It exists to REMOVE a cause of failure; whether this
+    # machine is ready is still decided by running the tools, exactly as it was
+    # before this installer could take that step at all. A declined or failed
+    # runtime install on a machine where herdr then answers --version is a
+    # machine that IS ready, and counting the step here would report it as not.
+    # A machine where it mattered ends NOT READY anyway - through herdr's own
+    # check, which names the same command.
+    $failed = @($outcomes | Where-Object { $_.Kind -ne 'runtime' -and $_.Outcome -in @('failed', 'blocked', 'needs-administrator') })
     $verified = ($performed -and $blocking.Count -eq 0)
     $ready = ($verified -and $unsupported.Count -eq 0 -and $unusable.Count -eq 0 -and $failed.Count -eq 0)
 
@@ -733,6 +794,10 @@ function Get-FmMachineSummaryLine {
         'kept-unproven'       = 'present but unproven, left alone at your choice'
         'unsupported-skipped' = 'UNSUPPORTED, skipped'
         'unusable-skipped'    = 'UNUSABLE - this machine refused to start it'
+        # The runtime step's own. DECLINED is a choice the captain made and is
+        # reported as one, not as a failure - the line beside it says what it
+        # costs and what to run.
+        'declined'            = 'DECLINED at the administrator prompt'
         'failed'              = 'FAILED'
         'blocked'             = 'BLOCKED'
         'needs-administrator' = 'NEEDS ADMINISTRATOR, skipped'
