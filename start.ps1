@@ -1,4 +1,3 @@
-#requires -Version 7.0
 <#
 .SYNOPSIS
 start.ps1 - start firstmate. One command; everything else happens in the browser.
@@ -38,6 +37,106 @@ param(
     [ValidateRange(1024, 65535)][int]$Port = 7433,
     [switch]$NoBrowser
 )
+
+# ============================================================================
+# 0. THE SHELL THIS WAS STARTED IN
+#
+# NO `#requires -Version 7.0` ON THIS FILE, and nothing above the relaunch below
+# may use PowerShell 7 syntax. This file used to carry the directive, and a
+# captain on their first successful install typed `.\start.ps1` in the Windows
+# PowerShell 5.1 window they had just run the installer from. What they got was
+#
+#     The script 'start.ps1' cannot be run because it contained a "#requires"
+#     statement for Windows PowerShell 7.0.
+#
+# which is accurate, is not firstmate speaking, and does not say what to do. The
+# machine was fine: `install.ps1` had already put PowerShell 7 on it. Only the
+# window was wrong, and a wrong window is something this script can fix itself.
+#
+# TYPING THIS IS THE CONSENT TO START. Relaunching does not start anything the
+# captain did not ask for - it runs the command they typed, in the shell it
+# needs. Nothing here decides to start on its own.
+#
+# WHY THIS IS NOT install.ps1's BLOCK. That one has to survive on a machine with
+# no PowerShell 7 at all, so it offers to INSTALL the shell; this one runs after
+# that install and must never install anything (see WHAT IT DOES NOT DO above).
+# They share only how pwsh is found, which is four lines and one well-known
+# location.
+# ============================================================================
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    [Console]::Out.WriteLine('')
+    [Console]::Out.WriteLine('  FIRSTMATE')
+    [Console]::Out.WriteLine('')
+    [Console]::Out.WriteLine("  This is Windows PowerShell $($PSVersionTable.PSVersion), and firstmate runs on")
+    [Console]::Out.WriteLine('  PowerShell 7. A script cannot change the shell it was started in.')
+    [Console]::Out.WriteLine('')
+
+    $relaunchArguments = @()
+    foreach ($key in $PSBoundParameters.Keys) {
+        $value = $PSBoundParameters[$key]
+        if ($value -is [System.Management.Automation.SwitchParameter]) {
+            if ($value.IsPresent) { $relaunchArguments += "-$key" }
+        } else {
+            $relaunchArguments += "-$key"
+            $relaunchArguments += [string]$value
+        }
+    }
+
+    $pwshCommand = Get-Command -Name 'pwsh' -ErrorAction SilentlyContinue
+    if (-not $pwshCommand) {
+        $localPwsh = Join-Path $env:LOCALAPPDATA 'Programs\PowerShell7\pwsh.exe'
+        if (Test-Path -LiteralPath $localPwsh) { $pwshCommand = Get-Command -Name $localPwsh -ErrorAction SilentlyContinue }
+    }
+    if (-not $pwshCommand) {
+        # A machine that has never been set up, rather than a wrong window. This
+        # installs nothing itself: install.ps1 is the one thing that installs,
+        # which is the same rule the missing-tool refusal below is built on.
+        [Console]::Error.WriteLine('  PowerShell 7 is not on this machine, so nothing here can start yet.')
+        [Console]::Error.WriteLine('  This puts it there, along with everything else firstmate needs:')
+        [Console]::Error.WriteLine('')
+        [Console]::Error.WriteLine("    powershell -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'install.ps1')`"")
+        [Console]::Error.WriteLine('')
+        exit 1
+    }
+
+    # ONE RELAUNCH, NEVER TWO. install.ps1's block states why: `pwsh` is also
+    # PowerShell 6's name, and relaunching into one would arrive back here.
+    if ($env:FM_SHELL_RELAUNCHED) {
+        [Console]::Error.WriteLine("  This relaunched into a shell that is still PowerShell $($PSVersionTable.PSVersion),")
+        [Console]::Error.WriteLine('  so it is stopping rather than doing it again. The pwsh on this machine is not')
+        [Console]::Error.WriteLine('  PowerShell 7 - PowerShell 6 uses that name too. This puts 7 beside it:')
+        [Console]::Error.WriteLine('')
+        [Console]::Error.WriteLine("    powershell -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'install.ps1')`"")
+        [Console]::Error.WriteLine('')
+        exit 1
+    }
+    $env:FM_SHELL_RELAUNCHED = '1'
+
+    # Said only once it is known to be true. Announcing the switch above, before
+    # pwsh has been found, promises it on the one machine that cannot do it.
+    [Console]::Out.WriteLine('  Switching to PowerShell 7 and carrying on there.')
+    [Console]::Out.WriteLine('')
+
+    # A MACHINE MAY REFUSE THIS, and the refusal must not be a .NET error -
+    # PowerShell raises a declined launch as a terminating exception whatever
+    # $ErrorActionPreference says. install.ps1's relaunch carries the same guard
+    # and docs/windows-install.md has the measurement behind it.
+    try {
+        & $pwshCommand.Source -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @relaunchArguments
+    } catch {
+        [Console]::Error.WriteLine('  Windows refused to start PowerShell 7 from here:')
+        [Console]::Error.WriteLine('')
+        [Console]::Error.WriteLine("    $($pwshCommand.Source)")
+        [Console]::Error.WriteLine('')
+        [Console]::Error.WriteLine('  The machine declined the launch; PowerShell itself did not fail. Open')
+        [Console]::Error.WriteLine('  "PowerShell 7" from your Start menu, change to this folder, and run:')
+        [Console]::Error.WriteLine('')
+        [Console]::Error.WriteLine('    .\start.ps1')
+        [Console]::Error.WriteLine('')
+        exit 1
+    }
+    exit $LASTEXITCODE
+}
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'

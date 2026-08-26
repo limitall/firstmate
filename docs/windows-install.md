@@ -6,7 +6,10 @@ The install area: `bin/fm-setup.ps1`, `bin/fm-doctor.ps1`,
 
 The MACHINE install sits on top of it: `install.ps1` at the repo root,
 `module/Firstmate/Private/FmToolInstall.ps1`, `Private/FmMachine.ps1`,
-`Public/Install-FmMachine.ps1`, `tests/FmToolInstall.Tests.ps1`.
+`Public/Install-FmMachine.ps1`, `Public/FmMachineStart.ps1`,
+`tests/FmToolInstall.Tests.ps1`.
+How that install ENDS, and how `start.ps1` answers the wrong shell, is "The last ten
+seconds" below rather than part of the machine install proper.
 "The machine install" is the section of that name below; everything else in this
 file is about the home and the wiring, which is the step the machine install
 runs in the middle of its own.
@@ -600,6 +603,75 @@ The verification's tool group and the doctor's prerequisite group overlap on her
 The doctor asks whether this HOME is healthy, where an absent herdr is a warning.
 The verification asks whether the INSTALL delivered what it promised, where a required tool that cannot print a version is a failure.
 
+
+## The last ten seconds
+
+`install.ps1`'s closing block, `module/Firstmate/Public/FmMachineStart.ps1`, and `start.ps1`'s version guard.
+
+**The install succeeded and the captain's very next command failed, twice.**
+The run ended `READY`, printed "This window took its PATH when it opened, so type this in a NEW one" and named `firstmate`, and the captain typed it in the window they were standing in.
+The run before that ended the same way with `claude` and `.\start.ps1`.
+Two clean-machine installs in a row therefore ended on a `CommandNotFoundException`, at the last step of an otherwise clean install and as the first impression firstmate makes.
+The instruction was accurate, it was on screen, and it was walked past anyway - so the finish line was badly placed, and blaming the reader was the wrong conclusion.
+
+**What is actually true was measured, not inherited from the report.**
+The report said the PATH was stale; that is right about the captain's window and wrong about the installing session, and the difference is the whole design.
+
+- The installing PROCESS resolves `firstmate` perfectly well.
+  `Add-FmToolUserPath` updates `$env:PATH` for the process it runs in, so the shim is on the PATH of the `pwsh` that ran the install, and a bare `firstmate` there returns the shim.
+- The captain's WINDOW is not that process.
+  The documented command is `powershell -ExecutionPolicy Bypass -File .\install.ps1`, which is a child, and `install.ps1` then relaunches itself under `pwsh`, so the work happens two processes below the prompt.
+  Reproduced 2026-08-26 on Windows PowerShell 5.1.26100.8115: with the shim directory removed from the parent's PATH, the child writes the shim and resolves it, the parent does not, and the parent's error is `The term 'firstmate' is not recognized as the name of a cmdlet, function, script file, or operable program` - the captain's line, verbatim.
+- A change made in a process cannot reach an ancestor, so that window can be given neither a PATH entry nor a function.
+  Measured alongside it: a script run IN a PowerShell 7 session does leave both behind - a `$env:PATH` edit and a `function global:` survive into that session's prompt - which is exactly why the distinction matters and why the failure looks arbitrary.
+  It is unreachable only because the installer never runs in the captain's session.
+
+**So two of the four candidate fixes are impossible here, and saying which is part of the answer.**
+
+| direction | verdict |
+| --- | --- |
+| make it work in that window | Impossible as a PATH repair, for the reason above. Taken in the sense that survives: name a command that works there. |
+| offer to start it | Taken. It is the same shape as the administrator prompt this run already puts, and it removes the failing command from the path entirely. |
+| make the failure teach | Rejected as unreachable. It needs a function in the captain's own session, and the installer is never in it, so a `CommandNotFoundException` in that window cannot be intercepted from outside it. |
+| make the instruction unmissable | Rejected. It is what was already there. The text was correct and was still walked past, so louder text is a fix that has already been tried and has already failed twice. |
+
+**What the ending does now.**
+It stops sending the captain somewhere else.
+`Get-FmMachineStartLine` names two commands and says which window each is for: the shim's full path, which works in the window being read, and `firstmate`, which works in any new one.
+Then `install.ps1` offers to start it here, once.
+The reason travels with them - "this window took its copy of PATH when it opened" - because a bare instruction is what was skim-read the first two times.
+
+**The full path to the shim is the command that always works, and that is not incidental.**
+Measured 2026-08-26 in a Windows PowerShell 5.1 window with the install's PATH entry removed and the execution policy at `Restricted`, which is what a clean Windows client has: `firstmate` is not recognized, `.\start.ps1` answers `cannot be loaded because running scripts is disabled on this system`, and `<...>\Programs\firstmate\firstmate.cmd` starts `start.ps1` under PowerShell 7.6.4.
+It is immune to both because a `.cmd` is not subject to an execution policy and the `pwsh` it starts is given `-ExecutionPolicy Bypass`.
+That is why the ending names it rather than `.\start.ps1`, which would have failed for a second reason on the machine shape this file already documents.
+
+**Nothing starts without an explicit yes in that run.**
+`Get-FmMachineStartDecision` is the gate, and it is a function rather than a condition inside `install.ps1` so that the rule can be tested.
+Only `y` or `yes` starts anything; an empty answer is a no, so pressing Enter cannot open a browser; and `-Unattended` or a redirected stdin is never asked at all, on the reasoning `Test-CaptainPresent` already states for the administrator prompt.
+That is deliberately the opposite default from `Confirm-SpeechModel`, and the difference is what the two questions cost: one finishes a download, this one starts a process and opens a browser.
+`AGENTS.md` is emphatic about this - things that start themselves are how the captain ended up with audio playing from a window they could not find - so here the silent answer is the safe one.
+
+**`start.ps1` from Windows PowerShell 5 is the same failure at the other door, and this closes `start-wrong-shell`.**
+That file carried `#requires -Version 7.0`, so the captain who typed `.\start.ps1` in the 5.1 window they had just installed from got
+`The script 'start.ps1' cannot be run because it contained a "#requires" statement for Windows PowerShell 7.0` - accurate, not firstmate speaking, and silent about what to do, on a machine that already had PowerShell 7 on it.
+Only the window was wrong, and unlike the `firstmate` case that IS something the script can fix, because it is the script's own process.
+So `start.ps1` now carries no `#requires`, checks `$PSVersionTable` itself, says what is wrong in firstmate's own words, and relaunches under `pwsh` carrying the captain's arguments across.
+Typing `.\start.ps1` is the consent to start, so relaunching starts nothing that was not asked for.
+Where there is no PowerShell 7 to switch to it installs nothing and names `install.ps1`, which is the same one-installer rule its missing-tool refusal is built on.
+
+**The two version guards are deliberately separate, and this is the reason.**
+`install.ps1`'s has to survive on a machine with no PowerShell 7 at all, so it offers to install the shell; `start.ps1`'s runs after that install and must never install anything.
+They share only how `pwsh` is found - four lines and one well-known location - and `install.ps1`'s block stays self-contained because it is the one file that must be able to say "you are on the wrong shell" before anything else on the machine is known to be there.
+
+**What this does NOT close.**
+A captain whose execution policy is the clean-machine `Restricted` never reaches `start.ps1`'s guard at all: the policy refuses the file first, and `README.md` gives the `-ExecutionPolicy Bypass` form for exactly that reason.
+The guard closes the raw version mismatch, which is what `start-wrong-shell` describes and what the captain actually hit; it does not and cannot close the policy refusal, which is a different failure with its own owner above.
+
+**How it is proved.**
+`tests/FmModuleAssembly.Tests.ps1` RUNS `start.ps1` in a real Windows PowerShell 5.1 rather than reading it: once with a stub `pwsh` at the front of PATH, which measures the relaunch and the arguments it carries without a bridge or a browser starting, and once with no `pwsh` anywhere, which measures the refusal and its exit code.
+Both fail against the pre-fix file, which is what makes them worth having.
+`tests/FmToolInstall.Tests.ps1` covers the closing lines, the fallback when no shim could be written, and every path through the consent gate - including that nobody at the keyboard is never a yes whatever the answer string says.
 ## Platform notes
 
 - `WINDOWS-UNVERIFIED`: everything in this area was executed on PowerShell 7.6.4

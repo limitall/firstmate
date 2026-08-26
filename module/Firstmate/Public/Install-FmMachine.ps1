@@ -723,6 +723,7 @@ function Install-FmMachine {
                 Action = 'skipped'
                 Detail = ("this machine refused to write the one-word command. Start firstmate with " +
                     "pwsh -File `"$(Join-Path $RepoRoot 'start.ps1')`" until that is sorted out.")
+                Path   = ''
             }
         }
         $steps += New-FmInstallStep -Name 'firstmate command' -Action $shim.Action -Detail $shim.Detail
@@ -736,6 +737,9 @@ function Install-FmMachine {
     } else {
         $steps += New-FmInstallStep -Name 'home' -Action 'skipped' -Detail 'WhatIf'
         $steps += New-FmInstallStep -Name 'firstmate command' -Action 'skipped' -Detail 'WhatIf'
+        # An empty Path, because a WhatIf run wrote no shim and the closing lines
+        # must not name a file this run did not create.
+        $shim = [pscustomobject]@{ Action = 'skipped'; Detail = 'WhatIf'; Path = '' }
         $shortcut = [pscustomobject]@{ Action = 'skipped'; Detail = 'WhatIf'; PwshPath = ''; Shortcut = '' }
         $steps += New-FmInstallStep -Name 'PowerShell 7 in Start' -Action 'skipped' -Detail 'WhatIf'
     }
@@ -842,17 +846,22 @@ function Install-FmMachine {
     }
 
     [pscustomobject]@{
-        Installed = $performed
-        Verified  = $verified
-        Ready     = $ready
-        Reason    = ''
-        Plan      = $plan
-        Outcomes  = $outcomes
-        Steps     = $steps
-        Checks    = $checks
-        Doctor    = $doctor
-        Suite     = $suite
-        Lines     = $lines
+        Installed    = $performed
+        Verified     = $verified
+        Ready        = $ready
+        Reason       = ''
+        Plan         = $plan
+        Outcomes     = $outcomes
+        Steps        = $steps
+        Checks       = $checks
+        Doctor       = $doctor
+        Suite        = $suite
+        # The full path of the `firstmate` command this run wrote, or '' when it
+        # could not be written. install.ps1's closing lines name it, because it
+        # is the one command that starts firstmate from the window the install
+        # was run in - Public/FmMachineStart.ps1 has the measurement.
+        StartCommand = [string]$shim.Path
+        Lines        = $lines
     }
 }
 

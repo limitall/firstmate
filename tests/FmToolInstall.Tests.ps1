@@ -878,6 +878,20 @@ Describe 'Install-FmMachine' {
         $report.Ready | Should -BeFalse
         $report.Lines[-1] | Should -Match 'WhatIf - nothing was installed'
         foreach ($outcome in $report.Outcomes) { $outcome.Detail | Should -Be 'WhatIf' }
+        # install.ps1's closing lines name this. A WhatIf run wrote no shim, so
+        # it must be empty rather than absent: reading a property that is not
+        # there is a terminating error under the strict mode install.ps1 sets.
+        $report.StartCommand | Should -Be ''
+    }
+
+    It 'reports the firstmate command it wrote, for the closing lines to name' {
+        # The wiring from the shim step to what the captain reads at the end. It
+        # is the one command that starts firstmate from the window the install
+        # was run in, so an install that wrote one must hand it back.
+        $installRoot = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $shim = Set-FmMachineCommandShim -RepoRoot $script:RepoRoot -InstallRoot $installRoot -PathScope Process -Confirm:$false
+        $lines = (Get-FmMachineStartLine -ShimPath $shim.Path -RepoRoot $script:RepoRoot) -join "`n"
+        $lines | Should -Match ([regex]::Escape($shim.Path))
     }
 
     It 'plans every requirement, with a reason and a route for each' {
@@ -2754,5 +2768,132 @@ Describe 'where this checkout is, asked before anything is attempted' {
         (Get-FmMachineLocationVerification -Location ([pscustomobject]@{
                     Path = 'C:\nope'; Usable = $false; Reason = 'refused'; Suggestion = 'C:\good'; Concerns = @('refused')
                 })).Required | Should -BeTrue
+    }
+}
+
+Describe 'the last ten seconds of an install' {
+    # WHY THIS EXISTS. Two clean-machine installs in a row ended on an error: the
+    # run printed "open a NEW window and type firstmate" and the captain typed it
+    # in the window they were standing in. The reproduction, and why a bare
+    # `firstmate` in that window can be neither made to work nor made to teach,
+    # are in docs/windows-install.md under "The last ten seconds".
+    #
+    # These pin the two things that answer it: the closing lines name a command
+    # that works in the window being read, and NOTHING starts without an explicit
+    # yes in that run.
+
+    Context 'what the captain is told' {
+        It 'names the command that works in the window the install was run from' {
+            $shim = 'C:\Users\me\AppData\Local\Programs\firstmate\firstmate.cmd'
+            $text = (Get-FmMachineStartLine -ShimPath $shim -RepoRoot 'C:\Users\me\firstmate') -join "`n"
+            $text | Should -Match ([regex]::Escape($shim))
+            $text | Should -Match 'works HERE, in this window'
+        }
+
+        It 'still names the one-word command, and says which window it is for' {
+            $text = (Get-FmMachineStartLine -ShimPath 'C:\p\firstmate.cmd' -RepoRoot 'C:\r') -join "`n"
+            $text | Should -Match '(?m)^\s+firstmate$'
+            $text | Should -Match 'works in any NEW window'
+        }
+
+        It 'says why the one-word command is not in this window, rather than only that it is not' {
+            # The old ending said "type this in a NEW one" and was walked past
+            # twice. What was missing is the reason, which is what makes the
+            # instruction survive being skim-read.
+            $text = (Get-FmMachineStartLine -ShimPath 'C:\p\firstmate.cmd' -RepoRoot 'C:\r') -join "`n"
+            $text | Should -Match 'took its copy of PATH when it opened'
+        }
+
+        It 'falls back to pwsh, and names no shim, when the shim could not be written' {
+            $text = (Get-FmMachineStartLine -ShimPath '' -RepoRoot 'C:\Users\me\firstmate') -join "`n"
+            $text | Should -Match 'pwsh -NoProfile -File'
+            $text | Should -Match ([regex]::Escape('C:\Users\me\firstmate\start.ps1'))
+            $text | Should -Not -Match 'firstmate\.cmd' -Because 'no file was written, so none may be named'
+            $text | Should -Not -Match 'works in any NEW window' -Because 'there is no one-word command to promise'
+        }
+
+        It 'hands back strings, so a caller can print them without formatting anything' {
+            $lines = Get-FmMachineStartLine -ShimPath 'C:\p\firstmate.cmd' -RepoRoot 'C:\r'
+            @($lines).Count | Should -BeGreaterThan 0
+            foreach ($line in $lines) { $line | Should -BeOfType [string] }
+        }
+    }
+
+    Context 'who decides whether it starts' {
+        It 'starts only on an explicit yes' {
+            foreach ($answer in @('y', 'Y', 'yes', 'YES', ' y ')) {
+                (Get-FmMachineStartDecision -Answer $answer -CaptainPresent).Start |
+                    Should -BeTrue -Because "'$answer' is a yes"
+            }
+        }
+
+        It 'treats an empty answer as no, so pressing Enter starts nothing' {
+            $decision = Get-FmMachineStartDecision -Answer '' -CaptainPresent
+            $decision.Start | Should -BeFalse
+            ($decision.Lines -join ' ') | Should -Match 'Not started'
+        }
+
+        It 'treats anything that is not yes as no' {
+            foreach ($answer in @('n', 'no', 'maybe', 'yes please', 'yeah', '1', 'ok')) {
+                (Get-FmMachineStartDecision -Answer $answer -CaptainPresent).Start |
+                    Should -BeFalse -Because "'$answer' is not an explicit yes"
+            }
+        }
+
+        It 'never starts when nobody is at the keyboard, whatever the answer says' {
+            # -Unattended and a redirected stdin both land here. A run with
+            # nobody watching must not open a browser, which is the rule
+            # AGENTS.md states and the reason this gate is a function at all.
+            foreach ($answer in @('y', 'yes', '')) {
+                (Get-FmMachineStartDecision -Answer $answer).Start | Should -BeFalse
+            }
+        }
+
+        It 'says why it did not ask, so the transcript explains itself' {
+            $decision = Get-FmMachineStartDecision -Answer '' -AbsenceReason '-Unattended was given'
+            ($decision.Lines -join ' ') | Should -Match 'Nothing was started, because -Unattended was given'
+        }
+
+        It 'still says how to start it later, on every path that did not start it' {
+            foreach ($decision in @(
+                    (Get-FmMachineStartDecision -Answer 'n' -CaptainPresent),
+                    (Get-FmMachineStartDecision -Answer '' -CaptainPresent),
+                    (Get-FmMachineStartDecision -Answer '' -AbsenceReason 'no console')
+                )) {
+                $decision.Start | Should -BeFalse
+                ($decision.Lines -join ' ') | Should -Match 'whenever you like'
+            }
+        }
+
+        It 'says nothing extra when it is starting, because start.ps1 speaks next' {
+            $decision = Get-FmMachineStartDecision -Answer 'y' -CaptainPresent
+            $decision.Start | Should -BeTrue
+            @($decision.Lines).Count | Should -Be 0
+        }
+    }
+
+    Context 'the path the closing lines are given' {
+        It 'comes from the shim step rather than being rebuilt by the caller' {
+            # Detail is prose for the report. Parsing it back to recover the path
+            # is what this property exists to prevent.
+            $installRoot = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+            $shim = Set-FmMachineCommandShim -RepoRoot $script:RepoRoot -InstallRoot $installRoot -PathScope Process -Confirm:$false
+            $shim.Path | Should -Be (Join-Path $installRoot 'firstmate' 'firstmate.cmd')
+            Test-Path -LiteralPath $shim.Path -PathType Leaf | Should -BeTrue
+        }
+
+        It 'is still reported on the second run, which writes nothing' {
+            $installRoot = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+            $null = Set-FmMachineCommandShim -RepoRoot $script:RepoRoot -InstallRoot $installRoot -PathScope Process -Confirm:$false
+            $again = Set-FmMachineCommandShim -RepoRoot $script:RepoRoot -InstallRoot $installRoot -PathScope Process -Confirm:$false
+            $again.Action | Should -Be 'already'
+            $again.Path | Should -Be (Join-Path $installRoot 'firstmate' 'firstmate.cmd')
+        }
+
+        It 'is empty under -WhatIf, so the ending cannot name a file that was never written' {
+            $installRoot = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+            (Set-FmMachineCommandShim -RepoRoot $script:RepoRoot -InstallRoot $installRoot -PathScope Process -WhatIf).Path |
+                Should -Be ''
+        }
     }
 }

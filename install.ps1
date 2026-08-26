@@ -152,6 +152,13 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
         }
     }
 
+    # Microsoft's own installer, pointed at a per-user directory: it takes the
+    # zip rather than the MSI, so it needs no administrator. Named out here
+    # because BOTH refusals below print it - the machine with no PowerShell 7 at
+    # all, and the machine whose `pwsh` turns out not to be 7.
+    $installLine = '& ([scriptblock]::Create((Invoke-RestMethod https://aka.ms/install-powershell.ps1))) ' +
+    '-Destination "$env:LOCALAPPDATA\Programs\PowerShell7" -AddToPath'
+
     $pwshCommand = Get-Command -Name 'pwsh' -ErrorAction SilentlyContinue
     if (-not $pwshCommand) {
         $localPwsh = Join-Path $env:LOCALAPPDATA 'Programs\PowerShell7\pwsh.exe'
@@ -159,10 +166,6 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     }
 
     if (-not $pwshCommand) {
-        # Microsoft's own installer, pointed at a per-user directory: it takes
-        # the zip rather than the MSI, so it needs no administrator.
-        $installLine = '& ([scriptblock]::Create((Invoke-RestMethod https://aka.ms/install-powershell.ps1))) ' +
-        '-Destination "$env:LOCALAPPDATA\Programs\PowerShell7" -AddToPath'
         [Console]::Out.WriteLine('  PowerShell 7 is not on this machine. It installs without administrator:')
         [Console]::Out.WriteLine('')
         [Console]::Out.WriteLine("    $installLine")
@@ -210,6 +213,23 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
         [Console]::Out.WriteLine('')
         $pwshCommand = Get-Command -Name $localPwsh -ErrorAction SilentlyContinue
     }
+
+    # ONE RELAUNCH, NEVER TWO. `pwsh` is ALSO what PowerShell 6 is called, so on
+    # a machine carrying it Get-Command resolves a shell that is still below 7,
+    # which arrives here and relaunches again - a process spawning itself with no
+    # bound. The marker travels to the child in its environment, so a second
+    # arrival refuses instead. start.ps1 carries the same guard for the same
+    # reason; this is the statement of it.
+    if ($env:FM_SHELL_RELAUNCHED) {
+        [Console]::Out.WriteLine("  This relaunched into a shell that is still PowerShell $($PSVersionTable.PSVersion),")
+        [Console]::Out.WriteLine('  so it is stopping rather than doing it again. The pwsh on this machine is not')
+        [Console]::Out.WriteLine('  PowerShell 7 - PowerShell 6 uses that name too. This installs 7 beside it:')
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine("    $installLine")
+        [Console]::Out.WriteLine('')
+        exit 1
+    }
+    $env:FM_SHELL_RELAUNCHED = '1'
 
     [Console]::Out.WriteLine("  Re-running under $($pwshCommand.Source)...")
     [Console]::Out.WriteLine('')
@@ -467,12 +487,43 @@ if (-not $report.Ready) {
     exit 1
 }
 
-# NOT A STEP IN THE INSTALL. Everything above is done and proven; this is about
+# NOT A STEP IN THE INSTALL. Everything above is done and proven; what is left is
 # the WINDOW you are standing in, which took its copy of PATH when it opened and
-# cannot be given a new one from inside. Any new window has it.
-Say '  Everything is installed and proven. This window took its PATH when it opened,'
-Say '  so type this in a NEW one:'
+# cannot be given a new one from inside.
+#
+# WHY THIS ENDING CHANGED. It used to say "type this in a NEW one" and name
+# `firstmate`. That was true, and two clean-machine installs in a row still ended
+# on an error, because the captain typed it here - `firstmate` the second time,
+# `claude` and `.\start.ps1` the time before. A finish line most people trip over
+# is badly placed, and blaming the reader is the wrong conclusion.
+#
+# So the run no longer ends by sending the captain somewhere else. It names the
+# command that works in THIS window, and then offers to do the last step here.
+# Public/FmMachineStart.ps1 owns both, has the measurements behind them, and says
+# why a bare `firstmate` in this window can be neither made to work nor made to
+# teach: the installer is not running in the captain's session and never was.
+foreach ($line in (Get-FmMachineStartLine -ShimPath $report.StartCommand -RepoRoot $PSScriptRoot)) { Say $line }
+
+# THE OFFER, AND WHY IT IS SAFE. Nothing in this repo may start itself - it is
+# how the captain ended up with audio playing from a window they could not find -
+# so this asks, once, and only an explicit yes starts anything. Pressing Enter is
+# a no. -Unattended and a redirected stdin are never asked at all, on exactly the
+# reasoning Test-CaptainPresent already states for the administrator prompt.
+$answer = ''
+$captainPresent = Test-CaptainPresent
+if ($captainPresent) { $answer = [string](Read-Host '  Start firstmate now? [y/N]') }
+
+$absence = if ($Unattended) { '-Unattended was given' } else { 'this run has no console to answer on' }
+$decision = Get-FmMachineStartDecision -Answer $answer -CaptainPresent:$captainPresent -AbsenceReason $absence
 Say ''
-Say '    firstmate          start it - opens your browser, everything happens there'
-Say ''
+foreach ($line in $decision.Lines) { Say $line }
+if (-not $decision.Start) {
+    Say ''
+    exit 0
+}
+
+# In THIS process, which is the PowerShell 7 this script relaunched itself into
+# and which already has the shim on its PATH. The shim exists for the captain's
+# other windows; going through it here would only add a process.
+& (Join-Path $PSScriptRoot 'start.ps1')
 exit 0

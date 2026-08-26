@@ -434,27 +434,32 @@ Describe 'the two entry points at the repo root' {
         ($missing -join '; ') | Should -Be ''
     }
 
-    It 'pins strict mode in both, and #requires 7 in start.ps1 only' {
-        # install.ps1 deliberately carries NO #requires. A clean Windows machine
-        # opens Windows PowerShell 5.1, where a #requires line produces "cannot
-        # be run because it contained a '#requires' statement" and nothing about
-        # what to do next. It checks $PSVersionTable itself and relaunches under
-        # pwsh, which is the one thing the installer must do before anything
-        # else works.
+    It 'pins strict mode in both, and lets NEITHER carry a #requires the wrong shell answers for it' {
+        # Both deliberately carry NO #requires. A clean Windows machine opens
+        # Windows PowerShell 5.1, where the directive produces "cannot be run
+        # because it contained a '#requires' statement" and nothing about what to
+        # do next. install.ps1 met that first and has checked $PSVersionTable
+        # itself ever since.
+        #
+        # start.ps1 joined it after the captain's first SUCCESSFUL install: they
+        # typed .\start.ps1 in the 5.1 window they had just installed from and
+        # got the raw version mismatch, on a machine that already had PowerShell
+        # 7 on it. Only the window was wrong, which is something the script can
+        # fix, so it checks the version itself and switches shells.
         $install = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'install.ps1'))
         $start = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'start.ps1'))
         # Anchored to the start of a line, which is the only place PowerShell
-        # honours the directive; the file talks ABOUT #requires in its own
+        # honours the directive; the files talk ABOUT #requires in their own
         # comments, and that prose must not read as the statement itself.
-        $install | Should -Not -Match '(?m)^#requires'
-        $install | Should -Match '\$PSVersionTable\.PSVersion\.Major -lt 7'
-        $install | Should -Match 'Set-StrictMode -Version Latest'
-        $start | Should -Match '(?m)^#requires -Version 7\.0'
-        $start | Should -Match 'Set-StrictMode -Version Latest'
+        foreach ($text in @($install, $start)) {
+            $text | Should -Not -Match '(?m)^#requires'
+            $text | Should -Match '\$PSVersionTable\.PSVersion\.Major -lt 7'
+            $text | Should -Match 'Set-StrictMode -Version Latest'
+        }
     }
 
-    It 'keeps install.ps1 parseable by Windows PowerShell 5.1, which is the shell it will meet first' {
-        # Its version check is useless if the file cannot be parsed to reach it.
+    It 'keeps both parseable by Windows PowerShell 5.1, which is the shell they will meet first' {
+        # A version check is useless if the file cannot be parsed to reach it.
         # 5.1 is not present on every machine this repo is developed on, so the
         # check is skipped rather than silently passing where it cannot run.
         $windowsPowerShell = Join-Path $env:WINDIR 'System32' 'WindowsPowerShell' 'v1.0' 'powershell.exe'
@@ -465,8 +470,112 @@ Describe 'the two entry points at the repo root' {
         $probe = 'param($Path) $e=$null; $null=[System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$null,[ref]$e); if ($e) { $e[0].Message } else { "OK" }'
         $probeFile = Join-Path $TestDrive 'parse-probe.ps1'
         [System.IO.File]::WriteAllText($probeFile, $probe)
-        $result = & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $probeFile -Path (Join-Path $script:RepoRoot 'install.ps1')
-        ($result -join ' ') | Should -Be 'OK'
+        foreach ($name in @('install.ps1', 'start.ps1')) {
+            $result = & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $probeFile -Path (Join-Path $script:RepoRoot $name)
+            ($result -join ' ') | Should -Be 'OK' -Because "$name has to parse under 5.1 to reach its own version check"
+        }
+    }
+}
+
+Describe 'start.ps1 in the shell a clean machine actually opens' {
+    # WHY THIS EXISTS. The captain's first SUCCESSFUL install ended on an error.
+    # They typed .\start.ps1 in the Windows PowerShell 5.1 window they had just
+    # run the installer from, and got
+    #
+    #     The script 'start.ps1' cannot be run because it contained a "#requires"
+    #     statement for Windows PowerShell 7.0.
+    #
+    # which is accurate, is not firstmate speaking, and says nothing about what
+    # to do. The machine was fine - install.ps1 had already put PowerShell 7 on
+    # it - and only the window was wrong.
+    #
+    # So this does not check what start.ps1 SAYS about itself. It RUNS it, on the
+    # shell a clean machine opens, and measures what the captain gets.
+    #
+    # NOTHING IS STARTED HERE. A stub `pwsh` at the front of PATH takes the
+    # relaunch, so what is measured is the command start.ps1 builds rather than a
+    # bridge and a browser. The second case has no pwsh to find at all.
+    BeforeAll {
+        $script:WindowsPowerShell = Join-Path $env:WINDIR 'System32' 'WindowsPowerShell' 'v1.0' 'powershell.exe'
+        $script:StartScript = Join-Path $script:RepoRoot 'start.ps1'
+
+        function Test-FiveOneAvailable {
+            $IsWindows -and (Test-Path -LiteralPath $script:WindowsPowerShell -PathType Leaf)
+        }
+
+        # Runs a command in a real Windows PowerShell 5.1, with the environment
+        # this case is about, and hands back everything it printed.
+        function Invoke-FiveOne {
+            param([Parameter(Mandatory)][string]$Command)
+            $output = & $script:WindowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $Command 2>&1
+            [pscustomobject]@{
+                ExitCode = $LASTEXITCODE
+                Text     = (@($output | ForEach-Object { [string]$_ }) -join "`n")
+            }
+        }
+    }
+
+    It 'switches to PowerShell 7 and carries the captain arguments across' {
+        if (-not (Test-FiveOneAvailable)) {
+            Set-ItResult -Skipped -Because 'Windows PowerShell 5.1 is not on this machine'
+            return
+        }
+        # A stub named pwsh.cmd, which Get-Command -Name 'pwsh' resolves exactly
+        # as it resolves the real executable. It prints its arguments and exits,
+        # so the relaunch is measured without anything starting.
+        $stubDir = Join-Path $TestDrive 'stub-shell'
+        $null = New-Item -ItemType Directory -Path $stubDir -Force
+        [System.IO.File]::WriteAllText((Join-Path $stubDir 'pwsh.cmd'), "@echo off`r`necho FM-RELAUNCH %*`r`n")
+
+        $result = Invoke-FiveOne -Command "`$env:PATH = '$stubDir;' + `$env:PATH; & '$($script:StartScript)' -Port 9111"
+
+        $result.Text | Should -Not -Match '#requires' -Because 'the raw version mismatch is what this replaced'
+        $result.Text | Should -Match 'FIRSTMATE' -Because "the captain must hear firstmate's own voice, not PowerShell's"
+        $result.Text | Should -Match 'FM-RELAUNCH' -Because 'it must actually switch shells rather than only explain'
+        $result.Text | Should -Match '-File .*start\.ps1'
+        $result.Text | Should -Match '-Port 9111' -Because 'the captain arguments have to survive the switch'
+    }
+
+    It 'relaunches once and never twice, so a pwsh that is not 7 cannot become a fork bomb' {
+        if (-not (Test-FiveOneAvailable)) {
+            Set-ItResult -Skipped -Because 'Windows PowerShell 5.1 is not on this machine'
+            return
+        }
+        # PowerShell 6 is ALSO called pwsh. Without the marker, a machine
+        # carrying it resolves a shell still below 7, which arrives back at this
+        # guard and relaunches again, with nothing bounding it. The marker is
+        # what a child inherits, so this asserts the SECOND arrival refuses -
+        # with a stub pwsh present, which is the case that would otherwise spawn.
+        $stubDir = Join-Path $TestDrive 'stub-loop'
+        $null = New-Item -ItemType Directory -Path $stubDir -Force
+        [System.IO.File]::WriteAllText((Join-Path $stubDir 'pwsh.cmd'), "@echo off`r`necho FM-RELAUNCH %*`r`n")
+
+        $result = Invoke-FiveOne -Command ("`$env:PATH = '$stubDir;' + `$env:PATH; " +
+            "`$env:FM_SHELL_RELAUNCHED = '1'; & '$($script:StartScript)'")
+
+        $result.Text | Should -Not -Match 'FM-RELAUNCH' -Because 'a second arrival must not spawn a third'
+        $result.Text | Should -Match 'stopping rather than doing it again'
+        $result.Text | Should -Match 'install\.ps1' -Because 'the captain still needs the way out'
+        $result.ExitCode | Should -Be 1
+    }
+
+    It 'names the one command that installs PowerShell 7, when there is none to switch to' {
+        if (-not (Test-FiveOneAvailable)) {
+            Set-ItResult -Skipped -Because 'Windows PowerShell 5.1 is not on this machine'
+            return
+        }
+        # No pwsh on PATH and nothing in the per-user location install.ps1 uses.
+        # That is a machine nobody has set up, not a wrong window, and start.ps1
+        # installs NOTHING - install.ps1 is the one thing that installs.
+        $emptyLocal = Join-Path $TestDrive 'empty-localappdata'
+        $null = New-Item -ItemType Directory -Path $emptyLocal -Force
+        $result = Invoke-FiveOne -Command ("`$env:PATH = '$([System.IO.Path]::Combine($env:WINDIR, 'System32'))'; " +
+            "`$env:LOCALAPPDATA = '$emptyLocal'; & '$($script:StartScript)'")
+
+        $result.Text | Should -Not -Match '#requires'
+        $result.Text | Should -Match 'PowerShell 7 is not on this machine'
+        $result.Text | Should -Match 'install\.ps1'
+        $result.ExitCode | Should -Be 1 -Because 'nothing started, and a refusal is not a success'
     }
 }
 

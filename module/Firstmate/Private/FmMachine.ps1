@@ -67,13 +67,18 @@ function Set-FmMachineCommandShim {
     $shimPath = Join-Path $binDirectory 'firstmate.cmd'
     $text = Get-FmMachineShimText -StartScript $startScript
 
+    # THE PATH IS RETURNED, not only described. The install's closing lines name
+    # this file, because its full path is the one command that starts firstmate
+    # in the window the install was run from - see Public/FmMachineStart.ps1.
+    # Detail is prose for the report and must never be parsed back to get it.
     $current = ''
     if (Test-Path -LiteralPath $shimPath -PathType Leaf) { $current = [System.IO.File]::ReadAllText($shimPath) }
     if ($current -eq $text -and (Test-FmToolOnPath -Directory $binDirectory -Scope $PathScope)) {
-        return [pscustomobject]@{ Action = 'already'; Detail = "$shimPath -> $startScript" }
+        return [pscustomobject]@{ Action = 'already'; Detail = "$shimPath -> $startScript"; Path = $shimPath }
     }
     if (-not $PSCmdlet.ShouldProcess($shimPath, 'write the firstmate command')) {
-        return [pscustomobject]@{ Action = 'skipped'; Detail = 'WhatIf' }
+        # Nothing was written, so there is no command to name.
+        return [pscustomobject]@{ Action = 'skipped'; Detail = 'WhatIf'; Path = '' }
     }
 
     if (-not (Test-Path -LiteralPath $binDirectory -PathType Container)) {
@@ -82,7 +87,7 @@ function Set-FmMachineCommandShim {
     $action = if (Test-Path -LiteralPath $shimPath -PathType Leaf) { 'updated' } else { 'created' }
     [System.IO.File]::WriteAllText($shimPath, $text)
     $null = Add-FmToolUserPath -Directory $binDirectory -Scope $PathScope -Confirm:$false
-    [pscustomobject]@{ Action = $action; Detail = "$shimPath -> $startScript" }
+    [pscustomobject]@{ Action = $action; Detail = "$shimPath -> $startScript"; Path = $shimPath }
 }
 
 # --- PowerShell 7, findable ------------------------------------------------------

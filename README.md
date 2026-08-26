@@ -38,14 +38,16 @@ Re-running it at any time is safe, and changes only what it must.
 
 The last thing it prints is a verdict, not a summary: **READY**, or **NOT READY** with every requirement and what happened to it.
 
-Then, from a new shell:
+Then it offers to start firstmate, once, and only an explicit yes starts anything - pressing Enter declines, and nothing starts on an unattended run.
+
+Whether you accept or not, it also names how to start it yourself:
 
 ```powershell
 firstmate               # start it - opens your browser, everything happens there
 ```
 
-Open a NEW window for that one.
-The window you installed from took its copy of `PATH` when it opened, and no program can hand a running window a new one - that is Windows, not a step the installer skipped.
+That one-word command works in any NEW window.
+The window you installed from took its copy of `PATH` when it opened, and no program can hand a running window a new one - that is Windows, not a step the installer skipped - so for that window the install prints the full path to the same command, which works there straight away.
 
 ## Start here
 
