@@ -283,8 +283,14 @@ Describe 'the sweep runner itself' {
     }
 
     It 'gives up after the full attempt budget when every sweep crashes' {
+        # A STUB EMITS THE WHOLE CONTRACT, INCLUDING THE FIELD THIS CASE DOES
+        # NOT LOOK AT. Invoke-FmAnalyzerSweep reads Analysed off whatever the
+        # sweep prints, and under Set-StrictMode a missing property throws
+        # rather than reading as empty - so a stub that omitted it failed inside
+        # the helper, before the retry behaviour under test was ever reached.
         $stub = New-FmStubSweep -Name 'always-fails' -Body @'
 [pscustomobject]@{
+    Analysed = @()
     Findings = @()
     Errors   = @([pscustomobject]@{ Target = 'X.psm1'; Rule = 'ProvideCommentHelp'; Message = 'Object reference not set to an instance of an object.' })
 } | ConvertTo-Json -Depth 6 -Compress
@@ -303,9 +309,9 @@ Describe 'the sweep runner itself' {
         $stub = New-FmStubSweep -Name 'fails-once' -Body @"
 if (-not (Test-Path -LiteralPath '$marker')) {
     Set-Content -LiteralPath '$marker' -Value 'x'
-    [pscustomobject]@{ Findings = @(); Errors = @([pscustomobject]@{ Target = 'X.psm1'; Rule = 'ProvideCommentHelp'; Message = 'boom' }) } | ConvertTo-Json -Depth 6 -Compress
+    [pscustomobject]@{ Analysed = @(); Findings = @(); Errors = @([pscustomobject]@{ Target = 'X.psm1'; Rule = 'ProvideCommentHelp'; Message = 'boom' }) } | ConvertTo-Json -Depth 6 -Compress
 } else {
-    [pscustomobject]@{ Findings = @([pscustomobject]@{ ScriptName = 'a.ps1'; Line = 1; RuleName = 'PSFake'; Severity = 'Warning'; Message = 'm' }); Errors = @() } | ConvertTo-Json -Depth 6 -Compress
+    [pscustomobject]@{ Analysed = @('a.ps1'); Findings = @([pscustomobject]@{ ScriptName = 'a.ps1'; Line = 1; RuleName = 'PSFake'; Severity = 'Warning'; Message = 'm' }); Errors = @() } | ConvertTo-Json -Depth 6 -Compress
 }
 "@
         $result = Invoke-FmAnalyzerSweep -Attempts 3 -ScriptPath $stub

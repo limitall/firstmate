@@ -114,7 +114,12 @@ Describe 'Reading' {
     }
 
     It 'returns an empty collection of lines for a missing file' {
-        (Read-FmStateLines -Path (Get-TestPath)).Count | Should -Be 0
+        # @() AROUND THE CALL, because PowerShell unrolls an empty array on the
+        # way out of a function: the parenthesised call alone is $null, and
+        # asking $null for .Count throws under Set-StrictMode rather than
+        # answering 0. Every real caller already wraps or foreachs it; this
+        # assertion was the only place reading the return value bare.
+        @(Read-FmStateLines -Path (Get-TestPath)).Count | Should -Be 0
     }
 
     It 'drops only the final newline, keeping meaningful blank lines inside' {
