@@ -628,6 +628,303 @@ Describe 'Test-FmBridgeDescribingWord' {
     }
 }
 
+Describe 'an ordinary question gets an ordinary answer' {
+
+    # THE DEFECT, from the captain's own fresh VM on 2026-09-07. They said
+    # "hello" and got a fleet report; they asked what day it was and got the
+    # identical fleet report again. Neither question was about work at all. The
+    # session wrote a real answer to each, the gate judged both ungrounded, and
+    # the console said why:
+    #
+    #     fm-bridge: reply held back - names work the records do not carry: 'Please run'
+    #
+    # There is no such job and the captain never typed the word. `run` is a verb
+    # here and the gate read it as the noun, so the politeness in front of it
+    # became the name of invented work.
+    #
+    # A FRESH VM IS THE WORST CASE AND THE FIRST THING THE CAPTAIN SEES. With
+    # nothing dispatched the records carry no words at all, so
+    # Test-FmBridgeWordsRecorded - the check that lets a reply quote the record
+    # it was handed - can never pass. The gate is at its very tightest on the
+    # morning after the install.
+    BeforeAll {
+        $script:Fresh = script:New-Ground -Empty -NoCapacity
+        $script:Board = script:New-Ground
+    }
+
+    It 'has no words at all to lean on, which is what made this the worst case' {
+        @($script:Fresh.Rows).Count | Should -Be 0
+        @($script:Fresh.Words).Count | Should -Be 0
+    }
+
+    It 'lets the reply the captain actually lost through' -ForEach @(
+        @{ Asked = 'hello'
+            Said = 'Hello. Nothing is under way right now. Please run it past me and I will write out what to ask for.'
+        }
+        @{ Asked = 'whic day today ?'
+            Said = 'I cannot read the clock from here, so please run date in your own window and it will tell you.'
+        }
+    ) {
+        $out = Protect-FmBridgeReply -Text $Said -Ground $script:Fresh -Asked $Asked
+        $out.Grounded | Should -BeTrue -Because "it was held for: $($out.Unsubstantiated -join '; ')"
+        $out.Reply | Should -Be $Said
+    }
+
+    # A GREETING, A DATE, A QUESTION ABOUT THIS SCREEN, A REFUSAL AND A ROUTE.
+    # None of them claims anything about the fleet, so there is nothing in any of
+    # them for the records to substantiate or to contradict. Every one is held to
+    # both readings, because the empty board and the busy one give the gate
+    # completely different vocabularies to work from.
+    It 'says nothing about the fleet, so nothing is held back' -ForEach @(
+        @{ Said = 'Hello, captain. Nothing is under way and nothing is waiting on you.' }
+        @{ Said = 'Please run date in your own window and it will tell you.' }
+        @{ Said = 'I cannot read the clock from here, so please run it in your firstmate window.' }
+        @{ Said = 'Let me work through what you want and I will write it out for you.' }
+        @{ Said = 'Just run it past me first and I will say what to ask for.' }
+        @{ Said = 'Kindly run that in the window you already have open.' }
+        @{ Said = 'Now run it and tell me what you see.' }
+        @{ Said = 'You can run it there whenever you like.' }
+        @{ Said = 'The full checks run in your own window, not on this screen.' }
+        @{ Said = 'I will fix that wording for you.' }
+        @{ Said = 'Would you like me to work out what to ask for?' }
+        @{ Said = 'I am the screen for your fleet. Ask me what is happening and I will tell you.' }
+        @{ Said = 'I cannot tell you that from here.' }
+        @{ Said = 'Everything I say comes from the records, so I will not guess at a date.' }
+        @{ Said = 'Say the word in your firstmate window and it will start.' }
+    ) {
+        foreach ($ground in @($script:Fresh, $script:Board)) {
+            $v = Test-FmBridgeGrounded -Text $Said -Ground $ground -Asked 'hello'
+            $v.Grounded | Should -BeTrue -Because "it was held for: $($v.Unsubstantiated -join '; ')"
+        }
+    }
+
+    # BOTH CHANNELS, TO THE SAME READING. The spoken line is a second sentence
+    # the session wrote, and gating it separately is what stops an invention
+    # arriving where the captain cannot re-read it. The narrowing has to reach
+    # both, or a greeting is delivered on screen and swallowed in the ear.
+    It 'lets an ordinary line through on the spoken channel too' {
+        $spoken = 'Hello. Please run it past me and I will write out what to ask for.'
+        $written = Protect-FmBridgeReply -Text $spoken -Ground $script:Fresh -Asked 'hello'
+        $heard = Protect-FmBridgeReply -Text $spoken -Ground $script:Fresh -Asked 'hello'
+        $written.Grounded | Should -BeTrue
+        $heard.Grounded | Should -Be $written.Grounded
+    }
+}
+
+Describe 'the line the narrowing must not cross' {
+
+    # THE POINT OF THIS BLOCK. The gate above was narrowed because it was firing
+    # on English that claims nothing. Every case here fails the moment that
+    # narrowing is taken one step further, and each one names the step it
+    # guards, so a later change that looks harmless has to argue with a named
+    # defect rather than with a passing suite.
+    BeforeAll {
+        $script:Fresh = script:New-Ground -Empty -NoCapacity
+        $script:Board = script:New-Ground
+    }
+
+    It 'still holds back a reply that invents work' -ForEach @(
+        # Fails if a noun with no verb reading were relaxed along with the ones
+        # that have one. `job`, `task` and `lane` are nouns and nothing else.
+        @{ Why = 'a job the records do not carry'; Said = 'The payments job is green.' }
+        @{ Why = 'a task the records do not carry'; Said = 'The payment task finished overnight.' }
+        @{ Why = 'a lane the records do not carry'; Said = 'The payment lane is blocked.' }
+        # Fails if the determiner rule were applied to a bare plural or to a mass
+        # noun, neither of which needs one in English.
+        @{ Why = 'a bare plural name'; Said = 'Payment tests are green and nothing is left to do.' }
+        @{ Why = 'a mass-noun name'; Said = 'Payment work finished overnight.' }
+        # Fails if a determiner stopped counting as evidence of a noun phrase.
+        @{ Why = 'a branch the records do not carry'; Said = 'The auth branch is ready to merge.' }
+        @{ Why = 'a run the records do not carry'; Said = 'The payment run came back clean.' }
+        @{ Why = 'a fix the records do not carry'; Said = 'A payment fix has landed.' }
+        # Fails if bare naming stopped being a finding on its own - the guard
+        # would then only catch what it could also read a claim out of.
+        @{ Why = 'a state the records do not carry'; Said = 'The payment tests are running.' }
+        @{ Why = 'an outcome the records do not carry'; Said = 'I have finished the payment tests.' }
+        # The founding defect itself, whole.
+        @{ Why = 'the reply this gate was built for'
+            Said = 'Halting lock-identity at its 75 percent and putting the payment tests in its place is your call.'
+        }
+    ) {
+        foreach ($ground in @($script:Fresh, $script:Board)) {
+            $out = Protect-FmBridgeReply -Text $Said -Ground $ground -Asked 'what is happening?'
+            $out.Grounded | Should -BeFalse -Because "it names $Why"
+            $out.Reply | Should -Not -Match '(?i)payment|auth'
+        }
+    }
+
+    # A figure never consults the grammar above at all, so the narrowing cannot
+    # reach it however far it is taken.
+    It 'still holds back an invented figure whatever the sentence around it is' -ForEach @(
+        @{ Said = 'Please run it: 1730 pass, 0 failed, 25 not run.' }
+        @{ Said = 'Let me work on it. Capacity is 79% of the week left.' }
+    ) {
+        (Test-FmBridgeGrounded -Text $Said -Ground $script:Fresh -Asked 'hello').Grounded |
+            Should -BeFalse
+    }
+}
+
+Describe 'what the captain reads when a reply is held back' {
+
+    # THE DEFECT. The captain said "hello", the gate fired, and what came back
+    # opened "The records show no work at all right now" and reached the reason
+    # four lines later. They had asked nothing about work. A fleet report is a
+    # fine answer to "what is happening" and an incoherent one to a greeting, so
+    # the reason leads now and the records follow it as what is on offer instead.
+    It 'opens by saying it held something back, not with a fleet report' {
+        $out = Protect-FmBridgeReply -Text 'The payment tests are at 40 percent.' `
+            -Ground (script:New-Ground) -Asked 'hello'
+        $first = @($out.Reply -split "`n")[0]
+        $first | Should -Match '(?i)held it back'
+        $first | Should -Not -Match '(?i)pieces of work|no work at all'
+    }
+
+    # An empty board substantiates nothing, so there is nothing to offer in the
+    # reply's place and saying so in one line is the whole of the honest answer.
+    It 'does not pad a held-back reply with a report of an empty board' {
+        $out = Protect-FmBridgeReply -Text 'The payment tests are at 40 percent.' `
+            -Ground (script:New-Ground -Empty -NoCapacity) -Asked 'hello'
+        $out.Grounded | Should -BeFalse
+        $out.Reply | Should -Match '(?i)held it back'
+        $out.Reply | Should -Not -Match '(?i)nothing is waiting on a decision'
+        $out.Reply | Should -Not -Match '(?i)the records show no work at all'
+    }
+
+    # The reason is new prose rather than a field the translator has already
+    # been through, so section 9 binds on it directly and on the real wording
+    # rather than on a stub.
+    It 'gives the reason in the captain nouns, never in machinery' {
+        foreach ($ground in @((script:New-Ground), (script:New-Ground -Empty -NoCapacity))) {
+            $out = Protect-FmBridgeReply -Text 'The payment tests are at 40 percent.' `
+                -Ground $ground -Asked 'hello'
+            # The same words the standalone answer is held to. A second, wider
+            # list here would drift from that one and would also trip over
+            # `lock identity`, which is a job the panel shows rather than jargon.
+            $out.Reply |
+                Should -Not -Match '(?i)worktree|crewmate|harness|status file|task id|\.ps1|state/'
+        }
+    }
+
+    # Asked for on its own rather than as a replacement, this is still the plain
+    # answer to "what is happening" and says both halves of it.
+    It 'still reports the whole board when it is not standing in for anything' {
+        $out = Get-FmBridgeRecordAnswer -Ground (script:New-Ground -Empty -NoCapacity)
+        $out | Should -Match '(?i)no work'
+        $out | Should -Match '(?i)nothing is waiting'
+    }
+}
+
+Describe 'Get-FmBridgeWorkNoun' {
+
+    # The gate builds its own matcher out of this, so a head it matches and a
+    # head it can reason about are the same list by construction rather than by
+    # anyone remembering to edit both.
+    It 'classifies every noun exactly once' {
+        $nouns = @(Get-FmBridgeWorkNoun)
+        @($nouns.Word | Select-Object -Unique).Count | Should -Be $nouns.Count
+        foreach ($n in $nouns) { $n.Word | Should -Be $n.Word.ToLowerInvariant() }
+    }
+
+    # Both halves have to be populated or the classification is decorative: if
+    # nothing were a verb the reported defect returns, and if everything were one
+    # the gate stops catching an invented job.
+    It 'holds both a verb-capable and a noun-only class' {
+        $nouns = @(Get-FmBridgeWorkNoun)
+        @($nouns | Where-Object { $_.Verb }).Count | Should -BeGreaterThan 0
+        @($nouns | Where-Object { -not $_.Verb }).Count | Should -BeGreaterThan 0
+    }
+
+    It 'reads run, work, fix, test and branch as words that are also verbs' -ForEach @(
+        @{ Word = 'run' }, @{ Word = 'work' }, @{ Word = 'fix' }, @{ Word = 'test' }, @{ Word = 'branch' }
+    ) {
+        (@(Get-FmBridgeWorkNoun) | Where-Object { $_.Word -eq $Word }).Verb | Should -BeTrue
+    }
+
+    It 'reads job, task and lane as nouns and nothing else' -ForEach @(
+        @{ Word = 'job' }, @{ Word = 'task' }, @{ Word = 'lane' }
+    ) {
+        (@(Get-FmBridgeWorkNoun) | Where-Object { $_.Word -eq $Word }).Verb | Should -BeFalse
+    }
+}
+
+Describe 'Test-FmBridgePluralWord' {
+
+    It 'reads the plural mark English actually writes' -ForEach @(
+        @{ Word = 'checks' }, @{ Word = 'tests' }, @{ Word = 'fixes' }, @{ Word = 'docs' }
+    ) {
+        Test-FmBridgePluralWord -Text $Word | Should -BeTrue
+    }
+
+    # The endings that wear the same letter without being a plural. Reading
+    # `status` as plural would let a real name through unchecked.
+    It 'does not mistake a singular ending in s for one' -ForEach @(
+        @{ Word = 'status' }, @{ Word = 'process' }, @{ Word = 'analysis' }
+        @{ Word = 'payment' }, @{ Word = 'auth' }, @{ Word = '' }, @{ Word = 'is' }
+    ) {
+        Test-FmBridgePluralWord -Text $Word | Should -BeFalse
+    }
+}
+
+Describe 'Test-FmBridgeNamingPhrase' {
+
+    # A noun with no verb reading is judged exactly as it was before any of this,
+    # which is what keeps the narrowing off the cases the gate exists for.
+    It 'reads a noun-only head as naming, whatever stands in front of it' -ForEach @(
+        @{ Head = 'job'; Modifier = @('payments') }
+        @{ Head = 'job'; Modifier = @('payment') }
+        @{ Head = 'lanes'; Modifier = @('payment') }
+    ) {
+        Test-FmBridgeNamingPhrase -Head $Head -Modifier $Modifier | Should -BeTrue
+    }
+
+    # English compounds a noun with a noun in the singular, so a plural touching
+    # the head is its subject: "the checks run" is checks doing something.
+    It 'reads a plural touching a verb-capable head as a subject, not a name' {
+        Test-FmBridgeNamingPhrase -Head 'run' -Modifier @('checks') -Introducer @('the') |
+            Should -BeFalse
+    }
+
+    # The rule that ends the reported defect: a singular count noun cannot stand
+    # as a noun phrase without a determiner, so "please run" names nothing.
+    It 'refuses a bare singular count noun' -ForEach @(
+        @{ Head = 'run'; Modifier = @('please') }
+        @{ Head = 'fix'; Modifier = @('just') }
+        @{ Head = 'test'; Modifier = @('kindly') }
+    ) {
+        Test-FmBridgeNamingPhrase -Head $Head -Modifier $Modifier -Introducer @('', '') |
+            Should -BeFalse
+    }
+
+    It 'accepts the same head once a determiner introduces it' -ForEach @(
+        @{ Intro = 'the' }, @{ Intro = 'a' }, @{ Intro = 'your' }, @{ Intro = 'every' }
+    ) {
+        Test-FmBridgeNamingPhrase -Head 'run' -Modifier @('payment') -Introducer @($Intro) |
+            Should -BeTrue
+    }
+
+    # A bare plural and a mass noun are noun phrases on their own, so neither is
+    # asked for a determiner and both stay checked.
+    It 'needs no determiner for a bare plural or a mass noun' -ForEach @(
+        @{ Head = 'tests' }, @{ Head = 'branches' }, @{ Head = 'work' }
+    ) {
+        Test-FmBridgeNamingPhrase -Head $Head -Modifier @('payment') -Introducer @('') |
+            Should -BeTrue
+    }
+
+    # The refusal paths. A head this does not classify is not its to judge, and
+    # a phrase with nothing in front of the noun names nothing at all.
+    It 'declines to overrule a caller on a head it does not classify' {
+        Test-FmBridgeNamingPhrase -Head 'pull-request' -Modifier @('payment') | Should -BeTrue
+    }
+
+    It 'names nothing when there is no modifier left' -ForEach @(
+        @{ Modifier = @() }, @{ Modifier = @('') }
+    ) {
+        Test-FmBridgeNamingPhrase -Head 'run' -Modifier $Modifier -Introducer @('the') |
+            Should -BeFalse
+    }
+}
+
 Describe 'the lists the gate leans on' {
 
     # Each entry is compared lowercased, so an entry that is not lowercase is an
@@ -640,6 +937,12 @@ Describe 'the lists the gate leans on' {
         foreach ($word in (Get-FmBridgeCommonModifier)) {
             $word | Should -Be $word.ToLowerInvariant()
         }
+        # A determiner is compared as one word. A two-word entry would never
+        # match anything and would read as coverage it does not give.
+        foreach ($word in (Get-FmBridgeDeterminer)) {
+            $word | Should -Be $word.ToLowerInvariant()
+            $word | Should -Match '^[a-z]+$'
+        }
     }
 
     It 'lists nothing twice' {
@@ -647,5 +950,7 @@ Describe 'the lists the gate leans on' {
         @($h | Select-Object -Unique).Count | Should -Be $h.Count
         $m = @(Get-FmBridgeCommonModifier)
         @($m | Select-Object -Unique).Count | Should -Be $m.Count
+        $d = @(Get-FmBridgeDeterminer)
+        @($d | Select-Object -Unique).Count | Should -Be $d.Count
     }
 }

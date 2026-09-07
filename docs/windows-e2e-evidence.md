@@ -8336,3 +8336,126 @@ A green run deletes its own transcript and the fix line names no file, so a succ
   Section 46.8 asks `Invoke-FmMachineSuite` to strip firstmate's own markers before `Start-Process`, so the self-check measures the machine rather than the install's footprints.
   That is the same function this section redirects the streams of, and the same defect met at the other end - what the child INHERITS rather than what it SAYS - but it is a separate change with a separate justification, and 42.7's open captain decision sits underneath it.
   It is named here so the next person at this seam finds both halves together, not because this task did it.
+
+## 48. The browser screen answered a greeting with a fleet report - `PROVEN (Windows 11) FOR THE REPRODUCTION, THE CAUSE AND THE FIX; THE CAPTAIN'S FRESH VM IS STILL THEIRS`
+
+On the captain's fresh VM of 2026-09-07 the browser screen answered every question with the same fleet-status report.
+Two exchanges, verbatim from their screenshot:
+
+```
+captain: hello
+fm-bridge: reply held back - names work the records do not carry: 'Please run'
+firstmate: The records show no work at all right now.
+
+Nothing is waiting on a decision from you.
+
+I had more to say than that, but the rest was not in the records I read, so I
+have left it out rather than guess. ...
+
+captain: whic day today ?
+fm-bridge: reply held back - names work the records do not carry: 'Please run'
+firstmate: <the identical reply again>
+```
+
+Neither question was about work.
+The session wrote a real answer to each, `Protect-FmBridgeReply` judged it ungrounded, cleared both channels, and the captain got the records instead.
+This is the first thing they see after a successful install, and it made a working system look broken.
+
+**All measurements below are from 2026-09-07 on this Windows 11 seat, against the module at `module/Firstmate/Public/FmBridgeGround.ps1`.**
+Nothing spoke and no session was started: `config/voice` and `config/bridge-voice` were both absent before and after, which is the off state.
+
+### 48.1 The reproduction, without a session
+
+`CONTRIBUTING.md` already records that the reply path needs no session to verify, and that is how this was reproduced.
+A fresh-VM fleet - no tasks, no decisions, no activity, no house, capacity unmeasured - was handed to `Get-FmBridgeGround`, and plausible replies were put through `Test-FmBridgeGrounded` directly:
+
+```
+pwsh -NoProfile -Command "Import-Module Firstmate; Test-FmBridgeGrounded -Ground $g -Asked 'whic day today ?' `
+  -Text 'I cannot read the clock from here, so I will not guess the date. Please run date in your own window and it will tell you.'"
+```
+
+That returns `Grounded = False` with `names work the records do not carry: 'Please run'` - the captain's console line, character for character.
+A greeting carrying the same phrase reproduces it identically, which is why both their questions got the same answer.
+
+### 48.2 The cause, read out of the extractor rather than guessed at
+
+The spaced-name matcher in `Test-FmBridgeGrounded` looks for one or two words in front of a work noun and reads them as the name of a job.
+Its head-noun list was `tests?|task|tasks|work|fix|fixes|job|jobs|run|runs|branch|branches|lane|lanes`.
+Walking the sentence above through it, one step at a time:
+
+| step | value |
+| --- | --- |
+| matched span | `Please run` |
+| head noun | `run`, which is in the list |
+| modifier | `Please` |
+| preposition guard | no preposition, so it carries on |
+| `Please` a common modifier? | no |
+| `Please` a describing word? | no |
+| read as the name | `Please` |
+| work key | `please` |
+| in `Ground.Names`? | no |
+| words recorded? | no |
+| the captain's own word? | no |
+| **verdict** | `names work the records do not carry: 'Please run'` |
+
+**Nine of those fifteen head words are also English verbs.**
+`run`, `work`, `fix`, `test` and `branch` name a thing and do a thing in the same spelling, and the matcher was written as though only the noun reading existed.
+So every ordinary imperative the screen has any reason to write looked exactly like an invented job.
+
+### 48.3 Why a fresh VM is the worst case, and it is also the first case
+
+`Test-FmBridgeWordsRecorded` is what lets a reply quote the record it was handed, and it is the escape hatch that saves ordinary English on a busy home.
+On a fresh VM it can never fire: with nothing dispatched the records carry no words at all, measured as `Ground.Words.Count = 0`.
+The gate is therefore at its tightest on the morning after the install, which is the one morning the captain is certain to be looking.
+
+### 48.4 The size of the class, measured before and after
+
+A corpus of 29 ordinary replies - greetings, dates, refusals, routes, and answers about the screen itself, none of them claiming anything about the fleet - and 12 deliberate fabrications was put through the gate on the fresh-VM records.
+
+| | before | after |
+| --- | --- | --- |
+| ordinary replies held back | 4 of 29 | **0 of 29** |
+| fabrications held back | 11 of 12 | **11 of 12** |
+
+The four were `Please run`, `so please run`, `Let me work` and `full checks run` - one class, the head read as a noun when it was a verb.
+
+### 48.5 The fix, and the line it does not cross
+
+The narrowing is grammatical rather than lexical, because a list of the phrases that went wrong stays permanently one defect behind - which `Test-FmBridgeDescribingWord` already learnt across four live turns.
+`Get-FmBridgeWorkNoun` now owns the head list and says of each word whether English also uses it as a verb, and `Test-FmBridgeNamingPhrase` asks whether the phrase has the shape of a noun phrase at all:
+
+- a noun with no verb reading - `job`, `task`, `lane` - is judged exactly as before, and nothing about it is relaxed;
+- a plural touching the head is a subject rather than a modifier, because English compounds nouns in the singular;
+- a singular count noun needs a determiner, so `the payment run` names something and `please run` does not.
+
+The word `please` appears in no list.
+
+### 48.6 The negative control
+
+Three loosenings were applied to the shipped source in turn, the guarding block re-run against each, and the source restored:
+
+| loosening | result |
+| --- | --- |
+| every head treated as verb-capable, so a job stops being a job | 1 test red |
+| bare plurals and mass nouns made to need a determiner | 2 tests red |
+| the naming test loosened to refuse every phrase | 11 tests red |
+
+Every one of them turns `the line the narrowing must not cross` red, so the guard cannot be widened past this point and still pass.
+
+### 48.7 What the captain reads when a reply IS held back
+
+The replacement used to open `The records show no work at all right now` and reach the reason four lines later, which under a greeting reads as a screen that misunderstood the question.
+The reason now leads, in the captain's own language, and on an empty board the fleet report is not printed at all - there is nothing on it to offer instead, and saying so in one line is the whole of the honest answer.
+The replacement still clears the gate it came from, which is asserted for both an empty board and a busy one.
+
+### 48.8 What was NOT proven, and one finding left open
+
+- **The captain's fresh VM has not run this.**
+  The reproduction, the cause and the fix are all measured on this seat, through the real reply path - split, de-stammered, then gated on both channels exactly as `bin/fm-bridge.ps1` does it - with no session and nothing speaking.
+  Whether their next install greets them properly is still their measurement.
+- **Nothing here asserts that a live session will not invent.**
+  That is a property of a model on a given day.
+  What is asserted is that invention still cannot be delivered, which is what every case in `tests/FmBridgeGround.Tests.ps1` holds.
+- **One fabrication was already getting through, and still is.**
+  `The billing job is green.` is not held back, before this change or after it, because `billing` ends in `-ing` and `Test-FmBridgeDescribingWord` reads it as description.
+  That is the documented and deliberate failure direction of that heuristic rather than anything this task introduced, and it is recorded here because it was found while measuring, not fixed.

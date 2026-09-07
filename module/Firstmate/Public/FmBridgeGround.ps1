@@ -271,6 +271,12 @@ function Get-FmBridgeCommonModifier {
         'is', 'was', 'are', 'were', 'be', 'been', 'being', 'am', 'to', 'of', 'in',
         'on', 'at', 'for', 'with', 'and', 'or', 'but', 'not', 'it', 'they', 'you',
         'i', 'we', 'he', 'she', 'if', 'when', 'whether', 'while', 'since',
+        # The rest of the pronouns, because half a closed class is the same
+        # trap as no closed class. The subject forms were here and the object
+        # forms were not, so "let me work that out" was held back as a job
+        # called `me` while "let us work that out" went through.
+        'me', 'him', 'us', 'them', 'myself', 'yourself', 'himself', 'herself',
+        'itself', 'ourselves', 'yourselves', 'themselves',
         'because', 'unless', 'until', 'though', 'although', 'after', 'before',
         'so', 'then', 'as', 'which', 'who', 'whom', 'whose', 'what',
         'where', 'why', 'how', 'there', 'here', 'now', 'also', 'still', 'yet',
@@ -283,6 +289,216 @@ function Get-FmBridgeCommonModifier {
         'wants', 'need', 'needs', 'give', 'gives', 'take', 'takes', 'put',
         'puts', 'leave', 'leaves', 'left', 'went', 'goes', 'go', 'came', 'come'
     )
+}
+
+function Get-FmBridgeWorkNoun {
+    <#
+        .SYNOPSIS
+        The nouns that make a phrase in front of them the name of a piece of
+        work, and the grammar of each one.
+
+        .DESCRIPTION
+        THE DEFECT THIS ENDS. The captain said "hello" to a freshly installed
+        screen and got a fleet report; so did "whic day today ?". Both times the
+        gate held the reply back for naming work that does not exist, and the
+        name it objected to was `Please run`. There is no such job, and the
+        captain never typed the word: the session had written "please run it in
+        your own window", and the gate read the VERB `run` as the noun `run` and
+        the politeness in front of it as what names it.
+
+        NINE OF THESE FIFTEEN WORDS ARE ALSO VERBS, which is the whole of it.
+        `run`, `work`, `fix`, `test` and `branch` name a thing and do a thing in
+        the same spelling, and the matcher that reads what precedes them as a
+        name was written as though only the first reading existed. So every
+        ordinary imperative the screen has any reason to write - "please run it
+        there", "let me work that out", "I will fix the wording" - arrived
+        looking exactly like an invented job.
+
+        WHY THE CLASSIFICATION LIVES HERE RATHER THAN IN A LIST OF PHRASES. The
+        list of head nouns is already fixed and already in this file; saying
+        which of them English also uses as a verb is a bounded, complete
+        judgement about those fifteen words, made once. An allow-list of the
+        phrases that went wrong - `please run`, then `let me work`, then
+        whatever the next turn writes - is the shape that stays permanently one
+        defect behind, which `Test-FmBridgeDescribingWord` already learnt in
+        four live turns running.
+
+        WHAT EACH FIELD IS FOR. `Verb` says the word has a verb reading that has
+        to be ruled out before the phrase counts as a name. `Plural` and `Mass`
+        say what kind of noun phrase it can head, which is what rules that
+        reading out: English lets a bare plural or a mass noun stand alone
+        ("payment tests", "payment work") but a singular count noun needs a
+        determiner in front of it, so a bare "please run" is not a noun phrase
+        at all.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param()
+    return [pscustomobject[]]@(
+        # Also verbs. A phrase in front of one of these is a name only when the
+        # phrase has the shape of a noun phrase.
+        [pscustomobject]@{ Word = 'test'; Plural = $false; Mass = $false; Verb = $true }
+        [pscustomobject]@{ Word = 'tests'; Plural = $true; Mass = $false; Verb = $true }
+        [pscustomobject]@{ Word = 'work'; Plural = $false; Mass = $true; Verb = $true }
+        [pscustomobject]@{ Word = 'fix'; Plural = $false; Mass = $false; Verb = $true }
+        [pscustomobject]@{ Word = 'fixes'; Plural = $true; Mass = $false; Verb = $true }
+        [pscustomobject]@{ Word = 'run'; Plural = $false; Mass = $false; Verb = $true }
+        [pscustomobject]@{ Word = 'runs'; Plural = $true; Mass = $false; Verb = $true }
+        [pscustomobject]@{ Word = 'branch'; Plural = $false; Mass = $false; Verb = $true }
+        [pscustomobject]@{ Word = 'branches'; Plural = $true; Mass = $false; Verb = $true }
+
+        # Nouns only. Nothing about these is relaxed, because there is no verb
+        # reading to make room for: "the payments job is green" is a claim about
+        # work whatever else is true of the sentence.
+        [pscustomobject]@{ Word = 'task'; Plural = $false; Mass = $false; Verb = $false }
+        [pscustomobject]@{ Word = 'tasks'; Plural = $true; Mass = $false; Verb = $false }
+        [pscustomobject]@{ Word = 'job'; Plural = $false; Mass = $false; Verb = $false }
+        [pscustomobject]@{ Word = 'jobs'; Plural = $true; Mass = $false; Verb = $false }
+        [pscustomobject]@{ Word = 'lane'; Plural = $false; Mass = $false; Verb = $false }
+        [pscustomobject]@{ Word = 'lanes'; Plural = $true; Mass = $false; Verb = $false }
+    )
+}
+
+function Get-FmBridgeDeterminer {
+    <#
+        .SYNOPSIS
+        The words that introduce a noun phrase.
+
+        .DESCRIPTION
+        A CLOSED CLASS, and that is why this can be listed in full rather than
+        one word at a time. English has not taken a new determiner in centuries,
+        so unlike the describing words - which English coins whenever it wants
+        one, and which cost this gate four live false positives before it stopped
+        enumerating them - this list is finished the day it is written.
+
+        WHAT IT IS FOR. A singular count noun cannot stand as a noun phrase on
+        its own: "the payment run" names something and "please run" does not,
+        and the determiner is the difference. So this is the evidence that the
+        word in front of a work noun is naming it rather than doing something
+        else entirely.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+    return [string[]]@(
+        'the', 'a', 'an', 'this', 'that', 'these', 'those',
+        'my', 'your', 'our', 'their', 'its', 'his', 'her', 'whose',
+        'each', 'every', 'either', 'neither', 'both', 'another', 'other',
+        'some', 'any', 'no', 'all', 'half', 'several', 'enough',
+        'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+        'first', 'second', 'third', 'last', 'next', 'previous', 'same'
+    )
+}
+
+function Test-FmBridgePluralWord {
+    <#
+        .SYNOPSIS
+        Is this word a plural, as far as its spelling can say?
+
+        .DESCRIPTION
+        There is no dictionary here, so this reads the one mark English puts on
+        a plural and discounts the endings that wear the same letter without
+        being one: `-ss` (process), `-us` (status), `-is` (analysis).
+
+        WHAT IT DECIDES. English compounds a noun with a noun in the SINGULAR -
+        "payment tests", "branch names", "test run" - never "payments tests".
+        So a plural word touching a work noun is not modifying it; it is the
+        subject of it, and the word after it is a verb: "the checks run in your
+        own window" is a sentence about checks, not a job called `checks`.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    $lower = $Text.ToLowerInvariant()
+    if ($lower.Length -lt 3) { return $false }
+    if ($lower -match '(?:ss|us|is)$') { return $false }
+    $lower.EndsWith('s')
+}
+
+function Test-FmBridgeNamingPhrase {
+    <#
+        .SYNOPSIS
+        Is this phrase NAMING a piece of work, or is it an ordinary sentence
+        that happens to use one of the same words?
+
+        .DESCRIPTION
+        THE NARROWING THIS IS. The gate's job is to stop the screen asserting
+        facts about work the records do not carry. It was doing something wider
+        than that: any word in front of `run`, `work`, `fix`, `test` or `branch`
+        was read as the name of a job, and those five spellings are verbs as
+        readily as they are nouns. A greeting, a date, a refusal and a routing
+        sentence are not claims about the fleet, and all four were being held
+        back and answered with a fleet report instead - measured on the
+        captain's own fresh VM, where `Please run` was called the name of work
+        that does not exist.
+
+        SO THE QUESTION ASKED IS GRAMMATICAL, NOT LEXICAL. Not "have we seen
+        this phrase before" - that list is always one turn behind - but "does
+        this have the shape of a noun phrase". Three answers, in order:
+
+        A NOUN THAT IS ONLY A NOUN IS UNTOUCHED. `job`, `task` and `lane` have
+        no verb reading to make room for, so nothing about them is relaxed and
+        an invention wearing one is caught exactly as before.
+
+        A PLURAL TOUCHING THE NOUN IS A SUBJECT, not a modifier, because English
+        compounds nouns in the singular. "the checks run" is checks doing
+        something; "the payment tests" is work with a name.
+
+        A SINGULAR COUNT NOUN NEEDS A DETERMINER. This is the one that catches
+        the reported defect and its whole family at once. "the payment run",
+        "a billing fix" and "your auth branch" are noun phrases; "please run",
+        "just fix" and "kindly test" are not noun phrases at all, whatever word
+        happens to precede them, because English does not let a bare singular
+        count noun stand alone. A bare plural and a mass noun can - "payment
+        tests", "payment work" - so those two are exempt and stay checked.
+
+        THE FAILURE DIRECTION, deliberately. What this can now let through is an
+        invented name that is a bare singular with no determiner in front of it
+        ("started payment run"), or one whose modifier is a plural ("the docs
+        work"). Both are English the screen does not write, and both are still
+        caught the moment they carry a figure, because the percentage and number
+        rules never consult this at all. What it can no longer do is call the
+        word `please` a job.
+
+        .PARAMETER Head
+        The work noun the phrase ends in, as it was written.
+
+        .PARAMETER Modifier
+        The words read as naming it, nearest the noun last.
+
+        .PARAMETER Introducer
+        The words standing in front of that phrase, any one of which may be the
+        determiner that makes it a noun phrase.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Head,
+        [Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Modifier,
+        [string[]]$Introducer = @()
+    )
+
+    $noun = @(Get-FmBridgeWorkNoun) | Where-Object { $_.Word -eq $Head.ToLowerInvariant() } |
+        Select-Object -First 1
+    # A head this does not know is not this function's to judge, and refusing it
+    # here would be a silent second opinion on the caller's own match.
+    if (-not $noun) { return $true }
+    if (-not $noun.Verb) { return $true }
+
+    $touching = @($Modifier | Where-Object { $_ })
+    if (-not $touching.Count) { return $false }
+    if (Test-FmBridgePluralWord -Text $touching[-1]) { return $false }
+
+    if ($noun.Plural -or $noun.Mass) { return $true }
+
+    $determiners = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]](Get-FmBridgeDeterminer), [StringComparer]::OrdinalIgnoreCase)
+    foreach ($word in @($Introducer)) {
+        if ($word -and $determiners.Contains($word)) { return $true }
+    }
+    $false
 }
 
 function Get-FmBridgeGround {
@@ -439,6 +655,20 @@ function Get-FmBridgeRecordAnswer {
         .PARAMETER Because
         One short clause naming why the assistant's own wording was not used.
         Omitted when this is asked for on its own rather than as a replacement.
+
+        WHEN IT IS GIVEN, IT GOES FIRST, and the defect that moved it there was
+        the captain's own fresh VM: they said "hello", the gate fired, and what
+        came back opened "The records show no work at all right now" and got to
+        the reason four lines later. A fleet report is a fine answer to "what is
+        happening" and an incoherent one to a greeting. Leading with what
+        happened means the captain can always tell a held-back reply from an
+        answer, whatever they asked - and the records that follow read as what
+        is on offer instead, rather than as a reply to a question nobody asked.
+
+        AND WHEN THERE ARE NO RECORDS EITHER, this says so in one line and stops.
+        A board with nothing on it substantiates nothing, so printing "no work,
+        nothing waiting" under a held-back greeting adds a paragraph that is
+        true, irrelevant, and reads like the screen misunderstood the question.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -449,34 +679,41 @@ function Get-FmBridgeRecordAnswer {
 
     $lines = [System.Collections.Generic.List[string]]::new()
     $rows = @($Ground.Rows)
-    if ($rows.Count) {
-        $count = $rows.Count
-        $word = if ($count -eq 1) { 'One piece of work' } else { "$count pieces of work" }
-        $lines.Add("$word, and this is all of it:")
-        foreach ($row in $rows) {
-            $where = if ($null -ne $row.Percent) { "$($row.Percent)%" } else { 'no figure given yet' }
-            $tail = if ($row.Note) { " - $($row.Note)" } else { '' }
-            $lines.Add("- $($row.Label), $where$tail")
-        }
-    } else {
-        $lines.Add('The records show no work at all right now.')
-    }
-
     $decisions = @($Ground.Decisions)
-    if ($decisions.Count) {
-        $lines.Add('')
-        $lines.Add('Waiting on you:')
-        foreach ($d in $decisions) {
-            $lines.Add("- $(($d.Task -replace '[-_]+', ' ')): $($d.Question)")
-        }
-    } else {
-        $lines.Add('')
-        $lines.Add('Nothing is waiting on a decision from you.')
-    }
 
     if ($Because) {
-        $lines.Add('')
         $lines.Add($Because)
+        $lines.Add('')
+    }
+
+    if ($Because -and -not $rows.Count -and -not $decisions.Count) {
+        # Nothing to offer instead, so one line and stop. Everything below would
+        # be true and none of it would be an answer.
+        $lines.Add('There is nothing on the board either, so I have nothing of my own to give you instead.')
+    } else {
+        if ($rows.Count) {
+            $count = $rows.Count
+            $word = if ($count -eq 1) { 'One piece of work' } else { "$count pieces of work" }
+            $lines.Add("$word, and this is all of it:")
+            foreach ($row in $rows) {
+                $where = if ($null -ne $row.Percent) { "$($row.Percent)%" } else { 'no figure given yet' }
+                $tail = if ($row.Note) { " - $($row.Note)" } else { '' }
+                $lines.Add("- $($row.Label), $where$tail")
+            }
+        } else {
+            $lines.Add('The records show no work at all right now.')
+        }
+
+        if ($decisions.Count) {
+            $lines.Add('')
+            $lines.Add('Waiting on you:')
+            foreach ($d in $decisions) {
+                $lines.Add("- $(($d.Task -replace '[-_]+', ' ')): $($d.Question)")
+            }
+        } else {
+            $lines.Add('')
+            $lines.Add('Nothing is waiting on a decision from you.')
+        }
     }
     ($lines -join "`n").Trim()
 }
@@ -551,6 +788,10 @@ function Test-FmBridgeGrounded {
 
     $common = [System.Collections.Generic.HashSet[string]]::new(
         [string[]](Get-FmBridgeCommonModifier), [StringComparer]::OrdinalIgnoreCase)
+    # Longest first, so `tests` is not matched as `test` with a stray `s` after
+    # it and read as a singular where the grammar below turns on the plural.
+    $workNouns = ((Get-FmBridgeWorkNoun).Word | Sort-Object -Property Length -Descending |
+        ForEach-Object { [regex]::Escape($_) }) -join '|'
 
     # What the captain just said. Both as whole names and as single words, since
     # they may write "payment tests" and the reply answer "the payment work".
@@ -613,8 +854,11 @@ function Test-FmBridgeGrounded {
 
         # A name as the panel prints one and as a sentence says one: the same
         # words with spaces, in front of the noun that makes it a piece of work.
-        foreach ($m in [regex]::Matches($line,
-                '(?i)\b((?:[A-Za-z][A-Za-z0-9-]*\s+){1,2})(tests?|task|tasks|work|fix|fixes|job|jobs|run|runs|branch|branches|lane|lanes)\b')) {
+        # The nouns come from Get-FmBridgeWorkNoun rather than being spelt out
+        # again here, because which of them are also verbs is the thing
+        # Test-FmBridgeNamingPhrase below has to know, and two copies of the
+        # list would answer that question differently the first time one moved.
+        foreach ($m in [regex]::Matches($line, "(?i)\b((?:[A-Za-z][A-Za-z0-9-]*\s+){1,2})($workNouns)\b")) {
             $modifier = $m.Groups[1].Value.Trim()
             # A preposition in the span means the head noun is not being named by
             # what comes before it: "5 pieces OF work", "a lot OF tests". Caught
@@ -634,12 +878,35 @@ function Test-FmBridgeGrounded {
             # work noun without claiming a piece of work by that name - which is
             # what held back "Active work" on a live turn.
             $meaningful = [System.Collections.Generic.List[string]]::new()
+            # WHAT STOPPED THE WALK IS EVIDENCE, not just a boundary. The word
+            # the walk refused is the one introducing the phrase, and whether it
+            # is a determiner is what says a bare singular noun is being named
+            # rather than done.
+            $stopper = ''
             for ($w = $words.Count - 1; $w -ge 0; $w--) {
                 $word = $words[$w]
-                if ($common.Contains($word) -or (Test-FmBridgeDescribingWord -Text $word)) { break }
+                if ($common.Contains($word) -or (Test-FmBridgeDescribingWord -Text $word)) {
+                    $stopper = $word; break
+                }
                 $meaningful.Insert(0, $word)
             }
             if (-not $meaningful.Count) { continue }
+
+            # The determiner may sit outside the two words this match reaches
+            # back over - "a full test run" puts it three words in front of the
+            # noun - so the word before the match counts as an introducer too.
+            $ahead = @([regex]::Matches($line.Substring(0, $m.Index), '[A-Za-z][A-Za-z0-9-]*') |
+                ForEach-Object { $_.Value })
+            $introducer = @($stopper) + @(if ($ahead.Count) { $ahead[-1] } else { '' })
+
+            # AND IS IT A NAME AT ALL. Nine of these nouns are also verbs, and
+            # the gate used to read every one of them as a noun: "please run it
+            # in your own window" was held back on the captain's fresh VM as
+            # work called `Please run`.
+            if (-not (Test-FmBridgeNamingPhrase -Head $m.Groups[2].Value `
+                        -Modifier @($meaningful) -Introducer $introducer)) {
+                continue
+            }
 
             $key = ConvertTo-FmBridgeWorkKey -Text ($meaningful -join '-')
             if ($Ground.Names.Contains($key)) { continue }
@@ -790,9 +1057,16 @@ function Protect-FmBridgeReply {
         }
     }
 
-    $because = 'I had more to say than that, but the rest was not in the records I read, ' +
-    'so I have left it out rather than guess. Ask me about any one of these and I will ' +
-    'tell you what the records say about it.'
+    # SAID FIRST, AND SAID AS SOMETHING THAT HAPPENED. The captain has to be able
+    # to tell a held-back reply from an answer, in their own language, without
+    # being handed a summary of something they did not ask about. What used to
+    # sit at the END of a fleet report - after "the records show no work at all
+    # right now", under a greeting - told them nothing until they had already
+    # read a page that had nothing to do with what they said.
+    $because = 'I wrote you an answer and then held it back: part of it named work I could ' +
+    'not find in the records I read, and I would rather tell you nothing than tell you ' +
+    'something that is not there. Ask me again in other words, or ask me by name, and I ' +
+    'will tell you what the records say.'
     [pscustomobject]@{
         Reply           = (Get-FmBridgeRecordAnswer -Ground $Ground -Because $because)
         Grounded        = $false
