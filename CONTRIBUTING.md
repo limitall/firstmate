@@ -89,6 +89,21 @@ section 2 lists the state-file formats).
   fact removed - pointing `$env:LOCALAPPDATA` and `$env:ProgramFiles` at empty
   directories is a machine with no engine - and pair it with the negative
   control that puts the old failure back.
+  **A test that starts a CHILD reads the suite's own environment too, and that
+  is set by whatever launched the suite.** Three cases that start a real shell to
+  exercise the PowerShell 7 relaunch failed only on the captain's clean VM, and
+  the difference was never the machine: `install.ps1` sets `FM_SHELL_RELAUNCHED`
+  before re-running itself under PowerShell 7, nothing clears it, and the suite
+  the install's own self-check launches is a descendant of that relaunch. So the
+  install poisoned the measurement and then reported it as a fact about the VM.
+  Two rules come out of it. State every variable the child branches on, at the
+  seam that creates the child - the one case in that block which set the marker
+  itself has passed on every machine, and its three neighbours that inherited it
+  are exactly the three that failed. Then stage it HOSTILE in the test process,
+  because a test that only clears what it inherits still passes for the wrong
+  reason on a seat where nothing set it: with the marker staged and the clearing
+  backed out, all three fail here, which is what makes the fix proven rather than
+  trusted. `docs/windows-e2e-evidence.md` section 46 has the runs.
   The mirror of this rule - a test that WRITES to the machine, up to putting a
   dialog on the captain's screen - is the `-NonInteractive` bullet above and
   `tests/FmUnstartable.TestHelpers.ps1`, which own it. Same disease, one turn

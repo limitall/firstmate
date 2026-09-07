@@ -505,13 +505,46 @@ Describe 'start.ps1 in the shell a clean machine actually opens' {
 
         # Runs a command in a real Windows PowerShell 5.1, with the environment
         # this case is about, and hands back everything it printed.
+        #
+        # WHICH ARRIVAL THIS IS, STATED RATHER THAN INHERITED. FM_SHELL_RELAUNCHED
+        # is the marker that bounds the switch to one hop, and a child process
+        # inherits it. On a clean machine the captain's install is ITSELF a shell
+        # that relaunched - it sets the marker, then runs this suite as a child -
+        # so the marker arrives here already set, and every case below that means
+        # to measure a FIRST arrival was reading whichever answer the machine
+        # running it happened to give. Measured 2026-09-07: with it set, this
+        # Describe reports 2 passed and 1 failed without one line of it changing.
+        # It is cleared here so each case begins from a stated arrival; the case
+        # that measures a SECOND arrival sets it again in its own command, after
+        # this, which is why that one has always passed everywhere.
         function Invoke-FiveOne {
             param([Parameter(Mandatory)][string]$Command)
-            $output = & $script:WindowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $Command 2>&1
+            $output = & $script:WindowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+                -Command "Remove-Item -LiteralPath 'Env:\FM_SHELL_RELAUNCHED' -ErrorAction SilentlyContinue; $Command" 2>&1
             [pscustomobject]@{
                 ExitCode = $LASTEXITCODE
                 Text     = (@($output | ForEach-Object { [string]$_ }) -join "`n")
             }
+        }
+    }
+
+    # AND THE HOSTILE SHAPE IS STAGED, NOT WAITED FOR.
+    # Clearing the marker in the child is only half the fix: on a seat where
+    # nothing sets it, a clear that was deleted again would still pass, and this
+    # whole class of defect is tests passing for a reason nobody checked. So the
+    # marker is set HERE, in the process running the suite, which is exactly the
+    # shape the captain's install hands it. Every run now meets the case that
+    # used to need a clean VM to find, and the clearing above is proven on this
+    # seat rather than trusted.
+    BeforeEach {
+        $script:AmbientRelaunchMarker = $env:FM_SHELL_RELAUNCHED
+        $env:FM_SHELL_RELAUNCHED = '1'
+    }
+    AfterEach {
+        if ($null -eq $script:AmbientRelaunchMarker) {
+            Remove-Item -LiteralPath 'Env:\FM_SHELL_RELAUNCHED' -ErrorAction SilentlyContinue
+        } else {
+            $env:FM_SHELL_RELAUNCHED = $script:AmbientRelaunchMarker
         }
     }
 
@@ -611,9 +644,33 @@ Describe 'the first command README gives a newcomer' {
             param([Parameter(Mandatory)][string]$Command)
             # -ExecutionPolicy Restricted is what a clean Windows client has, and
             # it is passed to a CHILD process: no machine setting is changed.
+            #
+            # FM_SHELL_RELAUNCHED is cleared for the same reason it is cleared in
+            # the Describe above, and this is the case that proves the cost: the
+            # captain's install relaunches itself into PowerShell 7, sets that
+            # marker, and runs this suite from there - so install.ps1 met its own
+            # footprint here and refused a switch it had already made. A newcomer
+            # typing README's first command has no such marker, which is the
+            # machine this case is named for.
             $output = & $script:WindowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Restricted `
-                -Command "Set-Location -LiteralPath '$($script:RepoRoot)'; $Command" 2>&1
+                -Command ("Remove-Item -LiteralPath 'Env:\FM_SHELL_RELAUNCHED' -ErrorAction SilentlyContinue; " +
+                    "Set-Location -LiteralPath '$($script:RepoRoot)'; $Command") 2>&1
             [pscustomobject]@{ ExitCode = $LASTEXITCODE; Text = (@($output | ForEach-Object { [string]$_ }) -join "`n") }
+        }
+    }
+
+    # Staged hostile, not waited for - the Describe above states that in full,
+    # and the reason is the same: the suite that gates an install runs as a
+    # descendant of that install's own relaunch and carries its marker.
+    BeforeEach {
+        $script:AmbientRelaunchMarker = $env:FM_SHELL_RELAUNCHED
+        $env:FM_SHELL_RELAUNCHED = '1'
+    }
+    AfterEach {
+        if ($null -eq $script:AmbientRelaunchMarker) {
+            Remove-Item -LiteralPath 'Env:\FM_SHELL_RELAUNCHED' -ErrorAction SilentlyContinue
+        } else {
+            $env:FM_SHELL_RELAUNCHED = $script:AmbientRelaunchMarker
         }
     }
 

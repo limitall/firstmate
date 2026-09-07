@@ -8021,3 +8021,213 @@ Both halves are pinned - section 44's three tests pass unchanged, and `tests/FmS
   The pattern selects it from `PROCESSOR_ARCHITECTURE`, and its existence is confirmed from the release listing only.
 - **Nothing here was run on a machine with no speech engine at all.**
   The `[off]` half of the report is covered by tests that construct that status; a real engine-less machine has not read it.
+
+## 46. Three tests the install broke before it ran them - `PROVEN (Windows 11) ON THIS SEAT BY REPRODUCING ALL THREE FROM ONE VARIABLE; THE CLEAN VM ITSELF IS STILL THE CAPTAIN'S`
+
+Dated 2026-09-07, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\13\firstmate-win`, PowerShell 7.6.4, Windows PowerShell 5.1.26100.8115, Pester 6.1.0, git 2.49.0, Windows 11 Pro 10.0.26200.8246.
+Written on `fm/relaunch-tests-fail` over `main` at `87b7fc1`, which is the commit that introduced all three cases.
+
+The captain's clean VM was green on everything else - every tool installed and answering, herdr 0.8.2, Handy 0.9.6 and its model, the instruction surface and 19 skills present - and ended `NOT READY` on this:
+
+```
+[missing] test suite - 2631 passed, 3 failed, 15 skipped - first failures:
+  start.ps1 in the shell a clean machine actually opens.switches to PowerShell 7 and carries the captain arguments across
+  the first command README gives a newcomer.runs it, on a machine where running scripts is disabled
+  a launch this machine refuses.tells the captain plainly when install.ps1 cannot re-launch itself
+```
+
+Section 42 is the ten that came before these, and its thesis was that each of the ten asserted something about the seat it was written on.
+**These three are a different and worse shape, and it is worth naming precisely: they are not a fact about any machine at all.**
+They are a fact about the CALLER.
+`install.ps1` sets a variable, runs this suite, and then reports the suite's reaction to that variable as the machine's verdict.
+The instrument contaminated the measurement and then published it.
+
+### 46.1 The question that had to be answered first, and its answer
+
+**Does the shell switch actually work on a clean machine?**
+
+**Yes.**
+The feature is sound, and not one line of `start.ps1` or `install.ps1` was changed to make these tests pass.
+Every one of the three failures is the test reading an environment the install had already written; the relaunch itself does exactly what `87b7fc1` claims for it, including on a machine whose PowerShell 7 is the per-user one.
+The tests were doing their job in only one sense - they were the first thing to notice that the install poisons its own self-check - and in the sense the report implied, that a captain's `start.ps1` is broken in the situation it was written for, they were wrong.
+
+### 46.2 The cause, reproduced here before anything was changed
+
+`install.ps1:232` and `start.ps1:113` both set `$env:FM_SHELL_RELAUNCHED = '1'` in their OWN process before launching PowerShell 7, and nothing anywhere clears it.
+It is the marker that bounds the switch to one hop, and a child process inherits it.
+
+The chain on a fresh machine is four links long and every one of them is ordinary:
+
+1. The captain opens Windows PowerShell 5.1, which is what a clean machine gives them, and runs README's first command.
+2. `install.ps1` sees 5.1, sets the marker, and re-runs itself under PowerShell 7. The child inherits the marker.
+3. The install's LAST step runs this suite.
+   `Invoke-FmMachineSuite` starts it with `Start-Process -FilePath $pwsh`, which inherits the parent environment, so the marker arrives in the suite.
+4. The three cases each start a Windows PowerShell 5.1 of their own.
+   The marker arrives there too, and `start.ps1` and `install.ps1` take their one-relaunch refusal instead of the first arrival every one of those cases asserts.
+
+**Reproduced on this seat by setting that one variable, with the tree unmodified at `87b7fc1`:**
+
+```
+FM_SHELL_RELAUNCHED unset   ->  2 passed, 0 failed      (the seat that wrote them)
+FM_SHELL_RELAUNCHED=1       ->  0 passed, 2 failed      (the captain's exact two)
+                                + the FmToolInstall case, failed, = the captain's exact three
+```
+
+The refusal text those runs produced is the whole story in one line:
+
+```
+This relaunched into a shell that is still PowerShell 5.1.26100.8115,
+so it is stopping rather than doing it again. The pwsh on this machine is not
+PowerShell 7 - PowerShell 6 uses that name too.
+```
+
+That is the fork-bomb guard firing correctly, on a machine with a perfectly good PowerShell 7, because it was told it had already relaunched.
+
+### 46.3 The set is closed, by running the whole blocks rather than the three names
+
+The three named cases have neighbours in the same `Describe` blocks, and the neighbours are what prove the diagnosis rather than merely fitting it.
+With the marker ambient and nothing else changed, the two `Describe` blocks in `tests/FmModuleAssembly.Tests.ps1` report **4 passed, 2 failed**, and each survivor survives for a reason the code states:
+
+| case | with the marker set | why |
+| --- | --- | --- |
+| `switches to PowerShell 7 and carries the captain arguments across` | **FAILS** | asserts a first arrival, inherits a second |
+| `relaunches once and never twice, so a pwsh that is not 7 cannot become a fork bomb` | passes | it SETS the marker itself, in its own command |
+| `names the one command that installs PowerShell 7, when there is none to switch to` | passes | `start.ps1` refuses for no-pwsh BEFORE it reads the marker |
+| `gives one, inside its first code block` | passes | reads README, starts no shell |
+| `runs it, on a machine where running scripts is disabled` | **FAILS** | asserts a first arrival, inherits a second |
+| `and the bare form README used to give really does fail there` | passes | dies at the execution policy, before any relaunch |
+
+Plus one of the thirteen in `a launch this machine refuses`, and 6 + 13 = 19 with 16 passing, which is the count the negative control in 46.6 reproduces exactly.
+**The second row is the finding inside the finding.**
+One case in that block states its arrival instead of inheriting it, and it is the one case that has passed on every machine, every time.
+Its three neighbours that did not state it are precisely the three that failed.
+The fix was already sitting in the file, written by the same hand, one `It` away.
+
+### 46.4 The three leads, each established or discarded by measurement
+
+- **Windows PowerShell 5.1 and a restrictive execution policy - DISCARDED as the cause.**
+  Both are true of the captain's VM and neither is what failed these three.
+  The README case already passes `-ExecutionPolicy Restricted` to its own child, which is harsher than the VM's machine setting, and it passes here under exactly that.
+  A Group Policy that pinned the policy would have made it SKIP rather than fail, and its guard for that did not fire.
+  The marker alone reproduces all three, under `Bypass`.
+- **PowerShell 7 living at a per-user path - DISCARDED, and measured rather than argued.**
+  Neither entry point contains a machine-wide assumption.
+  Both do `Get-Command -Name 'pwsh'` first and fall back to `%LOCALAPPDATA%\Programs\PowerShell7\pwsh.exe`, which is exactly where the captain's VM keeps it.
+  Measured with PATH stripped to `C:\Windows\System32` and `LOCALAPPDATA` pointed at a fake per-user tree: `PATH-resolved <none on PATH>`, `FINAL-resolved ...\fake-localappdata\Programs\PowerShell7\pwsh.exe`.
+  The VM's installer also used `-AddToPath`, so PATH finds it first there in any case.
+- **The refused launch needing a machine that refuses something - DISCARDED.**
+  That case builds its own unstartable fixture, which `CreateProcess` declines on any machine, so it never needed such a VM.
+  It failed before it reached a launch at all.
+
+### 46.5 What each of the three is
+
+All three are **THE TEST IS WRONG**, in section 42.1's vocabulary, and they are the same wrongness three times: each asserted an environment instead of stating it.
+
+| # | test | category | what it actually depended on |
+| --- | --- | --- | --- |
+| 1 | `start.ps1 ....switches to PowerShell 7 and carries the captain arguments across` | THE TEST IS WRONG | the suite not having been started by an install that relaunched |
+| 2 | `the first command README gives a newcomer.runs it, on a machine where running scripts is disabled` | THE TEST IS WRONG | the same |
+| 3 | `a launch this machine refuses.tells the captain plainly when install.ps1 cannot re-launch itself` | THE TEST IS WRONG | the same |
+
+**Nothing was skipped, and nothing was silenced.**
+The declared-skip outcome was available for all three and is right for none: the fixture each was silently borrowing is one line, entirely inside the test's own reach, and needs nothing from the machine.
+A skip here would have bought a green report and thrown away the only run that had ever asked these questions from where the captain asks them.
+
+### 46.6 The fix, in two halves, because clearing alone is not enough
+
+**State the arrival.**
+Each case now clears `FM_SHELL_RELAUNCHED` at the seam that creates the child - in the two shell helpers in `tests/FmModuleAssembly.Tests.ps1`, and by `$psi.Environment.Remove(...)` in the `ProcessStartInfo` case, whose environment is a copy of this process's taken on first touch.
+
+**Then stage it hostile.**
+Clearing alone would have been the same mistake one level up.
+On this seat nothing sets the marker, so a clear that was later deleted would still pass here and fail again on the captain's VM, which is exactly the class of defect this whole section is about.
+So each block now SETS the marker in the suite's own process first, which is the shape the install hands it, and restores whatever was there afterwards.
+The hostile case is now the one every run meets, on every machine.
+
+That second half is the prior checkpoint's idea and it is better than what this task first wrote; 46.9 says what was and was not taken from it.
+
+### 46.7 The negative control
+
+With the staging in place and only the three clears backed out, this seat - which could never produce these failures before - now produces them, and produces exactly them:
+
+```
+start.ps1 in the shell a clean machine actually opens.switches to PowerShell 7 and carries the captain arguments across
+the first command README gives a newcomer.runs it, on a machine where running scripts is disabled
+a launch this machine refuses.tells the captain plainly when install.ps1 cannot re-launch itself
+
+16 passed, 3 failed
+```
+
+Byte for byte the captain's three, in the captain's order.
+Restored, the same 19 pass.
+And the fork-bomb case beside them was checked separately for the obvious way this fix could have gone wrong - a clear that ran AFTER the case's own assignment would have quietly made it vacuous - by disabling the guard in `start.ps1` and confirming that case still fails.
+It does.
+
+### 46.8 The bigger question: what would have caught this, and what it would cost
+
+Section 42.7 already argued that the whole suite is the wrong proof for a fresh install, and recommended that a suite failure report as a FINDING rather than as the `NOT READY` verdict.
+That recommendation is still open, still the captain's call, and this section is the second batch of evidence for it in eighteen days.
+**But these three sharpen it past where 42.7 got to, and the sharper version is the useful one.**
+
+The ten in section 42 were facts about the SEAT that wrote them, and it genuinely took a machine that was not that seat to expose them.
+These three were facts about the CALLER, and no clean VM was ever needed: one variable on the machine that wrote them finds all three in under a minute, which is what 46.2 does.
+The install is not a neutral observer of the suite it runs.
+It changes the environment first, then reports what the suite says about that change as a fact about the machine.
+And the variable, the guard that reads it and the three tests that assert against it all arrived in one commit, `87b7fc1` - written from a seat where nothing ever set it, so the interaction between the three was unobservable to the hand that wrote all three.
+
+**The cheap guard, named and costed, and deliberately NOT built here.**
+`Invoke-FmMachineSuite` should clear firstmate's own markers from the child's environment before `Start-Process`, so the install's self-check measures the machine rather than its own footprints.
+There is exactly one such marker in the tree today, so this is about three lines in `module/Firstmate/Private/FmMachine.ps1` plus one test that sets the marker and asserts the suite child does not see it.
+It is not built here for two reasons: the brief puts tool installation out of scope, and which failures may end an install is 42.7's open captain decision rather than a worker's.
+It is worth doing, and it is worth doing at that seam rather than in each test, because the next marker will not announce itself.
+
+**The half that IS built costs nothing and generalises further.**
+The hostile staging in 46.6 means no second suite run, no CI shape, and no clean VM is needed to keep these honest: every ordinary run now meets the install's environment.
+The rule behind it is now in `CONTRIBUTING.md` beside the machine-staging rule it extends, because the mechanism is not special to this marker - any variable a spawned child branches on has the same shape, and the repo's own one worked example was already in the file.
+That is the whole guard, and it is a line of discipline rather than machinery.
+
+### 46.9 The prior checkpoint, and what was taken from it
+
+`4b9c835` on `fm/relaunch-tests-fail` is an earlier attempt the captain stopped partway, and its own message says it reached no conclusion.
+**It had, in fact, reached the right one**, independently: the same marker, the same chain, the same reading of which branch those cases were measuring.
+This task did not read it until after reproducing the cause from scratch, which is why 46.2 is a measurement rather than a confirmation.
+
+**Set aside as a base, adopted as an idea.**
+Its commit was not built on: 20 of its 24 changed files are a materialized `.claude/skills` tree, which is the Windows placeholder artefact section 8 owns and must not be committed, and its evidence section was never written.
+Its `stage it HOSTILE` argument is better than the clearing this task first wrote, and it is adopted here in full, with its reasoning intact - a test that only clears what it inherits still passes for the wrong reason where nothing set it.
+
+### 46.10 The suite and the analyzer
+
+`Invoke-Pester -Path ./tests` on the committed tree, this worktree, PowerShell 7.6.4:
+
+```
+Tests Passed: 2631, Failed: 0, Skipped: 18, Inconclusive: 0, NotRun: 0
+Tests completed in 2170.65s
+```
+
+The analyzer is not a separate sweep here - `tests/FmAnalyzer.Tests.ps1` runs `Invoke-ScriptAnalyzer` over the repo as 12 of those tests, and they are green in that run.
+
+**The first run in a fresh worktree is not the reportable one, and that is a property of the worktree rather than of this change.**
+The checkout arrives with the Windows placeholder instruction surface section 8 owns, so the first run fails on it and repairs it on the way past.
+Three runs, in order: `2624 passed, 7 failed`, then `2630 passed, 1 failed`, then `2631 passed, 0 failed` - the seven and then the one are all `this checkout's own instruction surface.is healthy` and the doctor cases that follow from it, and none of them is in the files this task touched.
+
+**The three cases were confirmed to RUN rather than skip**, which is the assertion a green number cannot make on its own:
+
+```
+the three Describe blocks  ->  19 passed, 0 failed, 0 SKIPPED
+```
+
+**One number that does not match the captain's, and is not this change's.**
+Their VM reported 15 skipped where this seat reports 18, against an identical total of 2649.
+That difference is present in every run on this seat, the three blocks above contribute none of it, and nothing here explains it; it is recorded so the next reader does not read it as a consequence of this fix.
+
+### 46.11 What was NOT proven here, and one finding left open
+
+- **No clean VM has run this.**
+  Everything above is the mechanism reproduced on this seat by staging the captain's environment, not the captain's machine running the fix.
+  What would settle it is one ordinary install on a fresh VM, and that is still theirs to run.
+- **The marker leak itself is real and is NOT fixed.**
+  `install.ps1` leaves `FM_SHELL_RELAUNCHED` set in the PowerShell 7 window it ends in, which since `87b7fc1` is the window the captain is standing in.
+  A captain who opens a Windows PowerShell 5.1 from there and runs `.\start.ps1` is told `The pwsh on this machine is not PowerShell 7`, on a machine where it is - the exact text 46.2 captured.
+  It is out of this task's scope and it belongs with the install area's owner, alongside the `Invoke-FmMachineSuite` guard in 46.8, which is the same defect met at the other end.
+- **Nothing here re-examined the relaunch design**, which the brief put out of scope and which these runs give no reason to revisit: the switch, the one-hop bound, the per-user fallback and the refusal path all behaved correctly throughout.

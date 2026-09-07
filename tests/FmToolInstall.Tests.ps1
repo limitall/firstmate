@@ -1186,7 +1186,28 @@ Describe 'a launch this machine refuses' {
                 (Join-Path $script:RepoRoot 'install.ps1'), '-DetectOnly')) {
             $psi.ArgumentList.Add($argument)
         }
-        $psi.Environment['PATH'] = $fakeShellDir + [System.IO.Path]::PathSeparator + (Join-Path $env:WINDIR 'System32')
+        # THE FIRST ARRIVAL, STAGED HOSTILE AND THEN STATED.
+        # install.ps1 sets FM_SHELL_RELAUNCHED before re-running itself under
+        # PowerShell 7, and nothing clears it, so every descendant of that run
+        # carries it - including the suite the install's own self-check starts.
+        # Inherited here, install.ps1 below takes its one-relaunch refusal and
+        # never reaches the declined launch this case is about, which is what the
+        # captain's clean VM reported while this passed on the seat that wrote it.
+        # It is set first so the removal is exercised on every machine, and
+        # .Environment is a COPY taken on first touch - the PATH line below is
+        # that touch, so both lines must stay inside this staging.
+        $ambientRelaunchMarker = $env:FM_SHELL_RELAUNCHED
+        $env:FM_SHELL_RELAUNCHED = '1'
+        try {
+            $psi.Environment['PATH'] = $fakeShellDir + [System.IO.Path]::PathSeparator + (Join-Path $env:WINDIR 'System32')
+            $null = $psi.Environment.Remove('FM_SHELL_RELAUNCHED')
+        } finally {
+            if ($null -eq $ambientRelaunchMarker) {
+                Remove-Item -LiteralPath 'Env:\FM_SHELL_RELAUNCHED' -ErrorAction SilentlyContinue
+            } else {
+                $env:FM_SHELL_RELAUNCHED = $ambientRelaunchMarker
+            }
+        }
         $psi.WorkingDirectory = $script:RepoRoot
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
