@@ -8231,3 +8231,108 @@ That difference is present in every run on this seat, the three blocks above con
   A captain who opens a Windows PowerShell 5.1 from there and runs `.\start.ps1` is told `The pwsh on this machine is not PowerShell 7`, on a machine where it is - the exact text 46.2 captured.
   It is out of this task's scope and it belongs with the install area's owner, alongside the `Invoke-FmMachineSuite` guard in 46.8, which is the same defect met at the other end.
 - **Nothing here re-examined the relaunch design**, which the brief put out of scope and which these runs give no reason to revisit: the switch, the one-hop bound, the per-user fallback and the refusal path all behaved correctly throughout.
+## 47. Two hundred lines of test chatter on a successful install - `PROVEN (Windows 11) FOR THE STREAM BEHAVIOUR, THE REPRODUCTION AND THE FIX; THE CAPTAIN'S CLEAN VM IS STILL THEIRS`
+
+The captain's clean-VM install log of 2026-09-07 carried roughly 200 lines between "Installing what is missing" and the final report that had nothing to do with their machine.
+Every one of them was a test fixture doing exactly what it was written to do, inside a temp directory, about a project that does not exist.
+And every one of them was indistinguishable from a real fault to the person reading it, on a run that had in fact succeeded.
+That is expensive in a specific way: the captain rebuilds a fresh VM for every test run, so anything that makes a successful install look like a failure costs a whole rebuild to disambiguate.
+
+**All measurements below are from 2026-09-07 on this Windows 11 seat.**
+
+### 47.1 What was on the captain's screen
+
+Four shapes, quoted from their log:
+
+```
+What if: Performing the operation "create AGENTS.md and link CLAUDE.md to it" on target "C:\Users\higet\AppData\Local\Temp\Pester_e0lt\5sh02uhp.d0s".
+scaffolded: C:\Users\higet\AppData\Local\Temp\fmwin-07c11a8d0b2b\data\t1\brief.md (ship, mode=direct-PR; replace the placeholder)
+WARNING: teardown: worktree return failed with transient git lock (...\wt\index.lock); waiting 0s and retrying (1/3)
+{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: 1 task(s) in flight, ..."}
+```
+
+The last one is the worst of them, because it reads as this repo's own supervision alarm rather than as a fixture's.
+
+**Each of those is a real product function saying a true thing, which is why the fix could not be at the source.**
+`scaffolded:` is `New-FmBrief`'s own report (`module/Firstmate/Public/FmBrief.ps1`), the systemMessage is the turn-end guard's (`FmGuard.ps1`, `Invoke-FmClaudeHook.ps1`), and the WhatIf lines are `ShouldProcess` doing exactly what `-WhatIf` asks of it.
+Quietening any of them would have cost the captain that output on the runs where it IS about their machine.
+What was wrong was never the message - it was the joint that let a CHILD PROCESS'S output onto the parent's report.
+
+### 47.2 The stream table, measured rather than assumed
+
+The install runs the suite in a child `pwsh`, started `-NoNewWindow` - which hands that child the captain's own console - with `-RedirectStandardError` and nothing else.
+The obvious guess is that `WARNING:` and `What if:` are their own channels and would need their own handling.
+They are not.
+A child process was run with one write on each stream, both handles redirected to files, and the files read back:
+
+| written by | arrived on |
+| --- | --- |
+| `Write-Output` | stdout |
+| `Write-Host` | stdout |
+| `Write-Warning` | stdout, as `WARNING: ...` |
+| `Write-Information` | stdout |
+| `Write-Verbose` | stdout, as `VERBOSE: ...` |
+| `ShouldProcess` under `-WhatIf` | stdout, as `What if: ...` |
+| `Write-Error` | **stderr** |
+
+**In a `pwsh` child, every stream except the error stream lands on stdout.**
+So redirecting stderr alone caught the one shape that was never the problem and let the other four through onto the report the parent was composing.
+
+**And one of the four is not on a PowerShell stream at all.**
+`New-FmBrief` prints its `scaffolded:` line with `[Console]::Out.WriteLine`, which writes to the process's stdout HANDLE directly and never passes through the information stream.
+That settles where the cut had to be: no stream-level suppression inside the child - not `6>$null`, not `-InformationAction`, not a preference variable - could have caught it, because there is no stream to suppress.
+Redirecting the CHILD PROCESS'S handle is the only thing that catches every shape, including the ones nobody has written yet, and it is the one option that needs no test to change.
+
+### 47.3 The reproduction, at the real boundary
+
+A fixture emitting all four shapes plus an error record was put in a throwaway `tests/` directory, and `Invoke-FmMachineSuite` was called on it from a child `pwsh` whose own stdout and stderr were captured - so what is asserted is "this text did not reach a console", not "the code redirects".
+With the stdout redirection removed, that captured console is the captain's log, verbatim:
+
+```
+INSTALLER-SAYS: Installing what is missing
+WARNING: INSTALLER-SAYS: this machine has no gh, so no PR can be opened from it
+What if: Performing the operation "create AGENTS.md and link CLAUDE.md to it" on target "C:\Temp\Pester_e0lt\5sh02uhp.d0s".
+scaffolded: C:\Temp\fmwin-07c11a8d0b2b\data\t1\brief.md (ship, mode=direct-PR; replace the placeholder)
+WARNING: teardown: worktree return failed with transient git lock; waiting 0s and retrying (1/3)
+{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: 1 task(s) in flight"}
+VERBOSE: fixture: about to assert
+INSTALLER-SAYS: test suite - 1 passed, 0 failed, 0 skipped
+```
+
+That run is also the negative control for the tests this section covers: with the redirection put back, the same fixture produces
+
+```
+INSTALLER-SAYS: Installing what is missing
+WARNING: INSTALLER-SAYS: this machine has no gh, so no PR can be opened from it
+INSTALLER-SAYS: test suite - 1 passed, 0 failed, 0 skipped
+```
+
+Note the second line in BOTH.
+It is an installer-authored `WARNING:` on the same channel the fixture's teardown retry used, and it survives - which is the check that separates a redirected child from a muted channel.
+A fix that quietened warnings would have taken the installer's own voice with it and passed every other assertion here.
+
+### 47.4 The detail is not gone, it is somewhere
+
+Removing output from a console is only half a fix; a run that DID go wrong still has to be diagnosable.
+The child's two streams are now written back out whole, under headings that say which stream each block came from - because that distinction is exactly what someone reading a failure needs and exactly what cannot be recovered once the two are interleaved.
+The file is kept only when the run was not a clean pass, and `Get-FmMachineSuiteFix` names it in the check's fix line ahead of the re-run command, because reading what already happened comes before spending another three quarters of an hour on it:
+
+```
+              fix: read what the run said: 'C:\Users\ADMIN\AppData\Local\Temp\fm-suite-20260907-150048-fb0bbba2.log' - then re-run it yourself: Invoke-Pester -Path (Join-Path 'C:\...' 'tests')
+```
+
+A green run deletes its own transcript and the fix line names no file, so a successful install leaves nothing in `%TEMP%` and never points at a path that is not there.
+
+### 47.5 What was NOT proven
+
+- **The captain's clean VM has not run this.**
+  The fix is proven against a fixture that emits every shape their log carried, through the real `Invoke-FmMachineSuite` boundary, on this seat.
+  Whether their next rebuild is quiet is still their measurement.
+- **The 200 lines were not counted.**
+  Four shapes were reproduced from the quoted evidence; the log itself is on the captain's desktop and was never read here.
+- **No claim is made that these were the only sources of chatter.**
+  The cut is at the boundary, so it covers anything the child says on either stream, including shapes nobody has seen yet.
+- **The install still hands that child its own environment, and this did not change it.**
+  Section 46.8 asks `Invoke-FmMachineSuite` to strip firstmate's own markers before `Start-Process`, so the self-check measures the machine rather than the install's footprints.
+  That is the same function this section redirects the streams of, and the same defect met at the other end - what the child INHERITS rather than what it SAYS - but it is a separate change with a separate justification, and 42.7's open captain decision sits underneath it.
+  It is named here so the next person at this seam finds both halves together, not because this task did it.

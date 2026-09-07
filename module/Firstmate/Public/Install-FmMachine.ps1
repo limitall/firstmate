@@ -762,17 +762,23 @@ function Install-FmMachine {
     if ($SkipSuite -or -not $performed) {
         $suiteCheck += New-FmInstallCheck -Name 'test suite' -Status 'warn' `
             -Detail $(if ($performed) { 'not run (-SkipSuite), so this install is not proven by the suite' } else { 'not run (WhatIf)' }) `
-            -Fix "Invoke-Pester -Path (Join-Path '$RepoRoot' 'tests')"
+            -Fix (Get-FmMachineSuiteFix -RepoRoot $RepoRoot)
     } else {
         $suite = Invoke-FmMachineSuite -RepoRoot $RepoRoot
+        # THE SUITE'S CHATTER IS NOT ON THIS CONSOLE, so the fix line has to say
+        # where it went. Invoke-FmMachineSuite keeps the whole of what the run
+        # said, on both streams, whenever the run was not a clean pass - and
+        # hands back an empty path when there was nothing to keep, so this names
+        # a file only when there is one to open.
+        $suiteFix = Get-FmMachineSuiteFix -RepoRoot $RepoRoot -LogPath ([string]$suite.LogPath)
         if (-not $suite.Ran) {
             $suiteCheck += New-FmInstallCheck -Name 'test suite' -Status 'missing' -Required -Detail $suite.Detail `
-                -Fix "Invoke-Pester -Path (Join-Path '$RepoRoot' 'tests')"
+                -Fix $suiteFix
         } elseif ($suite.Failed -gt 0) {
             $named = @($suite.FailedNames | Select-Object -First 5)
             $suiteCheck += New-FmInstallCheck -Name 'test suite' -Status 'missing' -Required `
                 -Detail ($suite.Detail + $(if ($named.Count) { ' - first failures: ' + ($named -join '; ') } else { '' })) `
-                -Fix "Invoke-Pester -Path (Join-Path '$RepoRoot' 'tests')"
+                -Fix $suiteFix
         } else {
             $suiteCheck += New-FmInstallCheck -Name 'test suite' -Status 'ok' -Detail $suite.Detail
         }

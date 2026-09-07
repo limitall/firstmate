@@ -595,6 +595,16 @@ The engine is OPTIONAL in the catalog, because "required" means firstmate cannot
 `Ready` is false when any of that fails, when anything was skipped as unsupported, or when any install did not complete - and the last line says so in plain words instead of ending on a cheerful note.
 `-SkipSuite` is allowed and reports the install as unproven.
 
+**The suite's DIAGNOSTICS belong to the suite's result; the install console gets its OUTCOME.**
+That child is started `-NoNewWindow`, which hands it the captain's own console, and for a while only its error stream was redirected.
+In a `pwsh` child every stream EXCEPT the error stream lands on stdout - `WARNING:`, `What if:`, `VERBOSE:`, `Write-Host`, `Write-Information` and plain output all arrive there, and only error records reach stderr.
+So redirecting stderr alone left roughly 200 lines of fixture chatter between "Installing what is missing" and the final report on the captain's clean-VM run of 2026-09-07: WhatIf lines about a Pester temp directory, `scaffolded:` lines about a project that does not exist, a fixture's own teardown retry warnings, and one fixture's systemMessage JSON reading "FIRSTMATE SUPERVISION IS GENUINELY DOWN".
+Every one of those was a test doing exactly its job, and every one was indistinguishable from a fault on that machine to the person reading it - which made a successful install look broken, at the cost of a whole VM rebuild to tell the difference.
+`Invoke-FmMachineSuite` now redirects BOTH of the child's streams to files, so the cut is at the one boundary where the installer consumes the run rather than inside any test.
+Nothing is discarded: a run that did not come back clean keeps its whole transcript at `%TEMP%\fm-suite-<date>-<id>.log`, with the two streams under separate headings because which stream a line came from cannot be recovered once they are merged, and `Get-FmMachineSuiteFix` names that file in the check's fix line.
+A clean pass deletes its transcript, so a green install leaves nothing behind.
+The counts and the named failures are unchanged, and an installer-authored `WARNING:` still reaches the console - the fix is a redirection of one child, never a muted channel.
+
 **Whether the WHOLE suite should be the thing that ends an install is an open question, and it is argued in `docs/windows-e2e-evidence.md` section 42.7 rather than restated here.**
 The short of it: the suite defends this repo's contracts against a change a fresh install has not made, so on the one clean VM that reached this step it returned ten failures and not one of them was a fact about that machine.
 Nothing has been changed - which failures may end an install is the captain's call - but read 39.7 before touching this step.

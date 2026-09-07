@@ -852,6 +852,228 @@ Describe 'the host this suite was given' {
     }
 }
 
+Describe 'the suite talks to its own result, not to the captain' {
+    # THE INSTALL THAT LOOKED BROKEN BECAUSE IT WORKED. On the captain's
+    # clean-VM run of 2026-09-07 roughly 200 lines of fixture chatter arrived
+    # between "Installing what is missing" and the final report: WhatIf lines
+    # about a Pester temp directory, `scaffolded:` lines about a project that
+    # does not exist, a fixture's own teardown retry warnings, and one fixture's
+    # systemMessage JSON reading "FIRSTMATE SUPERVISION IS GENUINELY DOWN". Each
+    # was a test doing exactly its job; each read to the person in front of the
+    # screen as a fault on their machine, at the cost of a whole VM rebuild to
+    # tell the difference.
+    #
+    # These are measured from OUTSIDE, on a real console, because that is the
+    # only place the defect existed: the function's return value was already
+    # correct while its child was writing over the report. So the assertion is
+    # not "the code redirects" but "this text did not reach a console" - which
+    # is why a fixture emitting every one of the four shapes is run through the
+    # real boundary in a child pwsh whose stdout and stderr are captured.
+    # docs/windows-e2e-evidence.md section 47 has the stream table, the
+    # reproduction, and the console these produce with the fix reverted.
+
+    BeforeAll {
+        # Every shape from the captain's log, on the stream it really arrives
+        # on. Established by measurement rather than assumption: in a pwsh child
+        # WARNING, VERBOSE, What if, Write-Host and Write-Information all land
+        # on STDOUT, and only error records reach stderr.
+        $script:NoisyFixture = @'
+Describe 'a fixture that talks while it works' {
+    It 'says every shape the captain saw' {
+        function Set-FmNoiseBait {
+            [CmdletBinding(SupportsShouldProcess)]
+            param()
+            if ($PSCmdlet.ShouldProcess('C:\Temp\Pester_e0lt\5sh02uhp.d0s', 'create AGENTS.md and link CLAUDE.md to it')) { }
+        }
+        Set-FmNoiseBait -WhatIf
+        # Through the CONSOLE HANDLE, exactly as New-FmBrief writes this line.
+        # It is on no PowerShell stream at all, so it is the shape that decides
+        # the fix: nothing suppressible inside the child could ever catch it.
+        [Console]::Out.WriteLine('scaffolded: C:\Temp\fmwin-07c11a8d0b2b\data\t1\brief.md (ship, mode=direct-PR; replace the placeholder)')
+        Write-Warning 'teardown: worktree return failed with transient git lock; waiting 0s and retrying (1/3)'
+        Write-Host '{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: 1 task(s) in flight"}'
+        Write-Verbose 'fixture: about to assert' -Verbose
+        Write-Error 'fixture: an error record from a test that handles it' -ErrorAction Continue
+        1 | Should -Be 1
+    }
+    __EXTRA__
+}
+'@
+        # A repository of chatty tests, plus a driver that calls the real
+        # boundary the way the installer does and prints installer-authored
+        # lines of its own on either side of it.
+        function Invoke-FmNoisySuiteRun {
+            param([string]$Root, [string]$Extra = '')
+
+            $fake = Join-Path $Root ([System.IO.Path]::GetRandomFileName())
+            $null = New-Item -ItemType Directory -Path (Join-Path $fake 'tests') -Force
+            [System.IO.File]::WriteAllText(
+                (Join-Path $fake 'tests' 'Noise.Tests.ps1'),
+                ($script:NoisyFixture -replace '__EXTRA__', $Extra))
+
+            $driver = Join-Path $Root (([System.IO.Path]::GetRandomFileName()) + '.ps1')
+            [System.IO.File]::WriteAllText($driver, @'
+param([Parameter(Mandatory)][string]$RepoRoot, [Parameter(Mandatory)][string]$Fake)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+foreach ($subdir in @('Private', 'Public')) {
+    Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'module' 'Firstmate' $subdir) -Filter '*.ps1' |
+        Sort-Object Name | ForEach-Object { . $_.FullName }
+}
+# Two messages the INSTALLER itself authors, one on each of the channels the
+# fixture also uses, so a fix that merely muted a channel is caught here.
+Write-Host 'INSTALLER-SAYS: Installing what is missing'
+Write-Warning 'INSTALLER-SAYS: this machine has no gh, so no PR can be opened from it'
+$result = Invoke-FmMachineSuite -RepoRoot $Fake -TimeoutSeconds 300
+Write-Host "INSTALLER-SAYS: test suite - $($result.Detail)"
+Write-Host "SUITE-LOGPATH=$($result.LogPath)"
+Write-Host "SUITE-FIX=$(Get-FmMachineSuiteFix -RepoRoot $Fake -LogPath ([string]$result.LogPath))"
+'@, [System.Text.UTF8Encoding]::new($false))
+
+            $outPath = Join-Path $Root (([System.IO.Path]::GetRandomFileName()) + '.out')
+            $errPath = Join-Path $Root (([System.IO.Path]::GetRandomFileName()) + '.err')
+            $pwsh = (Get-Process -Id $PID).Path
+            $process = Start-Process -FilePath $pwsh -NoNewWindow -PassThru -Wait `
+                -RedirectStandardOutput $outPath -RedirectStandardError $errPath -ArgumentList @(
+                '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $driver,
+                '-RepoRoot', $script:RepoRoot, '-Fake', $fake)
+
+            $stdout = if (Test-Path -LiteralPath $outPath) { [System.IO.File]::ReadAllText($outPath) } else { '' }
+            $stderr = if (Test-Path -LiteralPath $errPath) { [System.IO.File]::ReadAllText($errPath) } else { '' }
+            $console = $stdout + "`n" + $stderr
+            $logPath = ''
+            $fix = ''
+            foreach ($line in @($stdout -split '\r?\n')) {
+                if ($line -match '^SUITE-LOGPATH=(.*)$') { $logPath = $Matches[1].Trim() }
+                if ($line -match '^SUITE-FIX=(.*)$') { $fix = $Matches[1].Trim() }
+            }
+            [pscustomobject]@{
+                Console  = $console
+                Stdout   = $stdout
+                Stderr   = $stderr
+                LogPath  = $logPath
+                Fix      = $fix
+                ExitCode = $process.ExitCode
+            }
+        }
+    }
+
+    It 'keeps every shape of the captain''s 200 lines off the install console' {
+        $run = Invoke-FmNoisySuiteRun -Root $TestDrive
+        # Named one at a time so a regression says WHICH shape came back.
+        $run.Console | Should -Not -Match 'What if:'
+        $run.Console | Should -Not -Match 'scaffolded:'
+        $run.Console | Should -Not -Match 'transient git lock'
+        $run.Console | Should -Not -Match 'systemMessage'
+        $run.Console | Should -Not -Match 'GENUINELY DOWN'
+        $run.Console | Should -Not -Match 'VERBOSE:'
+        $run.Console | Should -Not -Match 'fixture: an error record'
+    }
+
+    It 'still prints a message the installer itself wrote, on both channels' {
+        # THE OTHER HALF OF THE FIX, and the one a careless version breaks:
+        # muting the warning channel, or the host, would take the installer's
+        # own voice with it. Both of these are written by the run that CONSUMES
+        # the suite, and both must survive - including the WARNING, which is the
+        # same channel the fixture's teardown retry used.
+        $run = Invoke-FmNoisySuiteRun -Root $TestDrive
+        $run.Console | Should -Match 'INSTALLER-SAYS: Installing what is missing'
+        $run.Console | Should -Match 'WARNING: INSTALLER-SAYS: this machine has no gh'
+    }
+
+    It 'reports the outcome as counts, and the failing test by name' {
+        # Unchanged in substance from before the chatter was cut: the console
+        # loses the suite's diagnostics, never its verdict.
+        $run = Invoke-FmNoisySuiteRun -Root $TestDrive -Extra "It 'fails on purpose' { 1 | Should -Be 2 }"
+        $run.Console | Should -Match 'INSTALLER-SAYS: test suite - 1 passed, 1 failed, 0 skipped'
+    }
+
+    It 'keeps what it took off the console, in a file, when the run was not clean' {
+        # RECOVERABLE OR IT IS A COVER-UP. A failing run is exactly when
+        # somebody needs the detail that is no longer on screen.
+        $run = Invoke-FmNoisySuiteRun -Root $TestDrive -Extra "It 'fails on purpose' { 1 | Should -Be 2 }"
+        $run.LogPath | Should -Not -BeNullOrEmpty
+        try {
+            Test-Path -LiteralPath $run.LogPath -PathType Leaf | Should -BeTrue
+            $kept = [System.IO.File]::ReadAllText($run.LogPath)
+            $kept | Should -Match 'What if:'
+            $kept | Should -Match 'scaffolded:'
+            $kept | Should -Match 'transient git lock'
+            $kept | Should -Match 'systemMessage'
+            # The two streams stay told apart, because which stream a line came
+            # from is the thing that cannot be recovered once they are merged.
+            $kept | Should -Match 'output stream'
+            $kept | Should -Match 'error stream'
+            $kept | Should -Match 'fixture: an error record'
+            # AND THE INSTALLER SAYS WHERE IT IS. A detail nobody can find is
+            # the same as a detail that was thrown away.
+            $run.Fix | Should -Match ([regex]::Escape($run.LogPath))
+            $run.Fix | Should -Match 'Invoke-Pester'
+        } finally {
+            Remove-Item -LiteralPath $run.LogPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'leaves no transcript behind when the run passed' {
+        # A file per green install, in temp, saying nothing anyone will read.
+        $run = Invoke-FmNoisySuiteRun -Root $TestDrive
+        $run.Console | Should -Match 'INSTALLER-SAYS: test suite - 1 passed, 0 failed, 0 skipped'
+        $run.LogPath | Should -BeNullOrEmpty
+        $run.Fix | Should -Match 'Invoke-Pester'
+        $run.Fix | Should -Not -Match 'read what the run said' -Because 'no path is named when there is no file'
+        $run.Fix | Should -Not -Match 'fm-suite-'
+    }
+}
+
+Describe 'Get-FmMachineSuiteFix' {
+    It 'gives the command alone when there is no transcript to read' {
+        Get-FmMachineSuiteFix -RepoRoot 'C:\repo' |
+            Should -Be "Invoke-Pester -Path (Join-Path 'C:\repo' 'tests')"
+    }
+
+    It 'names the transcript before the re-run when there is one' {
+        # Reading what already happened comes before spending another run on it.
+        $fix = Get-FmMachineSuiteFix -RepoRoot 'C:\repo' -LogPath 'C:\Temp\fm-suite-20260907-120000-abcd1234.log'
+        $fix | Should -Match 'fm-suite-20260907-120000-abcd1234\.log'
+        $fix.IndexOf('fm-suite') | Should -BeLessThan $fix.IndexOf('Invoke-Pester')
+    }
+
+    It 'never names a file it was not given' {
+        Get-FmMachineSuiteFix -RepoRoot 'C:\repo' -LogPath '' | Should -Not -Match 'read what the run said'
+    }
+}
+
+Describe 'Save-FmMachineSuiteTranscript' {
+    It 'writes nothing, and names nothing, when the run said nothing' {
+        # The silent-and-green case. Returning a path here would put an empty
+        # file's name into a fix line.
+        $path = Join-Path $TestDrive 'quiet.log'
+        Save-FmMachineSuiteTranscript -Path $path -Tests 'C:\repo\tests' -Output '' -Errors '' | Should -Be ''
+        Test-Path -LiteralPath $path | Should -BeFalse
+    }
+
+    It 'keeps a stream it was given even when the other one is empty' {
+        $path = Join-Path $TestDrive 'oneside.log'
+        Save-FmMachineSuiteTranscript -Path $path -Tests 'C:\repo\tests' -Output 'WARNING: only stdout spoke' |
+            Should -Be $path
+        $text = [System.IO.File]::ReadAllText($path)
+        $text | Should -Match 'only stdout spoke'
+        $text | Should -Match 'C:\\repo\\tests' -Because 'the file says which run it belongs to'
+        $text | Should -Not -Match 'error stream'
+    }
+
+    It 'reports a temp directory it cannot write to as no transcript, not as a failure' {
+        # The transcript is a convenience; losing it must never take the
+        # install verdict down with it.
+        $path = Join-Path $TestDrive 'no-such-directory' 'nested' 'x.log'
+        $kept = $null
+        { $script:Kept = Save-FmMachineSuiteTranscript -Path $path -Tests 'C:\repo\tests' -Output 'something' } |
+            Should -Not -Throw
+        $kept = $script:Kept
+        $kept | Should -Be ''
+    }
+}
+
 Describe 'Install-FmMachine' {
     It 'refuses without -Approved, and installs nothing' {
         $report = Install-FmMachine -RepoRoot $script:RepoRoot -Offline

@@ -529,6 +529,71 @@ function Get-FmMachineSuitePrerequisite {
     [pscustomobject]@{ CanRun = $true; Newest = $newest[0].ToString(); Detail = '' }
 }
 
+# WHAT TO DO ABOUT A SUITE THAT DID NOT COME BACK CLEAN, in one line.
+#
+# The run's own chatter is deliberately not on the captain's console any more,
+# so this is the only place that says where it went. It names the transcript
+# FIRST, because reading what happened comes before re-running it, and it names
+# no file at all when there is none - a fix line pointing at a path that does
+# not exist is worse than one that only gives the command.
+function Get-FmMachineSuiteFix {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [AllowEmptyString()][string]$LogPath = ''
+    )
+
+    $rerun = "Invoke-Pester -Path (Join-Path '$RepoRoot' 'tests')"
+    if (-not $LogPath) { return $rerun }
+    "read what the run said: '$LogPath' - then re-run it yourself: $rerun"
+}
+
+# THE DETAIL THAT WAS TAKEN OFF THE CONSOLE, PUT SOMEWHERE IT CAN BE READ.
+#
+# Keeping the suite's chatter out of the captain's install log is only half a
+# fix: the other half is that a run which DID go wrong must still be
+# diagnosable. So the child's two streams are written back out, whole and
+# unedited, under headings that say which stream each block came from - because
+# `WARNING:` and `What if:` reaching stdout while error records reach stderr is
+# exactly the distinction someone reading a failure needs and cannot recover
+# once the two are interleaved.
+#
+# Returns the path it wrote, or an empty string when there was nothing to say or
+# the file could not be written. An empty string means the caller has no file to
+# name, never that it should name one that is not there.
+function Save-FmMachineSuiteTranscript {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Tests,
+        [AllowEmptyString()][string]$Output = '',
+        [AllowEmptyString()][string]$Errors = ''
+    )
+
+    if (-not $Output -and -not $Errors) { return '' }
+    if (-not $PSCmdlet.ShouldProcess($Path, 'write the suite transcript')) { return '' }
+
+    $lines = @(
+        "firstmate test suite - the full output of the run over $Tests",
+        "written $([datetime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))",
+        'The installer reports this run as counts and named failures; this file is everything the run said.',
+        ''
+    )
+    if ($Output) { $lines += @('--- output stream (host, warning, verbose, information) ---', $Output, '') }
+    if ($Errors) { $lines += @('--- error stream ---', $Errors, '') }
+    try {
+        [System.IO.File]::WriteAllText($Path, ($lines -join [Environment]::NewLine), [System.Text.UTF8Encoding]::new($false))
+        return $Path
+    } catch {
+        # A temp directory this run cannot write to is not worth failing the
+        # install over; it costs the transcript, not the verdict.
+        Write-Debug "could not keep the suite transcript at '$Path': $_"
+        return ''
+    }
+}
+
 # Run in a CHILD process on purpose. The suite imports the module, rewrites
 # PSModulePath and sets environment variables of its own; running it inside the
 # session that just performed an install would leave that session's view of the
@@ -545,16 +610,22 @@ function Invoke-FmMachineSuite {
 
     $testsPath = Join-Path $RepoRoot 'tests'
     if (-not (Test-Path -LiteralPath $testsPath -PathType Container)) {
-        return [pscustomobject]@{ Ran = $false; Passed = 0; Failed = 0; Detail = "no tests directory at '$testsPath'"; FailedNames = @() }
+        return [pscustomobject]@{ Ran = $false; Passed = 0; Failed = 0; Detail = "no tests directory at '$testsPath'"; FailedNames = @(); LogPath = '' }
     }
     $prerequisite = Get-FmMachineSuitePrerequisite -Available @(Get-Module -ListAvailable -Name 'Pester' | ForEach-Object { $_.Version })
     if (-not $prerequisite.CanRun) {
-        return [pscustomobject]@{ Ran = $false; Passed = 0; Failed = 0; Detail = $prerequisite.Detail; FailedNames = @() }
+        return [pscustomobject]@{ Ran = $false; Passed = 0; Failed = 0; Detail = $prerequisite.Detail; FailedNames = @(); LogPath = '' }
     }
 
-    $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ('fm-suite-' + [guid]::NewGuid().ToString('N') + '.json')
-    $runner = Join-Path ([System.IO.Path]::GetTempPath()) ('fm-suite-' + [guid]::NewGuid().ToString('N') + '.ps1')
-    $errorPath = Join-Path ([System.IO.Path]::GetTempPath()) ('fm-suite-' + [guid]::NewGuid().ToString('N') + '.err')
+    $token = [guid]::NewGuid().ToString('N')
+    $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ("fm-suite-$token.json")
+    $runner = Join-Path ([System.IO.Path]::GetTempPath()) ("fm-suite-$token.ps1")
+    $errorPath = Join-Path ([System.IO.Path]::GetTempPath()) ("fm-suite-$token.err")
+    $outputPath = Join-Path ([System.IO.Path]::GetTempPath()) ("fm-suite-$token.out")
+    # The one file that OUTLIVES a run that went wrong, named for whoever has to
+    # open it rather than for the machine that wrote it.
+    $logPath = Join-Path ([System.IO.Path]::GetTempPath()) `
+        ('fm-suite-' + [datetime]::Now.ToString('yyyyMMdd-HHmmss') + '-' + $token.Substring(0, 8) + '.log')
     [System.IO.File]::WriteAllText($runner, @'
 param([Parameter(Mandatory)][string]$Tests, [Parameter(Mandatory)][string]$ResultPath)
 $ErrorActionPreference = 'Continue'
@@ -590,12 +661,41 @@ $failed = @($result.Failed | ForEach-Object { [string]$_.ExpandedPath })
         # report the captain is waiting for over a machine that declined to open
         # one more process.
         try {
-            # THE CHILD'S ERROR STREAM GOES TO A FILE, NOT TO THE CAPTAIN. With
-            # -NoNewWindow and no redirection it writes straight onto the console
+            # BOTH OF THE CHILD'S STREAMS GO TO A FILE, NOT TO THE CAPTAIN. With
+            # -NoNewWindow and no redirection they write straight onto the console
             # this run is composing a report on, which is how a handled Pester
             # failure arrived in the captain's log as a raw error with a
-            # source-line caret. Whatever it says is read back below and folded
+            # source-line caret. Whatever they say is read back below and folded
             # into this function's own verdict instead.
+            #
+            # STDOUT IS NOT AN AFTERTHOUGHT HERE, it is where nearly all of the
+            # damage came from. MEASURED, 2026-09-07: in a pwsh child every
+            # stream except the error stream lands on stdout - `WARNING:`,
+            # `What if:`, `VERBOSE:`, Write-Host, Write-Information and plain
+            # output all arrive there, and only error records go to stderr. So
+            # redirecting stderr alone left roughly 200 lines of fixture chatter
+            # on the captain's install log: WhatIf lines about a temp directory,
+            # `scaffolded:` lines about a project that does not exist, retry
+            # warnings from a fixture's own teardown, and one fixture's
+            # systemMessage JSON reading "FIRSTMATE SUPERVISION IS GENUINELY
+            # DOWN". Every one of them was a test doing its job, and every one of
+            # them was indistinguishable from a real fault to the person reading
+            # it - which made a successful install look broken, at the cost of a
+            # whole clean-VM rebuild to disambiguate.
+            #
+            # The suite's DIAGNOSTIC OUTPUT belongs to the suite's result; the
+            # install console gets the suite's OUTCOME. This is the only place
+            # that joint exists, so it is the only place it can be cut without
+            # silencing a test or weakening what one asserts. Nothing is thrown
+            # away: a run that did not come back clean keeps its whole transcript
+            # at $logPath, and the check that reports it names that file.
+            #
+            # THE HANDLE, NOT THE STREAMS, and that is forced rather than
+            # chosen: New-FmBrief prints its `scaffolded:` line with
+            # [Console]::Out.WriteLine, which never passes through a PowerShell
+            # stream at all. No amount of 6>$null or -InformationAction inside
+            # the child would have caught it. Redirecting the child's stdout
+            # handle catches every shape, including ones not yet written.
             # -ExecutionPolicy Bypass because the runner IS A FILE, and a file
             # is the one thing Windows' default policy refuses. install.ps1's
             # documented first command carries the same switch for the same
@@ -615,7 +715,8 @@ $failed = @($result.Failed | ForEach-Object { [string]$_.ExpandedPath })
             # MissingMandatoryParameter with it. It turns any prompt this suite
             # can reach - not only that one - from a dead install into one named
             # test failure the captain can read.
-            $process = Start-Process -FilePath $pwsh -NoNewWindow -PassThru -RedirectStandardError $errorPath -ArgumentList @(
+            $process = Start-Process -FilePath $pwsh -NoNewWindow -PassThru `
+                -RedirectStandardOutput $outputPath -RedirectStandardError $errorPath -ArgumentList @(
                 '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $runner, '-Tests', $testsPath, '-ResultPath', $resultPath)
         } catch {
             Write-Debug "could not start the suite process: $_"
@@ -627,22 +728,42 @@ $failed = @($result.Failed | ForEach-Object { [string]$_.ExpandedPath })
                         -Consequence 'the suite was never started, so this install is not proven by it' `
                         -Remedy "Run it yourself: Invoke-Pester -Path '$testsPath'.")
                 FailedNames = @()
+                LogPath     = ''
             }
         }
-        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        $finished = $process.WaitForExit($TimeoutSeconds * 1000)
+        if (-not $finished) {
             try { $process.Kill($true) } catch { Write-Debug "could not stop the suite process: $_" }
+            # Wait for the killed child to actually let go, so the transcript
+            # below is the whole of what it managed to say before it was stopped
+            # - which on a wedge is the only clue to WHERE it wedged.
+            try { $null = $process.WaitForExit(5000) } catch { Write-Debug "could not wait out the stopped suite process: $_" }
+        }
+
+        # WHATEVER THE CHILD SAID, SAID ONCE AND IN THIS FUNCTION'S WORDS - and
+        # kept in full, exactly once, in a file this function can name.
+        $said = ''
+        if (Test-Path -LiteralPath $errorPath -PathType Leaf) {
+            $said = ([System.IO.File]::ReadAllText($errorPath)).Trim()
+        }
+        $chattered = ''
+        if (Test-Path -LiteralPath $outputPath -PathType Leaf) {
+            $chattered = ([System.IO.File]::ReadAllText($outputPath)).Trim()
+        }
+        # Written now, while both files are still here, and REMOVED AGAIN on the
+        # one path where nobody will ever want it: a clean pass. Keeping it for a
+        # green run would leave a file per install in temp saying nothing.
+        $logPath = Save-FmMachineSuiteTranscript -Path $logPath -Tests $testsPath -Output $chattered -Errors $said
+
+        if (-not $finished) {
             return [pscustomobject]@{
                 Ran         = $false
                 Passed      = 0
                 Failed      = 0
                 Detail      = "the suite did not finish within $TimeoutSeconds seconds and was stopped"
                 FailedNames = @()
+                LogPath     = $logPath
             }
-        }
-        # WHATEVER THE CHILD SAID, SAID ONCE AND IN THIS FUNCTION'S WORDS.
-        $said = ''
-        if (Test-Path -LiteralPath $errorPath -PathType Leaf) {
-            $said = ([System.IO.File]::ReadAllText($errorPath)).Trim()
         }
         if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
             $detail = "the suite process produced no result file (exit code $($process.ExitCode))"
@@ -650,7 +771,7 @@ $failed = @($result.Failed | ForEach-Object { [string]$_.ExpandedPath })
                 $firstLines = @($said -split "`r`n|`n" | Where-Object { $_.Trim() } | Select-Object -First 3)
                 $detail += '. It said: ' + ($firstLines -join ' ')
             }
-            return [pscustomobject]@{ Ran = $false; Passed = 0; Failed = 0; Detail = $detail; FailedNames = @() }
+            return [pscustomobject]@{ Ran = $false; Passed = 0; Failed = 0; Detail = $detail; FailedNames = @(); LogPath = $logPath }
         }
         $parsed = [System.IO.File]::ReadAllText($resultPath) | ConvertFrom-Json
         # The runner writes a result file even when it could not start Pester, so
@@ -664,18 +785,26 @@ $failed = @($result.Failed | ForEach-Object { [string]$_.ExpandedPath })
                 Failed      = 0
                 Detail      = "the suite could not start Pester: $refused"
                 FailedNames = @()
+                LogPath     = $logPath
             }
         }
         $names = @($parsed.FailedNames)
+        if ([int]$parsed.Failed -eq 0 -and $logPath) {
+            Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+            $logPath = ''
+        }
         return [pscustomobject]@{
             Ran         = $true
             Passed      = [int]$parsed.Passed
             Failed      = [int]$parsed.Failed
             Detail      = "$([int]$parsed.Passed) passed, $([int]$parsed.Failed) failed, $([int]$parsed.Skipped) skipped"
             FailedNames = $names
+            LogPath     = $logPath
         }
     } finally {
-        foreach ($temp in @($runner, $resultPath, $errorPath)) {
+        # $logPath is deliberately absent: it is the one file meant to outlive
+        # this call, and the clean-pass path above removes it itself.
+        foreach ($temp in @($runner, $resultPath, $errorPath, $outputPath)) {
             if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
         }
     }

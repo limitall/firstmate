@@ -146,6 +146,13 @@ section 2 lists the state-file formats).
   owns the full contract and what it cost to learn, including the one that is
   easy to get wrong: **every PowerShell child gets `-NonInteractive`, and it is
   NOT inherited**, so a grandchild needs its own.
+  **Redirecting a child's stderr does not quieten it.** In a `pwsh` child every
+  stream except the error stream lands on STDOUT - `WARNING:`, `What if:`,
+  `VERBOSE:`, `Write-Host` and `Write-Information` included - so a
+  `-NoNewWindow` child with only `-RedirectStandardError` set writes over
+  whatever report its parent is composing. That put 200 lines of test-fixture
+  chatter into a captain's install log; `docs/windows-install.md` owns the
+  measurement and the shape of the fix.
 - Mark anything provable only on Windows with a `# WINDOWS-UNVERIFIED:` comment
   and a one-line reason. Where behaviour must differ by platform, branch on
   `$IsWindows`; the Linux path is a development convenience, not the product.
