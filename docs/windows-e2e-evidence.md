@@ -8459,3 +8459,127 @@ The replacement still clears the gate it came from, which is asserted for both a
 - **One fabrication was already getting through, and still is.**
   `The billing job is green.` is not held back, before this change or after it, because `billing` ends in `-ing` and `Test-FmBridgeDescribingWord` reads it as description.
   That is the documented and deliberate failure direction of that heuristic rather than anything this task introduced, and it is recorded here because it was found while measuring, not fixed.
+
+---
+
+## 49. The screen opened on a machine that could not answer - `PROVEN (Windows 11) FOR THE REPRODUCTION, THE MEASUREMENTS AND BOTH ACCEPTANCE PATHS; THE CAPTAIN'S FRESH VM IS STILL THEIRS`
+
+The captain reached the screen, typed `hello`, and got nothing useful.
+Section 48 fixed one half of that: a greeting was being replaced by a fleet report.
+This section is the other half, and it is a different fault with a different cause.
+
+Everything here was run on the captain's Windows 11 seat on 2026-09-08, over plain loopback, with `-NoBrowser` throughout.
+No browser was opened, `config/voice` and `config/bridge-voice` were absent at the start and confirmed absent at the end, and nothing spoke at any point.
+
+### 49.1 The greeting half is genuinely fixed, measured before anything was changed
+
+Current `main` at `95fca6e`, real session, over loopback:
+
+```
+captain: hello
+firstmate: Hello, captain. Nothing is under way on your projects right now, and nothing is
+           waiting on you. This screen and the progress monitoring are both ready. ...
+```
+
+So `b94f179` did land, and the remaining defect is the sign-in question alone.
+This was measured rather than assumed, because a fault that is already fixed is the most expensive kind to go hunting for.
+
+### 49.2 The reproduction: every layer reports healthy and the answer is a refusal
+
+With the CLI pointed at an empty config directory (`CLAUDE_CONFIG_DIR`), so that nothing on this seat was signed out to produce it:
+
+```
+fm-bridge: starting the firstmate session...
+fm-bridge: session up (id d077498f-786d-4260-8541-2467c06cd6f1)
+HEALTH: engine=True configured=True
+captain: hello
+firstmate: Not logged in - Please run /login
+```
+
+That is the captain's screenshot.
+`/api/health` reports `engine: true`, the house panel reports `This screen: ready`, and the reply is a refusal naming a slash command that cannot be typed into that box.
+
+The cause is that presence and readiness were never separated.
+`start.ps1` checked `claude` was on PATH and said nothing; a signed-out CLI still starts, still holds the pipe, and answers the first turn with its own refusal before exiting, so `$session.Process.HasExited` is false and the session looks up.
+`New-FmBridgeSession` returns `$null` only when the CLI is missing entirely, which is a different failure and the only one anything was watching for.
+
+### 49.3 The requirement, and the proof that it IS a requirement
+
+One requirement is checked, and only one: **an authenticated Claude CLI**.
+
+- It is required, proven by 49.2: the CLI was present and on PATH the whole time, and the screen still could not answer.
+- Nothing else is checked, because nothing else was measured to be missing at this point.
+  `git` and `claude` presence were already covered by the step above, and the bridge binds loopback only, so no reachable service or quota is on the path between typing `start` and a working greeting.
+
+### 49.4 It is a local check, so a start pays no round trip
+
+`claude auth status` answers from local state:
+
+```
+> claude auth status                                    exit 0, 552ms
+{ "loggedIn": true, "authMethod": "claude.ai", ... }
+
+> HTTPS_PROXY=http://10.255.255.1:9 claude auth status   exit 0, 449ms
+{ "loggedIn": true, "authMethod": "claude.ai", ... }
+```
+
+Behind an unroutable proxy it returns the same answer in the same time, which is what proves it reads local state rather than calling the auth service.
+An offline or slow machine therefore gains no wait from this check.
+The signed-out shape is `exit 1` with `"loggedIn": false, "authMethod": "none"`, and both shapes are what `ConvertFrom-FmSignInStatus` parses.
+
+The CLI is asked rather than its credential file read, because `auth status` covers every route it supports in one reading.
+Parsing `~/.claude/.credentials.json` here would be a second copy of that matrix and the first to go stale, and a machine authenticated by a route this file had not learned would be refused a start that would have worked.
+
+### 49.5 Both acceptance paths, through the real `start.ps1`
+
+**Everything present.** The gate says nothing at all:
+
+```
+  FIRSTMATE
+  starting up...
+
+  Starting the engine and opening your browser.
+...
+captain: hello
+firstmate: Hello, captain. Right now there is nothing under way on your projects. ...
+```
+
+There is no line between `starting up...` and `Starting the engine`, which is the requirement: a start that prints a paragraph of green ticks teaches the captain to read past the one line that matters.
+
+**The requirement missing.** Asked before the screen opens, and the screen never opens:
+
+```
+  FIRSTMATE
+  starting up...
+                                                        [stderr]
+  firstmate answers through your Claude account, and this machine is not signed in yet.
+  The screen would open and then have nothing to say, so this asks first.
+
+  Sign in with this, then start again:
+
+    claude auth login
+
+exit 1;  listener on the port afterwards: False
+```
+
+`claude auth login` is verified against `claude auth --help` as the CLI's own command; `/login` is deliberately never printed, because the captain is at a terminal and cannot type it there.
+A captain who is standing at the keyboard is offered the sign-in instead and pressing Enter accepts, since this finishes the thing they already asked for by typing `start`.
+
+### 49.6 The bias is towards starting
+
+Only a definite signed-out answer stops a start.
+No CLI, a timeout, a body without `loggedIn`, unparseable output, or `loggedIn: true` beside a non-zero exit all report "cannot tell" and the start proceeds in silence.
+A readiness check that invents a new way to be unable to start would be worse than the defect it was added for.
+
+The wait is bounded and the child is killed, and the pipe reads are bounded separately, because a process can exit while a grandchild still holds the write end and the read then never completes.
+
+### 49.7 What was NOT proven
+
+- **The captain's fresh VM has not run this.**
+  Every measurement above is from this seat.
+- **No real machine was signed out to produce the reproduction**, and nothing here signs anything in or out.
+  The signed-out states were produced with `CLAUDE_CONFIG_DIR` pointed at an empty directory, and the suite reaches only stub CLIs written into `TestDrive`.
+  A developer who is signed in is still signed in afterwards.
+- **The interactive prompt was not driven through a live console.**
+  Its decision - the default-yes, the refusal wordings, and the re-read after an abandoned sign-in - is covered by `tests/FmSignIn.Tests.ps1`, and the redirected-stdin path above is what ran end to end.
+  A terminal with a real keyboard is the captain's own measurement.

@@ -12,9 +12,10 @@ entry point that is not for firstmate's own use: it is for the captain, once.
 
 WHAT IT DOES
   1. checks the tools that must be present, and says plainly what is missing
-  2. repairs the home if setup has never run here
-  3. starts the bridge, which hosts a real firstmate session
-  4. opens the browser at the page, carrying this run's key
+  2. checks this machine is signed in, and offers to do it while you are here
+  3. repairs the home if setup has never run here
+  4. starts the bridge, which hosts a real firstmate session
+  5. opens the browser at the page, carrying this run's key
 
 WHAT IT DOES NOT DO. It installs nothing, and it does not keep its own list of
 where a tool comes from. A missing tool is reported and the run stops, pointing
@@ -22,6 +23,13 @@ at ./install.ps1, which is the one thing that installs - because a half-started
 fleet is worse than one that refused (AGENTS.md section 3's detect-ask-install
 rule) and a second install table is how two tools came to be installed from the
 wrong npm packages.
+
+WHY SIGNING IN IS ASKED HERE AND NOT LEFT TO install.ps1. An install happens
+once; a sign-in expires, and can be revoked or replaced on a machine that was
+installed months ago. So it is not an install step that can be done and
+forgotten - it is a readiness question that only has a right answer at the
+moment of starting, which is this file. Public/FmSignIn.ps1 owns the check and
+the measurement behind it.
 
 .PARAMETER Port
 Loopback port for the browser. Default 7433.
@@ -172,7 +180,59 @@ if ($missing.Count) {
     exit 1
 }
 
-# ---- 2. repair the home if this machine has never been set up ---------------
+# ---- 2. is this machine signed in ------------------------------------------
+# THE DEFECT THIS IS HERE FOR. The captain reached the screen, typed "hello",
+# and got "Not logged in - Please run /login" back in a chat box, which is the
+# one surface where `/login` cannot be typed. The check above had already passed
+# it: `claude` was on PATH. Present and signed in are different questions, and
+# only the first one was ever asked.
+#
+# ASKED HERE BECAUSE THIS IS THE LAST MOMENT SOMEBODY CAN ANSWER. Two lines
+# below, the browser has the captain and this terminal no longer does.
+#
+# NOT IN fm-bridge.ps1, deliberately. The bridge is also started headless by the
+# tests and by workers, where there is nobody to ask and a prompt would be a
+# hang. This file is the captain's own command, and the only entry point that
+# can assume a person is reading it.
+#
+# SILENT WHEN THERE IS NOTHING TO SAY. Public/FmSignIn.ps1 owns why, and why a
+# check that cannot reach a verdict starts anyway rather than inventing a new
+# way to be stuck.
+. (Join-Path $root 'bin' 'fm-module-load.ps1') -RequiredCommand 'Get-FmSignInStatus'
+
+# ONE READING, ASKED ABOUT TWICE. The state of the machine does not change
+# between the question and the answer, so the second call re-decides on the same
+# status with the captain's reply rather than paying for another look.
+$status = Get-FmSignInStatus
+$signIn = Get-FmSignInDecision -Status $status -CaptainPresent:(-not [Console]::IsInputRedirected)
+if ($signIn.SignIn) {
+    # The wording belongs to the decision, not to this file - see the note on
+    # the SignIn branch in Public/FmSignIn.ps1. Printing a second copy here is
+    # how the terminal and the nobody-home path would come to say different
+    # things about the same machine.
+    foreach ($line in $signIn.Lines) { [Console]::Out.WriteLine($line) }
+    [Console]::Out.WriteLine('')
+    $answer = [string](Read-Host '  Sign in now? [Y/n]')
+    $signIn = Get-FmSignInDecision -Status $status -CaptainPresent -Answer $answer
+    if ($signIn.SignIn) {
+        [Console]::Out.WriteLine('')
+        # The CLI owns this flow, and this console for the length of it.
+        $after = Invoke-FmSignIn -Confirm:$false
+        [Console]::Out.WriteLine('')
+        # RE-READ, rather than trusting the attempt: a sign-in the captain
+        # abandoned half way leaves the machine exactly as it was, and starting
+        # on the assumption that it worked lands them back at the mute screen
+        # this whole section exists to prevent. The answer is 'n' because the
+        # asking is done - one refusal per start, never a second prompt.
+        $signIn = Get-FmSignInDecision -Status $after -CaptainPresent -Answer 'n'
+    }
+}
+if (-not $signIn.Proceed) {
+    foreach ($line in $signIn.Lines) { [Console]::Error.WriteLine($line) }
+    exit 1
+}
+
+# ---- 3. repair the home if this machine has never been set up ---------------
 # A Windows clone arrives with the two committed symlinks as placeholder text,
 # which silently means no instructions and no skills. Setup is idempotent, so
 # running it here costs nothing on a machine that is already wired.
@@ -193,7 +253,7 @@ if ($needsSetup) {
     & (Join-Path $root 'bin' 'fm-setup.ps1') | Out-Null
 }
 
-# ---- 3. the engine ----------------------------------------------------------
+# ---- 4. the engine ----------------------------------------------------------
 [Console]::Out.WriteLine('  Starting the engine and opening your browser.')
 [Console]::Out.WriteLine('  Everything happens in the page from here. Ctrl+C stops it.')
 [Console]::Out.WriteLine()
