@@ -219,8 +219,47 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     # which arrives here and relaunches again - a process spawning itself with no
     # bound. The marker travels to the child in its environment, so a second
     # arrival refuses instead. start.ps1 carries the same guard for the same
-    # reason; this is the statement of it.
-    if ($env:FM_SHELL_RELAUNCHED) {
+    # reason; this is the statement of it, and of what the marker holds.
+    #
+    # IT HOLDS THE RELAUNCHING PROCESS'S PID, AND A BARE '1' WILL NOT DO.
+    # A .ps1 runs IN the window the captain typed in, so the marker this script
+    # sets is set on THAT WINDOW, and the next script the captain runs there
+    # reads it back - from a shell that is nobody's relaunched child. A flag that
+    # only says "a relaunch happened" cannot tell those two apart, and answered
+    # the wrong one: `.\start.ps1`, in the very window a successful install had
+    # just ended in, read the leftover, took the branch below, and told the
+    # captain that their PowerShell 7 was not PowerShell 7. Measured on their
+    # clean VM 2026-09-08; docs/windows-e2e-evidence.md section 50 has it.
+    #
+    # SO THE MARKER IS A CLAIM ABOUT A LAUNCH THAT IS STILL UNDER WAY, and it is
+    # believed on exactly the two conditions that make that claim possible. It
+    # must name some OTHER process, because a marker naming this one is this
+    # process's own footprint and says nothing about how it started. And that
+    # process must still BE there: a relaunch waits for its child, so the shell
+    # that set a live marker is by definition still standing behind this one.
+    #
+    # THE SECOND CONDITION IS WHAT MAKES THE FIX REACH THE CAPTAIN WHO REPORTED
+    # IT. Their window is carrying the literal '1' an older install wrote, and it
+    # will keep carrying it for as long as that window is open - a rule that only
+    # asked "is this my own PID" would go on refusing them in the one window this
+    # was reported from. '1' names nothing on Windows, so it is not a claim about
+    # a launch; it is a leftover, and it is read as one.
+    $fmRelaunchedBy = $env:FM_SHELL_RELAUNCHED
+    $fmSecondArrival = $false
+    if ($fmRelaunchedBy -and $fmRelaunchedBy -ne "$PID") {
+        $fmRelaunchPid = 0
+        if ([int]::TryParse($fmRelaunchedBy, [ref]$fmRelaunchPid)) {
+            # GetProcessById rather than Get-Process: this runs before anything
+            # about the shell is established, and a cmdlet is a module load.
+            try {
+                $null = [System.Diagnostics.Process]::GetProcessById($fmRelaunchPid)
+                $fmSecondArrival = $true
+            } catch {
+                $fmSecondArrival = $false
+            }
+        }
+    }
+    if ($fmSecondArrival) {
         [Console]::Out.WriteLine("  This relaunched into a shell that is still PowerShell $($PSVersionTable.PSVersion),")
         [Console]::Out.WriteLine('  so it is stopping rather than doing it again. The pwsh on this machine is not')
         [Console]::Out.WriteLine('  PowerShell 7 - PowerShell 6 uses that name too. This installs 7 beside it:')
@@ -229,10 +268,28 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
         [Console]::Out.WriteLine('')
         exit 1
     }
-    $env:FM_SHELL_RELAUNCHED = '1'
 
     [Console]::Out.WriteLine("  Re-running under $($pwshCommand.Source)...")
     [Console]::Out.WriteLine('')
+    # `&` hands the child a COPY of this process's environment, which is the only
+    # way to reach it, so the marker is written here and PUT BACK when the launch
+    # is over - the window is left as this script found it rather than carrying a
+    # variable it has finished with. That is tidiness rather than correctness now;
+    # the two conditions above are what make a leftover harmless. It is a `finally`
+    # because the catch below exits, and a Ctrl+C on a long-running child can take
+    # this shell with it - neither may be a way of skipping it.
+    #
+    # CLEARED THROUGH [Environment]::SetEnvironmentVariable RATHER THAN
+    # `Remove-Item Env:\...`, here and everywhere else this file touches the
+    # marker. Removing through the Env: drive needs a provider out of
+    # Microsoft.PowerShell.Management, which is a module load; this block is the
+    # one part of the file that runs before anything about the shell has been
+    # established, which is the same reason it prints through [Console] rather
+    # than Write-Host. Measured on a PowerShell 7 whose module path did not
+    # resolve: the Remove-Item form failed with "the module could not be loaded",
+    # and the .NET call has no such dependency.
+    $priorRelaunchMarker = $env:FM_SHELL_RELAUNCHED
+    $env:FM_SHELL_RELAUNCHED = "$PID"
     # A MACHINE MAY REFUSE THIS, and the refusal must not be a .NET error. Windows
     # declines to start a program for reasons that have nothing to do with this
     # repo and reports every one of them as "access is denied"; unguarded, that
@@ -259,9 +316,25 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
         [Console]::Out.WriteLine('  the second one out.')
         [Console]::Out.WriteLine('')
         exit 1
+    } finally {
+        [Environment]::SetEnvironmentVariable('FM_SHELL_RELAUNCHED', $priorRelaunchMarker)
     }
     exit $LASTEXITCODE
 }
+
+# THE MARKER IS SPENT ON ARRIVAL, so it is consumed here rather than carried.
+# Reaching this line means the shell IS 7, so the one hop the marker bounds is
+# over - and everything this run starts from now on would otherwise inherit a
+# marker that has already done its job. That is not hypothetical: the install's
+# own last step runs the suite, three of whose cases start a Windows PowerShell
+# 5.1 to measure a FIRST arrival, and they read this run's footprint instead and
+# reported it as a fact about the captain's machine
+# (docs/windows-e2e-evidence.md section 46, which fixed those cases at the test
+# end and named this seam as the other half). It is the same rule as the restore
+# above - the marker describes one launch, not a process - met at the far end of
+# that launch. The guard above never runs in a shell this new, so nothing that
+# reads the marker can be affected by its removal.
+[Environment]::SetEnvironmentVariable('FM_SHELL_RELAUNCHED', $null)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'

@@ -108,8 +108,27 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     }
 
     # ONE RELAUNCH, NEVER TWO. install.ps1's block states why: `pwsh` is also
-    # PowerShell 6's name, and relaunching into one would arrive back here.
-    if ($env:FM_SHELL_RELAUNCHED) {
+    # PowerShell 6's name, and relaunching into one would arrive back here. It
+    # also owns why the marker is read the way it is below - the short of it is
+    # that a script sets it on the captain's own window, so "somebody relaunched"
+    # and "you are a relaunched child" are different questions, and only a marker
+    # that names some other process which is STILL THERE answers the second one.
+    # This script is the one that got the answer wrong in front of a captain, and
+    # it is the one that reads it here.
+    $fmRelaunchedBy = $env:FM_SHELL_RELAUNCHED
+    $fmSecondArrival = $false
+    if ($fmRelaunchedBy -and $fmRelaunchedBy -ne "$PID") {
+        $fmRelaunchPid = 0
+        if ([int]::TryParse($fmRelaunchedBy, [ref]$fmRelaunchPid)) {
+            try {
+                $null = [System.Diagnostics.Process]::GetProcessById($fmRelaunchPid)
+                $fmSecondArrival = $true
+            } catch {
+                $fmSecondArrival = $false
+            }
+        }
+    }
+    if ($fmSecondArrival) {
         [Console]::Error.WriteLine("  This relaunched into a shell that is still PowerShell $($PSVersionTable.PSVersion),")
         [Console]::Error.WriteLine('  so it is stopping rather than doing it again. The pwsh on this machine is not')
         [Console]::Error.WriteLine('  PowerShell 7 - PowerShell 6 uses that name too. This puts 7 beside it:')
@@ -118,12 +137,20 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
         [Console]::Error.WriteLine('')
         exit 1
     }
-    $env:FM_SHELL_RELAUNCHED = '1'
 
     # Said only once it is known to be true. Announcing the switch above, before
     # pwsh has been found, promises it on the one machine that cannot do it.
     [Console]::Out.WriteLine('  Switching to PowerShell 7 and carrying on there.')
     [Console]::Out.WriteLine('')
+
+    # Set for the launch and put back afterwards, exactly as install.ps1 does and
+    # for the reason stated there - including why it is cleared with a .NET call
+    # rather than through the Env: drive. This script leaked it the same way, and
+    # its own version of the fault needed no installer at all: a captain who
+    # stopped firstmate with Ctrl+C and typed .\start.ps1 again in the same window
+    # met the refusal above, on the second command of their own session.
+    $priorRelaunchMarker = $env:FM_SHELL_RELAUNCHED
+    $env:FM_SHELL_RELAUNCHED = "$PID"
 
     # A MACHINE MAY REFUSE THIS, and the refusal must not be a .NET error -
     # PowerShell raises a declined launch as a terminating exception whatever
@@ -142,9 +169,17 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
         [Console]::Error.WriteLine('    .\start.ps1')
         [Console]::Error.WriteLine('')
         exit 1
+    } finally {
+        [Environment]::SetEnvironmentVariable('FM_SHELL_RELAUNCHED', $priorRelaunchMarker)
     }
     exit $LASTEXITCODE
 }
+
+# Spent on arrival: the shell IS 7 here, so the hop the marker bounds is over and
+# nothing this run starts should inherit it. install.ps1's matching line owns the
+# reasoning, and the .NET call rather than `Remove-Item Env:\...` for the reason
+# stated there too.
+[Environment]::SetEnvironmentVariable('FM_SHELL_RELAUNCHED', $null)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -156,6 +191,45 @@ $root = $PSScriptRoot
 [Console]::Out.WriteLine()
 
 # ---- 1. what must be present ------------------------------------------------
+#
+# READ FROM THE MACHINE, NOT FROM THE WINDOW. A window took its copy of PATH when
+# it opened and can never be given a new one; a child it starts inherits that
+# copy, so switching shells does not escape it either. The window the install
+# leaves the captain standing in is exactly that window - the install wrote its
+# PATH entries after it opened - and MEASURED there, 2026-09-08, a `.\start.ps1`
+# that had just switched shells correctly went on to say
+#
+#     Cannot start - something required is missing:
+#       claude  - firstmate itself
+#
+# on a machine where the install had installed claude minutes earlier, and told
+# the captain to run the installer again. Fixing it here also fixes it for the
+# firstmate.cmd shim, which reaches this same line from that same window.
+#
+# So the entries the machine actually has are added before anything is called
+# missing, and THE PROCESS'S OWN ENTRIES COME FIRST, which is the one thing that
+# must not be got backwards: only directories this window had never heard of are
+# appended, so nothing that already resolved starts resolving to another file.
+# Update-FmToolSessionPath owns this rule inside the module and orders it the
+# other way round for the opposite reason - it is recovering from an install that
+# has just written the persisted PATH, where the new entries are the point. It is
+# not called here for the reason section 0 gives for the pwsh lookup above being
+# spelt out rather than shared: this file has to work before the module is loaded
+# or the home is wired.
+$fmPathSeparator = [System.IO.Path]::PathSeparator
+$fmPathEntries = [System.Collections.Generic.List[string]]::new()
+$fmPathSeen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($fmChunk in @($env:PATH, [Environment]::GetEnvironmentVariable('Path', 'Machine'),
+        [Environment]::GetEnvironmentVariable('Path', 'User'))) {
+    if (-not $fmChunk) { continue }
+    foreach ($fmEntry in $fmChunk.Split($fmPathSeparator)) {
+        if ([string]::IsNullOrWhiteSpace($fmEntry)) { continue }
+        if (-not $fmPathSeen.Add($fmEntry)) { continue }
+        $fmPathEntries.Add($fmEntry)
+    }
+}
+$env:PATH = $fmPathEntries -join $fmPathSeparator
+
 $missing = @()
 foreach ($t in @(
         @{ n = 'git'; why = 'isolated copies for workers' }

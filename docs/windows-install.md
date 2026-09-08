@@ -656,6 +656,12 @@ Measured 2026-08-26 in a Windows PowerShell 5.1 window with the install's PATH e
 It is immune to both because a `.cmd` is not subject to an execution policy and the `pwsh` it starts is given `-ExecutionPolicy Bypass`.
 That is why the ending names it rather than `.\start.ps1`, which would have failed for a second reason on the machine shape this file already documents.
 
+**"Always works" was one condition short, and that condition is exactly the window this ending is written for.**
+The 2026-08-26 run above removed the install's own PATH entry and left `pwsh` on PATH, so the shim's `pwsh` resolved.
+On the machine where the install has just PUT PowerShell 7 there, it does not: that window took its copy of PATH before the per-user route persisted the entry, and measured 2026-09-08 the recommended command answered `'pwsh' is not recognized as an internal or external command`.
+`Get-FmMachineShimText` now resolves `pwsh` the way both entry points do - PATH first, then `%LOCALAPPDATA%\Programs\PowerShell7` - so the claim above holds for the reason it always said it did.
+`docs/windows-e2e-evidence.md` section 50 has that run and the two other failures found in the same window.
+
 **Nothing starts without an explicit yes in that run.**
 `Get-FmMachineStartDecision` is the gate, and it is a function rather than a condition inside `install.ps1` so that the rule can be tested.
 Only `y` or `yes` starts anything; an empty answer is a no, so pressing Enter cannot open a browser; and `-Unattended` or a redirected stdin is never asked at all, on the reasoning `Test-CaptainPresent` already states for the administrator prompt.

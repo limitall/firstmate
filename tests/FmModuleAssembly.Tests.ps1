@@ -538,7 +538,10 @@ Describe 'start.ps1 in the shell a clean machine actually opens' {
     # seat rather than trusted.
     BeforeEach {
         $script:AmbientRelaunchMarker = $env:FM_SHELL_RELAUNCHED
-        $env:FM_SHELL_RELAUNCHED = '1'
+        # A PID, AND THIS PROCESS'S OWN. The marker says which launch it
+        # describes, so only a value naming a live process that is not the child
+        # is a value the child would branch on - a bare '1' stages nothing now.
+        $env:FM_SHELL_RELAUNCHED = "$PID"
     }
     AfterEach {
         if ($null -eq $script:AmbientRelaunchMarker) {
@@ -579,12 +582,23 @@ Describe 'start.ps1 in the shell a clean machine actually opens' {
         # guard and relaunches again, with nothing bounding it. The marker is
         # what a child inherits, so this asserts the SECOND arrival refuses -
         # with a stub pwsh present, which is the case that would otherwise spawn.
+        #
+        # THE MARKER NAMES THE LAUNCHING PROCESS, WHICH IS WHY IT IS A PID HERE.
+        # This case used to stage a bare '1', and that stopped meaning "you were
+        # relaunched" the day the marker began saying WHICH launch it describes:
+        # a leftover naming no process is now read as a leftover, which is the
+        # whole point of that change and is what let a captain switch shells in
+        # the window their install ended in. So the arrival is staged the way a
+        # real one arrives - naming a process that is not this shell and is still
+        # running, which the suite's own process is. `the marker that bounds the
+        # shell switch` takes this same fork through a genuine second hop, with
+        # no staging at all, for both entry points.
         $stubDir = Join-Path $TestDrive 'stub-loop'
         $null = New-Item -ItemType Directory -Path $stubDir -Force
         [System.IO.File]::WriteAllText((Join-Path $stubDir 'pwsh.cmd'), "@echo off`r`necho FM-RELAUNCH %*`r`n")
 
         $result = Invoke-FiveOne -Command ("`$env:PATH = '$stubDir;' + `$env:PATH; " +
-            "`$env:FM_SHELL_RELAUNCHED = '1'; & '$($script:StartScript)'")
+            "`$env:FM_SHELL_RELAUNCHED = '$PID'; & '$($script:StartScript)'")
 
         $result.Text | Should -Not -Match 'FM-RELAUNCH' -Because 'a second arrival must not spawn a third'
         $result.Text | Should -Match 'stopping rather than doing it again'
@@ -609,6 +623,293 @@ Describe 'start.ps1 in the shell a clean machine actually opens' {
         $result.Text | Should -Match 'PowerShell 7 is not on this machine'
         $result.Text | Should -Match 'install\.ps1'
         $result.ExitCode | Should -Be 1 -Because 'nothing started, and a refusal is not a success'
+    }
+}
+
+Describe 'the marker that bounds the shell switch' {
+    # WHY THIS EXISTS. Both entry points relaunch themselves under PowerShell 7
+    # and both bound that to one hop with FM_SHELL_RELAUNCHED, because `pwsh` is
+    # also PowerShell 6's name and a relaunch into one would arrive straight back
+    # at the same code. The bound worked. What the marker MEANT did not.
+    #
+    # A .ps1 runs IN the window the captain typed in, so a marker set for a child
+    # was set on that window and stayed there. On the captain's clean VM,
+    # 2026-09-08, the install ended, they used firstmate, stopped it with Ctrl+C,
+    # and typed `.\start.ps1` in the same window:
+    #
+    #     This relaunched into a shell that is still PowerShell 5.1.26100.9168,
+    #     so it is stopping rather than doing it again. The pwsh on this machine
+    #     is not PowerShell 7 ...
+    #
+    # A correct message given a false input, on a machine whose PowerShell 7 the
+    # install had just used. So these cases are about the marker's MEANING rather
+    # than about the bound: what a window is told, what a genuinely-below-7 pwsh
+    # is still told, and what either entry point is carrying by the time it
+    # reaches its own work. `docs/windows-e2e-evidence.md` section 50 has the
+    # runs; section 46 is the same defect met at the suite end.
+    #
+    # NOTHING REAL IS STARTED HERE. Every case either stubs `pwsh` so the
+    # relaunch goes nowhere, or runs a copy of the entry point in a TestDrive
+    # root whose bin/ scripts print instead of doing. A case that pointed one of
+    # these at the checkout itself would start the engine on the captain's own
+    # port, which is what the fixture roots below exist to prevent.
+    BeforeAll {
+        $script:WindowsPowerShell = Join-Path $env:WINDIR 'System32' 'WindowsPowerShell' 'v1.0' 'powershell.exe'
+        $script:System32 = Join-Path $env:WINDIR 'System32'
+        $script:Pwsh = Join-Path $PSHOME 'pwsh.exe'
+
+        function Test-FiveOneHere {
+            $IsWindows -and (Test-Path -LiteralPath $script:WindowsPowerShell -PathType Leaf)
+        }
+
+        # A `pwsh` that resolves exactly as the real one does and goes nowhere.
+        function New-StubShell {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+                Justification = 'A Pester fixture builder that writes only into TestDrive; -WhatIf would leave the case asserting against a stub that was never written.')]
+            param([Parameter(Mandatory)][string]$Directory)
+            $null = New-Item -ItemType Directory -Path $Directory -Force
+            [System.IO.File]::WriteAllText((Join-Path $Directory 'pwsh.cmd'), "@echo off`r`necho FM-RELAUNCH %*`r`n")
+            $Directory
+        }
+
+        # A `pwsh` that is a REAL shell still below 7 - which is what a PowerShell
+        # 6 amounts to for this guard, and is reached by a genuine relaunch rather
+        # than by a staged variable.
+        function New-BelowSevenShell {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+                Justification = 'A Pester fixture builder that writes only into TestDrive; -WhatIf would leave the case asserting against a stub that was never written.')]
+            param([Parameter(Mandatory)][string]$Directory)
+            $null = New-Item -ItemType Directory -Path $Directory -Force
+            [System.IO.File]::WriteAllText((Join-Path $Directory 'pwsh.cmd'),
+                "@echo off`r`n`"$script:WindowsPowerShell`" -NoProfile -NonInteractive %*`r`n")
+            $Directory
+        }
+
+        # The environment this case is about, stated in the child's own command
+        # rather than inherited - CONTRIBUTING.md owns that rule, and this whole
+        # Describe is about what happens when a variable is inherited by accident.
+        function Invoke-FiveOne {
+            param([Parameter(Mandatory)][string]$Command)
+            $output = & $script:WindowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+                -Command "Remove-Item -LiteralPath 'Env:\FM_SHELL_RELAUNCHED' -ErrorAction SilentlyContinue; $Command" 2>&1
+            [pscustomobject]@{
+                ExitCode = $LASTEXITCODE
+                Text     = (@($output | ForEach-Object { [string]$_ }) -join "`n")
+            }
+        }
+
+        # A copy of the shipped entry point in a root whose bin/ prints instead
+        # of doing, so what it carries PAST the version gate can be read without
+        # installing anything or starting an engine. The file itself is the real
+        # one, byte for byte; only its neighbours are fixtures.
+        function New-EntryPointRoot {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+                Justification = 'A Pester fixture builder that writes only into TestDrive; -WhatIf would leave the case asserting against a stub that was never written.')]
+            param([Parameter(Mandatory)][string]$Script, [Parameter(Mandatory)][string]$Directory)
+            $bin = Join-Path $Directory 'bin'
+            $null = New-Item -ItemType Directory -Path $bin -Force
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot $Script) -Destination (Join-Path $Directory $Script) -Force
+            # BOTH ENTRY POINTS DOT-SOURCE THIS, AND THEY WANT DIFFERENT THINGS
+            # FROM IT. Everything install.ps1 does after the gate is behind it,
+            # and an `exit` in a dot-sourced script ends its caller, so for that
+            # one the prelude IS the end of the run. start.ps1 reaches it later,
+            # for the sign-in check, and has to carry on past it to the engine -
+            # so it gets a sign-in that says "nothing to ask" instead, which is
+            # the shape Get-FmSignInDecision returns on a healthy machine.
+            $prelude = if ($Script -eq 'install.ps1') {
+                @'
+param([string]$RequiredCommand)
+[Console]::Out.WriteLine("FM-MARKER=[$env:FM_SHELL_RELAUNCHED]")
+exit 0
+'@
+            } else {
+                @'
+param([string]$RequiredCommand)
+[Console]::Out.WriteLine("FM-MARKER=[$env:FM_SHELL_RELAUNCHED]")
+function Get-FmSignInStatus { [pscustomobject]@{ SignedIn = $true } }
+function Get-FmSignInDecision {
+    param($Status, [switch]$CaptainPresent, [string]$Answer = '')
+    [pscustomobject]@{ SignIn = $false; Proceed = $true; Lines = @() }
+}
+'@
+            }
+            [System.IO.File]::WriteAllText((Join-Path $bin 'fm-module-load.ps1'), $prelude)
+            [System.IO.File]::WriteAllText((Join-Path $bin 'fm-setup.ps1'), "[Console]::Out.WriteLine('FM-SETUP')`r`n")
+            [System.IO.File]::WriteAllText((Join-Path $bin 'fm-bridge.ps1'), @'
+param([int]$Port, [switch]$NoLaunch)
+[Console]::Out.WriteLine("FM-MARKER=[$env:FM_SHELL_RELAUNCHED]")
+[Console]::Out.WriteLine("FM-GIT=[$((Get-Command git -ErrorAction SilentlyContinue).Source)]")
+[Console]::Out.WriteLine("FM-PATH=[$env:PATH]")
+'@)
+            Join-Path $Directory $Script
+        }
+
+        # git and claude, so the tool check has something to find that is not the
+        # machine's own - these cases are about PATH, not about this seat.
+        function New-StubTool {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+                Justification = 'A Pester fixture builder that writes only into TestDrive; -WhatIf would leave the case asserting against a stub that was never written.')]
+            param([Parameter(Mandatory)][string]$Directory)
+            $null = New-Item -ItemType Directory -Path $Directory -Force
+            foreach ($tool in @('git', 'claude')) {
+                [System.IO.File]::WriteAllText((Join-Path $Directory "$tool.cmd"), "@echo off`r`necho stub $tool`r`n")
+            }
+            $Directory
+        }
+    }
+
+    # Staged hostile in the suite's own process, which is the shape an install
+    # hands it - CONTRIBUTING.md and section 46 own the reasoning.
+    BeforeEach {
+        $script:AmbientRelaunchMarker = $env:FM_SHELL_RELAUNCHED
+        # A PID, AND THIS PROCESS'S OWN. The marker says which launch it
+        # describes, so only a value naming a live process that is not the child
+        # is a value the child would branch on - a bare '1' stages nothing now.
+        $env:FM_SHELL_RELAUNCHED = "$PID"
+    }
+    AfterEach {
+        [Environment]::SetEnvironmentVariable('FM_SHELL_RELAUNCHED', $script:AmbientRelaunchMarker)
+    }
+
+    It 'switches from the very window an install ends in, which is carrying that install''s own marker' {
+        if (-not (Test-FiveOneHere)) {
+            Set-ItResult -Skipped -Because 'Windows PowerShell 5.1 is not on this machine'
+            return
+        }
+        # THE CAPTAIN'S CONSOLE. install.ps1 ran in this window, so the marker it
+        # set names this window - and this window is nobody's relaunched child.
+        $stub = New-StubShell -Directory (Join-Path $TestDrive 'stub-own-marker')
+        $result = Invoke-FiveOne -Command ("`$env:FM_SHELL_RELAUNCHED = `"`$PID`"; " +
+            "`$env:PATH = '$stub;' + `$env:PATH; & '$(Join-Path $script:RepoRoot 'start.ps1')' -Port 9111")
+
+        $result.Text | Should -Match 'FM-RELAUNCH' -Because 'the window an install ends in must still be able to switch'
+        $result.Text | Should -Match '-Port 9111' -Because 'the captain arguments still have to survive it'
+        $result.Text | Should -Not -Match 'stopping rather than doing it again' -Because 'the marker names this window, not a relaunch of it'
+        $result.ExitCode | Should -Be 0
+    }
+
+    It 'still refuses when pwsh really is a shell below 7, which is the fork this bound exists for' {
+        if (-not (Test-FiveOneHere)) {
+            Set-ItResult -Skipped -Because 'Windows PowerShell 5.1 is not on this machine'
+            return
+        }
+        # NOT A STAGED MARKER - A REAL SECOND HOP, for BOTH entry points. This
+        # `pwsh` runs the file it is given under Windows PowerShell 5.1, which is
+        # what a PowerShell 6 amounts to here: a shell still below 7, reached by a
+        # genuine relaunch, carrying whatever that relaunch put in its
+        # environment. Without the bound this is the fork bomb, so the assertions
+        # are that it stops after exactly one hop and says what it always said.
+        $announcement = @{ 'start.ps1' = 'Switching to PowerShell 7'; 'install.ps1' = 'Re-running under' }
+        foreach ($entry in @('start.ps1', 'install.ps1')) {
+            $stub = New-BelowSevenShell -Directory (Join-Path $TestDrive "below-seven-$entry")
+            $result = Invoke-FiveOne -Command ("`$env:PATH = '$stub;$script:System32'; " +
+                "& '$(Join-Path $script:RepoRoot $entry)'")
+
+            $result.Text | Should -Match 'stopping rather than doing it again' -Because "$entry must still refuse a second arrival"
+            $result.Text | Should -Match 'PowerShell 6 uses that name too' -Because 'the diagnosis is right for this machine, and only this one'
+            $result.Text | Should -Match 'install\.ps1' -Because 'the captain still needs the way out'
+            @([regex]::Matches($result.Text, $announcement[$entry])).Count |
+                Should -Be 1 -Because "one relaunch, never two - a second arrival of $entry must not spawn a third"
+            $result.ExitCode | Should -Be 1
+        }
+    }
+
+    It 'leaves the window the captain typed in exactly as it found it, from either entry point' {
+        if (-not (Test-FiveOneHere)) {
+            Set-ItResult -Skipped -Because 'Windows PowerShell 5.1 is not on this machine'
+            return
+        }
+        # The window is where the captain works next, and a script that runs in it
+        # has no business leaving a variable behind. Both entry points are checked
+        # because both set it and both used to leave it: install.ps1 poisoned the
+        # window it ends in, and start.ps1 poisoned its own on the first Ctrl+C.
+        foreach ($entry in @('start.ps1', 'install.ps1')) {
+            $stub = New-StubShell -Directory (Join-Path $TestDrive "stub-restore-$entry")
+            $result = Invoke-FiveOne -Command ("`$env:PATH = '$stub;' + `$env:PATH; " +
+                "& '$(Join-Path $script:RepoRoot $entry)'; " +
+                "[Console]::Out.WriteLine('FM-LEFTOVER=[' + `$env:FM_SHELL_RELAUNCHED + ']')")
+
+            $result.Text | Should -Match 'FM-RELAUNCH' -Because "$entry has to have actually relaunched for this to mean anything"
+            $result.Text | Should -Match ([regex]::Escape('FM-LEFTOVER=[]')) -Because "$entry must not leave its marker on the captain's window"
+        }
+    }
+
+    It 'switches from a window still carrying the literal marker an OLDER install wrote' {
+        if (-not (Test-FiveOneHere)) {
+            Set-ItResult -Skipped -Because 'Windows PowerShell 5.1 is not on this machine'
+            return
+        }
+        # THE WINDOW THIS WAS REPORTED FROM. Until this fix, the marker was the
+        # literal '1', and the captain's window is carrying that one for as long
+        # as it stays open - updating the checkout cannot reach into it. A rule
+        # that asked only "is this my own PID" would go on refusing them in the
+        # very window the report came from, so a marker that names no process is
+        # read as the leftover it is. '1' is not a live process id on Windows,
+        # and neither is anything that is not a number at all.
+        #
+        # RESTORED, NOT CLEARED, is the second half of this case. The runs above
+        # start from a window with no marker, where restoring and deleting look
+        # identical; only a window that already had one can tell them apart.
+        foreach ($leftover in @('1', 'set-by-something-else')) {
+            $stub = New-StubShell -Directory (Join-Path $TestDrive "stub-leftover-$($leftover.Length)")
+            $result = Invoke-FiveOne -Command ("`$env:FM_SHELL_RELAUNCHED = '$leftover'; " +
+                "`$env:PATH = '$stub;' + `$env:PATH; & '$(Join-Path $script:RepoRoot 'start.ps1')'; " +
+                "[Console]::Out.WriteLine('FM-LEFTOVER=[' + `$env:FM_SHELL_RELAUNCHED + ']')")
+
+            $result.Text | Should -Match 'FM-RELAUNCH' -Because "a marker of '$leftover' names no process, so it must not block the switch"
+            $result.Text | Should -Not -Match 'stopping rather than doing it again'
+            $result.Text | Should -Match ([regex]::Escape("FM-LEFTOVER=[$leftover]")) -Because 'a variable this script did not set is not its to delete'
+        }
+    }
+
+    It 'is spent by the time either entry point reaches its own work, so nothing it starts inherits it' {
+        # THE OTHER END OF THE SAME DEFECT. Reaching PowerShell 7 means the hop
+        # the marker bounds is over, and everything the run starts from there -
+        # the suite an install gates itself with, the engine start.ps1 starts -
+        # would otherwise inherit a marker that has already been used. That is
+        # not hypothetical: section 46 is three tests that read exactly this
+        # footprint and reported it as a fact about the captain's machine.
+        $tools = New-StubTool -Directory (Join-Path $TestDrive 'spent-tools')
+        foreach ($entry in @('start.ps1', 'install.ps1')) {
+            $copy = New-EntryPointRoot -Script $entry -Directory (Join-Path $TestDrive "spent-$entry")
+            $output = & $script:Pwsh -NoProfile -ExecutionPolicy Bypass -Command (
+                "`$env:FM_SHELL_RELAUNCHED = '$PID'; `$env:PATH = '$tools;$script:System32'; & '$copy'") 2>&1
+            $text = (@($output | ForEach-Object { [string]$_ }) -join "`n")
+
+            $text | Should -Match ([regex]::Escape('FM-MARKER=[]')) -Because "$entry must not hand a spent marker to anything it starts"
+        }
+    }
+
+    It 'decides what is missing from the PATH the machine has, not only the one the window opened with' {
+        # THE SECOND HALF OF THE CAPTAIN'S REPORT. A window took its copy of PATH
+        # when it opened and can never be given a new one, and a child inherits
+        # that copy - so switching shells does not escape it either. In the window
+        # an install ends in, every directory the install persisted is missing,
+        # and MEASURED there 2026-09-08 a start.ps1 that had just switched shells
+        # correctly went on to say `claude - firstmate itself` was missing and to
+        # advise re-running the installer that had just installed it.
+        #
+        # So this starts the entry point WITHOUT a directory the machine
+        # persists, and asks for it back. The stub tools stay first, because
+        # nothing already resolvable may start resolving differently.
+        $persisted = @(([Environment]::GetEnvironmentVariable('Path', 'Machine') -split [System.IO.Path]::PathSeparator) |
+                Where-Object { $_ -and $_.TrimEnd('\') -ine $script:System32.TrimEnd('\') } |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+        if ($persisted.Count -eq 0) {
+            Set-ItResult -Skipped -Because 'this machine persists no PATH entry besides System32 to ask back for'
+            return
+        }
+        $wanted = [string]$persisted[0]
+        $tools = New-StubTool -Directory (Join-Path $TestDrive 'window-tools')
+        $copy = New-EntryPointRoot -Script 'start.ps1' -Directory (Join-Path $TestDrive 'window-path')
+
+        $output = & $script:Pwsh -NoProfile -ExecutionPolicy Bypass -Command (
+            "`$env:PATH = '$tools;$script:System32'; & '$copy' -NoBrowser") 2>&1
+        $text = (@($output | ForEach-Object { [string]$_ }) -join "`n")
+
+        $text | Should -Not -Match 'Cannot start' -Because 'the tools are there; only this window had not heard of them'
+        $text | Should -Match ([regex]::Escape($wanted)) -Because 'a directory the machine persists has to reach the run that needs it'
+        $text | Should -Match ([regex]::Escape("FM-GIT=[$(Join-Path $tools 'git.cmd')]")) -Because 'what this window could already resolve must keep resolving the same way'
     }
 }
 
@@ -664,7 +965,10 @@ Describe 'the first command README gives a newcomer' {
     # descendant of that install's own relaunch and carries its marker.
     BeforeEach {
         $script:AmbientRelaunchMarker = $env:FM_SHELL_RELAUNCHED
-        $env:FM_SHELL_RELAUNCHED = '1'
+        # A PID, AND THIS PROCESS'S OWN. The marker says which launch it
+        # describes, so only a value naming a live process that is not the child
+        # is a value the child would branch on - a bare '1' stages nothing now.
+        $env:FM_SHELL_RELAUNCHED = "$PID"
     }
     AfterEach {
         if ($null -eq $script:AmbientRelaunchMarker) {

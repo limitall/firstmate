@@ -614,9 +614,83 @@ Describe 'the enablers, checked before they are used' {
 Describe 'the firstmate command' {
     It 'runs start.ps1 through pwsh with no profile' {
         $text = Get-FmMachineShimText -StartScript 'C:\demo\start.ps1'
-        $text | Should -Match 'pwsh -NoProfile'
+        $text | Should -Match 'pwsh'
+        $text | Should -Match '-NoProfile'
         $text | Should -Match 'C:\\demo\\start\.ps1'
         $text | Should -Match '%\*' -Because "the captain's own arguments have to reach start.ps1"
+    }
+
+    It 'starts firstmate from a window that has no pwsh on its PATH, which is the window an install ends in' {
+        # THE COMMAND THE INSTALL RECOMMENDS FOR THAT WINDOW. Its closing lines
+        # name this file's full path as "works HERE, in this window, right now" -
+        # and on the machine that install just put PowerShell 7 on, that window
+        # is the one that cannot see it: it took its copy of PATH when it opened,
+        # and the per-user route persists an entry that reaches only NEW windows.
+        # Measured there 2026-09-08, before the fallback existed: `'pwsh' is not
+        # recognized as an internal or external command`.
+        #
+        # So this runs the shim FOR REAL from a shell with no pwsh on its PATH,
+        # with LOCALAPPDATA pointed at a per-user PowerShell 7 that is really
+        # there. Nothing of the machine's own is touched and no engine is
+        # started: the script the shim is pointed at only prints.
+        if (-not $IsWindows) {
+            Set-ItResult -Skipped -Because 'the shim is a Windows .cmd'
+            return
+        }
+        $lab = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $programs = Join-Path $lab 'localapp' 'Programs'
+        $null = New-Item -ItemType Directory -Path $programs -Force
+        # A junction rather than a copy: pwsh.exe needs the modules beside it, and
+        # this is a per-user PowerShell 7 exactly where install.ps1 puts one.
+        # SAFE TO LEAVE FOR PESTER TO CLEAN UP, and that was measured rather than
+        # assumed, because getting it wrong would delete $PSHOME: `Remove-Item
+        # -Recurse -Force` on a directory holding a junction removes the junction
+        # and leaves the target and its contents untouched.
+        try {
+            $null = New-Item -ItemType Junction -Path (Join-Path $programs 'PowerShell7') -Target $PSHOME -ErrorAction Stop
+        } catch {
+            Set-ItResult -Skipped -Because 'this machine does not allow a junction in the test drive'
+            return
+        }
+        $target = Join-Path $lab 'target.ps1'
+        [System.IO.File]::WriteAllText($target, "[Console]::Out.WriteLine('FM-STARTED args=[' + (`$args -join ',') + ']')`r`n")
+        $shim = Join-Path $lab 'firstmate.cmd'
+        [System.IO.File]::WriteAllText($shim, (Get-FmMachineShimText -StartScript $target))
+
+        $comspec = Join-Path $env:WINDIR 'System32' 'cmd.exe'
+        $system32 = Join-Path $env:WINDIR 'System32'
+        $output = & $comspec /c "set `"PATH=$system32`" && set `"LOCALAPPDATA=$(Join-Path $lab 'localapp')`" && `"$shim`" -NoBrowser" 2>&1
+        $text = (@($output | ForEach-Object { [string]$_ }) -join "`n")
+
+        $text | Should -Not -Match "is not recognized" -Because 'the window the install ends in is the one this command is offered to'
+        $text | Should -Match ([regex]::Escape('FM-STARTED args=[-NoBrowser]')) -Because "the captain's own arguments still have to reach start.ps1"
+    }
+
+    It 'still takes the pwsh the window already has, so an upgraded or relocated one keeps working' {
+        # THE OTHER WINDOW, and the reason the fallback is second rather than
+        # first. A per-user PowerShell 7 upgrades in place and a machine-wide one
+        # never lives under LOCALAPPDATA at all, so a shim that went straight to
+        # the fixed location would pin the captain to one copy forever. PATH
+        # decides whenever PATH can, and the fixed location is only the answer
+        # when it cannot.
+        if (-not $IsWindows) {
+            Set-ItResult -Skipped -Because 'the shim is a Windows .cmd'
+            return
+        }
+        $lab = Join-Path $TestDrive ([System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $lab -Force
+        $target = Join-Path $lab 'target.ps1'
+        [System.IO.File]::WriteAllText($target, "[Console]::Out.WriteLine('FM-STARTED from=[' + `$PSHOME + ']')`r`n")
+        $shim = Join-Path $lab 'firstmate.cmd'
+        [System.IO.File]::WriteAllText($shim, (Get-FmMachineShimText -StartScript $target))
+
+        $comspec = Join-Path $env:WINDIR 'System32' 'cmd.exe'
+        # LOCALAPPDATA is pointed at a directory with no PowerShell 7 in it, so a
+        # pass here can only have come from PATH.
+        $output = & $comspec /c "set `"LOCALAPPDATA=$lab`" && `"$shim`"" 2>&1
+        $text = (@($output | ForEach-Object { [string]$_ }) -join "`n")
+
+        $text | Should -Match ([regex]::Escape("FM-STARTED from=[$PSHOME]")) -Because 'the pwsh already on PATH is the one that runs'
     }
 
     It 'is created once and reports already the second time' {

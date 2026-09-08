@@ -47,9 +47,28 @@ function Get-FmMachineShimText {
     # A .cmd rather than a .ps1: this is what makes a bare `firstmate` work from
     # cmd.exe, from the Run box and from a PowerShell session alike. %* carries
     # the captain's own arguments through to start.ps1.
+    #
+    # IT FINDS pwsh THE WAY THE ENTRY POINTS DO, and it has to. This used to run a
+    # bare `pwsh`, which is resolved against the PATH of whatever window invokes
+    # the shim - and the install's own closing lines name this file's full path as
+    # "works HERE, in this window, right now". On the machine that install just
+    # put PowerShell 7 on, that window is exactly the one that cannot see it: it
+    # took its copy of PATH when it opened, and the per-user PowerShell 7 route
+    # persists a PATH entry that reaches only NEW windows. MEASURED 2026-09-08 in
+    # that window, on the command the run had just recommended:
+    #
+    #     'pwsh' is not recognized as an internal or external command
+    #
+    # So the fallback is the one install.ps1 and start.ps1 already carry, written
+    # for cmd: PATH first, so an upgraded or relocated PowerShell 7 keeps working,
+    # and %LOCALAPPDATA%\Programs\PowerShell7 second, which is the only place this
+    # installer ever puts one. `where` is in System32 and is always there.
+    # docs/windows-e2e-evidence.md section 50 has the run.
     @(
         '@echo off'
-        "pwsh -NoProfile -ExecutionPolicy Bypass -File `"$StartScript`" %*"
+        'set "FM_PWSH=pwsh"'
+        'where pwsh >nul 2>&1 || set "FM_PWSH=%LOCALAPPDATA%\Programs\PowerShell7\pwsh.exe"'
+        "`"%FM_PWSH%`" -NoProfile -ExecutionPolicy Bypass -File `"$StartScript`" %*"
     ) -join "`r`n"
 }
 

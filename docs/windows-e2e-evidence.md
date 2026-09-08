@@ -8583,3 +8583,237 @@ The wait is bounded and the child is killed, and the pipe reads are bounded sepa
 - **The interactive prompt was not driven through a live console.**
   Its decision - the default-yes, the refusal wordings, and the re-read after an abandoned sign-in - is covered by `tests/FmSignIn.Tests.ps1`, and the redirected-stdin path above is what ran end to end.
   A terminal with a real keyboard is the captain's own measurement.
+
+---
+
+## 50. Three things went wrong in the one window an install leaves the captain standing in - `PROVEN (Windows 11) BY REPRODUCING ALL THREE IN THAT CONSOLE AND MEASURING EACH FIX THERE; THE CAPTAIN'S FRESH VM IS STILL THEIRS`
+
+Dated 2026-09-08, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\16\firstmate-win`, PowerShell 7.6.4, Windows PowerShell 5.1.26100.8115, Pester 6.1.0, git 2.49.0, Windows 11 Pro 10.0.26200.
+Written on `fm/stale-relaunch-marker` over `main` at `95fca6e`, rebased onto `main` at `4f96151` and re-measured there.
+
+The captain's fresh VM, 2026-09-08, ran the whole install successfully, answered `y` to `Start firstmate now?`, used the browser screen, stopped it with Ctrl+C, and was returned to the Administrator Windows PowerShell 5.1 window they had started from.
+Everything up to that point worked.
+Then, verbatim from their screenshot:
+
+```
+PS C:\Users\Adit\firstmate> firstmate
+firstmate : The term 'firstmate' is not recognized as the name of a cmdlet...
+
+PS C:\Users\Adit\firstmate> .\start.ps1
+
+  FIRSTMATE
+
+  This is Windows PowerShell 5.1.26100.9168, and firstmate runs on
+  PowerShell 7. A script cannot change the shell it was started in.
+
+  This relaunched into a shell that is still PowerShell 5.1.26100.9168,
+  so it is stopping rather than doing it again. The pwsh on this machine is not
+  PowerShell 7 ...
+```
+
+That second paragraph is a correct message given a false input.
+It is the fork-bomb guard firing on a machine whose PowerShell 7 the install had used minutes earlier.
+
+### 50.1 The cause was already established, and this task did not re-derive it
+
+Section 46.11 recorded it as a known finding and deliberately left it open, because it sits in install code that task was told to stay out of:
+
+> `install.ps1` leaves `FM_SHELL_RELAUNCHED` set in the PowerShell 7 window it ends in, which since `87b7fc1` is the window the captain is standing in.
+
+`install.ps1` sets that marker in its own process before re-running itself under PowerShell 7, and a `.ps1` runs IN the window the captain typed in, so the marker is set on that window and nothing ever clears it.
+`start.ps1` reads it back and takes the one-relaunch refusal - the branch that exists for the genuine case where `pwsh` turns out to be PowerShell 6.
+
+### 50.2 Reproduced first anyway, in their console rather than in the abstract
+
+With the tree unmodified at `95fca6e`, a Windows PowerShell 5.1 carrying nothing but that one variable, and a stub `pwsh` so nothing would actually launch:
+
+```
+FM_SHELL_RELAUNCHED=1  ->  This relaunched into a shell that is still PowerShell 5.1.26100.8115,
+                           so it is stopping rather than doing it again. The pwsh on this machine is not
+                           PowerShell 7 - PowerShell 6 uses that name too.  EXIT=1
+```
+
+Byte for byte the captain's paragraph.
+
+### 50.3 There were THREE failures in that window, not one, and they share a root
+
+The marker is the one that was reported.
+Measuring the window rather than the message found two more, and all three are the same fact: a window took its copy of the environment when it opened, and nothing an install does can reach back into it.
+
+| # | what the captain types | what that window did | why |
+| --- | --- | --- | --- |
+| 1 | `.\start.ps1` | refused, saying their PowerShell 7 is not PowerShell 7 | the marker `install.ps1` set on this window, never cleared |
+| 2 | `.\start.ps1`, once it can relaunch | `Cannot start - something required is missing: claude` | the window's PATH predates the install that wrote the entry |
+| 3 | the shim's full path, which the install's closing lines name as working HERE | `'pwsh' is not recognized as an internal or external command` | the same stale PATH, met by a shim that ran a bare `pwsh` |
+
+The second and third were found by asking the acceptance question the brief set - does the captain get a working firstmate from where they stand - rather than by stopping at the reported symptom.
+Both were measured in a PowerShell 7 whose PATH was stripped to `System32` plus git, with `claude` present on the machine's persisted PATH and reachable by nothing in that process:
+
+```
+  Cannot start - something required is missing:
+    claude  - firstmate itself
+
+  Install everything this machine needs with:  ...\install.ps1
+```
+
+That is a working machine being called broken and being told to re-run the installer that had just worked, which is the same shape section 46 named and `Resolve-FmToolAfterInstall` was written for one level up.
+
+### 50.4 WHERE the marker is cleared is the whole question, and there are three places
+
+Clearing it in the wrong place reopens the fork bomb the marker exists to catch, so each place was decided separately.
+
+- **NOT at the top of the guard.**
+  That is the one clearing that would be wrong.
+  The marker's only reader is the second arrival, and a clear before that read deletes the evidence the guard is there to weigh.
+- **AT THE END OF THE LAUNCH IT DESCRIBES**, in a `finally` around the relaunch, restoring whatever the window had before.
+  The marker describes one hop; when the hop is over, the window is left exactly as the script found it.
+  It is a `finally` because the `catch` beside it exits and because a Ctrl+C on a long-running child can take the parent shell with it, and neither may be a way of skipping the restore.
+- **AT THE FAR END OF THAT LAUNCH**, once the shell is known to be 7.
+  Reaching there means the hop is over, and everything the run starts from that point - the suite an install gates itself with, the engine `start.ps1` starts - would otherwise inherit a marker that has already done its job.
+  That is exactly the seam section 46.8 named and costed and left to this task.
+
+### 50.5 What the marker now holds, and the second condition that matters more than the first
+
+A flag that only says "a relaunch happened" cannot distinguish the window that DID the relaunching from the child it created, and it answered for the wrong one.
+So the marker holds the relaunching process's id, and it is believed on two conditions:
+
+1. **It names some OTHER process.**
+   A relaunch can never share the id of the process that created it, because that one is still running and waiting for it.
+   So a marker naming this process is this process's own footprint and says nothing about how it started.
+2. **That process is still there.**
+   A relaunch waits for its child, so a marker that is a live claim has a live shell standing behind it.
+
+**The second condition is what makes this fix reach the captain who reported it, and it was found by a test rather than by argument.**
+Their window is carrying the literal `1` an older `install.ps1` wrote, and it will carry it for as long as that window stays open - updating the checkout cannot reach into a running window any more than the install could.
+A rule that asked only "is this my own id" would have gone on refusing them in the one window the report came from.
+`1` is not a live process id on Windows (measured on this seat: ids 0 and 4 exist, 1, 2 and 3 do not), so it is not a claim about a launch in progress; it is a leftover, and it is now read as one.
+
+### 50.6 The three fixes
+
+- **The marker.**
+  Both entry points write their own id, restore the window's prior value in a `finally`, and clear the marker on arrival in PowerShell 7.
+  The guard believes it only under 50.5's two conditions.
+  It is cleared with `[Environment]::SetEnvironmentVariable` rather than `Remove-Item Env:\...`, because the `Env:` provider is a module load and this block runs before anything about the shell is established - measured against a PowerShell 7 whose module path did not resolve, where the `Remove-Item` form failed with "the module could not be loaded" and the .NET call did not.
+- **The PATH.**
+  `start.ps1` appends the directories the machine persists to its own before deciding anything is missing.
+  The process's existing entries stay FIRST, which is the one thing that must not be got backwards: anything the window could already resolve has to keep resolving to the same file.
+  `Update-FmToolSessionPath` owns this rule inside the module and orders it the other way for the opposite reason - it is recovering from an install that has just written the persisted PATH - and it is not called here for the reason section 0 of that file gives for the `pwsh` lookup beside it: this file has to work before the module is loaded or the home is wired.
+- **The shim.**
+  `Get-FmMachineShimText` resolves `pwsh` the way the entry points do - PATH first, so an upgraded or relocated PowerShell 7 keeps working, and `%LOCALAPPDATA%\Programs\PowerShell7` second, which is the only place this installer ever puts one.
+  PATH stays first deliberately: a shim that went straight to the fixed location would pin the captain to one copy forever.
+
+### 50.7 The negative controls
+
+Every guard was backed out one at a time, against the tests that hold it, and every one of them fails when the code it protects is gone:
+
+```
+the ORIGINAL flag guard, which is the shipped defect      -> 2 fail  (the install's window, and the older leftover)
+PID only, with no liveness                                -> 1 fail  (the older leftover)
+no restore                                                -> 2 fail  (the window keeps it, and the leftover is deleted)
+no spend-on-arrival                                       -> 1 fail  (the run hands its marker on)
+no PATH rebuild                                           -> 1 fail  (the window decides what the machine has)
+the shim runs a bare pwsh again                           -> 1 fail  (no pwsh on that window's PATH)
+```
+
+Not one of the new cases passes for a reason other than the code it names.
+
+**And section 46's own fix was checked the same way, because this change could have quietly neutered it.**
+46.6's second half stages the marker hostile in the suite's process so the clearing at each child-creating seam is proven rather than trusted.
+That staging was the literal `1`, which this change deliberately makes inert - a marker naming no process is now correctly ignored - so a staging left as it was would have gone on passing while testing nothing.
+The three stagings and the one case that set `1` in its own command now use a live process id, which is the only value a child branches on under the new rule, and 46.6's clearing is still load-bearing:
+
+```
+f27e150's clearing backed out, staging updated  ->  4 fail
+  switches to PowerShell 7 and carries the captain arguments across
+  still refuses when pwsh really is a shell below 7, which is the fork this bound exists for
+  leaves the window the captain typed in exactly as it found it, from either entry point
+  runs it, on a machine where running scripts is disabled
+```
+
+That is one more failing case than section 46 had, because the two new entry-point cases inherit the same seam.
+The rule behind it is now in `CONTRIBUTING.md` beside the staging rule it amends.
+
+**The seventh control is the one that found this**, and it found it by failing rather than by review: the fork-bomb case in `start.ps1 in the shell a clean machine actually opens` failed on the first full run of the fixed tree, because it staged `1` and asserted a refusal.
+It was the only failure in 2724 tests, it was correct to fail, and it is exactly the shape 46.3 called "the finding inside the finding" - a case that states its own arrival is the one that keeps telling the truth when the thing it states changes meaning.
+
+### 50.8 The captain's window, after
+
+The three commands, measured in a Windows PowerShell 5.1 carrying the marker their window carries, with no `pwsh` and no `claude` on its PATH, a per-user PowerShell 7 where `install.ps1` puts one, and a fixture root so no engine is started:
+
+```
+.\start.ps1                ->  Switching to PowerShell 7 and carrying on there.
+                               ... claude=[C:\Users\ADMIN\.local\bin\claude.exe]  EXIT=0
+                               window still carries=[1]   (restored, not deleted - it was not ours)
+
+<shim full path>           ->  FM-STARTED args=[-NoBrowser]
+
+a pwsh that is really 5.1  ->  stopping rather than doing it again ... PowerShell 6 uses that name too   EXIT=1
+                               "Switching to PowerShell 7" appears exactly once - one hop, never two
+```
+
+And the whole captain sequence in one window, with the fixed `install.ps1` first:
+
+```
+install.ps1  ->  Re-running under ...pwsh   (relaunches)
+                 --- window now carries: []
+start.ps1    ->  Switching to PowerShell 7 and carrying on there.   EXIT=0
+```
+
+**`firstmate` on its own still cannot work in that window, and this is not a gap that can be closed.**
+The one-word command is on the PATH the install persisted, and a running window can never be given a new PATH from outside.
+`Public/FmMachineStart.ps1` already owns that statement and the install's closing lines already say it, naming the shim's full path as the command for that window - what was wrong was that the named command did not run, which is fixed above rather than explained away.
+### 50.9 What the rebase onto the sign-in change added, and why it is not just a merge
+
+This landed after section 49's sign-in check, which edits the same file and asks its question in the same window.
+The two changes compose, and the order they compose in is load-bearing rather than incidental.
+
+`Get-FmSignInStatus` runs `claude auth status`, so it needs `claude` to resolve - and the window this whole section is about is precisely the one where it does not.
+Measured on the rebased tree, in a PowerShell 7 whose PATH was stripped to `System32` plus git, with `claude` present on the machine's persisted PATH:
+
+```
+without the PATH rebuild  ->  claude resolvable=[]
+                              {"SignedIn":false,"Known":false,"Detail":"no claude on PATH"}
+
+with it, as start.ps1 now does first
+                          ->  claude resolvable=[C:\Users\ADMIN\.local\bin\claude.exe]
+                              {"SignedIn":true,"Known":true,"Method":"claude.ai"}
+```
+
+So in the window an install ends in, the sign-in check could not have reached a verdict at all.
+Section 49.4's design holds either way - a check that cannot reach a verdict starts anyway rather than inventing a new way to be stuck - so nothing was broken; what it could not do was ASK, in the one window 49 says is the last moment somebody can answer.
+The rebuild runs before the tool check, which runs before the sign-in check, and that is the order in the file.
+
+**One fixture had to change with it, and the change is not cosmetic.**
+`start.ps1` now dot-sources the shared module prelude to reach `Get-FmSignInStatus`, and the entry-point fixture in `tests/FmModuleAssembly.Tests.ps1` stubs that prelude with an `exit`, which is right for `install.ps1` - everything it does is behind that line - and would have silently truncated every `start.ps1` case just before the engine.
+The stub now answers per entry point: an exit for one, and a sign-in that says "nothing to ask" for the other.
+The PATH case is what would have caught it regardless, because it asserts against output the run only reaches after that prelude.
+
+### 50.10 The suite and the analyzer
+
+`Invoke-Pester -Path ./tests`, twice, on the rebased tree:
+
+```
+run 1   2757 passed, 7 failed, 18 skipped   (2124s)
+run 2   2764 passed, 0 failed, 18 skipped   (1914s)
+```
+
+**The first run in this worktree is not the reportable one, and that is a property of the worktree rather than of this change.**
+A Windows checkout arrives with the two committed links as placeholder text, and this one was deliberately put back into that shape: the rebase needed a clean tree, so `.claude/skills` was restored to the entry git actually tracks.
+The suite repairs that surface as it goes, so the seven are `this checkout's own instruction surface.is healthy` and the doctor cases that follow from it - the same shape section 46.10 recorded, and none of them in a file this section touches.
+Run 2 is the tree as the captain would have it.
+
+The analyzer is not a separate sweep here - `tests/FmAnalyzer.Tests.ps1` runs `Invoke-ScriptAnalyzer` over the repo as part of those tests, and it is green in both.
+The four fixture builders this section adds carry an explicit `SuppressMessageAttribute` with its justification, which is the pattern `tests/FmDelivery.Tests.ps1` and `tests/FmTeardown.Tests.ps1` already use for the same rule: they call `New-Item`, and `-WhatIf` on a fixture would leave the case asserting against a stub that was never written.
+
+### 50.11 What was NOT proven here
+
+- **The captain's fresh VM has not run this.**
+  Everything above is their console reproduced on this seat - the marker staged, the PATH stripped, a per-user PowerShell 7 where the installer puts one - and each fix measured back in that same shape.
+  Whether their next install ends in a window that works is still their measurement, and it is one command.
+- **No install was run end to end.**
+  The relaunch, the marker, the PATH and the shim were each measured directly; nothing here re-ran the full installer, and the fixture roots exist precisely so that no engine, browser or tool install was started by a measurement.
+  One of those measurements DID start a real engine on the captain's own port, once, by being pointed at the checkout instead of a fixture; it was stopped inside a minute, left nothing listening, and every measurement after it used a fixture root.
+- **`firstmate` as a bare word in that window is not fixed and cannot be.**
+  50.8 states why, and it is a property of how Windows hands a process its environment rather than anything this repo chose.
+- **Nothing here re-examined the relaunch design itself.**
+  The one-hop bound, the per-user fallback and the refusal path all behaved correctly throughout; what changed is what the marker MEANS, not that there is one.

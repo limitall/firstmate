@@ -104,6 +104,23 @@ section 2 lists the state-file formats).
   reason on a seat where nothing set it: with the marker staged and the clearing
   backed out, all three fail here, which is what makes the fix proven rather than
   trusted. `docs/windows-e2e-evidence.md` section 46 has the runs.
+  **And the same defect has a production side, which is where it reached the
+  captain.** A variable a script sets for a child is set on the WINDOW that
+  script is running in, and outlives the run: the marker above went on to tell a
+  captain, in the window their successful install had just ended in, that their
+  PowerShell 7 was not PowerShell 7. So a marker handed to a child through the
+  environment has to say WHICH launch it describes rather than merely that one
+  happened - it names the process that set it, and is believed only while that
+  process is still there - and it is put back when the launch ends and cleared
+  once the run reaches the state it was bounding. Do not clear it at the point
+  that READS it; that is the one place a clear deletes the evidence the guard
+  exists to weigh. That also changes what STAGING it hostile means, and the
+  suite was updated with it: a value naming no process is now correctly ignored,
+  so a case that stages this marker stages a live process id or it stages
+  nothing at all. `install.ps1`'s relaunch block is the statement of all of
+  this, `start.ps1` cross-references it, and
+  `docs/windows-e2e-evidence.md` section 50 has the runs and the seven negative
+  controls.
   The mirror of this rule - a test that WRITES to the machine, up to putting a
   dialog on the captain's screen - is the `-NonInteractive` bullet above and
   `tests/FmUnstartable.TestHelpers.ps1`, which own it. Same disease, one turn
