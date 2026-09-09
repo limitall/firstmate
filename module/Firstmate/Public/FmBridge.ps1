@@ -1919,6 +1919,11 @@ function Get-FmBridgeFleet {
         Activity  = @($activity | Sort-Object Order -Descending | Select-Object -First 24)
         House     = @(Get-FmBridgeHouseWork)
         Capacity  = (Get-FmBridgeCapacity)
+        # WHO THIS HOME'S FIRSTMATE IS, carried in the same reading as the work
+        # so the prompt and the reply gate cannot hold two different answers to
+        # it. Get-FmBridgeGround's rule that the fleet object is its only source
+        # is why this rides here rather than being read again downstream.
+        Identity  = (Get-FmHomeIdentity -ConfigDir (Join-Path $HomePath 'config'))
         At        = (Get-Date).ToString('HH:mm:ss')
     }
 }
@@ -1979,6 +1984,28 @@ function New-FmBridgeTurnPrompt {
     )
 
     $lines = [System.Collections.Generic.List[string]]::new()
+
+    # WHO YOU ARE, FIRST AND EVERY TURN. The captain asked "who are you and what
+    # you can do ?" and got the vendor of the model. Nothing here recognises
+    # that question - recognising it would need a list of the ways it can be
+    # asked, and this file has watched a list fall one defect behind twice. The
+    # fact is simply always present, so every phrasing reaches it, including the
+    # ones nobody has thought of yet. Get-FmHomeIdentity owns what it says.
+    $identity = ''
+    if ($Fleet.PSObject.Properties['Identity']) { $identity = [string]$Fleet.Identity }
+    if ($identity) {
+        $lines.Add('[WHO YOU ARE. ' + $identity)
+        # BOTH HALVES OR NEITHER. The answer that prompted this got the
+        # capabilities right and the identity wrong; replacing one wrong half
+        # with one right half would still be half an answer to a question that
+        # plainly asked for two.
+        $lines.Add('That is settled and it is not the model behind you: asked who or what you are, who')
+        $lines.Add('made you, or who you belong to, answer from it and never with the name of a model or')
+        $lines.Add('the company that trained one. When they ask what you can do as well, say both - who')
+        $lines.Add('you are, and what you can do for them from this screen.]')
+        $lines.Add('')
+    }
+
     $lines.Add('[THE SCREEN BESIDE YOUR REPLY, read at ' + [string]$Fleet.At + ' from the durable records.')
     $lines.Add('This is what the captain can see right now, so it is what you are answering from.')
 

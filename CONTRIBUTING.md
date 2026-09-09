@@ -613,6 +613,21 @@ built for and states what it still cannot prove.
   action. If you find yourself adding a rule to the prompt to stop the screen
   saying something, the check belongs in the courier instead - a prompt is a
   request, exactly as the translator note above says.
+- **Narrow that gate by grammar, never by listing the phrase that just went
+  wrong.** A list of phrases has now fallen one defect behind three times here:
+  `Test-FmBridgeDescribingWord` across four live turns, the verb-reading fix in
+  `docs/windows-e2e-evidence.md` section 48, and the determiner-reading fix in
+  section 51. Prefer a closed class English cannot extend - the articles, the
+  determiners, the copulas - and measure the change against a corpus of ordinary
+  replies AND fabrications on both an empty board and a busy one, because the
+  gate is at its tightest on a fresh install and that is the morning the captain
+  is certain to be looking. Section 51.6 has the negative controls.
+- **What the SCREEN is, as opposed to what it knows, is a per-home fact.** Who
+  this home's firstmate is - made for whom, by whom, for what - lives in
+  `config/identity` and rides on the fleet reading, so the prompt and the reply
+  gate cannot hold two different answers to it. Its words widen what a reply may
+  say; its numbers widen nothing, which is the one thing to preserve if you
+  touch it. A home that set nothing answers generically rather than blankly.
 The whole suite takes about three quarters of an hour here, and it must run from
 a parent that OUTLIVES it. An orphaned run fails
 `Get-FmParentProcessId.finds a parent for this process` and nothing else, because

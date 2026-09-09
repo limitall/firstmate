@@ -1707,3 +1707,82 @@ Describe 'Get-FmStableCheckout' {
         Get-FmStableCheckout -Root '' | Should -Be ''
     }
 }
+
+Describe 'the identity the turn prompt carries' {
+
+    BeforeAll {
+        $script:IdReading = [pscustomobject]@{
+            At        = '09:15:00'
+            Tasks     = @()
+            Decisions = @()
+            Activity  = @()
+            House     = @()
+            Identity  = 'I am a firstmate, made for Adit by Dhaval Bhalodia, to help you work on the Adit app products.'
+        }
+    }
+
+    # THE DEFECT. Asked who it was, the screen answered with the vendor of the
+    # model behind it. The fix is not a reply to that question - it is a fact the
+    # session is holding before the question arrives.
+    It 'puts this home identity in the prompt' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'who are you and what you can do ?' -Fleet $script:IdReading
+        $prompt | Should -Match 'made for Adit by Dhaval Bhalodia'
+        $prompt | Should -Match '(?i)who you are'
+    }
+
+    # NO TRIGGER, AND THAT IS THE DESIGN. The identity is there whatever the
+    # captain typed, so every phrasing of the question reaches it - including
+    # the ones nobody has thought of. A prompt that only carried it when it
+    # recognised the question would be a phrase list, and this file has watched
+    # a phrase list fall one defect behind twice.
+    It 'carries it whatever the captain asked' -ForEach @(
+        @{ Asked = 'who are you and what you can do ?' }
+        @{ Asked = 'what are you' }
+        @{ Asked = 'what can you do' }
+        @{ Asked = 'what do you do' }
+        @{ Asked = 'who made you?' }
+        @{ Asked = 'whose assistant are you' }
+        @{ Asked = 'tell me about yourself' }
+        @{ Asked = 'hello' }
+        @{ Asked = 'what is happening' }
+    ) {
+        $prompt = New-FmBridgeTurnPrompt -Text $Asked -Fleet $script:IdReading
+        $prompt | Should -Match 'made for Adit by Dhaval Bhalodia'
+    }
+
+    # BOTH HALVES. The answer that prompted this got the capabilities right and
+    # the identity wrong; swapping one wrong half for one right half would still
+    # be half an answer to a question that plainly asked for two.
+    It 'asks for the capability half as well as the identity half' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'who are you and what you can do ?' -Fleet $script:IdReading
+        $prompt | Should -Match '(?i)what you can do for them'
+    }
+
+    # And it says which answer is wrong, since that is the one the screen gave.
+    It 'rules out answering as the model behind it' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'who are you' -Fleet $script:IdReading
+        $prompt | Should -Match '(?i)never with the name of a model'
+    }
+
+    # A HOME THAT SET NOTHING gets a prompt with no identity block rather than a
+    # prompt with a hole in it, and everything else about the turn is unchanged.
+    It 'leaves no blank behind when the home carries no identity' {
+        $bare = [pscustomobject]@{
+            At = '09:15:00'; Tasks = @(); Decisions = @(); Activity = @(); House = @(); Identity = ''
+        }
+        $prompt = New-FmBridgeTurnPrompt -Text 'who are you' -Fleet $bare
+        $prompt | Should -Not -Match '(?i)WHO YOU ARE'
+        $prompt | Should -Not -Match '\[\s*\]'
+        $prompt | Should -Match '(?i)THE SCREEN BESIDE YOUR REPLY'
+        $prompt | Should -Match 'who are you'
+    }
+
+    # A reading from before this existed has no Identity property at all, and
+    # the prompt must not throw under Set-StrictMode when it looks.
+    It 'survives a reading that carries no identity property' {
+        $old = [pscustomobject]@{
+            At = '09:15:00'; Tasks = @(); Decisions = @(); Activity = @(); House = @()
+        }
+        { New-FmBridgeTurnPrompt -Text 'who are you' -Fleet $old } | Should -Not -Throw
+    }
+}

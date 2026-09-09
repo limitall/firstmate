@@ -122,6 +122,13 @@ $home_ = if ($configured) { Get-FmBridgeWorkspace -RepoRoot $root } else { '' }
 $captainName = Get-FmCaptainName
 # Set when the address changes mid-run, cleared when it has been passed on.
 $script:pendingAddress = $null
+# WHAT THE CAPTAIN HAS SAID, not only what they just said. A name they
+# introduced is theirs for the rest of the conversation: they typed "create one
+# dummy task", and the reply naming it back a turn later was held for inventing
+# it. Bounded because this widens what the reply gate will quote, and a
+# conversation the captain is still in is a few turns, not a transcript.
+$script:captainSaid = [System.Collections.Generic.List[string]]::new()
+$script:captainSaidKeep = 12
 # Push-to-talk bookkeeping for this run: which edge of the engine's toggle the
 # next request is on, and whose the line waiting to be collected is.
 # Step-FmSpeechCaptureState owns both rules and says why.
@@ -626,6 +633,16 @@ try {
                     $reply = Remove-FmBridgeRepetition -Text $split.Written
                     $replyError = ConvertTo-FmBridgePlainText -Text $turn.Error -Prose -Keep $names
 
+                    # Everything they said BEFORE this turn, which the gate
+                    # counts as theirs exactly as it counts this turn's words.
+                    # Collected before the gate runs and after the reply is in
+                    # hand, so this turn's question is never in its own history.
+                    $earlier = @($script:captainSaid)
+                    $script:captainSaid.Add($text)
+                    while ($script:captainSaid.Count -gt $script:captainSaidKeep) {
+                        $script:captainSaid.RemoveAt(0)
+                    }
+
                     # AND THE SECOND GUARANTEE, on what the first one produced.
                     # The translator settles the WORDS; this settles the FACTS,
                     # and the screen needed both: it once named work that does
@@ -646,7 +663,7 @@ try {
                     # cannot re-read it and check.
                     $spoken = $split.Spoken
                     if ($turn.Ok -and $reply) {
-                        $checked = Protect-FmBridgeReply -Text $reply -Ground $ground -Asked $text
+                        $checked = Protect-FmBridgeReply -Text $reply -Ground $ground -Asked $text -AlsoAsked $earlier
                         if (-not $checked.Grounded) {
                             [Console]::Error.WriteLine('fm-bridge: reply held back - ' +
                                 ($checked.Unsubstantiated -join '; '))
@@ -659,7 +676,7 @@ try {
                         $reply = $checked.Reply
                     }
                     if ($spoken) {
-                        $checkedSpoken = Protect-FmBridgeReply -Text $spoken -Ground $ground -Asked $text
+                        $checkedSpoken = Protect-FmBridgeReply -Text $spoken -Ground $ground -Asked $text -AlsoAsked $earlier
                         if (-not $checkedSpoken.Grounded) {
                             [Console]::Error.WriteLine('fm-bridge: spoken line held back - ' +
                                 ($checkedSpoken.Unsubstantiated -join '; '))

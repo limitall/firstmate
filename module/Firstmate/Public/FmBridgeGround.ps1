@@ -434,9 +434,24 @@ function Test-FmBridgeNamingPhrase {
         captain's own fresh VM, where `Please run` was called the name of work
         that does not exist.
 
+        AND THE SAME DEFECT CAME BACK ONE STEP ALONG. The narrowing below
+        removed the verb reading and left the DETERMINER reading standing, so
+        the captain's screen went on holding "each on a different task", "a
+        harder task", "a smaller job" and "what I do is set work going" - 20
+        ordinary replies in 38, measured. One of those two families is answered
+        here; the other is the indefinite article, which is not a question about
+        the phrase's SHAPE but about how strong a claim it makes, so it is
+        handled where mentions are weighed in Test-FmBridgeGrounded.
+
         SO THE QUESTION ASKED IS GRAMMATICAL, NOT LEXICAL. Not "have we seen
         this phrase before" - that list is always one turn behind - but "does
-        this have the shape of a noun phrase". Three answers, in order:
+        this have the shape of a noun phrase". Four answers, in order:
+
+        AFTER A COPULA THE WORDS ARE A COMPLEMENT. "what I do is set work going"
+        says what kind of thing this is; naming a particular one would take a
+        determiner, and a determiner would have stopped the walk instead. This
+        is first because it disqualifies the phrase outright, whatever head noun
+        it ends in.
 
         A NOUN THAT IS ONLY A NOUN IS UNTOUCHED. `job`, `task` and `lane` have
         no verb reading to make room for, so nothing about them is relaxed and
@@ -479,6 +494,21 @@ function Test-FmBridgeNamingPhrase {
         [Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Modifier,
         [string[]]$Introducer = @()
     )
+
+    # THE WORD THAT INTRODUCES THE PHRASE, whichever end it came from. The
+    # caller offers the word that stopped its walk first and the word standing
+    # in front of the match second; the first one there is the one actually
+    # touching the phrase.
+    $leading = ''
+    foreach ($word in @($Introducer)) { if ($word) { $leading = $word.ToLowerInvariant(); break } }
+
+    # AFTER `IS`, THE WORDS ARE THE VERB'S COMPLEMENT, not a name. "What I do is
+    # set work going for you" was held on the captain's screen as work called
+    # `set` - the copula's complement read as though it named something. A bare
+    # noun phrase after `to be` says what kind of thing this is; naming a
+    # particular one takes a determiner, and a determiner would have stopped the
+    # walk here instead.
+    if (@('is', 'are', 'was', 'were', 'be', 'been', 'being', 'am') -contains $leading) { return $false }
 
     $noun = @(Get-FmBridgeWorkNoun) | Where-Object { $_.Word -eq $Head.ToLowerInvariant() } |
         Select-Object -First 1
@@ -615,6 +645,27 @@ function Get-FmBridgeGround {
             if ($value -ge 0 -and $value -le 100) { $null = $percents.Add($value) }
         }
     }
+    # WHO THIS HOME'S FIRSTMATE IS, and its WORDS ONLY. The identity is a record
+    # of this home like any other - the captain wrote it, not the model - so a
+    # reply repeating it back is quoting a record rather than inventing one. It
+    # has to be here or the gate holds the identity answer back: measured on a
+    # fresh board, "I look after the Adit app work" is read as work called `Adit
+    # app`, because `Adit` appears in no record.
+    #
+    # NO FIGURES FROM IT, DELIBERATELY, and this is the whole of the care taken
+    # here. Folding it into the prose bag above would make any number written in
+    # that file a number the reply may state, which is the exact defect
+    # `1730 pass, 0 failed` came from. The identity widens the vocabulary and
+    # cannot widen the arithmetic. Get-FmHomeIdentity bounds its length for the
+    # same reason: a vocabulary is a few sentences, not a document.
+    $identity = ''
+    if ($Fleet.PSObject.Properties['Identity']) { $identity = [string]$Fleet.Identity }
+    if ($identity) {
+        foreach ($w in [regex]::Matches($identity, '[A-Za-z][A-Za-z0-9]*')) {
+            $null = $words.Add($w.Value.ToLowerInvariant())
+        }
+    }
+
     # Counts of what is in front of it. These are the records' own arithmetic
     # rather than a reading of anything, so a reply may state them.
     $null = $numbers.Add($rows.Count)
@@ -632,6 +683,7 @@ function Get-FmBridgeGround {
         Decisions  = @($Fleet.Decisions)
         House      = @($Fleet.House)
         Capacity   = $capacity
+        Identity   = $identity
         At         = [string]$Fleet.At
     }
 }
@@ -689,7 +741,7 @@ function Get-FmBridgeRecordAnswer {
     if ($Because -and -not $rows.Count -and -not $decisions.Count) {
         # Nothing to offer instead, so one line and stop. Everything below would
         # be true and none of it would be an answer.
-        $lines.Add('There is nothing on the board either, so I have nothing of my own to give you instead.')
+        $lines.Add('Nothing is under way and nothing is waiting on you. Ask me again in other words and I will tell you what I find.')
     } else {
         if ($rows.Count) {
             $count = $rows.Count
@@ -772,13 +824,30 @@ function Test-FmBridgeGrounded {
         .PARAMETER Asked
         What the captain said this turn. Names they used are quotable; names they
         did not are not.
+
+        .PARAMETER AlsoAsked
+        What the captain said EARLIER IN THE SAME CONVERSATION, and it counts for
+        exactly as much as this turn's words.
+
+        THE DEFECT THIS ENDS. The captain typed "create one dummy task in which
+        you start multiple crewmates", and the reply naming it back was held for
+        naming work the records do not carry: `the dummy job`. Their own word,
+        from their own screen, one turn earlier. The contract says a name may
+        come from "the captain's own words" and nothing in it says those words
+        expire at the end of the turn - but the code read only the current
+        question, so every name the captain introduced became an invention again
+        the moment they asked a follow-up.
+
+        A conversation is the unit here, not a message. The caller decides how
+        far back that reaches; this only says the words count when they arrive.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
         [Parameter(Mandatory)]$Ground,
-        [string]$Asked = ''
+        [string]$Asked = '',
+        [string[]]$AlsoAsked = @()
     )
 
     $found = [System.Collections.Generic.List[string]]::new()
@@ -797,11 +866,14 @@ function Test-FmBridgeGrounded {
     # they may write "payment tests" and the reply answer "the payment work".
     $askedKeys = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $askedWords = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    if ($Asked) {
-        foreach ($w in [regex]::Matches($Asked, '[A-Za-z][A-Za-z0-9]*(?:[-\s]+[A-Za-z][A-Za-z0-9]*)?')) {
+    # This turn and everything they said before it in the same conversation. A
+    # word of theirs does not stop being theirs when they press return.
+    foreach ($said in (@($Asked) + @($AlsoAsked))) {
+        if ([string]::IsNullOrWhiteSpace($said)) { continue }
+        foreach ($w in [regex]::Matches($said, '[A-Za-z][A-Za-z0-9]*(?:[-\s]+[A-Za-z][A-Za-z0-9]*)?')) {
             $null = $askedKeys.Add((ConvertTo-FmBridgeWorkKey -Text $w.Value))
         }
-        foreach ($w in [regex]::Matches($Asked, '[A-Za-z][A-Za-z0-9]*|\d+')) {
+        foreach ($w in [regex]::Matches($said, '[A-Za-z][A-Za-z0-9]*|\d+')) {
             $null = $askedWords.Add($w.Value.ToLowerInvariant())
         }
     }
@@ -816,7 +888,14 @@ function Test-FmBridgeGrounded {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
 
         $namesAt = [System.Collections.Generic.List[object]]::new()
+        # Two kinds of mention, because they are not exposed to the same rules.
+        # A DEFINITE one - "the payment tests", or a name the captain used -
+        # points at a particular piece of work, so recommending action on it is
+        # recommending action on that work. An INDEFINITE one cannot point at
+        # anything, so there is nothing to act on; only a state or a figure can
+        # turn it into a claim.
         $ungroundedHere = [System.Collections.Generic.List[string]]::new()
+        $indefiniteHere = [System.Collections.Generic.List[string]]::new()
 
         # Which real work this line is about, however it chose to spell it. The
         # panel prints "lock identity" and a reply may write "LOCK IDENTITY" or
@@ -919,6 +998,38 @@ function Test-FmBridgeGrounded {
             $askedAll = $true
             foreach ($w in $meaningful) { if (-not $askedWords.Contains($w)) { $askedAll = $false; break } }
             if ($askedAll) { $ungroundedHere.Add($phrase); continue }
+
+            # AN INDEFINITE ARTICLE IS A MENTION, NOT A CLAIM, and this is the
+            # second half of the defect section 48 got the first half of. That
+            # fix stopped `run` and `work` being read as nouns when they were
+            # verbs; it left every DETERMINER-led phrase standing, and the
+            # captain's screen went on holding "each on a different task", "a
+            # harder task", "a smaller job" and "a slower run" - 20 ordinary
+            # replies in 38, measured.
+            #
+            # ENGLISH SETTLES IT WITHOUT A DICTIONARY. `a` and `an` mark
+            # indefinite reference: they introduce SOME member of a kind, never
+            # a particular named one. "a different task" is any task that
+            # differs; "a lock-identity" is not English at all. So this cannot
+            # be claiming a named piece of work - whatever adjective sits in the
+            # middle, and without any rule here having to know that `different`,
+            # `harder` and `separate` are adjectives, which none of them can.
+            #
+            # A CLOSED CLASS OF TWO, which is why it cannot fall behind the way
+            # the describing-word list did four times running.
+            #
+            # AND IT IS DEMOTED, NOT EXCUSED. "A payment fix has landed" is an
+            # invention and stays one: dropping it here entirely turned `the
+            # line the narrowing must not cross` red, which is exactly what that
+            # test is for. It joins the captain's own words as something that
+            # may be MENTIONED and may not be reported on, and the three rules
+            # below decide which it is.
+            $leadsIndefinite = $false
+            foreach ($word in @($introducer)) {
+                if ($word) { $leadsIndefinite = @('a', 'an') -contains $word.ToLowerInvariant(); break }
+            }
+            if ($leadsIndefinite) { $indefiniteHere.Add($phrase); continue }
+
             $found.Add("names work the records do not carry: '$phrase'")
         }
 
@@ -990,16 +1101,45 @@ function Test-FmBridgeGrounded {
             $found.Add("gives a figure the records do not carry: $value")
         }
 
-        if (-not $ungroundedHere.Count) { continue }
+        if (-not $ungroundedHere.Count -and -not $indefiniteHere.Count) { continue }
 
         # From here down the line mentions something the records do not carry.
-        # Mentioning it is allowed - the captain raised it. Reporting on it or
-        # acting on it is not.
+        # Mentioning it is allowed - the captain raised it, or English only ever
+        # raised it as a kind. Reporting on it or acting on it is not.
+        $mentioned = @($ungroundedHere) + @($indefiniteHere)
         if ($percentsHere.Count) {
-            $found.Add("reports a figure for '$($ungroundedHere[0])', which the records do not carry at all")
+            $found.Add("reports a figure for '$($mentioned[0])', which the records do not carry at all")
         }
-        if ($line -match '(?i)\b(should|shouldn.t|recommend|recommendation|suggest|advise|advice|worth|i.d\s|i\s+would|instead\s+of|in\s+its\s+place|ask\s+(?:there|firstmate|it)|tell\s+(?:firstmate|it))\b' -or
-            $line -match '(?i)^\s*(?:\d+[.)]\s*|[-*]\s*|\*\*)?(start|stop|halt|pause|resume|begin|land|merge|kill|switch|swap|replace|take|put|hold|drop|leave|focus|review)\b') {
+        # A STATE, which the contract has named since the day it was written and
+        # the code has never checked. "a state, a percentage, or a recommended
+        # action" - the figure was checked, the action was checked, and the
+        # state was not, which is why section 48.8 had to record `The billing
+        # job is green.` as a fabrication that got through and stayed through.
+        #
+        # It is what tells a mention from a claim. "each on a different task" is
+        # the captain being told how crewmates are put out; "A payment fix has
+        # landed" is a piece of work being reported finished. Only the second
+        # one is something they would act on, and only the second one is here.
+        #
+        # THE VOCABULARY IS THE RECORDS' OWN - the states a status line actually
+        # carries, plus the handful of words English reports an outcome with. A
+        # word missing from it costs a mention that should have been held, never
+        # a true reply held back, because a line has to be naming unrecorded
+        # work before this is consulted at all.
+        if ($line -match ('(?i)\b(?:is|are|was|were|has|have|had|came\s+back)\s+(?:been\s+|still\s+|now\s+)?' +
+                '(?:green|red|ready|done|finished|failed|blocked|running|landed|merged|passed|passing|' +
+                'stalled|paused|complete|completed|clean|broken|under\s+way|in\s+flight|out\s+of\s+date)\b') -or
+            $line -match '(?i)\b(?:finished|landed|merged|completed|failed|stalled)\s+(?:overnight|already|today|yesterday|just\s+now)\b') {
+            $found.Add("gives a state to '$($mentioned[0])', which the records do not carry at all")
+        }
+        # DEFINITE REFERENCE ONLY, because acting on something means acting on a
+        # PARTICULAR something. "Stop lock-identity and start the payment tests"
+        # points at a piece of work and tells the captain to move it; "I would
+        # give them a harder task" points at nothing and proposes a kind. Both
+        # were being held, and only the first is the defect this rule is for.
+        if ($ungroundedHere.Count -and (
+                $line -match '(?i)\b(should|shouldn.t|recommend|recommendation|suggest|advise|advice|worth|i.d\s|i\s+would|instead\s+of|in\s+its\s+place|ask\s+(?:there|firstmate|it)|tell\s+(?:firstmate|it))\b' -or
+                $line -match '(?i)^\s*(?:\d+[.)]\s*|[-*]\s*|\*\*)?(start|stop|halt|pause|resume|begin|land|merge|kill|switch|swap|replace|take|put|hold|drop|leave|focus|review)\b')) {
             $found.Add("recommends acting on '$($ungroundedHere[0])', which the records do not carry at all")
         }
     }
@@ -1038,16 +1178,21 @@ function Protect-FmBridgeReply {
 
         .PARAMETER Asked
         What the captain said this turn.
+
+        .PARAMETER AlsoAsked
+        What the captain said earlier in the same conversation. Handed straight
+        to Test-FmBridgeGrounded, which owns why it counts.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
         [Parameter(Mandatory)]$Ground,
-        [string]$Asked = ''
+        [string]$Asked = '',
+        [string[]]$AlsoAsked = @()
     )
 
-    $verdict = Test-FmBridgeGrounded -Text $Text -Ground $Ground -Asked $Asked
+    $verdict = Test-FmBridgeGrounded -Text $Text -Ground $Ground -Asked $Asked -AlsoAsked $AlsoAsked
     if ($verdict.Grounded) {
         return [pscustomobject]@{
             Reply           = $Text
@@ -1063,10 +1208,13 @@ function Protect-FmBridgeReply {
     # sit at the END of a fleet report - after "the records show no work at all
     # right now", under a greeting - told them nothing until they had already
     # read a page that had nothing to do with what they said.
-    $because = 'I wrote you an answer and then held it back: part of it named work I could ' +
-    'not find in the records I read, and I would rather tell you nothing than tell you ' +
-    'something that is not there. Ask me again in other words, or ask me by name, and I ' +
-    'will tell you what the records say.'
+    # SHORT, AND NOT A CONFESSION. What used to stand here was four lines about
+    # an answer the captain could not see, and twice in a row it read as a
+    # machine reporting its own fault - which is the one thing the screen's own
+    # rule forbids: never answer with something you cannot do. It still says
+    # plainly that this is the records rather than the reply, because the
+    # captain must be able to tell those apart, and then it gets out of the way.
+    $because = 'Let me give you that from the records rather than from memory.'
     [pscustomobject]@{
         Reply           = (Get-FmBridgeRecordAnswer -Ground $Ground -Because $because)
         Grounded        = $false

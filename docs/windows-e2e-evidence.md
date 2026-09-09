@@ -8817,3 +8817,178 @@ The four fixture builders this section adds carry an explicit `SuppressMessageAt
   50.8 states why, and it is a property of how Windows hands a process its environment rather than anything this repo chose.
 - **Nothing here re-examined the relaunch design itself.**
   The one-hop bound, the per-user fallback and the refusal path all behaved correctly throughout; what changed is what the marker MEANS, not that there is one.
+
+---
+
+## 51. The screen answered "who are you" as the model, and the same guard was swallowing the reply anyway - `PROVEN (Windows 11) FOR THE REPRODUCTION, EVERY MEASUREMENT AND EACH FIX; THE CAPTAIN'S FRESH VM IS STILL THEIRS`
+
+Two defects on one question, found together because the second hides the first.
+
+The captain typed, on the browser screen:
+
+```
+captain: who are you and what you can do ?
+```
+
+and read back, in part:
+
+```
+Claude is the model behind me, built by Anthropic, and on this screen I serve as
+your reporting hand rather than a second set of controls.
+```
+
+The capability half of that answer was accurate and useful.
+The identity half answered a question nobody asked: they asked who it IS, and it led with the vendor of the model.
+
+And on the same fresh VM, four real replies were being held back by the reply gate, one of them the answer to that very question:
+
+```
+captain: who are you ?
+fm-bridge: reply held back - names work the records do not carry: 'is set work'
+
+captain: can you start multiple teammates ... and test whether they can work in parallel
+fm-bridge: reply held back - names work the records do not carry: 'a different task'
+
+captain: create one dummy task in which you start multiple crewmates ...
+fm-bridge: reply held back - names work the records do not carry: 'the dummy job'
+fm-bridge: reply held back - names work the records do not carry: 'a harder task'
+```
+
+**All measurements below are from 2026-09-09 on this Windows 11 seat, against the module at `module/Firstmate/Public/`.**
+Nothing spoke, no session was started, and the bridge was never launched: the whole reply path runs without one, exactly as section 48 established, so every figure here comes from driving the real functions directly.
+
+### 51.1 The identity is a fact, not an answer
+
+There are two readings of "hard code as in-built memory" and only one of them survives contact with this repository.
+
+A FIXED REPLY the screen returns for identity questions needs something at the door deciding which questions those are.
+That is a phrase list, and a phrase list has now fallen one defect behind twice here - `Test-FmBridgeDescribingWord` across four live turns, and the naming grammar again in 51.3 below.
+The captain will ask "what are you", "who made you", or ask it inside a sentence about something else, and a list will not have that phrasing.
+The same file also records a canned line being deleted for a related reason: a fixed sentence cannot know what the answer beside it already says.
+
+A DURABLE FACT the session always holds needs no door at all.
+`New-FmBridgeTurnPrompt` already carries the fleet reading, the route and a pending change of address; the identity is one more standing fact of this home, present on every turn whatever was typed.
+Every phrasing reaches it because nothing has to recognise anything.
+
+Measured, on a home with `config/identity` set:
+
+| the captain typed | identity in the prompt |
+| --- | --- |
+| `who are you and what you can do ?` | yes |
+| `what are you` | yes |
+| `what can you do` | yes |
+| `what do you do` | yes |
+| `who made you` | yes |
+| `tell me about yourself` | yes |
+
+There is no row that could say no.
+The block is emitted before the reading, unconditionally.
+
+### 51.2 Where it lives, and why not the three near misses
+
+`config/identity`, a per-home file gitignored by the existing `config/` rule, sibling to `config/captain-name`.
+
+- **Not `AGENTS.md`.** It is tracked and travels to every home. This captain's firstmate was made for Adit by Dhaval Bhalodia; the next home's was not.
+- **Not `data/captain.md`.** That file is about the CAPTAIN - their preferences and working style. This is about the firstmate. One file answering both questions has two owners the first time either changes.
+- **Not `config/captain-name`.** That is the form of address, one line, already owned by `Get-FmCaptainName`.
+
+`Get-FmHomeIdentity` reads it on every call rather than caching, which is what makes it survive a restart of the screen and take effect without one.
+A home that has set nothing gets the sentence that is true of every firstmate there has ever been - not a blank, not a placeholder, not a crash:
+
+```
+I am your firstmate: the hand that runs your work on this machine and reports back to you.
+```
+
+### 51.3 The gag, which is bigger than the four reported
+
+`b94f179` narrowed the naming matcher grammatically and genuinely helped - "hello" and "what's the date" answer correctly.
+It removed the VERB reading and left the DETERMINER reading standing.
+
+A corpus of 19 ordinary replies and 12 deliberate fabrications was run against two boards - a fresh VM with no records at all, and a home with `bridge-gag` and `login-before-start` on it:
+
+| | before | after |
+| --- | --- | --- |
+| ordinary replies held back | **20 of 38** | **2 of 38** |
+| fabrications delivered | 0 of 24 | **0 of 24** |
+
+Both columns are the same corpus against the same two boards; the "before" column was measured by extracting `module/Firstmate` at `main` into a temporary module and running the identical harness against it.
+
+The 20 were not four cases but one family.
+Besides the reported `a different task`, `a harder task` and `is set work`, the same rule was swallowing `a separate task`, `a smaller job`, `a slower run` and `a simple task` - every indefinite noun phrase the screen has any reason to write.
+
+### 51.4 Three rules, each a closed class or the contract already written
+
+**An indefinite article is a mention, not a claim.**
+`a` and `an` mark indefinite reference: they introduce some member of a kind, never a particular named one.
+"a different task" is any task that differs; "a lock-identity" is not English.
+So the phrase cannot be claiming a named piece of work - whatever adjective sits in the middle, and without any rule having to know that `different`, `harder` and `separate` are adjectives, which none of them can.
+A closed class of two, which is why it cannot fall behind.
+
+**After a copula the words are a complement.**
+"What I do is set work going" was held as work called `set`.
+A bare noun phrase after `to be` says what kind of thing this is; naming a particular one takes a determiner, and a determiner would have stopped the walk instead.
+
+**The captain's words last as long as the conversation.**
+They typed "create one dummy task", and the reply naming it back one turn later was held for inventing `the dummy job` - their own word, from their own screen.
+The contract says a name may come from "the captain's own words" and nothing in it says those words expire at the end of the turn.
+`bin/fm-bridge.ps1` now carries the last 12 of their turns; `Test-FmBridgeGrounded -AlsoAsked` counts them exactly as it counts this turn's.
+
+### 51.5 The guard was not weakened, and one rule was added to it
+
+The indefinite article DEMOTES a phrase to a mention; it does not excuse it.
+Dropping those phrases entirely turned `the line the narrowing must not cross` red on `A payment fix has landed.`, which is what that test exists for, and the rule was rewritten rather than the test.
+
+That failure exposed something better.
+The contract has said since the day it was written that a name the records do not carry "may be mentioned but never given a state, a percentage, or a recommended action" - and the code checked the figure and the action and **never checked the state**.
+That third rule now exists, which is why section 48.8's `The billing job is green.` is no longer the whole story: the same claim about `the payment task` or `the dummy job` is now held.
+
+The recommendation rule was narrowed to DEFINITE reference in the same pass, because acting on something means acting on a particular something.
+"Stop lock-identity and start the payment tests" points at work and tells the captain to move it; "I would give them a harder task" points at nothing.
+
+Every fabrication in the corpus is still held, on both boards, including all eleven from section 48's set and the founding reply whole.
+
+An invented name wearing the SHAPE of a real one is the case worth stating separately, because it is the invention the captain is likeliest to believe: their records name work `bridge-gag`, `login-before-start`, `install-test-noise`, and `payment-gateway` is indistinguishable from those to everybody except the records.
+`still holds an invented name shaped exactly like a real one` drives five such replies through the whole courier on both boards, including one where the captain themselves used the name in an earlier turn - which makes it mentionable and still not reportable.
+
+### 51.6 The negative control
+
+Five loosenings were applied to the shipped source in turn, the whole `tests/FmBridgeGround.Tests.ps1` re-run against each, and the source restored:
+
+| loosening | result |
+| --- | --- |
+| indefinite phrases dropped outright instead of demoted to a mention | 5 tests red |
+| the state rule removed | 10 tests red |
+| the recommendation rule allowed to fire on indefinite mentions | 2 tests red |
+| the identity folded into the ground's prose bag rather than its words alone | 1 test red |
+| the hyphenated-name rule removed, so a record-shaped invention passes | 5 tests red |
+
+The source was restored after each and the suite confirmed green again.
+The last row is the important one: that single test is what says a figure written into `config/identity` never becomes a figure the reply may state.
+
+### 51.7 What the captain reads when a reply IS held back
+
+The replacement used to open with four lines about an answer they could not see, and twice in a row that reads as a machine reporting its own fault - which is the one thing the screen's own prompt forbids.
+It is one line now, and it still marks the reply as coming from the records so a held-back answer is never mistaken for an answer:
+
+```
+Let me give you that from the records rather than from memory.
+```
+
+On an empty board it offers a next move rather than ending on what it could not do.
+
+### 51.8 What was NOT proven, and two findings left open
+
+- **The captain's fresh VM has not run this.**
+  Every measurement is from this seat, through the real reply path, with no session and nothing speaking.
+  Whether their next install answers them properly is still their measurement.
+- **`config/identity` is not set on the captain's home by this branch.**
+  It is a per-home file and this work ran in an isolated worktree, so nothing here could write it without reaching outside.
+  Until one line is written into `config/identity` there, that home answers with the generic sentence - correctly, but not as their firstmate.
+- **`billing` still slips the naming rule and now slips the state rule with it.**
+  `The billing job is green.` is still delivered, because `billing` ends in `-ing` and `Test-FmBridgeDescribingWord` reads it as description before any of this is consulted.
+  That is section 48.8's finding unchanged, recorded again here because the state rule was measured against it and does not reach it: the phrase never becomes a mention, so there is nothing for the state rule to attach to.
+  The same sentence about a name that DOES reach the mention stage is held, which is asserted.
+- **One ordinary reply in 19 is still held on both boards.**
+  "I am an Adit firstmate ... to help with the Adit product work" is held because the identity says `products` and the reply says `product`, and `Test-FmBridgeWordsRecorded` compares words exactly.
+  Chasing it means adding a stemmer, which is the guess-from-English shape this area has twice been burnt by, so it is recorded rather than fixed.
+  The failure direction is the documented one: a duller reply, never a false one.

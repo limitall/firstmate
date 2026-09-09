@@ -35,7 +35,7 @@ BeforeAll {
     # The records as they actually stood the day the screen invented work, so
     # every name and figure below is the real one rather than a convenient one.
     function script:New-Ground {
-        param([switch]$Empty, [switch]$NoCapacity)
+        param([switch]$Empty, [switch]$NoCapacity, [string]$Identity = '')
         $tasks = if ($Empty) { @() } else {
             @(
                 [pscustomobject]@{ Id = 'finished-run-stall'; Percent = 100; State = 'done'; Note = 'Ready' }
@@ -68,9 +68,14 @@ BeforeAll {
                 Activity  = @()
                 House     = @()
                 Capacity  = $capacity
+                Identity  = $Identity
                 At        = '14:02:11'
             })
     }
+
+    # This home's answer to "who are you", as the captain wrote it.
+    $script:AditIdentity =
+    'I am a firstmate, made for Adit by Dhaval Bhalodia, to help you work on the Adit app products.'
 }
 
 Describe 'ConvertTo-FmBridgeWorkKey' {
@@ -385,10 +390,11 @@ Describe 'Protect-FmBridgeReply' {
         $out.Reply | Should -Match '(?i)lock identity'
         $out.Reply | Should -Match '75%'
         $out.Reply | Should -Match '(?i)nothing is waiting'
-        # Long enough to be an answer, and it offers the captain a next move
-        # rather than ending on what it would not do.
+        # Long enough to be an answer rather than a refusal.
         $out.Reply.Length | Should -BeGreaterThan 120
-        $out.Reply | Should -Match '(?i)ask me'
+        # And it says the records are the source, so the captain can tell this
+        # from the reply they would otherwise have read.
+        $out.Reply | Should -Match '(?i)from the records'
     }
 
     # Every figure in the replacement is one the panel is showing from the same
@@ -771,12 +777,20 @@ Describe 'what the captain reads when a reply is held back' {
     # four lines later. They had asked nothing about work. A fleet report is a
     # fine answer to "what is happening" and an incoherent one to a greeting, so
     # the reason leads now and the records follow it as what is on offer instead.
+    #
+    # AND IT IS ONE LINE, not four. The paragraph that used to lead - an apology
+    # about an answer the captain could not see - read, twice in a row, as a
+    # machine reporting its own fault, which is the one thing the screen's own
+    # rule forbids. It still marks the reply as coming from the records; it no
+    # longer explains itself at length.
     It 'opens by saying it held something back, not with a fleet report' {
         $out = Protect-FmBridgeReply -Text 'The payment tests are at 40 percent.' `
             -Ground (script:New-Ground) -Asked 'hello'
         $first = @($out.Reply -split "`n")[0]
-        $first | Should -Match '(?i)held it back'
+        $first | Should -Match '(?i)from the records'
         $first | Should -Not -Match '(?i)pieces of work|no work at all'
+        # Short enough not to read as a confession.
+        $first.Length | Should -BeLessThan 100
     }
 
     # An empty board substantiates nothing, so there is nothing to offer in the
@@ -785,9 +799,12 @@ Describe 'what the captain reads when a reply is held back' {
         $out = Protect-FmBridgeReply -Text 'The payment tests are at 40 percent.' `
             -Ground (script:New-Ground -Empty -NoCapacity) -Asked 'hello'
         $out.Grounded | Should -BeFalse
-        $out.Reply | Should -Match '(?i)held it back'
+        $out.Reply | Should -Match '(?i)from the records'
         $out.Reply | Should -Not -Match '(?i)nothing is waiting on a decision'
         $out.Reply | Should -Not -Match '(?i)the records show no work at all'
+        # An empty board still offers the captain a next move rather than
+        # ending on what this screen could not do.
+        $out.Reply | Should -Match '(?i)ask me again'
     }
 
     # The reason is new prose rather than a field the translator has already
@@ -952,5 +969,208 @@ Describe 'the lists the gate leans on' {
         @($m | Select-Object -Unique).Count | Should -Be $m.Count
         $d = @(Get-FmBridgeDeterminer)
         @($d | Select-Object -Unique).Count | Should -Be $d.Count
+    }
+}
+
+Describe 'the identity this home carries' {
+
+    # THE DEFECT. The captain asked "who are you and what you can do ?" and the
+    # screen answered as the model behind it. The identity they wrote is a
+    # record of this home like any other, so a reply repeating it back is
+    # quoting a record - but only if the gate has been told that.
+    It 'lets the reply say who it is' -ForEach @(
+        @{ Said = 'I am a firstmate made for Adit by Dhaval Bhalodia, here to help you with the Adit app products.' }
+        @{ Said = 'I am your firstmate for Adit. I look after the Adit app work.' }
+        @{ Said = 'Dhaval Bhalodia made me for Adit, and the Adit app work is what I help you with.' }
+        @{ Said = 'I am the Adit firstmate. Dhaval Bhalodia built me for the Adit app products.' }
+    ) {
+        $ground = script:New-Ground -Empty -NoCapacity -Identity $script:AditIdentity
+        $out = Protect-FmBridgeReply -Text $Said -Ground $ground -Asked 'who are you and what you can do ?'
+        $out.Grounded | Should -BeTrue -Because "the records carry this home's identity"
+        $out.Reply | Should -Be $Said
+    }
+
+    # WITHOUT THE IDENTITY IT IS INVENTION, and this is what says the fix is the
+    # identity rather than some accident of the wording. Same sentence, same
+    # empty board, no identity set: `Adit app` is a name nothing substantiates.
+    It 'still calls those words invention when no identity is set' {
+        $ground = script:New-Ground -Empty -NoCapacity
+        $out = Test-FmBridgeGrounded -Text 'I look after the Adit app work.' `
+            -Ground $ground -Asked 'who are you'
+        $out.Grounded | Should -BeFalse
+    }
+
+    # THE WORDS, NOT THE ARITHMETIC. A figure written into the identity file is
+    # still a figure nothing measured, and the defect "1730 pass, 0 failed" came
+    # from exactly this: a number read off a page and repeated back.
+    It 'does not let a figure in the identity become quotable' {
+        $ground = script:New-Ground -Empty -NoCapacity `
+            -Identity 'I am the firstmate for Adit, and I look after 47 products across 12 teams.'
+        $ground.Numbers.Contains(47) | Should -BeFalse
+        $ground.Numbers.Contains(12) | Should -BeFalse
+        (Test-FmBridgeGrounded -Text 'There are 47 products.' -Ground $ground -Asked 'how many').Grounded |
+            Should -BeFalse
+    }
+
+    # An identity cannot conjure work into existence either. It widens what may
+    # be SAID, never what is on the board.
+    It 'does not let the identity put work on the board' {
+        $ground = script:New-Ground -Empty -NoCapacity -Identity $script:AditIdentity
+        @($ground.Rows).Count | Should -Be 0
+        $ground.Names.Count | Should -Be 0
+        (Test-FmBridgeGrounded -Text 'The Adit app work is at 40% and I would land it next.' `
+                -Ground $ground -Asked 'status').Grounded | Should -BeFalse
+    }
+
+    # A home that has set nothing is not a home with a blank on its screen.
+    It 'carries no identity when none was set, and nothing breaks' {
+        $ground = script:New-Ground -Empty -NoCapacity
+        $ground.Identity | Should -Be ''
+        { Test-FmBridgeGrounded -Text 'Good morning.' -Ground $ground -Asked 'hello' } | Should -Not -Throw
+    }
+}
+
+Describe 'the gag on determiner-led phrases' {
+
+    # THE DEFECT, from the captain's own screen on 2026-09-09. b94f179 stopped
+    # `run` and `work` being read as nouns when they were verbs and left every
+    # DETERMINER-led phrase standing, so four real replies were swallowed and
+    # the captain read a paragraph about an answer they could not see.
+    It 'delivers the replies the captain actually lost' -ForEach @(
+        @{ Asked = 'who are you ?'
+            Said = 'I am your firstmate on this machine. What I do is set work going for you and tell you how it stands.'
+        }
+        @{ Asked = 'can you start multiple teammates and test whether they can work in parallel'
+            Said = 'Yes. I can put several crewmates out at once, each on a different task, and they run side by side.'
+        }
+        @{ Asked = 'create one dummy task in which you start multiple crewmates'
+            Said = 'That one is small enough to finish quickly. If you want a real measurement I would give them a harder task.'
+        }
+        # The whole family, not only the four that were reported.
+        @{ Asked = 'can you do more than one thing'
+            Said = 'I can, and each crewmate takes a separate task so they never wait on one another.'
+        }
+        @{ Asked = 'what next'; Said = 'I would rather give you a smaller job first so you can see it finish.' }
+        @{ Asked = 'is that all'; Said = 'There is a slower run available if you want more detail from it.' }
+        @{ Asked = 'how do I try it'; Said = 'Give me a simple task and I will show you how it goes.' }
+    ) {
+        foreach ($ground in @((script:New-Ground -Empty -NoCapacity), (script:New-Ground))) {
+            (Test-FmBridgeGrounded -Text $Said -Ground $ground -Asked $Asked).Grounded |
+                Should -BeTrue -Because 'nothing in it claims anything about work'
+        }
+    }
+
+    # THE LINE THIS NARROWING MUST NOT CROSS EITHER. An indefinite article
+    # demotes a phrase to a mention; it does not excuse it. Each of these gives
+    # the mention a state or a figure, and each must still be held.
+    It 'still holds an indefinite phrase that is given a state or a figure' -ForEach @(
+        @{ Said = 'A payment fix has landed.' }
+        @{ Said = 'A payment run is green.' }
+        @{ Said = 'A payment task is done.' }
+        @{ Said = 'A payment run finished overnight.' }
+        @{ Said = 'A payment run is at 40%.' }
+    ) {
+        foreach ($ground in @((script:New-Ground -Empty -NoCapacity), (script:New-Ground))) {
+            $out = Protect-FmBridgeReply -Text $Said -Ground $ground -Asked 'what is happening?'
+            $out.Grounded | Should -BeFalse -Because 'it reports on work that does not exist'
+            $out.Reply | Should -Not -Match '(?i)payment'
+        }
+    }
+
+    # SHAPED LIKE A REAL ID, which is the invention this gate is likeliest to be
+    # handed and the one the captain is likeliest to believe. Their own records
+    # name work `bridge-gag`, `login-before-start`, `install-test-noise` - a
+    # lowercase hyphenated slug - so an invented name wearing that shape is
+    # indistinguishable from a real one to everybody but the records. Nothing in
+    # the narrowing above is allowed to reach these.
+    It 'still holds an invented name shaped exactly like a real one' -ForEach @(
+        @{ Said = 'payment-gateway is at 60% and should land before the others.' }
+        @{ Said = 'The billing-migration job is green.' }
+        @{ Said = 'I would stop lock-identity and start customer-import instead.' }
+        @{ Said = 'A payment-gateway fix has landed.' }
+        # A name the captain used is mentionable, never reportable, and this
+        # reports on it.
+        @{ Said = 'payment-gateway is done and nothing else is waiting.' }
+    ) {
+        foreach ($ground in @((script:New-Ground -Empty -NoCapacity), (script:New-Ground))) {
+            $out = Protect-FmBridgeReply -Text $Said -Ground $ground -Asked 'what is happening?' `
+                -AlsoAsked @('how is payment-gateway going')
+            $out.Grounded | Should -BeFalse -Because 'the records carry no such name'
+            $out.Reply | Should -Not -Match '(?i)payment-gateway|billing-migration|customer-import'
+        }
+    }
+
+    # THE STATE RULE ITSELF, which is the third thing the contract has always
+    # named and the code never checked. Driven through a name the captain used,
+    # because that is a mention rather than a hard finding - so a failure here
+    # is this rule failing and nothing else.
+    It 'holds back a state given to a name only the captain has used' -ForEach @(
+        @{ Said = 'The dummy job is green.' }
+        @{ Said = 'The dummy job has failed.' }
+        @{ Said = 'The dummy job is done.' }
+        @{ Said = 'The dummy job finished overnight.' }
+    ) {
+        (Test-FmBridgeGrounded -Text $Said -Ground (script:New-Ground) -Asked 'and now ?' `
+                -AlsoAsked @('make me a dummy task')).Grounded |
+            Should -BeFalse -Because 'a name they used may be mentioned, never reported on'
+    }
+
+    # AND THE SAME NAME WITH NO STATE ON IT STILL SHIPS, which is what says the
+    # rule above is reading the state rather than the name.
+    It 'still delivers the same name when nothing is claimed about it' {
+        (Test-FmBridgeGrounded -Text 'The dummy job is the one you asked me to make.' `
+                -Ground (script:New-Ground) -Asked 'and now ?' `
+                -AlsoAsked @('make me a dummy task')).Grounded | Should -BeTrue
+    }
+
+    # A copula's complement is not a name. "What I do is set work going" was
+    # held as work called `set`.
+    It 'reads the words after a copula as a complement, not a name' -ForEach @(
+        @{ Head = 'work'; Intro = 'is' }, @{ Head = 'work'; Intro = 'was' }
+        @{ Head = 'tests'; Intro = 'are' }, @{ Head = 'run'; Intro = 'be' }
+    ) {
+        Test-FmBridgeNamingPhrase -Head $Head -Modifier @('set') -Introducer @($Intro) |
+            Should -BeFalse
+    }
+}
+
+Describe 'the captain own words, for as long as the conversation lasts' {
+
+    # THE DEFECT. The captain typed "create one dummy task in which you start
+    # multiple crewmates" and the reply naming it back one turn later was held
+    # for inventing `the dummy job`. Their own word, from their own screen.
+    It 'counts a name the captain introduced on an earlier turn' {
+        $ground = script:New-Ground -Empty -NoCapacity
+        $said = 'Not yet. The dummy job is still going and I will tell you the moment it lands.'
+
+        # As it was: their word is gone the instant the turn ends.
+        (Test-FmBridgeGrounded -Text $said -Ground $ground -Asked 'is it finished ?').Grounded |
+            Should -BeFalse
+
+        # As it is: the conversation is the unit, not the message.
+        (Test-FmBridgeGrounded -Text $said -Ground $ground -Asked 'is it finished ?' `
+                -AlsoAsked @('create one dummy task in which you start multiple crewmates')).Grounded |
+            Should -BeTrue
+    }
+
+    # Carried through the one call the courier actually makes.
+    It 'carries earlier words through Protect-FmBridgeReply' {
+        $out = Protect-FmBridgeReply -Text 'The dummy job is still going.' `
+            -Ground (script:New-Ground -Empty -NoCapacity) -Asked 'and now ?' `
+            -AlsoAsked @('make me a dummy task')
+        $out.Grounded | Should -BeTrue
+        $out.Reply | Should -Match '(?i)dummy'
+    }
+
+    # AND IT IS STILL ONLY A MENTION. A word of theirs makes a name sayable, not
+    # reportable - which is the half of the contract that keeps this from being
+    # a way to talk the gate into anything.
+    It 'still refuses to report on a name the captain merely used' -ForEach @(
+        @{ Said = 'The dummy job is at 40%.' }
+        @{ Said = 'I would stop the dummy job and start something real.' }
+        @{ Said = 'The dummy job has failed.' }
+    ) {
+        (Test-FmBridgeGrounded -Text $Said -Ground (script:New-Ground) -Asked 'and now ?' `
+                -AlsoAsked @('make me a dummy task')).Grounded | Should -BeFalse
     }
 }
