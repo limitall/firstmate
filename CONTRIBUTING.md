@@ -499,6 +499,16 @@ directory with no instructions and no hooks, and nothing said so.
   `instructions` group does the same for the operating contract and the skills:
   a checkout that has every command and no identity is reported, not discovered
   by the captain noticing the tone.
+- **The question has the same answer for a session nothing typed `cd` for.**
+  `bin/fm-bridge.ps1` hosts a firstmate rather than being one, so it starts that
+  session in the CHECKOUT and names the home with `FM_HOME`, which
+  `Resolve-FmEntryPointHome` takes above the persisted pointer for exactly this.
+  Started in the home instead - which it did until 2026-09-09 - the session gets
+  no contract, no skills and no `.claude/settings.json`, and since that file
+  registers the `SessionStart` hook it never runs a session start and never
+  takes the home either. `docs/windows-e2e-evidence.md` section 52 measures both
+  halves. Anything else that starts a session on the captain's behalf owes the
+  same two answers.
 
 ## Seeing the browser screen
 
@@ -553,6 +563,15 @@ built for and states what it still cannot prove.
 - **The reply path needs no session to verify.** `Test-FmBridgeGrounded` and
   `Protect-FmBridgeReply` take a reply and a reading and answer whether the one
   can be substantiated by the other, so a fabrication is provable at a prompt.
+- **Whether the hosted session takes the home CANNOT be measured from a
+  worktree, and the failure looks exactly like the bug.**
+  `Test-FmHookPrimaryScope` requires `--git-dir` to equal `--git-common-dir`, so
+  every linked worktree gets a no-op `SessionStart` hook by design and the lock
+  therefore stays free however correct the code is. Measure it in a real `git
+  clone` set up until `bin/fm-doctor.ps1` says healthy; `Get-FmBridgeHomeHolder`
+  answering `none` in your own worktree is the expected reading, not a
+  regression. `docs/windows-e2e-evidence.md` 52.3 cost one wrong conclusion to
+  this.
 - **Measure, do not look.** Claims about what overlaps what come from
   `getBoundingClientRect` and `document.documentElement.scrollWidth`, at several
   window sizes. A screenshot shows the defect; the numbers are what pin it.

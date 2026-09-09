@@ -9,6 +9,23 @@
 # session running the same AGENTS.md, the same skills and the same spawn path;
 # the bridge is a courier.
 #
+# AND "THE SAME AGENTS.md" IS A REQUIREMENT ON WHERE THE SESSION IS STARTED, not
+# a description of what happens by itself. It was written here from the first
+# day and was not true in the code for as long: the session was started in the
+# HOME, which holds `config/ data/ projects/ state/` and none of those things, so
+# the screen the captain typed one command to reach was a general assistant with
+# no contract, no skills and no hooks - and therefore no session lock either,
+# since the lock is taken by the SessionStart hook the checkout registers.
+# New-FmBridgeSession's WorkingDirectory carries the argument in full.
+#
+# THE SCREEN IS MEANT TO ACT. `start.ps1` tells the captain "everything happens
+# in the page from here"; AGENTS.md section 1 gives firstmate four jobs and a
+# reporting surface can do one of them; and Get-FmBridgeHomeHolder is a runtime
+# comparison rather than a constant precisely because acting is the expected
+# case. When it cannot act, Get-FmBridgeRoute says so in terms of a next step
+# that exists - which is a different sentence depending on whether a second
+# window is actually open.
+#
 # WHY ONE PERSISTENT PROCESS RATHER THAN ONE PER MESSAGE. Also measured, and the
 # gap is not marginal: persistent answered in 1188ms and 948ms after a 6031ms
 # first token, against 7-8s for `--resume` per message, and a resumed turn paid a
@@ -35,6 +52,7 @@ function New-FmBridgeSession {
     [OutputType([object])]
     param(
         [Parameter(Mandatory)][string]$HomePath,
+        [Parameter(Mandatory)][string]$CheckoutPath,
         [string]$Model = ''
     )
 
@@ -63,7 +81,44 @@ function New-FmBridgeSession {
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $claude.Source
     foreach ($a in $launchArgs) { $psi.ArgumentList.Add($a) }
-    $psi.WorkingDirectory = $HomePath
+    # THE CHECKOUT, NOT THE HOME, AND THIS IS THE WHOLE OF WHY THE SCREEN WAS
+    # NOT FIRSTMATE. This line read `$HomePath`, and a session started in a home
+    # is not a firstmate: `AGENTS.md`, `CLAUDE.md`, `.claude/skills` and
+    # `.claude/settings.json` all live in the CHECKOUT. MEASURED on a fresh
+    # checkout, 2026-09-09 - the home the bridge creates on first run holds
+    # `config/ data/ projects/ state/` and nothing else, so the hosted session
+    # came up with no operating contract at all, no skills, and no hooks. It
+    # answered the captain as a helpful assistant because that is the only thing
+    # it had been told to be.
+    #
+    # THE HOOKS ARE THE SECOND HALF, and they are why this one line fixes both
+    # halves of the defect. `<checkout>/.claude/settings.json` registers the
+    # `SessionStart` hook that runs `bin/fm-session-start.ps1`, whose first stage
+    # acquires this home's session lock. Started in the home there is no
+    # settings file, so nothing ran, so nothing ever took the home - MEASURED as
+    # `lock: free` for the whole life of the session - and
+    # Get-FmBridgeHomeHolder was answering `none` forever.
+    #
+    # THE LOCK'S MECHANICS ARE UNTOUCHED. Nothing here takes, breaks or renews
+    # anything. This session acquires exactly the way a terminal firstmate does,
+    # through the same script and the same contention rules, because it now IS
+    # one. When a terminal firstmate already holds this home, the hosted
+    # session's acquire refuses in the ordinary way and it stays read-only -
+    # which is the arrangement Get-FmBridgeHomeHolder was written to read, and
+    # the case where "ask in your other window" is finally TRUE.
+    #
+    # RUNNING CHECKOUT, not Get-FmStableCheckout's durable one. A worker's
+    # bridge must host the session on the code IT is running; the stable
+    # checkout answers a different question - which path is still there tomorrow
+    # for a captain-facing instruction - and using it here would point a
+    # worker's session at the primary checkout's contract.
+    $psi.WorkingDirectory = $CheckoutPath
+    # WHICH HOME THAT CHECKOUT OPERATES ON. Resolve-FmEntryPointHome takes the
+    # environment above the persisted `<checkout>/.fm-home` pointer precisely so
+    # a caller can say this, and the bridge is exactly that caller: it already
+    # knows the home, and saying so leaves nothing to infer. Inherited, so every
+    # script and worker the session starts resolves the same home.
+    $psi.Environment['FM_HOME'] = $HomePath
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -100,6 +155,7 @@ function New-FmBridgeSession {
         Process    = $proc
         SessionId  = $sessionId
         Home       = $HomePath
+        Checkout   = $CheckoutPath
         Started    = [datetime]::UtcNow
     }
 }
@@ -1311,10 +1367,11 @@ function Remove-FmBridgeRepetition {
     (($kept -join "`n") -replace '(?:[ \t]*\n){3,}', "`n`n").Trim()
 }
 
-function Test-FmBridgeSessionCanAct {
+function Get-FmBridgeHomeHolder {
     <#
         .SYNOPSIS
-        Can the session this bridge hosts change anything, or only look?
+        Who is in charge of this home: the session this bridge hosts, another
+        live session, or nobody.
 
         .DESCRIPTION
         Asked by the bridge, never by the session, and that is the point. The
@@ -1323,33 +1380,64 @@ function Test-FmBridgeSessionCanAct {
         what, and a verb list of what it could not do. The bridge knows the same
         fact from one comparison and can say it in one sentence of English.
 
+        THREE ANSWERS, NOT TWO, AND THE THIRD IS WHY THIS REPLACED A BOOLEAN.
+        This used to answer only "can it act", and everything that was not
+        `self` collapsed into one word. Get-FmBridgeRoute then had to guess what
+        the other case was, guessed the reassuring one, and told a captain with
+        no second window open to go and use it. MEASURED on the captain's fresh
+        VM, 2026-09-09: they typed `firstmate` at a bare command prompt and were
+        sent to a window that has never existed. `elsewhere` and `none` are
+        different facts about their machine and the captain acts on them
+        differently, so they are different answers.
+
         THE COMPARISON. This home is held by exactly one live session at a time,
-        and the holder is recorded. The hosted session can act when the holder is
-        the hosted session; anything else - held elsewhere, not held, unreadable -
-        means it can look and nothing more. Unreadable counts as cannot, because
-        promising the captain an action this cannot deliver is the worse mistake.
+        and the holder is recorded.
+
+          self       the holder IS the hosted session - it can act
+          elsewhere  the holder is another LIVE harness - a real second window
+          none       nothing holds it, or the record could not be read
+
+        `Get-FmSessionLockStatus` reports `held` only for a process that is both
+        alive and a harness, so a dead or stale holder is `none` and never
+        `elsewhere` - there is no window to send anyone to. Anything unreadable
+        is `none` for the same reason it used to mean cannot-act: promising the
+        captain an action this cannot deliver, or a window that is not there, are
+        the two worse mistakes.
 
         NOT A LOCK CHANGE. This reads the same record `Invoke-FmLock -Status`
         reads and writes nothing; how the record is taken, broken or renewed is
         untouched.
     #>
     [CmdletBinding()]
-    [OutputType([bool])]
+    [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string]$HomePath,
         [int]$SessionProcessId = 0
     )
 
-    if ($SessionProcessId -le 0) { return $false }
+    $holder = 'none'
     $status = $null
     try { $status = Get-FmSessionLockStatus -StatePath (Join-Path $HomePath 'state') }
     catch {
         Write-Debug "bridge: could not read who holds this home - $($_.Exception.Message)"
-        return $false
+        $status = $null
     }
-    if ($null -eq $status -or $status.State -ne 'held') { return $false }
-    if ($null -eq $status.ProcessId) { return $false }
-    return ([int]$status.ProcessId -eq $SessionProcessId)
+    if ($null -ne $status -and $status.State -eq 'held' -and $null -ne $status.ProcessId) {
+        # A bridge that does not know its own session cannot be the holder, but
+        # the home may still be genuinely held by somebody - and that second
+        # window is a fact about the captain's machine either way.
+        $holder = if ($SessionProcessId -gt 0 -and [int]$status.ProcessId -eq $SessionProcessId) {
+            'self'
+        } else {
+            'elsewhere'
+        }
+    }
+
+    [pscustomobject]@{
+        PSTypeName = 'Firstmate.BridgeHomeHolder'
+        Holder     = $holder
+        CanAct     = ($holder -eq 'self')
+    }
 }
 
 function Test-FmBridgeVoiceAllowed {
@@ -1372,7 +1460,7 @@ function Test-FmBridgeVoiceAllowed {
 
         THE GATE HAS ONE OWNER and it is not this function. `Get-FmBridgeVoice`
         reads `config/bridge-voice` and decides; this asks it on the browser's
-        behalf, the same way Test-FmBridgeSessionCanAct asks the lock reader
+        behalf, the same way Get-FmBridgeHomeHolder asks the lock reader
         rather than parsing the record itself. A second gate would be a second
         thing to forget.
 
@@ -1435,12 +1523,33 @@ function Get-FmBridgeRoute {
         saying nothing would have left the captain asking twice. What the screen
         owes them is the next step, in their own words.
 
-        WHAT THE ROUTE ACTUALLY IS, and it is a real one rather than a polite
-        deferral: starting, stopping and steering work happens in the captain's
-        own firstmate window, which is open on this machine whenever this screen
-        is the one that cannot do it - that is the same fact, read from the other
-        side. So the route names that window and offers to say exactly what to
-        ask for there.
+        A ROUTE HAS TO EXIST TO BE ONE, AND THIS ONE DID NOT. What was written
+        here assumed the captain had a firstmate window open whenever this screen
+        could not act, on the reasoning that the two are "the same fact read from
+        the other side". They are not, and the captain proved it. MEASURED on
+        their fresh VM, 2026-09-09: they typed `firstmate` at a bare command
+        prompt, which IS this screen, and got
+
+            ask for it in the firstmate window you already have open
+
+        There was no other window. A route to a place that does not exist is
+        worse than the confession it replaced, because the captain cannot even
+        tell that they have been refused. Their ruling - "it never should say
+        this line, instead it should give the solution" - is a demand for a real
+        next step, not for a reassuring sentence.
+
+        SO THE ROUTE IS DERIVED FROM WHO ACTUALLY HOLDS THE HOME, and there are
+        three answers rather than two. `self` needs no route at all - this screen
+        does the thing. `elsewhere` means a second live session really is in
+        charge, and only then is naming that window the truth. `none` means
+        nothing has taken charge, so there is nowhere to send them: the honest
+        step is to say so in their own terms and offer the restart that would
+        put this screen in charge, which is the same one command they already
+        typed once.
+
+        STILL NEVER A REFUSAL. `none` says what IS possible from here and what
+        makes the rest possible again; it does not describe the arrangement, and
+        Get-FmBridgeHomeHolder owns the fact it is built from.
 
         RETURNED TO THE SESSION, NOT TO THE SCREEN. This is guidance in the turn
         prompt; the session writes the actual sentence, in the captain's
@@ -1449,14 +1558,37 @@ function Get-FmBridgeRoute {
     #>
     [CmdletBinding()]
     [OutputType([string])]
-    param([Parameter(Mandatory)][bool]$CanAct)
+    param(
+        # 'self', 'elsewhere' or 'none' - Get-FmBridgeHomeHolder's answer.
+        [Parameter(Mandatory)][ValidateSet('self', 'elsewhere', 'none')][string]$Holder
+    )
 
-    if ($CanAct) { return '' }
+    if ($Holder -eq 'self') { return '' }
+    if ($Holder -eq 'elsewhere') {
+        return (@(
+                'Another firstmate window is open on this machine and it is the one in charge of the'
+                'work, so starting, stopping and steering happen there rather than here. That is the'
+                'route, and it is the only thing you may say about it: name what the captain should'
+                'ask for in that window, or offer to write it out for them, and carry on with'
+                'everything you CAN do from here.'
+            ) -join "`n")
+    }
+    # THE CAPTAIN'S OWN CASE. They typed one command and this screen is what
+    # answered, so there is no second window and you may not invent one.
+    #
+    # "NOT YET" RATHER THAN "NOT AT ALL", because this is also what the first
+    # seconds look like. Taking charge is measured at around twenty seconds from
+    # a cold start, so a captain who types the moment the page opens can land
+    # here while it is still happening. Both readings have to be true of the
+    # same sentence: hence "has not taken charge yet", and the restart offered
+    # as what to do IF it stays that way rather than as the immediate step.
     @(
-        'Starting, stopping and steering work happens in the firstmate window the captain'
-        'already has open on this machine, not here. That is the route, and it is the only'
-        'thing you may say about it: name what they should ask for there, or offer to write'
-        'it out for them, and carry on with everything you CAN do from here.'
+        "Nothing has taken charge of the captain's work on this machine, and there is NO other"
+        'firstmate window open - so never send the captain to one, and never say they already'
+        'have one. What you may say is that this screen has not taken charge of starting and'
+        'stopping work yet, and that if it stays that way, closing it and running firstmate'
+        'again is what puts it in charge. Lead with what you CAN do: tell them anything about'
+        'what is under way, and write out whatever they want to hand on.'
     ) -join "`n"
 }
 
@@ -1977,7 +2109,10 @@ function New-FmBridgeTurnPrompt {
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
         [Parameter(Mandatory)]$Fleet,
-        [bool]$CanAct = $true,
+        # Who holds the home, from Get-FmBridgeHomeHolder. A hosted session that
+        # holds it needs no route at all; the other two answers are different
+        # next steps for the captain, not two shades of the same one.
+        [ValidateSet('self', 'elsewhere', 'none')][string]$Holder = 'self',
         # A change of address made since the last turn, carried along rather than
         # given a blocking round trip of its own.
         [string]$Address = ''
@@ -2094,7 +2229,7 @@ function New-FmBridgeTurnPrompt {
     # captain asking for brevity, not for a dead end.
     $lines.Add('This holds even when the captain asks for a yes or a no: answer them, and put the')
     $lines.Add('next step in the same breath rather than leaving a bare no on the screen.')
-    $route = Get-FmBridgeRoute -CanAct $CanAct
+    $route = Get-FmBridgeRoute -Holder $Holder
     if ($route) { $lines.Add($route) }
     $lines.Add('Never describe how this screen is arranged and never name anything internal: no process')
     $lines.Add('numbers, no lock, no read-only, no dispatch, steer or merge, no checkout, no uncommitted')

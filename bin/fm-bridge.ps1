@@ -24,6 +24,11 @@ process cannot. So firstmate stays a Claude session running the same AGENTS.md,
 the same skills and the same spawn path; this is a courier, not a second
 implementation of the operating contract.
 
+AND IT IS STARTED IN THE CHECKOUT, WHICH IS WHERE THOSE THINGS ARE. Started in
+the home instead - which is what this did until 2026-09-09 - the session gets no
+contract, no skills and no hooks, so it is not firstmate and never takes the
+home. New-FmBridgeSession's WorkingDirectory owns the argument.
+
 ROUTES
     GET  /              the UI
     GET  /api/fleet     work under way, open decisions, recent activity
@@ -166,11 +171,15 @@ function Start-Engine {
         # analyzer can see they are used - and so this reads as a function rather
         # than something that quietly depends on where it was defined.
         [bool]$Suppressed,
-        [string]$ModelName
+        [string]$ModelName,
+        # The checkout the session runs IN, which is where the contract, the
+        # skills and the hooks are. New-FmBridgeSession owns why this is not the
+        # home; passed rather than closed over for the reason just above.
+        [string]$CheckoutPath
     )
     if ($Suppressed -or -not $HomePath) { return $null }
     [Console]::Out.WriteLine('fm-bridge: starting the firstmate session...')
-    $s = New-FmBridgeSession -HomePath $HomePath -Model $ModelName
+    $s = New-FmBridgeSession -HomePath $HomePath -CheckoutPath $CheckoutPath -Model $ModelName
     if ($null -eq $s) {
         [Console]::Error.WriteLine('fm-bridge: could not start a firstmate session (is the Claude CLI installed?)')
         [Console]::Error.WriteLine('           serving read-only; the page will say so rather than pretend')
@@ -181,7 +190,7 @@ function Start-Engine {
 }
 
 if ($configured) {
-    $session = Start-Engine -HomePath $home_ -Suppressed $NoEngine.IsPresent -ModelName $Model
+    $session = Start-Engine -HomePath $home_ -Suppressed $NoEngine.IsPresent -ModelName $Model -CheckoutPath $root
 } else {
     [Console]::Out.WriteLine('fm-bridge: first run - asking in the browser where the workspace goes')
 }
@@ -418,7 +427,7 @@ try {
                     $configured = $true
                     $captainName = Get-FmCaptainName -ConfigDir (Join-Path $home_ 'config')
                     [Console]::Out.WriteLine("fm-bridge: workspace created at $home_")
-                    $session = Start-Engine -HomePath $home_ -Suppressed $NoEngine.IsPresent -ModelName $Model
+                    $session = Start-Engine -HomePath $home_ -Suppressed $NoEngine.IsPresent -ModelName $Model -CheckoutPath $root
                     Write-Json -Response $res -Object @{
                         ok     = $true
                         home   = $home_
@@ -604,11 +613,15 @@ try {
                     # showing. New-FmBridgeTurnPrompt carries the whole argument.
                     $fleet = Get-FmBridgeFleet -HomePath $home_
                     $ground = Get-FmBridgeGround -Fleet $fleet
-                    $canAct = Test-FmBridgeSessionCanAct -HomePath $home_ -SessionProcessId $session.Process.Id
+                    # ONE READ, THREE ANSWERS. Whether this screen is in charge
+                    # and whether a second window exists are the same fact about
+                    # who holds the home, so they are read together rather than
+                    # asked twice and risking two different answers in one turn.
+                    $holder = (Get-FmBridgeHomeHolder -HomePath $home_ -SessionProcessId $session.Process.Id).Holder
                     # A name change set since the last turn rides along with this
                     # one, so it takes effect in THIS conversation rather than at
                     # the next restart - and without its own blocking round trip.
-                    $send = New-FmBridgeTurnPrompt -Text $text -Fleet $fleet -CanAct $canAct -Address $script:pendingAddress
+                    $send = New-FmBridgeTurnPrompt -Text $text -Fleet $fleet -Holder $holder -Address $script:pendingAddress
                     $script:pendingAddress = $null
 
                     $turn = Send-FmBridgeTurn -Session $session -Text $send

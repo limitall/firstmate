@@ -8992,3 +8992,205 @@ On an empty board it offers a next move rather than ending on what it could not 
   "I am an Adit firstmate ... to help with the Adit product work" is held because the identity says `products` and the reply says `product`, and `Test-FmBridgeWordsRecorded` compares words exactly.
   Chasing it means adding a stemmer, which is the guess-from-English shape this area has twice been burnt by, so it is recorded rather than fixed.
   The failure direction is the documented one: a duller reply, never a false one.
+## 52. The screen the captain typed one command to reach was not firstmate - `PROVEN (Windows 11) FOR BOTH CAUSES, THE FIX AND THE LOCK SAFETY, IN A REAL PRIMARY CHECKOUT; THE CAPTAIN'S FRESH VM IS STILL THEIRS`
+
+Dated 2026-09-09, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\20\firstmate-win`, PowerShell 7.6.4, Pester 6.1.0, git 2.49.0.windows.1, Claude CLI 2.1.266, Windows 11 Pro 10.0.26200.
+Written on `fm/bridge-not-firstmate` over `main` at `cd53e16`.
+
+The captain's verdict after a clean install was "it looks like it not start real firstmate", and their session is the whole of the case:
+
+```
+C:\Windows\System32>firstmate
+fm-bridge: workspace created at C:\Users\higet\firstmate
+fm-bridge: session up (id d2b7b593-...)
+
+captain: hello
+firstmate: Hello, captain. Nothing is under way on your projects right now...
+  If you want something started, ask for it in the firstmate window you
+  already have open, or tell me what you have in mind and I will write out
+  the request for you to paste there.
+
+captain: who are you and what you can do ?
+firstmate: Claude is the model behind me, built by Anthropic, and on this
+  screen I serve as your reporting hand rather than a second set of controls.
+```
+
+They typed `firstmate` at a bare command prompt.
+That IS their firstmate, and it sent them to a window that has never existed.
+
+### 52.1 The question underneath, answered first, because the code said both things
+
+Is the screen MEANT to be able to act, or meant to be a reporting surface?
+It is meant to act, and four independent places in this repo say so.
+
+- `start.ps1` tells the captain "Everything happens in the page from here" immediately before starting the bridge.
+- `AGENTS.md` section 1 gives firstmate four jobs, which are to answer the captain, dispatch the work, supervise it and relay the outcome, and a reporting surface can do one of them.
+- `module/Firstmate/Public/FmBridge.ps1`'s own header has said from the first day that "firstmate stays a Claude session running the same AGENTS.md, the same skills and the same spawn path; the bridge is a courier".
+- `Test-FmBridgeSessionCanAct` was a runtime comparison rather than a constant, which is only worth writing if acting is the expected case.
+
+What was missing was not the decision but the wiring that makes the decision true.
+The rest of this section is the measurement of that gap and of its closing.
+
+### 52.2 Both candidate causes were real, and they are one root
+
+Reproduced end to end over plain loopback, with `-NoLaunch`, no browser and nothing speaking, by pointing a fresh checkout at a new workspace exactly as the browser's first run does.
+
+**Cause A, the contract.**
+The workspace `Initialize-FmBridgeWorkspace` creates on first run holds `config/ data/ projects/ state/` and nothing else:
+
+```
+--- MEASUREMENT A: what contract does the hosted session get? ---
+  home entry: config
+  home entry: data
+  home entry: projects
+  home entry: state
+  AGENTS.md    ABSENT
+  CLAUDE.md    ABSENT
+  .claude      ABSENT
+```
+
+This is WORSE than the task brief supposed.
+The brief expected the session to be reading setup's stop-and-redirect `AGENTS.md` as its operating contract; in fact it reads nothing at all, because that redirect is written by `Install-FmHome` and never runs against a home the bridge creates for itself.
+`$psi.WorkingDirectory = $HomePath` therefore started a general-purpose Claude with no contract, no skills and no hooks, which is exactly the thing that introduced itself to the captain as Claude.
+
+**Cause B, the lock.**
+In the same run, through two full turns and forty seconds:
+
+```
+--- MEASUREMENT B: who holds the home while the bridge is up? ---
+  t+0s  lock: free
+  ...
+  t+38s  lock: free
+```
+
+Nothing ever acquires it, and the reason is the same one directory.
+The lock is taken by stage 1 of `bin/fm-session-start.ps1`, which runs from the `SessionStart` hook registered in `<checkout>/.claude/settings.json`.
+Started in the home there is no settings file, so no hook, so no session start, so no lock, so `CanAct` was false forever and `Get-FmBridgeRoute` emitted the "ask in your other window" instruction on every single turn.
+
+Both causes are the same defect: the session was hosted in the home rather than in the checkout.
+
+### 52.3 A measurement trap that cost one wrong conclusion, recorded so the next task does not pay it again
+
+With the fix in place, in a disposable task worktree, the lock STILL stayed free.
+The cause is not the bridge.
+`Test-FmHookPrimaryScope` in `module/Firstmate/Private/FmHooks.ps1` requires `git rev-parse --git-dir` to equal `--git-common-dir`, which is false for every linked worktree, and the `SessionStart` hook returns a no-op decision there by design so that a task worktree cannot run a session start for a home it does not own.
+
+**No lock behaviour of the bridge can be measured from a worktree.**
+A plain control confirmed the hook mechanism itself is sound: a scratch project carrying a one-line `SessionStart` hook, run as `claude -p --dangerously-skip-permissions`, fired it and wrote its marker.
+So every lock measurement below was taken in a real `git clone` whose `--git-dir` equals its `--git-common-dir`, set up with `bin/fm-setup.ps1` until `bin/fm-doctor.ps1` reported "healthy: every check passed", which is the captain's shape.
+
+This is also a real property of the shipped code rather than only of the test rig.
+A bridge run from a worker's disposable copy will never take the home, will read `none`, and will get the honest route rather than a claimed window.
+
+### 52.4 The three measurements, in that clone
+
+```
+=== E1  NEGATIVE CONTROL: the session started in the HOME (code as shipped) ===
+  RESULT: lock: free
+  home contract: AGENTS.md=False .claude=False
+
+=== E2  FIXED: the session started in the CHECKOUT, FM_HOME naming the home ===
+    t+  0s  lock: free
+    t+ 21s  lock: held by live harness pid 81968
+  RESULT: lock: held by live harness pid 81968
+  session started: True
+  Get-FmBridgeHomeHolder(that pid) -> Holder=self CanAct=True
+  Get-FmBridgeRoute -> ''
+
+=== E3  SAFETY: a terminal firstmate starts while the bridge session holds the home ===
+  holder before: lock: held by live harness pid 81968
+  second session said: ok
+  holder after : lock: held by live harness pid 81968
+  same holder as before: True
+  as a session that is NOT the holder sees it -> Holder=elsewhere CanAct=False
+```
+
+E1 is the shipped code failing in the captain's exact shape.
+E2 is the same clone and the same home, one line different, taking the helm in twenty-one seconds.
+E3 is the constraint the task set: a real terminal firstmate, `claude -p` started in the checkout with `FM_HOME` naming the held home, ran a full turn against it and did NOT take the lock, and the bridge session still held it afterwards.
+
+### 52.5 Why that is safe, stated exactly, because it is the constraint
+
+**No lock mechanic changed.**
+Nothing in this change takes, breaks, renews or reads the record differently.
+`Get-FmBridgeHomeHolder` reads what `Invoke-FmLock -Status` reads and writes nothing, exactly as `Test-FmBridgeSessionCanAct` did before it.
+
+What changed is that the hosted session is now a firstmate, so it acquires through the same `bin/fm-session-start.ps1` that every terminal firstmate uses, under the same contention rules.
+Two live sessions writing one home is prevented by the same record it always was, which E3 measures directly: the second arrival is refused and stays read-only.
+The bridge is not privileged in that contest and does not break a held lock.
+Whichever session takes the helm first keeps it, and the other one reads `elsewhere` and says so.
+
+### 52.6 The consequence fix: the sentence can no longer be produced when there is no window
+
+Establishing the cause is not the whole task, because the captain's actual injury was being sent somewhere that does not exist.
+`Get-FmBridgeRoute` asserted a second window unconditionally whenever the screen could not act, on the reasoning that the two are "the same fact read from the other side".
+They are not, and a bare `firstmate` on a clean machine is the counterexample.
+
+The boolean is replaced by `Get-FmBridgeHomeHolder`, which answers `self`, `elsewhere` or `none` from one read, and the route is derived from that.
+`Get-FmSessionLockStatus` reports `held` only for a process that is both alive and a harness, so a stale, free, unreadable or invalid record is `none` and never `elsewhere`, because a dead holder is not a window.
+Only `elsewhere` may name another window, and E3 is the measurement that it is true exactly there.
+
+### 52.7 The captain's own session, before and after
+
+Their first turn, on the shipped code, reproduced verbatim on this seat:
+
+```
+firstmate: ... If you want anything started or redirect, ask for it in the
+  firstmate window you have open, and I can write out the exact request for
+  you here.
+```
+
+The same turn, the same home, with the fix:
+
+```
+firstmate: Hello, captain. Nothing is under way on your projects right now,
+  this screen and the progress watch are both ready, and there's nothing
+  waiting on you. Tell me what you'd like started and I'll get it moving.
+```
+
+It offers to start the work, because it now can.
+On a machine where a terminal firstmate genuinely holds the home, the same screen names that window instead, and that is the only case in which it does.
+
+### 52.8 A defect this exposed that belongs to another owner, reported and NOT touched
+
+Two of the three turns in the after-run were held back by the reply-grounding guard, which reported on stderr:
+
+```
+fm-bridge: reply held back - names work the records do not carry: 'your software work'
+fm-bridge: reply held back - names work the records do not carry: 'll work'
+```
+
+Both are false positives in `Protect-FmBridgeReply`'s modifier-plus-noun rule, and `'ll work` is a tokenization miss: the guard splits "I'll work" on the apostrophe and reads `ll` as the modifier naming a job.
+The captain sees a held-back non-answer to "who are you and what you can do ?", which is one of the two questions they actually asked.
+
+It is pre-existing and unrelated to this change, because the same hold fired in this task's first reproduction run before any code here was edited, and `module/Firstmate/Public/FmBridgeGround.ps1` is another worker's area.
+Nothing here was changed in that file, so their work is kept rather than collided with.
+
+**That worker's fix has since landed as section 51, and these two still reproduce on top of it.**
+Re-measured on `main` at `066c9d5`, through the public interface, with an empty reading:
+
+```
+grounded=False  <- Tell me what you'd like started and I'll work on it.
+    held: names work the records do not carry: 'll work'
+grounded=False  <- I can look after your software work from here.
+    held: names work the records do not carry: 'your software work'
+```
+
+Section 51 widened what the gate accepts to what the captain said EARLIER in the conversation, which is a different class from these two: `'ll work` is a contraction the modifier rule tokenizes into a job name, and `your software work` is a generic possessive rather than anything the captain introduced.
+So the defect is still open after that landing rather than closed by it, and it now matters more, because the reply this task set out to make possible - the screen offering to start work - is exactly the sentence shape that trips it.
+It is still not this task's to fix, and it is recorded here with a reproduction its owner can run rather than with a description.
+
+### 52.9 What was NOT proven here
+
+- **The captain's fresh VM has not run this.**
+  Everything above is their session reproduced on this seat, in a clone deliberately put into the shape their machine has, with each half measured there.
+  Whether their next `firstmate` behaves is still their measurement, and it is one command.
+- **No browser, microphone or voice was involved at any point.**
+  Every bridge run used `-NoLaunch` and plain loopback, `config/bridge-voice` was absent throughout so the screen would have been mute even with a page open, and the constraint that nothing may speak at the captain's machine was held.
+- **The identity answer is not fixed here** and was never this task's to fix.
+  Section 51 is where it landed, and this section was rebased on top of it rather than beside it; 52.8 records the one part of that area which is still open, with a reproduction.
+- **The two measurement scripts in 52.4 and 52.7 were run against this task's tree before the rebase onto section 51's work.**
+  The five source files this task changed are byte-identical across that rebase and section 51 touches none of the lines they exercise, but the captain-turn transcripts in 52.7 were produced without section 51's identity block in the prompt.
+  What they prove is the ROUTE and the lock, which is what they are cited for; the wording of a reply on the current tree would differ.
+- **Nothing here re-examined the first-run workspace question.**
+  The home the bridge creates still holds only state, which is correct now that nothing is started in it, and whether the browser should ask that question at all was out of scope.

@@ -993,34 +993,161 @@ Captain the guard is firing again and nothing has changed since the last time
     }
 }
 
-Describe 'Test-FmBridgeSessionCanAct' {
+Describe 'New-FmBridgeSession' {
+
+    # THE DEFECT THIS WHOLE DESCRIBE EXISTS FOR. The captain typed `firstmate`
+    # on a fresh VM and got a general assistant: it introduced itself as Claude,
+    # said it could not start work, and sent them to a firstmate window that did
+    # not exist. The session was being started in the HOME - `config/ data/
+    # projects/ state/` and nothing else - so it had no AGENTS.md, no CLAUDE.md,
+    # no skills and no `.claude/settings.json`, which is also the file whose
+    # SessionStart hook takes the home's lock. One wrong directory, both halves.
+    #
+    # DRIVEN THROUGH A STUB, not the real CLI. What is being asserted is where
+    # this function puts a process and what it tells it about the home, and a
+    # stub that records both answers those exactly. Nothing here starts a real
+    # engine, opens a browser, or speaks.
+    BeforeAll {
+        $script:SessTmp = Join-Path ([IO.Path]::GetTempPath()) ('fm-sess-' + [guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $script:SessTmp
+        $script:SessCheckout = Join-Path $script:SessTmp 'checkout'
+        $script:SessHome = Join-Path $script:SessTmp 'home'
+        $null = New-Item -ItemType Directory -Path $script:SessCheckout
+        $null = New-Item -ItemType Directory -Path (Join-Path $script:SessHome 'state')
+        $script:SessRecord = Join-Path $script:SessTmp 'started.txt'
+        $script:SessStub = Join-Path $script:SessTmp 'claude.cmd'
+        # THE REDIRECT COMES FIRST ON PURPOSE. Written the natural way round,
+        # `echo voice=%FM_VOICE_OFF%>>"file"` expands to `echo voice=1>>"file"`
+        # and cmd reads that trailing `1` as the stdout file descriptor, so the
+        # value silently disappears from what it wrote and the stub reports an
+        # unset variable that is in fact set. Cost one wrong diagnosis already.
+        Set-Content -LiteralPath $script:SessStub -Value @(
+            '@echo off'
+            ">`"$script:SessRecord`" echo cwd=%CD%"
+            ">>`"$script:SessRecord`" echo home=%FM_HOME%"
+            ">>`"$script:SessRecord`" echo voice=%FM_VOICE_OFF%"
+        )
+    }
+
+    AfterAll {
+        Remove-Item -LiteralPath $script:SessTmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    BeforeEach {
+        Remove-Item -LiteralPath $script:SessRecord -Force -ErrorAction SilentlyContinue
+        Mock -CommandName Get-Command -ModuleName Firstmate `
+            -ParameterFilter { $Name -eq 'claude' } `
+            -MockWith { [pscustomobject]@{ Source = $script:SessStub } }
+    }
+
+    It 'starts the session in the checkout, where the contract and the hooks are' {
+        $s = New-FmBridgeSession -HomePath $script:SessHome -CheckoutPath $script:SessCheckout
+        $s | Should -Not -BeNullOrEmpty
+        try { $s.Process.WaitForExit(20000) | Out-Null } finally { $s.Process.Dispose() }
+
+        $record = Get-Content -LiteralPath $script:SessRecord -Raw
+        # THE HOME IS NOT AN ACCEPTABLE ANSWER HERE. That was the defect.
+        $record | Should -Match ('(?m)^cwd=' + [regex]::Escape($script:SessCheckout) + '\s*$')
+        $record | Should -Not -Match ('(?m)^cwd=' + [regex]::Escape($script:SessHome) + '\s*$')
+    }
+
+    # Running in the checkout is only half an answer: the checkout resolves its
+    # home from `.fm-home` or the environment, and the bridge already knows
+    # which home this is. Saying so leaves nothing to infer, and it is inherited
+    # by everything the session starts.
+    It 'tells that session which home it operates on' {
+        $s = New-FmBridgeSession -HomePath $script:SessHome -CheckoutPath $script:SessCheckout
+        try { $s.Process.WaitForExit(20000) | Out-Null } finally { $s.Process.Dispose() }
+        Get-Content -LiteralPath $script:SessRecord -Raw |
+            Should -Match ('(?m)^home=' + [regex]::Escape($script:SessHome) + '\s*$')
+    }
+
+    # Unchanged by this fix and pinned so it stays that way: a home that has
+    # turned config/voice on must not talk out of a process the page cannot
+    # reach. The session is now a full firstmate, so it knows bin/fm-say.ps1
+    # exists - which makes this gate matter more than it did before, not less.
+    It 'still refuses that session the machine voice' {
+        $s = New-FmBridgeSession -HomePath $script:SessHome -CheckoutPath $script:SessCheckout
+        try { $s.Process.WaitForExit(20000) | Out-Null } finally { $s.Process.Dispose() }
+        Get-Content -LiteralPath $script:SessRecord -Raw | Should -Match '(?m)^voice=1\s*$'
+    }
+
+    It 'records the checkout on the handle, so the bridge is not left guessing' {
+        $s = New-FmBridgeSession -HomePath $script:SessHome -CheckoutPath $script:SessCheckout
+        try {
+            $s.Checkout | Should -Be $script:SessCheckout
+            $s.Home | Should -Be $script:SessHome
+            $s.Process.WaitForExit(20000) | Out-Null
+        } finally { $s.Process.Dispose() }
+    }
+
+    # A bridge with no checkout to host the session in cannot produce a
+    # firstmate, and starting one anyway is exactly how this defect shipped.
+    It 'refuses to start a session with no checkout to run it in' {
+        { New-FmBridgeSession -HomePath $script:SessHome -CheckoutPath '' } | Should -Throw
+    }
+
+    It 'answers with nothing at all when the CLI is not installed' {
+        Mock -CommandName Get-Command -ModuleName Firstmate `
+            -ParameterFilter { $Name -eq 'claude' } -MockWith { $null }
+        New-FmBridgeSession -HomePath $script:SessHome -CheckoutPath $script:SessCheckout |
+            Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Get-FmBridgeHomeHolder' {
 
     BeforeAll {
         $script:CanActHome = Join-Path $TestDrive 'home'
         New-Item -ItemType Directory -Path (Join-Path $script:CanActHome 'state') -Force | Out-Null
     }
 
-    It 'says no when nothing holds this home' {
-        Test-FmBridgeSessionCanAct -HomePath $script:CanActHome -SessionProcessId 4242 | Should -BeFalse
+    It 'says nobody holds this home when nothing does' {
+        $h = Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242
+        $h.Holder | Should -Be 'none'
+        $h.CanAct | Should -BeFalse
     }
 
-    It 'says no when it was given no session at all' {
-        Test-FmBridgeSessionCanAct -HomePath $script:CanActHome | Should -BeFalse
+    It 'says nobody rather than inventing a session when it was given none' {
+        (Get-FmBridgeHomeHolder -HomePath $script:CanActHome).Holder | Should -Be 'none'
     }
 
-    It 'says yes only when the session this bridge hosts is the holder' {
+    It 'says self only when the session this bridge hosts is the holder' {
         Mock -CommandName Get-FmSessionLockStatus -ModuleName Firstmate -MockWith {
             [pscustomobject]@{ State = 'held'; ProcessId = 4242; Text = '' }
         }
-        Test-FmBridgeSessionCanAct -HomePath $script:CanActHome -SessionProcessId 4242 | Should -BeTrue
-        Test-FmBridgeSessionCanAct -HomePath $script:CanActHome -SessionProcessId 25876 | Should -BeFalse
+        $mine = Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242
+        $mine.Holder | Should -Be 'self'
+        $mine.CanAct | Should -BeTrue
+
+        $theirs = Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 25876
+        $theirs.Holder | Should -Be 'elsewhere'
+        $theirs.CanAct | Should -BeFalse
+    }
+
+    # THE DISTINCTION THE CAPTAIN PAID FOR. A window that is not there is not
+    # the same fact as a window that is, and the two used to collapse into one
+    # boolean - which is what sent them to a window they had never opened.
+    It 'tells a dead holder apart from a live one, because only one is a window' -ForEach @(
+        @{ State = 'stale'; Because = 'a dead holder is nobody to send the captain to' }
+        @{ State = 'free'; Because = 'nothing holds it' }
+        @{ State = 'unreadable'; Because = 'a record it could not read is not a window' }
+        @{ State = 'invalid'; Because = 'a record it could not read is not a window' }
+    ) {
+        Mock -CommandName Get-FmSessionLockStatus -ModuleName Firstmate -MockWith {
+            [pscustomobject]@{ State = $State; ProcessId = 25876; Text = '' }
+        }
+        (Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242).Holder |
+            Should -Be 'none' -Because $Because
     }
 
     # Promising the captain an action this cannot deliver is worse than
     # understating what it can do, so anything it could not read counts as no.
-    It 'says no rather than guessing when it cannot read who holds this home' {
+    It 'says nobody rather than guessing when it cannot read who holds this home' {
         Mock -CommandName Get-FmSessionLockStatus -ModuleName Firstmate -MockWith { throw 'unreadable' }
-        Test-FmBridgeSessionCanAct -HomePath $script:CanActHome -SessionProcessId 4242 | Should -BeFalse
+        $h = Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242
+        $h.Holder | Should -Be 'none'
+        $h.CanAct | Should -BeFalse
     }
 }
 
@@ -1032,22 +1159,62 @@ Describe 'Get-FmBridgeRoute' {
     # never says that at all; it gives the way to get the thing done. A softer
     # phrasing of the same confession would have been the same mistake.
     It 'says nothing at all when the screen can act' {
-        Get-FmBridgeRoute -CanAct $true | Should -Be ''
+        Get-FmBridgeRoute -Holder 'self' | Should -Be ''
     }
 
-    It 'gives a route, never a refusal' {
-        $route = Get-FmBridgeRoute -CanAct $false
-        $route | Should -Match '(?i)firstmate window'
+    It 'gives a route, never a refusal' -ForEach @(
+        @{ Holder = 'elsewhere' }, @{ Holder = 'none' }
+    ) {
+        $route = Get-FmBridgeRoute -Holder $Holder
+        $route | Should -Not -BeNullOrEmpty
         $route | Should -Not -Match "(?i)\bcan(?:not|n't)\b"
         $route | Should -Not -Match '(?i)\bunable\b'
         $route | Should -Not -Match '(?i)\bsorry\b'
     }
 
-    It 'keeps machinery out of the route as well' {
-        $route = Get-FmBridgeRoute -CanAct $false
+    It 'keeps machinery out of the route as well' -ForEach @(
+        @{ Holder = 'elsewhere' }, @{ Holder = 'none' }
+    ) {
+        $route = Get-FmBridgeRoute -Holder $Holder
         foreach ($word in @('lock', 'read-only', 'pid', 'dispatch', 'merge', 'checkout', 'worktree')) {
             $route | Should -Not -Match ('\b' + [regex]::Escape($word) + '\b')
         }
+    }
+
+    It 'names the other window only when there really is one' {
+        Get-FmBridgeRoute -Holder 'elsewhere' | Should -Match '(?i)another firstmate window is open'
+    }
+
+    # ACCEPTANCE CRITERION 2, AND THE WHOLE POINT OF THE THREE-WAY ANSWER. The
+    # captain typed `firstmate` at a bare command prompt on a fresh VM, which IS
+    # this screen, and was told to ask "in the firstmate window you already have
+    # open". There was none. No answer this can give may assert one except the
+    # single case where the record says a live session holds the home.
+    It 'never claims the captain already has a window open' -ForEach @(
+        @{ Holder = 'self' }, @{ Holder = 'none' }
+    ) {
+        $route = Get-FmBridgeRoute -Holder $Holder
+        $route | Should -Not -Match '(?i)window (the captain |you )?already ha'
+        $route | Should -Not -Match '(?i)(you|the captain) (already )?ha(ve|s) open'
+    }
+
+    It 'tells the session outright not to invent one when nothing holds the home' {
+        $route = Get-FmBridgeRoute -Holder 'none'
+        $route | Should -Match '(?i)NO other'
+        $route | Should -Match '(?i)never send the captain to one'
+        # And it still carries a step that exists. `\s+` rather than a space:
+        # the route is wrapped for reading, so any phrase in it can fall across
+        # a line break.
+        $route | Should -Match '(?i)running firstmate\s+again'
+    }
+
+    # A three-way answer with only two shapes would be the boolean back again.
+    It 'answers the two cannot-act cases differently' {
+        Get-FmBridgeRoute -Holder 'none' | Should -Not -Be (Get-FmBridgeRoute -Holder 'elsewhere')
+    }
+
+    It 'refuses a holder it does not recognise rather than guessing a route' {
+        { Get-FmBridgeRoute -Holder 'maybe' } | Should -Throw
     }
 }
 
@@ -1221,7 +1388,7 @@ Describe 'the reply never answers with a limitation' {
     }
 
     It 'tells the session to answer with the route instead' {
-        $prompt = New-FmBridgeTurnPrompt -Text 'start the payment tests' -Fleet $script:EmptyFleet -CanAct $false
+        $prompt = New-FmBridgeTurnPrompt -Text 'start the payment tests' -Fleet $script:EmptyFleet -Holder 'none'
         $prompt | Should -Match '(?i)NEVER answer with something you cannot do'
         $prompt | Should -Match '(?i)answer with how it gets done'
         $prompt | Should -Match '(?i)say what IS'
@@ -1232,19 +1399,42 @@ Describe 'the reply never answers with a limitation' {
     # whole reply. A yes-or-no is the captain asking for brevity, not for a dead
     # end.
     It 'holds the rule even when the captain asks for a yes or a no' {
-        $prompt = New-FmBridgeTurnPrompt -Text 'can you do it yourself? yes or no.' -Fleet $script:EmptyFleet -CanAct $false
+        $prompt = New-FmBridgeTurnPrompt -Text 'can you do it yourself? yes or no.' -Fleet $script:EmptyFleet -Holder 'none'
         $prompt | Should -Match '(?i)even when the captain asks for a yes or a no'
         $prompt | Should -Match '(?i)bare no'
     }
 
-    It 'carries the real route, not a polite deferral' {
-        $prompt = New-FmBridgeTurnPrompt -Text 'start the payment tests' -Fleet $script:EmptyFleet -CanAct $false
-        $prompt | Should -Match ([regex]::Escape((Get-FmBridgeRoute -CanAct $false)))
+    It 'carries the real route, not a polite deferral' -ForEach @(
+        @{ Holder = 'none' }, @{ Holder = 'elsewhere' }
+    ) {
+        $prompt = New-FmBridgeTurnPrompt -Text 'start the payment tests' -Fleet $script:EmptyFleet -Holder $Holder
+        $prompt | Should -Match ([regex]::Escape((Get-FmBridgeRoute -Holder $Holder)))
     }
 
     It 'leaves the route out entirely when the screen can act' {
-        $prompt = New-FmBridgeTurnPrompt -Text 'start the payment tests' -Fleet $script:EmptyFleet -CanAct $true
-        $prompt | Should -Not -Match '(?i)firstmate window the captain'
+        $prompt = New-FmBridgeTurnPrompt -Text 'start the payment tests' -Fleet $script:EmptyFleet -Holder 'self'
+        $prompt | Should -Not -Match '(?i)firstmate window'
+    }
+
+    # ACCEPTANCE CRITERION 2, ON THE TEXT THAT ACTUALLY REACHES THE SESSION.
+    # Get-FmBridgeRoute is pinned on its own above; this is the guarantee that
+    # nothing ELSE in the composed prompt puts the sentence back, and that the
+    # default a caller gets by saying nothing is not the claiming one.
+    It 'never tells the session the captain already has a window open' -ForEach @(
+        @{ Holder = 'self' }, @{ Holder = 'none' }
+    ) {
+        $prompt = New-FmBridgeTurnPrompt -Text 'start the payment tests' -Fleet $script:EmptyFleet -Holder $Holder
+        $prompt | Should -Not -Match '(?i)window (the captain |you )?already ha'
+        $prompt | Should -Not -Match '(?i)(you|the captain) (already )?ha(ve|s) open'
+    }
+
+    It 'assumes the screen is in charge when no holder is named, so no window is invented' {
+        $prompt = New-FmBridgeTurnPrompt -Text 'start the payment tests' -Fleet $script:EmptyFleet
+        $prompt | Should -Not -Match '(?i)firstmate window'
+    }
+
+    It 'refuses a holder it does not recognise rather than composing a guessed route' {
+        { New-FmBridgeTurnPrompt -Text 'go' -Fleet $script:EmptyFleet -Holder 'maybe' } | Should -Throw
     }
 
     # The append that produced the same statement twice in one reply is gone, so
