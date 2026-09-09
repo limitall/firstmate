@@ -98,6 +98,41 @@ function Test-FmTransientIOException {
     return $false
 }
 
+function Test-FmAccessRefused {
+    <#
+        .SYNOPSIS
+        True when an exception is Windows refusing this account permission.
+
+        .DESCRIPTION
+        A DIFFERENT QUESTION FROM Test-FmTransientIOException ABOVE, and the two
+        deliberately answer differently about the same exception type. That one
+        asks "will waiting help?" and says yes to UnauthorizedAccessException,
+        because a file pending delete raises it and clears on its own. This one
+        asks "is this account simply not allowed?", which no amount of waiting
+        changes, and is what turns a failure into a sentence telling the captain
+        to move a folder rather than a retry that can never succeed.
+
+        Both are true of a pending delete; that is a property of the exception
+        .NET raises, not a contradiction. Callers pick by what they intend to do
+        next - retry, or explain - and neither may be rewritten into the other.
+
+        The walk descends InnerException for the same reason its sibling does: a
+        .NET call made from PowerShell surfaces as a MethodInvocationException
+        wrapping the real one, so the raised type is never the one on top.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][AllowNull()][System.Exception]$Exception)
+
+    $current = $Exception
+    for ($depth = 0; $current -and $depth -lt 8; $depth++) {
+        if ($current -is [System.UnauthorizedAccessException]) { return $true }
+        if ($current -is [System.Security.SecurityException]) { return $true }
+        $current = $current.InnerException
+    }
+    return $false
+}
+
 function Invoke-FmFileRetry {
     <#
         .SYNOPSIS

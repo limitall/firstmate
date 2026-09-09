@@ -367,6 +367,18 @@ table, and neither does `install.ps1` - see below for what a second table cost.
 `install.ps1` is the captain's one command on a fresh machine, and `Install-FmMachine` is all of it except the prompting.
 It exists because `bin/fm-setup.ps1` deliberately installs nothing: setup answers "is this home wired", and something still has to answer "does this machine have the tools at all".
 
+**An install belongs to the account that runs it, and that is the one thing it refuses over.**
+`install.ps1` is built to run unelevated and to raise the single administrator prompt it needs by itself, which is why running the whole thing from an elevated window is not the harmless shortcut it looks like.
+Where the signed-in captain is not an administrator, Windows elevates by switching user, so the checkout, the profile block, the command shim and every per-user tool land in the ADMINISTRATOR's profile instead of theirs.
+Nothing fails while that happens - it fails afterwards, in the captain's own session, as the first run being refused `<checkout>/.fm-home` in a folder they never chose.
+`Get-FmMachineSessionCheck` compares the account this run is using against the one signed in to Windows and stops before anything is written; `-DetectOnly` is exempt, because a run that changes nothing has nothing to protect them from.
+Elevation is never offered as the way out - it is the cause.
+
+**A checkout inside another account's user folder is refused structurally, not by trying it.**
+`Get-FmMachineLocationCheck` settles this one by whose profile the path is in rather than by its write probe, and the probe is exactly why: whether that write is refused depends on who is asking.
+An elevated run accepts it and every write after it, so the probe would report a location that works for nobody as usable.
+`C:\Users\Public` is nobody's and is allowed; the captain's own folder is allowed; only a sibling account's is refused.
+
 **Why the route table is not here.**
 `install.ps1` used to keep its own, and the two disagreed in the one way that matters.
 Measured 2026-08-17: it installed `treehouse` and `herdr` FROM NPM, where the package called `treehouse` is an unrelated single-page-application state framework and the one called `herdr` is a `0.0.0` placeholder containing nothing.

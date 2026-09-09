@@ -1976,3 +1976,155 @@ Describe 'the identity the turn prompt carries' {
         { New-FmBridgeTurnPrompt -Text 'who are you' -Fleet $old } | Should -Not -Throw
     }
 }
+
+Describe 'Initialize-FmBridgeWorkspace' {
+    # THE FIRST-RUN PANEL RENDERS `Error` VERBATIM (ui/bridge.html,
+    # `setupErr.textContent = r.error`), so every refusal here is a sentence
+    # written for the captain. What sent this area to a fresh VM and back was
+    # the one refusal that was not:
+    #
+    #     Exception calling "WriteAllText" with "3" argument(s): "Access to the
+    #     path 'C:\Users\Adit\firstmate\.fm-home' is denied."
+    #
+    # in red, on the panel, naming a path the captain had never typed - it is
+    # where firstmate itself was installed, not the home they asked for.
+
+    BeforeEach {
+        $script:Sandbox = Join-Path ([IO.Path]::GetTempPath()) ("fm-ws-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $script:Checkout = Join-Path $script:Sandbox 'checkout'
+        $script:Home_ = Join-Path $script:Sandbox 'firstmate'
+        $null = New-Item -ItemType Directory -Path $script:Checkout -Force
+    }
+    AfterEach {
+        Remove-Item -LiteralPath $script:Sandbox -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'creates the home layout and both records the entry points read' {
+        $result = Initialize-FmBridgeWorkspace -RepoRoot $script:Checkout -Path $script:Home_ -Confirm:$false
+        $result.Ok | Should -BeTrue
+        $result.Error | Should -BeNullOrEmpty
+        foreach ($d in @('config', 'data', 'projects', 'state')) {
+            Test-Path -LiteralPath (Join-Path $script:Home_ $d) -PathType Container | Should -BeTrue
+        }
+        # The contract these two carry is what lets an entry point resolve the
+        # home with no profile and no environment. Neither may drift.
+        [System.IO.File]::ReadAllText((Join-Path $script:Checkout '.fm-home')) | Should -Be $script:Home_
+        ([System.IO.File]::ReadAllText((Join-Path $script:Checkout '.fm-workspace'))).Trim() | Should -Be $script:Home_
+        Get-FmBridgeWorkspace -RepoRoot $script:Checkout | Should -Be $script:Home_
+        Test-FmBridgeConfigured -RepoRoot $script:Checkout | Should -BeTrue
+    }
+
+    It 'names a fresh workspace with a backend this port can actually drive' {
+        $null = Initialize-FmBridgeWorkspace -RepoRoot $script:Checkout -Path $script:Home_ -Confirm:$false
+        ([System.IO.File]::ReadAllText((Join-Path $script:Home_ 'config' 'backend'))).Trim() | Should -Be 'herdr'
+    }
+
+    Context 'when the checkout itself cannot be written to' {
+        # The captain's shape, reproduced without needing a second Windows
+        # account: a DIRECTORY standing where the record's file goes makes .NET
+        # raise the identical UnauthorizedAccessException, wrapped in the
+        # identical MethodInvocationException, with the identical message.
+        BeforeEach {
+            $null = New-Item -ItemType Directory -Path (Join-Path $script:Checkout '.fm-home') -Force
+            $script:Refused = Initialize-FmBridgeWorkspace -RepoRoot $script:Checkout -Path $script:Home_ -Confirm:$false
+        }
+
+        It 'refuses, rather than reporting a setup that did not happen' {
+            $script:Refused.Ok | Should -BeFalse
+        }
+
+        It 'never puts a .NET exception on the panel' {
+            $script:Refused.Error | Should -Not -Match 'Exception calling'
+            $script:Refused.Error | Should -Not -Match 'WriteAllText'
+            $script:Refused.Error | Should -Not -Match 'argument\(s\)'
+        }
+
+        It 'names the folder that is actually wrong, and a way forward' {
+            # The captain typed the home; the folder that refused the write is
+            # the OTHER one, and saying so is the whole difference between a
+            # message they can act on and one they cannot.
+            #
+            # THE NEXT STEP DIFFERS BY WHOSE FOLDER IT IS - move it, or allow
+            # firstmate in the one they already own - and the two cases are
+            # pinned separately below. What EVERY refusal here owes them is one:
+            # this fixture sits under TEMP, inside this account's own profile.
+            $script:Refused.Error | Should -Match ([regex]::Escape($script:Checkout))
+            $script:Refused.Error | Should -Match '(?i)install\.ps1|press SET IT UP'
+        }
+
+        It 'does not answer with the workaround, which installs for the wrong account' {
+            $script:Refused.Error | Should -Not -Match '(?i)as administrator'
+        }
+
+        It 'keeps the raw text for whoever has to diagnose it, off the panel' {
+            # Plain for the captain is not the same as lost. bin/fm-bridge.ps1
+            # writes this to its own window.
+            $script:Refused.Detail | Should -Match 'is denied'
+        }
+
+        It 'does not blame another account for a folder that is the captain''s own' {
+            # SECTION 34 OF THE EVIDENCE FILE IS WHY THIS EXISTS. A refused
+            # write was once read as a permission problem between two users,
+            # briefed as a task, and disproved by the captain running the whole
+            # thing as ONE user. "Access is denied" gets completed with the most
+            # familiar explanation that fits, and this is the one place that
+            # completion would now be written down for them to read.
+            $inMine = Join-Path $env:USERPROFILE ("fm-own-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            $null = New-Item -ItemType Directory -Path (Join-Path $inMine '.fm-home') -Force
+            try {
+                $result = Initialize-FmBridgeWorkspace -RepoRoot $inMine -Path $script:Home_ -Confirm:$false
+                $result.Ok | Should -BeFalse
+                $result.Error | Should -Match '(?i)already yours'
+                $result.Error | Should -Not -Match '(?i)move that folder'
+            } finally { Remove-Item -LiteralPath $inMine -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'tells a captain whose checkout is NOT theirs to move it' {
+            # C:\Users\Public is writable and is nobody's profile, which is the
+            # shape the captain reported without needing a second account.
+            $notMine = Join-Path $env:PUBLIC ("fm-other-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            $null = New-Item -ItemType Directory -Path (Join-Path $notMine '.fm-home') -Force
+            try {
+                $result = Initialize-FmBridgeWorkspace -RepoRoot $notMine -Path $script:Home_ -Confirm:$false
+                $result.Ok | Should -BeFalse
+                $result.Error | Should -Match '(?i)move that folder'
+                $result.Error | Should -Not -Match '(?i)already yours'
+            } finally { Remove-Item -LiteralPath $notMine -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'is honest that the workspace itself was made' {
+            Test-Path -LiteralPath (Join-Path $script:Home_ 'state') -PathType Container | Should -BeTrue
+            $script:Refused.Error | Should -Match '(?i)workspace is ready'
+        }
+    }
+
+    Context 'the refusals it already made, which must keep their sentences' {
+        It 'refuses an empty path' {
+            (Initialize-FmBridgeWorkspace -RepoRoot $script:Checkout -Path '  ' -Confirm:$false).Error |
+                Should -Be 'no path given'
+        }
+
+        It 'refuses a relative path, and says what a full one looks like' {
+            $result = Initialize-FmBridgeWorkspace -RepoRoot $script:Checkout -Path 'firstmate' -Confirm:$false
+            $result.Ok | Should -BeFalse
+            $result.Error | Should -Match 'full path'
+        }
+
+        It 'refuses a path that is a file' {
+            $file = Join-Path $script:Sandbox 'a-file'
+            [System.IO.File]::WriteAllText($file, 'x')
+            (Initialize-FmBridgeWorkspace -RepoRoot $script:Checkout -Path $file -Confirm:$false).Error |
+                Should -Be 'that path is a file'
+        }
+
+        It 'carries Detail on every answer, so a strict-mode caller can read it' {
+            # bin/fm-bridge.ps1 runs under Set-StrictMode -Version Latest and
+            # reads .Detail on whatever comes back; a shape that only sometimes
+            # has the field would throw there instead of answering the captain.
+            foreach ($path in @('  ', 'firstmate', $script:Home_)) {
+                $result = Initialize-FmBridgeWorkspace -RepoRoot $script:Checkout -Path $path -Confirm:$false
+                { $result.Detail } | Should -Not -Throw
+            }
+        }
+    }
+}

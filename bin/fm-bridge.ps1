@@ -419,6 +419,14 @@ try {
 
                     $made = Initialize-FmBridgeWorkspace -RepoRoot $root -Path $wantPath -Confirm:$false
                     if (-not $made.Ok) {
+                        # The panel gets the sentence; this window gets what .NET
+                        # actually said. Keeping the raw text OFF the screen is the
+                        # point, and losing it entirely would be the other mistake -
+                        # nobody can diagnose a refused install from a sentence
+                        # written for somebody who does not want to read one.
+                        if ($made.Detail) {
+                            [Console]::Out.WriteLine("fm-bridge: setup refused - $($made.Detail)")
+                        }
                         Write-Json -Response $res -Object @{ ok = $false; error = $made.Error } -Status 400
                         continue
                     }

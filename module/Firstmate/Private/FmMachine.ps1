@@ -316,6 +316,121 @@ function Get-FmMachineShellLine {
 
 # --- the suite -----------------------------------------------------------------
 
+# --- who is running this install -------------------------------------------------
+#
+# THE CAPTAIN'S OWN WORKAROUND, CAUGHT AT THE ONE MOMENT IT IS STILL CHEAP.
+# "if start with admin then it works fine" is true and is the trap: an install
+# run from an elevated window installs for the ELEVATED account. On a machine
+# where the person signed in is not an administrator, Windows elevates by
+# switching user - so the checkout, the profile block bin/fm-setup.ps1 writes,
+# and every per-user tool land in the administrator's profile, and the captain's
+# own session can read none of them. It surfaced as first run being refused
+# .fm-home in a folder the captain had never typed.
+#
+# ONLY A DIFFERENT ACCOUNT IS A PROBLEM, not elevation itself. An administrator
+# elevating their OWN account keeps the same profile, so everything lands where
+# they will find it and this says nothing - a machine that works today must keep
+# working (there is no "you should not have elevated" lecture here for someone
+# it is working for).
+#
+# THE DECISION, SEPARATE FROM THE ASKING, and split for a reason that is not
+# tidiness: proving the refusal otherwise needs a second Windows account and a
+# real elevation, so the branch that stops the captain's install would be the
+# one branch no test could reach. Everything here is a pure function of three
+# facts, and Get-FmMachineSessionCheck below is the only part that must run on a
+# real machine to learn them.
+function Get-FmMachineSessionVerdict {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][bool]$Elevated,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$RunningAs,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$SignedIn
+    )
+
+    # THE WAY OUT TRAVELS WITH THE VERDICT, because install.ps1 is the caller
+    # that most needs it and reads this through the plan rather than by calling
+    # into the module. Elevation is not the fix and is never offered as one:
+    # install.ps1 is built to run unelevated and raises the single administrator
+    # prompt it needs by itself.
+    $result = [pscustomobject]@{
+        Usable    = $true
+        Elevated  = $Elevated
+        RunningAs = $RunningAs
+        SignedIn  = $SignedIn
+        Reason    = 'this install is running as the account signed in to Windows'
+        Fix       = 'close this window, open PowerShell normally - NOT "Run as administrator" - and run ' +
+                    'install.ps1 there. The one step that genuinely needs administrator asks for it on its own.'
+    }
+
+    # NOT ELEVATED IS THE END OF IT. An unelevated run cannot be running as
+    # anybody but the person who started it.
+    if (-not $Elevated) { return $result }
+
+    # UNKNOWN IS NOT A REFUSAL, either half of it. A question that was never
+    # answered says nothing about whose profile anything lands in, and refusing
+    # an install over one would stop captains whose machines are fine.
+    if (-not $RunningAs -or -not $SignedIn) {
+        $result.Reason = 'this install is elevated, and the accounts involved could not both be read'
+        return $result
+    }
+    if ($SignedIn -ieq $RunningAs) {
+        $result.Reason = 'this install is elevated as the account signed in to Windows, which installs for that account'
+        return $result
+    }
+
+    $result.Usable = $false
+    $result.Reason = ("this install is running as $RunningAs, but $SignedIn is signed in to Windows. An install " +
+        'belongs to the account that runs it - the checkout, the one-word command written into the PowerShell ' +
+        "profile, and the per-user tools would all be installed for $RunningAs, and $SignedIn could use none of them.")
+    $result
+}
+
+function Get-FmMachineSessionCheck {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param()
+
+    if (-not $IsWindows) {
+        $verdict = Get-FmMachineSessionVerdict -Elevated $false -RunningAs '' -SignedIn ''
+        $verdict.Reason = 'not Windows, so there is no elevation to tell apart'
+        return $verdict
+    }
+
+    # WHETHER THIS SESSION IS ELEVATED IS NOT ASKED HERE. Test-FmToolElevated
+    # already owns that question - it is what decides whether a route needing
+    # administrator can run - and a second WindowsPrincipal check would be a
+    # second answer for the same fact to drift from. This area asks only the
+    # part that one does not: WHICH account, and whose desk it is.
+    $elevated = Test-FmToolElevated
+
+    $runningAs = ''
+    try { $runningAs = [string]([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) }
+    catch {
+        # UNKNOWN IS NOT A REFUSAL. The verdict below treats an unread account
+        # as a question never answered, which is what it is.
+        Write-Debug "could not read this run's identity: $_"
+    }
+
+    # ASKED ONLY WHEN ELEVATED. Win32_ComputerSystem is a CIM query and the
+    # unelevated path is every normal install, which must not pay for it.
+    #
+    # WHO IS ACTUALLY AT THE KEYBOARD. This reports the interactive console user
+    # even when read from a process elevated as somebody else, which is the whole
+    # reason it is the question asked rather than any environment variable - all
+    # of those describe the elevated token instead.
+    $signedIn = ''
+    if ($elevated) {
+        try {
+            $signedIn = [string](Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).UserName
+        } catch {
+            Write-Debug "could not read the signed-in user: $_"
+        }
+    }
+
+    Get-FmMachineSessionVerdict -Elevated $elevated -RunningAs $runningAs -SignedIn $signedIn
+}
+
 # --- where this checkout is ------------------------------------------------------
 #
 # THE FIFTH THING THE CAPTAIN STILL DID BY HAND. A clone in the wrong place is
@@ -325,7 +440,7 @@ function Get-FmMachineShellLine {
 # top, in one place, and answers it by WRITING rather than by guessing: the only
 # proof that a directory can be installed into is a write it accepted.
 #
-# THREE THINGS MAKE A LOCATION UNUSABLE, and they are told apart because the
+# FOUR THINGS MAKE A LOCATION UNUSABLE, and they are told apart because the
 # remedy differs:
 #
 #   a refused write   proved here, by doing it. Nothing else can be established
@@ -339,6 +454,15 @@ function Get-FmMachineShellLine {
 #                     two links and VERIFIES them at the end of every install, so
 #                     a checkout under OneDrive fails a check nothing here can
 #                     fix from inside.
+#   another account's
+#   profile           THE ONE THE WRITE ABOVE CANNOT PROVE, because whether it
+#                     is refused depends on who is asking. An install run from an
+#                     elevated window accepts the probe and every write after it;
+#                     the captain's own session, which is not elevated, is then
+#                     refused the first record first run tries to write. So this
+#                     one is settled STRUCTURALLY - by whose profile the path is
+#                     in - and asked before the probe, which would otherwise
+#                     report a location that works for nobody as usable.
 #
 # AND ONE MAKES IT A WARNING, not a refusal. Controlled folder access protects
 # Documents, Desktop and the other known folders, and it is OFF by default - so a
@@ -398,7 +522,34 @@ function Get-FmMachineLocationCheck {
         }
     }
 
-    # 2. a folder something else is syncing.
+    # 2. somebody else's user folder. Structural on purpose - see the note above
+    #    this function. C:\Users\<someone-else> is compared against the profile
+    #    of the account asking, so it is the same answer whether or not this run
+    #    happens to be elevated, and the shared C:\Users\Public is not anybody's.
+    $ownProfile = ''
+    try { if ($env:USERPROFILE) { $ownProfile = [System.IO.Path]::GetFullPath($env:USERPROFILE) } }
+    catch { Write-Debug "could not normalize USERPROFILE '$env:USERPROFILE': $_" }
+    if ($ownProfile) {
+        $profilesRoot = ''
+        try { $profilesRoot = [System.IO.Path]::GetDirectoryName($ownProfile) }
+        catch { Write-Debug "could not take the parent of '$ownProfile': $_" }
+        $sameAsRoot = $profilesRoot -and
+            ($full.TrimEnd('\', '/') -ieq $profilesRoot.TrimEnd('\', '/'))
+        if ($profilesRoot -and -not $sameAsRoot -and
+            (Test-FmMachinePathUnder -Path $full -Parent $profilesRoot) -and
+            -not (Test-FmMachinePathUnder -Path $full -Parent $ownProfile) -and
+            -not (Test-FmMachinePathUnder -Path $full -Parent $env:PUBLIC)) {
+            $result.Usable = $false
+            $result.Reason = ('this checkout is inside another account''s user folder, and firstmate runs as you. ' +
+                'Windows does not let one account write into another one''s folder, so first run is refused the ' +
+                'moment it records where your work goes - and starting firstmate as administrator to get past that ' +
+                'installs everything for the administrator instead of for you.')
+            $result.Concerns = @($result.Reason)
+            return $result
+        }
+    }
+
+    # 3. a folder something else is syncing.
     $syncRoots = @($env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer) | Where-Object { $_ }
     $inSync = @($syncRoots | Where-Object { Test-FmMachinePathUnder -Path $full -Parent $_ }).Count -gt 0
     if (-not $inSync) {
@@ -413,7 +564,7 @@ function Get-FmMachineLocationCheck {
         return $result
     }
 
-    # 3. a folder Windows guards when the captain has switched that guard on.
+    # 4. a folder Windows guards when the captain has switched that guard on.
     foreach ($known in @('MyDocuments', 'Desktop', 'MyPictures', 'MyVideos', 'MyMusic', 'Favorites')) {
         $folder = ''
         try { $folder = [System.Environment]::GetFolderPath($known) } catch { Write-Debug "no known folder '$known': $_" }
@@ -423,7 +574,7 @@ function Get-FmMachineLocationCheck {
                 'It is off by default, so this usually works - and where it is on, the write below is what finds out.'))
     }
 
-    # 4. THE ONLY PROOF: a write this machine accepted. A directory as well as a
+    # 5. THE ONLY PROOF: a write this machine accepted. A directory as well as a
     #    file, because the install creates both and a guard can allow one.
     # NOTHING IS CREATED TO ANSWER A QUESTION ABOUT WHAT IS THERE. The probe
     # below uses -Force, which would build the whole missing chain - so a path

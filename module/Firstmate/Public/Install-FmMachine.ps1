@@ -89,6 +89,10 @@ function Get-FmMachineInstallPlan {
     # question is answered before anything is attempted, and the answer is
     # carried all the way to the final report.
     $location = Get-FmMachineLocationCheck -Path $RepoRoot
+    # WHO IS RUNNING IT, asked beside WHERE for the same reason: an install that
+    # belongs to the wrong account produces a checkout the captain cannot write
+    # to, and that is discovered at first run, after everything has been done.
+    $session = Get-FmMachineSessionCheck
     $requirements = @()
 
     foreach ($entry in (Get-FmToolCatalog)) {
@@ -218,6 +222,15 @@ function Get-FmMachineInstallPlan {
     $runtime = Get-FmToolRuntimeStatus
 
     $lines = @()
+    # FIRST, because it is the only one that makes every line below it untrue:
+    # the report describes what this ACCOUNT has, and the captain is a different
+    # one.
+    if (-not $session.Usable) {
+        $lines += @('  THIS INSTALL WOULD BE INSTALLED FOR THE WRONG ACCOUNT:',
+            "    $($session.Reason)",
+            "    To fix it: $($session.Fix)",
+            '')
+    }
     if (-not $location.Usable) {
         $lines += @("  THIS CHECKOUT IS SOMEWHERE THE INSTALL CANNOT FINISH: $($location.Path)",
             "    $($location.Reason)",
@@ -266,6 +279,7 @@ function Get-FmMachineInstallPlan {
         Runtime      = $runtime
         Excluded     = $excluded
         Location     = $location
+        Session      = $session
         RepoRoot     = $RepoRoot
         Missing      = @($requirements | Where-Object { $_.Classification -eq 'missing' })
         Older        = @($requirements | Where-Object { $_.Classification -in @('older', 'unknown-version') })

@@ -2971,6 +2971,57 @@ Describe 'the portable install honours the whole record' {
     }
 }
 
+Describe 'who is running this install' {
+    # "if start with admin then it works fine" - the captain, on the fresh VM.
+    # It is true, and it is the trap: an elevated window on a machine whose
+    # signed-in user is not an administrator runs as a DIFFERENT account, so
+    # everything installs into that account's profile and the captain can use
+    # none of it. The verdict is separated from the asking precisely so this
+    # branch can be tested without a second Windows account.
+
+    It 'stops an install running as an account other than the one signed in' {
+        $verdict = Get-FmMachineSessionVerdict -Elevated $true -RunningAs 'PC\Adit' -SignedIn 'PC\higet'
+        $verdict.Usable | Should -BeFalse
+        $verdict.Reason | Should -Match 'PC\\Adit'
+        $verdict.Reason | Should -Match 'PC\\higet'
+        # The way out must never be the workaround they already found: it names
+        # elevation only to rule it out.
+        $verdict.Fix | Should -Match '(?i)NOT "Run as administrator"'
+        $verdict.Fix | Should -Match 'install\.ps1'
+    }
+
+    It 'says nothing about an install that is not elevated' {
+        $verdict = Get-FmMachineSessionVerdict -Elevated $false -RunningAs 'PC\higet' -SignedIn ''
+        $verdict.Usable | Should -BeTrue
+    }
+
+    It 'allows an administrator elevating their own account' {
+        # The profile does not change, so everything lands where they will find
+        # it. Refusing this would break machines that work today.
+        $verdict = Get-FmMachineSessionVerdict -Elevated $true -RunningAs 'PC\higet' -SignedIn 'PC\higet'
+        $verdict.Usable | Should -BeTrue
+    }
+
+    It 'compares the two accounts without regard to case' {
+        $verdict = Get-FmMachineSessionVerdict -Elevated $true -RunningAs 'PC\Higet' -SignedIn 'pc\higet'
+        $verdict.Usable | Should -BeTrue -Because 'a case difference is the same account, not a different one'
+    }
+
+    It 'does not refuse over a question it could not answer' {
+        # UNKNOWN IS NOT A REFUSAL: an unread account says nothing about whose
+        # profile anything lands in, and refusing on it would stop captains
+        # whose machines are fine.
+        (Get-FmMachineSessionVerdict -Elevated $true -RunningAs 'PC\Adit' -SignedIn '').Usable | Should -BeTrue
+        (Get-FmMachineSessionVerdict -Elevated $true -RunningAs '' -SignedIn 'PC\higet').Usable | Should -BeTrue
+    }
+
+    It 'answers on this machine without throwing, and carries a way out' {
+        $check = Get-FmMachineSessionCheck
+        $check.Usable | Should -BeOfType [bool]
+        $check.Fix | Should -Not -BeNullOrEmpty
+    }
+}
+
 Describe 'where this checkout is, asked before anything is attempted' {
     # THE FIFTH THING THE CAPTAIN STILL DID BY HAND. A clone in the wrong place
     # is refused, and the refusal never says "wrong place" - it says access is
@@ -3034,6 +3085,73 @@ Describe 'where this checkout is, asked before anything is attempted' {
         $result.Usable | Should -BeFalse
         $result.Reason | Should -Match 'no directory at this path'
         Test-Path -LiteralPath $absent | Should -BeFalse -Because 'looking must not create'
+    }
+
+    Context 'a checkout in somebody else''s user folder' {
+        # THE CAPTAIN'S BLOCKER, on a fresh VM. An install run from an elevated
+        # window put the checkout in the administrator's profile; their own
+        # session was then refused '<checkout>\.fm-home' at first run, naming a
+        # path they had never typed.
+        #
+        # THE USER FOLDERS ARE FABRICATED, not borrowed from this machine. A
+        # test that needs a second real Windows account is a test that skips on
+        # the machines that matter - including the one-account VM the captain
+        # rebuilds for every attempt.
+        BeforeEach {
+            $script:SavedProfile = $env:USERPROFILE
+            $script:SavedPublic = $env:PUBLIC
+            $script:UsersRoot = Join-Path $TestDrive 'Users'
+            $env:USERPROFILE = Join-Path $script:UsersRoot 'higet'
+            $env:PUBLIC = Join-Path $script:UsersRoot 'Public'
+            foreach ($who in @('higet', 'Adit', 'Public')) {
+                $null = New-Item -ItemType Directory -Path (Join-Path $script:UsersRoot $who) -Force
+            }
+        }
+        AfterEach {
+            $env:USERPROFILE = $script:SavedProfile
+            $env:PUBLIC = $script:SavedPublic
+        }
+
+        It 'refuses it even though this process can write there perfectly well' {
+            # THE POINT OF SETTLING IT STRUCTURALLY. The directory below is
+            # writable by this process, so the probe would call it usable -
+            # which is exactly what happens when the install runs elevated and
+            # is why the write cannot be the thing that answers this.
+            $checkout = Join-Path (Join-Path $script:UsersRoot 'Adit') 'firstmate'
+            $null = New-Item -ItemType Directory -Path $checkout -Force
+            $result = Get-FmMachineLocationCheck -Path $checkout
+            $result.Usable | Should -BeFalse
+            $result.Reason | Should -Match "another account's user folder"
+            # And it must not answer with the workaround the captain already
+            # found - starting elevated is what caused this.
+            $result.Reason | Should -Not -Match '(?i)^run (it )?as administrator'
+            $result.Reason | Should -Match '(?i)administrator'
+        }
+
+        It 'does not refuse the captain''s own user folder, nor the shared one' {
+            # A MACHINE THAT WORKS TODAY MUST KEEP WORKING. These are the
+            # neighbours the refusal above would be easiest to catch by accident.
+            foreach ($ok in @((Join-Path $env:USERPROFILE 'firstmate-win'),
+                    (Join-Path $env:PUBLIC 'firstmate-win'))) {
+                $null = New-Item -ItemType Directory -Path $ok -Force
+                $result = Get-FmMachineLocationCheck -Path $ok
+                $result.Reason | Should -Not -Match "another account's user folder"
+                $result.Usable | Should -BeTrue
+            }
+        }
+
+        It 'does not refuse a checkout that is nowhere near the user folders' {
+            $elsewhere = Join-Path $TestDrive 'dev'
+            $null = New-Item -ItemType Directory -Path $elsewhere -Force
+            $result = Get-FmMachineLocationCheck -Path $elsewhere
+            $result.Usable | Should -BeTrue
+            $result.Reason | Should -Not -Match "another account's user folder"
+        }
+
+        It 'does not read the user folders'' own root as somebody else''s' {
+            $result = Get-FmMachineLocationCheck -Path $script:UsersRoot
+            $result.Reason | Should -Not -Match "another account's user folder"
+        }
     }
 
     It 'does not read one directory as being inside another that merely shares a prefix' {

@@ -359,6 +359,21 @@ function Initialize-FmBridgeWorkspace {
         absolute, a path that is a file, or a path it cannot create. A workspace
         silently created somewhere other than where the captain typed is worse
         than a refusal they can act on.
+
+        EVERY REFUSAL IS A SENTENCE, NEVER AN EXCEPTION. `Error` is rendered
+        verbatim as the red line on the first-run panel (ui/bridge.html,
+        `setupErr.textContent = r.error`), so a raw .NET message put there is a
+        raw .NET message on the captain's screen. That is not hypothetical: a
+        checkout in another account's profile answered
+
+            Exception calling "WriteAllText" with "3" argument(s): "Access to
+            the path 'C:\Users\Adit\firstmate\.fm-home' is denied."
+
+        on a fresh VM - naming a path the captain never typed, because it is
+        where firstmate ITSELF sits rather than the home they asked for. The
+        raw detail is not lost: it goes to `Detail`, which bin/fm-bridge.ps1
+        logs to its own window, so the panel stays plain and the diagnosis
+        stays available.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([pscustomobject])]
@@ -369,7 +384,7 @@ function Initialize-FmBridgeWorkspace {
 
     $wanted = $Path.Trim().Trim('"')
     if (-not $wanted) {
-        return [pscustomobject]@{ Ok = $false; Path = ''; Error = 'no path given' }
+        return [pscustomobject]@{ Ok = $false; Path = ''; Error = 'no path given'; Detail = '' }
     }
     # Expand %VARS% and ~ so a captain can type what they would type anywhere
     # else, rather than learning this box's rules.
@@ -378,11 +393,11 @@ function Initialize-FmBridgeWorkspace {
         $wanted = Join-Path ([Environment]::GetFolderPath('UserProfile')) $wanted.TrimStart('~', '/', '\')
     }
     if (-not [System.IO.Path]::IsPathRooted($wanted)) {
-        return [pscustomobject]@{ Ok = $false; Path = $wanted
+        return [pscustomobject]@{ Ok = $false; Path = $wanted; Detail = ''
             Error = 'give a full path, such as C:\Users\you\firstmate' }
     }
     if (Test-Path -LiteralPath $wanted -PathType Leaf) {
-        return [pscustomobject]@{ Ok = $false; Path = $wanted; Error = 'that path is a file' }
+        return [pscustomobject]@{ Ok = $false; Path = $wanted; Error = 'that path is a file'; Detail = '' }
     }
     # Normalized, so a pasted path with doubled separators or a trailing slash is
     # recorded the way every later comparison will spell it. Observed storing
@@ -390,13 +405,24 @@ function Initialize-FmBridgeWorkspace {
     # home pointer disagree with everything that reads them back.
     try { $wanted = [System.IO.Path]::GetFullPath($wanted).TrimEnd('\', '/') }
     catch {
-        return [pscustomobject]@{ Ok = $false; Path = $wanted; Error = 'that path cannot be read as a location' }
+        return [pscustomobject]@{ Ok = $false; Path = $wanted; Detail = $_.Exception.Message
+            Error = 'that path cannot be read as a location' }
     }
 
     if (-not $PSCmdlet.ShouldProcess($wanted, 'create the firstmate workspace')) {
-        return [pscustomobject]@{ Ok = $false; Path = $wanted; Error = 'not confirmed' }
+        return [pscustomobject]@{ Ok = $false; Path = $wanted; Error = 'not confirmed'; Detail = '' }
     }
 
+    # Where to send a captain whose folder is the wrong one. This process runs
+    # as THEM - the bridge is never elevated - so their own profile is the right
+    # answer even when the checkout sits in somebody else's.
+    $ownFolder = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE 'firstmate-win' } else { '' }
+
+    # THE TWO WRITES ARE REFUSED SEPARATELY, because they fail for different
+    # reasons and a captain can only act on the one that names the right folder.
+    # The home is the path they typed; the checkout is where firstmate itself
+    # was installed, which they may never have chosen and cannot guess from a
+    # message about the other.
     try {
         foreach ($d in @('', 'config', 'data', 'projects', 'state')) {
             $target = if ($d) { Join-Path $wanted $d } else { $wanted }
@@ -410,6 +436,19 @@ function Initialize-FmBridgeWorkspace {
         if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) {
             [System.IO.File]::WriteAllText($backend, "herdr`n", [System.Text.UTF8Encoding]::new($false))
         }
+    } catch {
+        $why = if (Test-FmAccessRefused -Exception $_.Exception) {
+            $where = if ($ownFolder) { ", such as $ownFolder" } else { '' }
+            "Windows would not let firstmate create a workspace at $wanted. " +
+            "Pick a folder inside your own user folder$where, then press SET IT UP again."
+        } else {
+            "firstmate could not create a workspace at $wanted. " +
+            'Pick another folder and press SET IT UP again; the window firstmate is running in says why.'
+        }
+        return [pscustomobject]@{ Ok = $false; Path = $wanted; Error = $why; Detail = $_.Exception.Message }
+    }
+
+    try {
         # Two records, deliberately. .fm-home is what every entry point reads to
         # resolve the home with no profile and no environment; .fm-workspace is
         # what the bridge reads to know setup has HAPPENED, and survives even if
@@ -419,10 +458,34 @@ function Initialize-FmBridgeWorkspace {
         [System.IO.File]::WriteAllText((Join-Path $RepoRoot '.fm-workspace'), "$wanted`n",
             [System.Text.UTF8Encoding]::new($false))
     } catch {
-        return [pscustomobject]@{ Ok = $false; Path = $wanted; Error = $_.Exception.Message }
+        $why = if (Test-FmAccessRefused -Exception $_.Exception) {
+            # WHICH REMEDY IS RIGHT DEPENDS ON WHOSE FOLDER IT IS, and guessing
+            # wrong is the mistake section 34 of the evidence file was written
+            # about: "access is denied" gets completed with the most familiar
+            # explanation that fits, and "another user" is the most familiar of
+            # all. So this ASKS instead - a checkout already inside the
+            # captain's own profile is not an account problem, whatever the
+            # message would like to say, and telling them to move it somewhere
+            # they already are is worse than saying nothing.
+            $mine = $env:USERPROFILE -and (Test-FmMachinePathUnder -Path $RepoRoot -Parent $env:USERPROFILE)
+            $head = "Your workspace is ready, but firstmate cannot remember it: firstmate itself is " +
+                "installed in $RepoRoot, and Windows will not let this account write there. "
+            if ($mine) {
+                $head + 'That folder is already yours, so something is guarding it rather than refusing ' +
+                'you - Controlled folder access and security software both do this. Allow firstmate there, ' +
+                'then press SET IT UP again.'
+            } else {
+                $move = if ($ownFolder) { " - $ownFolder, say" } else { '' }
+                $head + "Move that folder into your own user folder$move, then run install.ps1 from its new place."
+            }
+        } else {
+            "Your workspace is ready, but firstmate cannot record it in $RepoRoot, where firstmate itself " +
+            'is installed. The window firstmate is running in says why.'
+        }
+        return [pscustomobject]@{ Ok = $false; Path = $wanted; Error = $why; Detail = $_.Exception.Message }
     }
 
-    [pscustomobject]@{ Ok = $true; Path = $wanted; Error = '' }
+    [pscustomobject]@{ Ok = $true; Path = $wanted; Error = ''; Detail = '' }
 }
 
 function Get-FmBridgeTokenPath {

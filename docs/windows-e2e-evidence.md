@@ -9194,3 +9194,184 @@ It is still not this task's to fix, and it is recorded here with a reproduction 
   What they prove is the ROUTE and the lock, which is what they are cited for; the wording of a reply on the current tree would differ.
 - **Nothing here re-examined the first-run workspace question.**
   The home the bridge creates still holds only state, which is correct now that nothing is started in it, and whether the browser should ask that question at all was out of scope.
+## 53. The first run refused a file in a folder the captain never typed - `PROVEN (Windows 11) FOR THE REPRODUCTION, THE CAUSE, BOTH FIXES AND THE UNTOUCHED CASE; THE CAPTAIN'S FRESH VM IS STILL THEIRS`
+
+Measured 2026-09-09 in a worktree of this repo, on Windows 11 Pro 26200, PowerShell 7.6.4.
+
+### 53.1 What the captain saw
+
+The first-run panel asked "Where should firstmate keep its work?" and the box held `C:\Users\higet\firstmate`.
+Pressing SET IT UP answered, in red, on the panel:
+
+```
+Exception calling "WriteAllText" with "3" argument(s): "Access to the path
+'C:\Users\Adit\firstmate\.fm-home' is denied."
+```
+
+Their words: "almost all done now, just facing this one error only. if start with admin then it works fine".
+
+**The two paths are different, and that is the whole tell.**
+`C:\Users\higet\` is the home they asked for; `C:\Users\Adit\` is where the checkout itself was sitting - another account's profile.
+
+### 53.2 The reproduction
+
+A second Windows account is not needed: a checkout the running user cannot write to is enough.
+
+```powershell
+$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+& icacls $fakeCheckout /inheritance:r /grant:r "${me}:(RX)" /q
+Initialize-FmBridgeWorkspace -RepoRoot $fakeCheckout -Path $wantHome -Confirm:$false
+```
+
+Answered, before the change:
+
+```
+Ok    : False
+Error : Exception calling "WriteAllText" with "3" argument(s): "Access to the path
+        '...\checkout\.fm-home' is denied."
+home created anyway? True
+```
+
+**The failure is partial, and that mattered to the message.**
+The workspace the captain asked for HAD been created - all four directories and `config/backend` - and only the two records in the checkout were refused.
+So the sentence they get now leads with that rather than implying nothing happened.
+
+### 53.3 The cause, established rather than assumed
+
+`install.ps1` does not choose where the checkout goes: it runs from `$PSScriptRoot`, wherever the captain put it.
+It is also, by design, not elevated - the comment at `install.ps1` "WINDOWS CAN ELEVATE ONE CHILD, so this run stays unelevated and one step asks" is the rule, and only the Visual C++ runtime step raises a prompt.
+So a normal install cannot produce this shape.
+
+What produces it is the captain's own screenshot: `Administrator: Windows PowerShell`.
+Where the signed-in user is not an administrator, Windows elevates by SWITCHING USER, so that window runs as `Adit`, `$env:USERPROFILE` is `C:\Users\Adit`, and everything the install writes lands there.
+
+**The repo knew whether a run was elevated, and not by whom.**
+`Test-FmToolElevated` (`module/Firstmate/Private/FmToolInstall.ps1`) has always answered "is this session elevated" - it is what decides whether a route needing administrator can run - so `Get-FmMachineSessionCheck` calls it rather than asking `WindowsPrincipal` a second time.
+What was missing is the other half: no code anywhere compared the account a run USES against the account signed in, nothing captured the invoking user's identity, and nothing was passed into the elevated child.
+
+**SECTION 34 IS THE WARNING THIS SECTION HAD TO ANSWER, and it is not answered by ignoring it.**
+That section records a refused launch read as a cross-account problem on the strength of two usernames in two screenshots, briefed as a task on that basis, and disproved by the captain running the whole thing as ONE user.
+Its lesson is that "Access is denied" is a text a reader completes with the most familiar explanation that fits, and permission problems between users are the most familiar of all.
+
+So the honest split for THIS incident:
+
+| established | how |
+| --- | --- |
+| the write to `<checkout>\.fm-home` was refused, and the panel showed the raw exception | the captain's own panel text, reproduced here in 53.2 |
+| starting as administrator makes it work | the captain's report |
+| `install.ps1` is unelevated by design and elevates one child | read in the code, 53.3 above |
+| no code compares the running account against the signed-in one | searched, and `Test-FmToolElevated` is the only elevation question the repo asks |
+
+| INFERRED, not confirmed with the captain | why it is still the reading taken |
+| --- | --- |
+| that their checkout sits in a DIFFERENT account's profile | the denied path and the home they typed differ in the user folder, in one submission rather than across two screenshots, and elevation - which changes who is asking, not what is asked - is what clears it |
+
+Unlike section 34's case, nothing here depends on that inference being right.
+A checkout the running account cannot write to is refused by the write probe whichever explanation holds, and the panel sentence says "this account" rather than naming another one, so it stays true if the cause turns out to be Controlled folder access or security software on the captain's own profile.
+What the inference buys is the EXTRA catch - the account comparison - which fires only on the shape it describes and is silent otherwise.
+
+**The write probe could not have caught it, and this is why it is not the check that does.**
+`Get-FmMachineLocationCheck` proves a location by writing into it - which is the right proof for every other case and the wrong one here, because whether that write is refused depends on who is asking.
+Run elevated, the probe passes and so does every write after it; the captain's own session is refused later, at first run.
+
+### 53.4 What else breaks in this shape, checked
+
+- **Self-update.** `docs/windows-install.md` states the module is used from the checkout so `git pull` updates it - and `git pull` into a checkout this account cannot write to fails the same way.
+- **The profile block.** `bin/fm-setup.ps1` writes to `$PROFILE.CurrentUserAllHosts`, which is the RUNNING account's profile, so the one-word command is installed for `Adit` and the captain's shell never gets it.
+- **The command shim and per-user tools.** `Get-FmMachineShimDirectory` and the tool installs use the running account's `LOCALAPPDATA`, with the same result.
+
+All three are fixed at the root by 53.5 - they are never created wrongly - rather than each being repaired afterwards.
+
+### 53.5 The two fixes, and why not the other options
+
+**Prevent was not available in the form the brief imagined.**
+The install does not place the checkout, so "put it somewhere writable" would mean relocating its own running checkout mid-run, with the module loaded from it, to a directory the captain did not choose.
+
+**Repair was rejected on its merits.**
+Moving or re-permissioning a checkout inside another account's profile needs write access to the thing that is denied, or an ACL rewrite of someone else's profile - which makes elevation the answer, and elevation is the cause.
+
+**Detect, at both ends, is what landed.**
+
+1. `Get-FmMachineSessionCheck` compares the account the install is running as against the one signed in to Windows, and `install.ps1` STOPS before writing anything. Only a different account trips it: an administrator elevating their own account keeps the same profile and is left alone.
+2. `Get-FmMachineLocationCheck` refuses a checkout inside another account's user folder structurally - by whose profile the path is in - because 53.3 says the probe cannot answer this one.
+3. `Initialize-FmBridgeWorkspace` answers every failure with a sentence. The raw .NET text goes to a new `Detail` field, which `bin/fm-bridge.ps1` logs to its own window, so the panel is plain and the diagnosis is not lost.
+
+What the panel shows now, for the captain's exact case:
+
+```
+Your workspace is ready, but firstmate cannot remember it: firstmate itself is
+installed in C:\Users\Adit\firstmate, and Windows does not let this account write
+there. Move that folder into your own user folder - C:\Users\higet\firstmate-win,
+say - and run install.ps1 from its new place.
+```
+
+### 53.6 The install-time fix, proved by running install.ps1
+
+Not reasoned about.
+`install.ps1`, `bin/` and `module/` were staged to a temporary directory, a sentinel `exit 99` was inserted immediately after the halt so that a wiring mistake could not install anything, and the real script was run twice with `-Offline -SkipOptional`.
+Only the machine-fact GATHERING was substituted in the refusing case - the part that cannot be faked on a one-account machine; the verdict and the halt are the shipped code.
+
+```
+=== B. this machine as it really is (must NOT halt)  (exit 99) ===
+  PROOF-SENTINEL: execution passed the halt
+
+=== A. elevated as another account (must halt)  (exit 1) ===
+    THIS INSTALL WOULD BE INSTALLED FOR THE WRONG ACCOUNT:
+      this install is running as PC\Adit, but PC\higet is signed in to Windows. ...
+    STOPPING, because this would install firstmate for the wrong account.
+    close this window, open PowerShell normally - NOT "Run as administrator" - and
+    run install.ps1 there. The one step that genuinely needs administrator asks for
+    it on its own.
+```
+
+**The reason is printed once.**
+It arrives with the plan, immediately above; the halt says what to DO and does not repeat it.
+
+### 53.7 The untouched case, proved on the real entry point
+
+```
+pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./install.ps1 -DetectOnly -Offline
+```
+
+Exit 0, the usual report, no account block and no location refusal, and no probe left behind.
+`Get-FmMachineLocationCheck` was also run directly over the neighbouring cases: the captain's own folder and `C:\Users\Public` are allowed, a path outside the user folders is allowed, and `C:\Users` itself is not read as somebody else's.
+
+### 53.8 The panel, exercised without a screen
+
+The captain's standing rule is that nothing here starts `bin/fm-bridge.ps1` or points a browser at one.
+`tests/ui/first-run-setup.checks.js` drives `ui/bridge.html`'s own script under `node:vm` against a stubbed window with no `speechSynthesis` behind it, and `tests/FmBridgeScreen.Tests.ps1` turns each check into a Pester result.
+Nothing was served, nothing rendered, and the checks assert `H.spoke` is 0.
+
+That pairing is the point: `setupErr.textContent = r.error` paints whatever the server sends, so the guarantee belongs to both halves.
+`tests/FmBridge.Tests.ps1` pins the sentence; these pin that the panel shows it unchanged, keeps itself open to be tried again, and carries no .NET text.
+
+### 53.9 The suite
+
+```
+run 1   2800 passed, 0 failed, 19 skipped
+run 2   2800 passed, 0 failed, 19 skipped   (1823.81s)
+```
+
+Both runs identical, so the number to read is either; run 2 is quoted by the worktree convention section 50 records.
+This worktree's instruction surface had already been repaired by an earlier full run, which is why run 1 here does not carry the nine `this checkout's own instruction surface` failures a fresh Windows clone starts with.
+
+The analyzer is not a separate sweep - `tests/FmAnalyzer.Tests.ps1` runs `Invoke-ScriptAnalyzer` over the repo as part of those tests, and it was also run directly against this tree at every severity: 0 findings.
+
+**One skip is new and is meant to be there.**
+`did not run the panel checks, and here is why` is the `-Skip:([bool]$script:NodeCmd)` counterpart that reports node's ABSENCE rather than passing silently, so on this machine - which has node - it is correctly skipped.
+
+**Three suite runs died mid-way before these two, and none of it was the code.**
+Each was killed while other `pwsh` work of this session ran against the same machine; the two runs above were taken with nothing else running, and both completed cleanly.
+It is recorded because the failure looks exactly like flakiness and is not.
+
+### 53.10 What was NOT proven here
+
+- **The captain's fresh VM has not run this.**
+  Everything above is their shape reproduced on this seat - a checkout the running account cannot write to, and the account comparison driven through its own verdict.
+  Whether their next install ends in a working firstmate is still their measurement.
+- **No elevated install was actually run.**
+  There is one account on this machine, so the refusing case substituted the two facts `Get-FmMachineSessionCheck` reads from Windows.
+  The comparison, the halt and the message are the shipped code; that `Win32_ComputerSystem.UserName` reports the console user from a process elevated as somebody else is taken from its documented behaviour and is NOT measured here.
+- **No repair path exists for a machine already in this state.**
+  It is diagnosed - by first run, and by re-running `install.ps1` - and the captain moves the folder.
+  `fm-doctor` was deliberately left alone rather than given a probe write on every run.

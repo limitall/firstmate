@@ -424,6 +424,33 @@ $plan = Get-FmMachineInstallPlan -SkipOptional:$SkipOptional -Offline:$Offline -
 foreach ($line in $plan.Lines) { Say $line }
 Say ''
 
+# ---- 1a. an install that would belong to somebody else STOPS HERE -----------
+#
+# THE ONE REFUSAL THIS SCRIPT MAKES BEFORE DOING ANYTHING, and it is a refusal
+# rather than a warning because carrying on is what produces the broken machine.
+# Every step below writes into the profile of whoever is running this, so an
+# elevated-as-another-account run installs a firstmate the signed-in captain
+# cannot read, cannot write to, and cannot update - and the first thing they see
+# of it is first run being refused a file in a folder they never chose.
+#
+# -DetectOnly IS EXEMPT. It changes nothing by definition, so reporting what it
+# found is the whole job and there is nothing to protect them from.
+#
+# NOT A UAC PROMPT AND NOT A RETRY. This run cannot drop its own privileges, so
+# the only honest move is to say what is wrong and let them start the right
+# window - which is also why the fix line never says "run as administrator".
+#
+# THE REASON IS ALREADY ON SCREEN, printed with the plan immediately above, so
+# this says what to DO and does not repeat it. A refusal that restates its own
+# paragraph reads as two problems.
+if (-not $plan.Session.Usable -and -not $DetectOnly) {
+    Warn '  STOPPING, because this would install firstmate for the wrong account.'
+    Warn ''
+    Warn "  $($plan.Session.Fix)"
+    Warn ''
+    exit 1
+}
+
 foreach ($enabler in $plan.Enablers) {
     if ($enabler.Satisfied) { continue }
     Warn "  $($enabler.Name) is not on this machine, and it is what provides $($enabler.Enables)."

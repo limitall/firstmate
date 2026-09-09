@@ -38,18 +38,23 @@ Set-StrictMode -Version Latest
 
 $script:ScreenRoot = Split-Path -Parent $PSScriptRoot
 $script:ChecksFile = Join-Path (Join-Path $PSScriptRoot 'ui') 'push-to-talk.checks.js'
+$script:SetupChecksFile = Join-Path (Join-Path $PSScriptRoot 'ui') 'first-run-setup.checks.js'
 $script:PagePath = Join-Path (Join-Path $script:ScreenRoot 'ui') 'bridge.html'
 $script:NodeCmd = Get-Command -Name 'node' -CommandType Application -ErrorAction SilentlyContinue |
     Select-Object -First 1
 
 # Run once, at discovery, so every check below can carry its own name in the
 # report rather than arriving as one opaque pass or fail.
-$script:ScreenRows = @()
-$script:ScreenError = ''
-if (-not $script:NodeCmd) {
-    $script:ScreenError = 'node is not on PATH, so the page checks did not run'
-} else {
-    $raw = & $script:NodeCmd.Source $script:ChecksFile $script:PagePath 2>&1
+#
+# TWO CHECK FILES NOW, read through the same reader: the push-to-talk state
+# machine, and the first-run panel's refusal. They are separate files because
+# they are separate subjects, and one reader because how a check is REPORTED is
+# not something two files should get to disagree about.
+$script:ReadScreenChecks = {
+    param($Node, $File, $Page)
+
+    if (-not $Node) { return @{ Rows = @(); Error = 'node is not on PATH, so the page checks did not run' } }
+    $raw = & $Node.Source $File $Page 2>&1
     $rows = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($line in @($raw)) {
         $text = [string]$line
@@ -71,11 +76,19 @@ if (-not $script:NodeCmd) {
             Write-Debug "not a check line: $text"
         }
     }
-    $script:ScreenRows = $rows.ToArray()
-    if ($script:ScreenRows.Count -eq 0) {
-        $script:ScreenError = "the page checks produced no result: $(@($raw) -join ' ')"
+    if ($rows.Count -eq 0) {
+        return @{ Rows = @(); Error = "the page checks produced no result: $(@($raw) -join ' ')" }
     }
+    @{ Rows = $rows.ToArray(); Error = '' }
 }
+
+$script:PushToTalk = & $script:ReadScreenChecks $script:NodeCmd $script:ChecksFile $script:PagePath
+$script:ScreenRows = $script:PushToTalk.Rows
+$script:ScreenError = $script:PushToTalk.Error
+
+$script:FirstRun = & $script:ReadScreenChecks $script:NodeCmd $script:SetupChecksFile $script:PagePath
+$script:SetupRows = $script:FirstRun.Rows
+$script:SetupError = $script:FirstRun.Error
 
 BeforeAll {
     $script:Root = Split-Path -Parent $PSScriptRoot
@@ -119,6 +132,42 @@ Describe 'the bridge screen: push to talk' -ForEach @{
         It '<Name>' -ForEach $cases {
             if (-not $Ok) {
                 throw "the page answered '$Got' where '$Want' was required"
+            }
+            $Ok | Should -BeTrue
+        }
+    }
+}
+
+# THE OTHER HALF OF A GUARANTEE THE SERVER CANNOT MAKE ALONE. What reaches the
+# captain is whatever bin/fm-bridge.ps1 sends AND whatever this line paints:
+# `setupErr.textContent = r.error`. tests/FmBridge.Tests.ps1 pins the sentence
+# Initialize-FmBridgeWorkspace writes; these pin that the panel shows it, keeps
+# itself open to be tried again, and says nothing aloud doing it.
+Describe 'the bridge screen: the first-run panel' -ForEach @{
+    Rows    = $script:SetupRows
+    Why     = $script:SetupError
+    HasNode = [bool]$script:NodeCmd
+} {
+
+    It 'has the checks file the panel is driven through' {
+        Test-Path -LiteralPath (Join-Path (Join-Path $PSScriptRoot 'ui') 'first-run-setup.checks.js') -PathType Leaf |
+            Should -BeTrue
+    }
+
+    It 'ran the panel checks at all' -Skip:(-not $script:NodeCmd) {
+        $Why | Should -BeNullOrEmpty
+        @($Rows).Count | Should -BeGreaterThan 8
+    }
+
+    It 'did not run the panel checks, and here is why' -Skip:([bool]$script:NodeCmd) {
+        Set-ItResult -Skipped -Because $Why
+    }
+
+    if ($script:SetupRows.Count -gt 0) {
+        $setupCases = @($script:SetupRows | Where-Object { -not $_.Note })
+        It '<Name>' -ForEach $setupCases {
+            if (-not $Ok) {
+                throw "the panel answered '$Got' where '$Want' was required"
             }
             $Ok | Should -BeTrue
         }
