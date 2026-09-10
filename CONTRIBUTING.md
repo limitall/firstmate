@@ -252,6 +252,9 @@ module any other way.
   empirical quirks that must not be "cleaned up".
 - `docs/worktree-isolation-windows.md` - worktree isolation via
   `treehouse get --lease`, and why that replaced scraping a pane's cwd.
+- `docs/console-window.md` - firstmate's own window: what `firstmate` opens now,
+  why the window and the page are one session in two surfaces rather than two
+  sessions contending for one home, and the traps in measuring either.
 - `docs/session-start.md` - the startup digest and bootstrap detection, plus the
   table of function names one area resolves from another. **Read that table
   before naming a cross-area function**: areas are built in parallel and bind to
@@ -565,6 +568,22 @@ built for and states what it still cannot prove.
 - **The reply path needs no session to verify.** `Test-FmBridgeGrounded` and
   `Protect-FmBridgeReply` take a reply and a reading and answer whether the one
   can be substantiated by the other, so a fabrication is provable at a prompt.
+- **The window and the page are ONE session, and only one of them may hold the
+  home.** `start.ps1` opens firstmate's own herdr window and runs the engine
+  there; the hosted session inside it is what takes the helm, and nothing else
+  starts an agent. Anything tempted to give the captain a second visible session
+  is proposing the contest the home record exists to settle - and the loser is
+  whichever surface they happen to be looking at. `docs/console-window.md` owns
+  the shape and `Start-FmConsole` the mechanics; note that it ANSWERS rather than
+  throwing, because a machine with no session provider must still get a
+  firstmate.
+- **Taking the helm is not instant, and the screen may not describe it as a
+  failure.** Measured at about half a minute from a cold start, so every turn a
+  captain types on arrival lands before the home is held.
+  `Get-FmBridgeHomeHolder` answers `starting` there and `none` only when nothing
+  is coming, and NO route may offer a restart: it is the one instruction that
+  makes the wait longer and it repairs nothing when waiting is not the answer.
+  `docs/windows-e2e-evidence.md` section 57 has the measurement.
 - **Whether the hosted session takes the home CANNOT be measured from a
   worktree, and the failure looks exactly like the bug.**
   `Test-FmHookPrimaryScope` requires `--git-dir` to equal `--git-common-dir`, so

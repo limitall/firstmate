@@ -50,6 +50,19 @@ Add `-Unattended` to that command to take the safe default for every question, `
 **It ends by proving itself**, not by announcing success: every tool is run and made to print a version, the doctor re-reads the home and the instruction surface, and this repo's own test suite is executed.
 The last thing printed is a summary of every requirement and what happened to it.
 
+**Then one word starts it**, in any new window:
+
+```powershell
+firstmate
+```
+
+That opens firstmate's own herdr window with the engine running in it, and your browser on the same session.
+Talk to it in the page or watch it work in the window - it is one firstmate, not two - and every worker it starts appears in that same window, running its own CLI, so you can see what is actually happening.
+The window opens in your project when you have one, in the folder holding them when you have several, and where firstmate itself lives when you have none.
+Closing the window stops it.
+If no window can be opened - no herdr on the machine, say - it says why and runs the engine in the terminal you typed in instead, which is what `-NoWindow` asks for deliberately.
+[`console-window.md`](console-window.md) has the design.
+
 ## 2. What setup does, if you run it alone
 
 ```powershell

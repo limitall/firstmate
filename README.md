@@ -43,7 +43,7 @@ Then it offers to start firstmate, once, and only an explicit yes starts anythin
 Whether you accept or not, it also names how to start it yourself:
 
 ```powershell
-firstmate               # start it - opens your browser, everything happens there
+firstmate               # start it - opens firstmate's own window, and your browser on it
 ```
 
 That one-word command works in any NEW window.

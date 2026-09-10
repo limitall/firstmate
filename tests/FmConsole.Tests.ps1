@@ -145,6 +145,7 @@ Describe 'Start-FmConsole' {
         Mock Send-FmHerdrTextLine { $script:sent += $Text; $true }
         Mock Set-FmHerdrTabFocus { $true }
         Mock Remove-FmHerdrPane { $true }
+        Mock Get-FmHerdrLiveTabIdByLabel { '' }
     }
 
     It 'opens a window at the given directory and starts firstmate in it' {
@@ -189,6 +190,26 @@ Describe 'Start-FmConsole' {
         { $script:answer = Start-FmConsole -Cwd $script:cwd -Command 'x' -Confirm:$false } | Should -Not -Throw
         $script:answer.Ok | Should -BeFalse
         $script:answer.Reason | Should -Match 'already exists'
+    }
+
+    # TYPED TWICE. A second engine would land on the port the first one holds and
+    # fail in front of the captain; what they were asking for is to SEE it.
+    It 'brings the existing window forward rather than opening a second one' {
+        Mock Get-FmHerdrLiveTabIdByLabel { 'tExisting' }
+        $c = Start-FmConsole -Cwd $script:cwd -Command 'x' -Confirm:$false
+        $c.Ok | Should -BeFalse
+        $c.AlreadyOpen | Should -BeTrue
+        $c.TabId | Should -Be 'tExisting'
+        Should -Invoke Set-FmHerdrTabFocus -Times 1 -ParameterFilter { $TabId -eq 'tExisting' }
+        Should -Invoke New-FmHerdrTask -Times 0
+        $script:sent.Count | Should -Be 0
+    }
+
+    It 'is not fooled by a tab herdr restored with nothing running in it' {
+        # Get-FmHerdrLiveTabIdByLabel answers '' for a husk, so the console is
+        # created and New-FmHerdrTask's own husk replacement does the rest.
+        Mock Get-FmHerdrLiveTabIdByLabel { '' }
+        (Start-FmConsole -Cwd $script:cwd -Command 'x' -Confirm:$false).Ok | Should -BeTrue
     }
 
     It 'leaves no empty window behind when firstmate could not be started in it' {

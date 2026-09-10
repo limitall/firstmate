@@ -982,6 +982,39 @@ function ConvertTo-FmPaneCommand {
     'pwsh -NoProfile -Command ' + (ConvertTo-FmPowerShellLiteral $Inner)
 }
 
+# Get-FmHerdrLiveTabIdByLabel: the tab id of a LIVE tab carrying this exact
+# label, or ''. A husk - a tab herdr restored from its saved layout with nothing
+# running in it - answers '' rather than its id, because it is not a window
+# anybody is looking at.
+#
+# NOT A SECOND COPY OF New-FmHerdrTask's DUPLICATE RULE. That one answers "may I
+# create this tab", and refusing is the whole of its job; this answers "is one
+# already open", which is a question with a friendlier next step than a refusal.
+# Both read the same list and the same husk test, so they cannot disagree about
+# what is there.
+function Get-FmHerdrLiveTabIdByLabel {
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Session,
+        [Parameter(Mandatory)][string]$WorkspaceId,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $json = Invoke-FmHerdrCliJson -Session $Session -Arguments @('tab', 'list', '--workspace', $WorkspaceId)
+    $tabs = Get-FmJsonValue -InputObject $json -Path 'result.tabs'
+    if ($null -eq $tabs) { return '' }
+    foreach ($tab in @($tabs)) {
+        if ((Get-FmJsonValue -InputObject $tab -Path 'label') -cne $Label) { continue }
+        $tabId = [string](Get-FmJsonValue -InputObject $tab -Path 'tab_id')
+        if (-not $tabId) { continue }
+        $paneId = Get-FmHerdrPaneForTab -Session $Session -WorkspaceId $WorkspaceId -TabId $tabId
+        if (-not $paneId) { continue }
+        if (Test-FmHerdrTabIsHusk -Session $Session -PaneId $paneId) { continue }
+        return $tabId
+    }
+    ''
+}
+
 # Set-FmHerdrTabFocus: bring one tab to the front. Every other create in this
 # file passes --no-focus deliberately - a spawn must never steal the captain's
 # window - so this is the one deliberate exception, used only for the console

@@ -920,7 +920,7 @@ function Get-FmConsoleDirectory {
 }
 function Start-FmConsole {
     param([string]$Cwd, [string]$Command, [string]$Label = 'firstmate')
-    [pscustomobject]@{ Ok = $false; Reason = 'no session provider in this fixture'; Cwd = $Cwd }
+    [pscustomobject]@{ Ok = $false; AlreadyOpen = $false; Reason = 'no session provider in this fixture'; Cwd = $Cwd }
 }
 '@
             }

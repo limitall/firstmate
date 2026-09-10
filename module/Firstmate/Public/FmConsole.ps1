@@ -121,9 +121,13 @@ NOT LABELLED LIKE A TASK. `Get-FmHerdrLiveTask` reads every `fm-*` tab in the
 workspace as a worker, so firstmate's own tab is `firstmate` and never `fm-`
 anything; supervision must not find its own console and reconcile it as a crew.
 
-ONE PER HOME, BY CONSTRUCTION. `New-FmHerdrTask` refuses a duplicate label, so a
-second `firstmate` on a machine that already has a window gets a sentence saying
-so rather than a second console competing for the same port.
+ONE PER HOME, AND A SECOND START JUST BRINGS IT FORWARD. A captain who types
+`firstmate` twice is asking to see firstmate, not to run two of them - and the
+second engine would land on a port the first one holds and fail there. So an
+already-open window is reported as `AlreadyOpen` and focused, and start.ps1 says
+so and stops rather than falling back to a second engine. `New-FmHerdrTask`
+remains the backstop: it refuses the duplicate outright if one appears between
+the read and the create.
 
 .PARAMETER Cwd
 The directory the window opens in. Get-FmConsoleDirectory answers this.
@@ -151,14 +155,15 @@ function Start-FmConsole {
     )
 
     $answer = [pscustomobject]@{
-        PSTypeName = 'Firstmate.Console'
-        Ok         = $false
-        Target     = ''
-        Session    = ''
-        TabId      = ''
-        PaneId     = ''
-        Cwd        = $Cwd
-        Reason     = ''
+        PSTypeName  = 'Firstmate.Console'
+        Ok          = $false
+        AlreadyOpen = $false
+        Target      = ''
+        Session     = ''
+        TabId       = ''
+        PaneId      = ''
+        Cwd         = $Cwd
+        Reason      = ''
     }
     if ($Label.StartsWith('fm-')) {
         $answer.Reason = "a console tab may not be labelled '$Label'; anything starting with fm- is read as a worker"
@@ -185,6 +190,20 @@ function Start-FmConsole {
     }
     if ($null -eq $container) {
         $answer.Reason = 'the session provider did not return a workspace to open a window in'
+        return $answer
+    }
+
+    # ALREADY OPEN IS NOT A FAILURE. Read before creating, so the answer is
+    # "here it is" rather than a refusal the caller has to interpret.
+    $existing = ''
+    try { $existing = Get-FmHerdrLiveTabIdByLabel -Session $container.Session -WorkspaceId $container.WorkspaceId -Label $Label }
+    catch { $existing = '' }
+    if ($existing) {
+        $null = Set-FmHerdrTabFocus -Session $container.Session -TabId $existing -Confirm:$false -ErrorAction SilentlyContinue
+        $answer.AlreadyOpen = $true
+        $answer.Session = $container.Session
+        $answer.TabId = $existing
+        $answer.Reason = 'firstmate is already running in its own window'
         return $answer
     }
 

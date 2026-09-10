@@ -378,6 +378,15 @@ if (-not $NoWindow) {
         [Console]::Out.WriteLine('  Watch it work there; your browser is opening on the same session.')
         [Console]::Out.WriteLine('  Closing that window stops it.')
         [Console]::Out.WriteLine()
+    } elseif ($console.AlreadyOpen) {
+        # TYPED TWICE, WHICH IS A REASONABLE THING TO DO. Starting a second
+        # engine here would land on the port the first one holds and fail in
+        # front of them; the window they were asking to see is now in front of
+        # them instead.
+        $consoleOpened = $true
+        [Console]::Out.WriteLine('  Firstmate is already running in its own window - brought it to the front.')
+        [Console]::Out.WriteLine('  Close that window if you want to start it fresh.')
+        [Console]::Out.WriteLine()
     } else {
         # SAID, NEVER SWALLOWED. A captain who asked for a window they can watch
         # and silently got the old behaviour would think the change never

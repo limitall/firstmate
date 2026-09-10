@@ -9871,3 +9871,201 @@ FmIdentity + FmLock, parent exited    : 95 passed, 4 failed   (parentAlive=False
 
 The first two attempts to reproduce this proved nothing, because waiting on the child kept the launching shell alive; the probe above only works by deliberately outliving it.
 The rule that came out of it is in `CONTRIBUTING.md`: a long detached run needs an anchor process that WAITS on it.
+
+## 57. The screen said it had not taken charge while it was taking charge, and firstmate opened nothing anyone could watch - `PROVEN (Windows 11) FOR BOTH FAULTS, THE CAUSE OF EACH, THE FIX, THE CONTENTION CASE AND THE WINDOW ITSELF, IN A REAL CLONE AND ON A REAL HERDR; THE CAPTAIN'S FRESH VM IS STILL THEIRS`
+
+Dated 2026-09-10, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\23\firstmate-win`, PowerShell 7.6.4, Pester 6.1.0, git 2.49.0.windows.1, Claude Code 2.1.267, herdr 0.7.5-preview protocol 17, Windows 11 Pro 10.0.26200.
+Written on `fm/start-visible-cli` over `main` at `b50558c`.
+
+The captain's verdict on the product, in their words:
+
+> still not satisfied with work, it not works like first mate. on start
+> firstmate it must open herder and in that go to project folder and start
+> claude with dangerous skip command so user can see cli also
+
+and, in the same transcript, their session saying unprompted:
+
+```
+This screen hasn't taken charge of starting and stopping work yet - if it
+stays that way, closing it and running firstmate again is what puts it in
+charge.
+```
+
+Section 52 landed the change that was supposed to make that sentence impossible, and measured it working in twenty-one seconds.
+This section establishes why it was still produced, and it is neither of the two candidates the task named.
+
+### 57.1 The cause: the screen was speaking before it was true
+
+Reproduced in the captain's exact shape - a real `git clone` set up with `bin/fm-setup.ps1`, no `.fm-workspace`, so the browser's first run creates the home - driven over plain loopback with `-NoLaunch`, no browser and nothing speaking.
+The first run was answered through `POST /api/setup` exactly as the page does, and `POST /api/say` sent "hello" one second later, exactly as the captain did.
+
+```
+[19:17:12] setup: ok=True home=...\scratchpad\home engine=True
+[19:17:13] captain: hello
+    t+ 10s  lock: free
+    t+ 29s  lock: held by live harness pid 61380
+[19:18:15] reply at t+62s
+```
+
+The hook is not broken and nothing else holds the home.
+Taking the helm simply takes about half a minute, and the browser opens at t+0.
+
+Measured separately, through the public interface, with NOTHING sent to the session at all:
+
+```
+t+  0s  session up, claude pid 34740
+t+  0s  holder=none canact=False  |  lock: free
+t+ 27s  holder=self canact=True   |  lock: held by live harness pid 34740
+```
+
+So the `SessionStart` hook fires on process start rather than on first input, and every turn inside those twenty-seven seconds read `none`.
+`Get-FmBridgeRoute -Holder 'none'` is what then told the captain the screen had not taken charge and that closing it and running firstmate again is what puts it in charge.
+
+**That advice is wrong in both readings it was written to serve.**
+While the start is under way it throws the elapsed seconds away and begins the wait again; and when the cause is not the clock, restarting does not repair it either.
+Section 52's own header records the trade being made - "both readings have to be true of the same sentence" - and the captain's machine is the counterexample to that being possible.
+
+### 57.2 A defect the proof run found, which reading the code would not have
+
+With `starting` implemented, the first proof run on the real clone still read:
+
+```
+t+  0s  holder=starting  |  lock: free     <- expected
+t+  0s  holder=none      |  lock: free     <- what it actually printed
+```
+
+`New-FmBridgeSession` stamps `Started` with `[datetime]::UtcNow`; the first version of the fix took a `-SessionAge` timespan and `bin/fm-bridge.ps1` computed it as `(Get-Date) - $Session.Started`.
+This seat is five and a half hours ahead of UTC, so a session one second old reported five and a half hours of age - past every bound, straight back to `none`.
+
+The parameter is now `-SessionStartedUtc` and the subtraction happens beside the `UtcNow` it is compared against, so there is no offset left for a caller to get wrong.
+A clock that makes the answer negative reads as a start in progress rather than a failed one, which is the safe direction.
+
+### 57.3 The fix, measured in the same clone
+
+```
+=== THE FIRST START: what the screen would say, second by second ===
+t+  0s  session up, claude pid 26548
+t+  0s  holder=starting  |  lock: free
+t+ 15s  holder=self      |  lock: held by live harness pid 26548
+holder values seen on a first start: starting -> self
+the captain's sentence reachable at any point: False
+
+[starting] This screen is taking charge of the captain's work right now - a start takes a
+[self] (nothing - it just acts)
+```
+
+`none` is never reached on a machine where nothing else holds the home, so the sentence cannot be produced there.
+`none` now means nothing is coming, and points at the window firstmate itself is running in rather than at a restart.
+
+### 57.4 Contention, re-measured on the fixed tree
+
+The constraint is that the terminal and the page must not fight over the home.
+
+```
+=== CONTENTION: a terminal firstmate arrives while the screen holds the home ===
+holder before : lock: held by live harness pid 26548
+terminal said : ok
+holder after  : lock: held by live harness pid 26548
+same holder   : True
+as a session that is NOT the holder sees it -> Holder=elsewhere CanAct=False
+its route names the other window: True
+```
+
+A real terminal firstmate - `claude -p --dangerously-skip-permissions` started in the checkout with `FM_HOME` naming the held home - ran a full turn and did NOT take the lock, and the screen still held it afterwards.
+**No lock mechanic changed in this section.**
+`starting` is a statement about this bridge's own child, read from a record it does not write; `Get-FmBridgeHomeHolder` still reads exactly what `Invoke-FmLock -Status` reads.
+
+### 57.5 The window, opened for real
+
+`start.ps1 -NoBrowser -Port 7461` from that clone, at a bare prompt (see 57.7), on the machine's real herdr.
+
+What the captain read in the terminal they typed in:
+
+```
+  FIRSTMATE
+  starting up...
+
+  Firstmate is running in its own window, at ...\scratchpad\clone.
+  Watch it work there; your browser is opening on the same session.
+  Closing that window stops it.
+```
+
+and the terminal was returned to them - `start.ps1 returned the terminal to the captain: True`.
+
+What herdr had, before and after:
+
+```
+before: [ {"label":"firstmate-win","tab_count":4,"workspace_id":"w9"} ]
+after : [ {"label":"firstmate-win","tab_count":4,"workspace_id":"w9"},
+          {"label":"firstmate","tab_count":1,"workspace_id":"wD","focused":true} ]
+new workspace: wD
+the captain's own workspaces are untouched: True
+```
+
+and what was on the captain screen in that window, read back with `herdr pane read`:
+
+```
+PS ...\scratchpad\clone> pwsh -NoProfile -Command '& ''...\bin\fm-bridge.ps1'' -Port 7461 -NoLaunch'
+fm-bridge: starting the firstmate session...
+fm-bridge: session up (id 6f1cad54-87e6-4c15-8271-0f07c81e5f85)
+fm-bridge: http://127.0.0.1:7461/
+fm-bridge: loopback only, token-guarded. Ctrl+C to stop.
+fm-bridge: open http://127.0.0.1:7461/#t=8ROyZ7lNVU61E0stKnNdOA
+fm-bridge: dictation - your dictation app is running and types what it hears wherever the cursor is
+```
+
+with, in the home:
+
+```
+lock in the home now: held by pid 88592
+```
+
+So the window is real, it is running the engine, and the session inside it took the helm.
+That home had **no projects cloned in it**, which is the captain's own machine, and the window opened at the checkout rather than refusing - `projects cloned in this home: 0`.
+
+The workspace was closed afterwards with `herdr workspace close wD` and the machine returned to one workspace with its four tabs; port 7461 was free again.
+
+### 57.6 The no-herdr path, measured by accident and kept
+
+A run that cleared `HERDR_SOCKET_PATH` as well as the launcher pane broke the herdr CLI in that process outright, which is exactly what a machine without a working herdr looks like:
+
+```
+  FIRSTMATE
+  starting up...
+
+  No window could be opened to run firstmate in:
+    error: 'herdr status --json' failed; is herdr installed correctly?
+  Running it here instead, so you can still watch it.
+
+  Starting the engine and opening your browser.
+  Watch it work here; everything you ask for happens in the page. Ctrl+C stops it.
+
+fm-bridge: starting the firstmate session...
+fm-bridge: session up (id 9e69f255-d84a-407a-abcd-a6fd8d523d97)
+```
+
+A missing window is not a missing firstmate: it says why, and starts the engine where the captain typed.
+
+### 57.7 A measurement trap, recorded so the next task does not pay it
+
+The first attempt at 57.5 put firstmate's tab into the captain's LIVE workspace rather than creating one.
+That is correct behaviour and the wrong shape to be proving: `Get-FmHerdrLauncherIdentity` resolves the launching pane's own workspace, and an agent's rig runs inside a herdr pane.
+Clear `HERDR_PANE_ID` for the child to reproduce a captain at a bare prompt - and clear ONLY that, because clearing `HERDR_SOCKET_PATH` too is what produced 57.6.
+
+That tab was closed and the workspace restored to its four tabs before anything else was measured.
+The same run also confirms the payoff of this design from the other side: a `firstmate` launched from inside a herdr pane joins that pane's workspace, which is precisely how every crewmate `Start-FmWorker` spawns lands in the window firstmate is running in.
+
+### 57.8 What was NOT proven here
+
+- **The captain's fresh VM has not run this.**
+  Everything above is their machine reproduced on this seat, in a clone deliberately put into their shape.
+  Whether their next `firstmate` opens a window they can watch is still their measurement, and it is one command.
+- **No browser, microphone or voice was involved at any point.**
+  Every run used `-NoBrowser` / `-NoLaunch`, `config/bridge-voice` was absent throughout, and the herdr pane was inspected with `herdr pane read` rather than looked at.
+- **A crewmate has not been dispatched into that window in this section.**
+  That crewmate panes land in the launching pane's workspace is measured here only from the other direction, in 57.7 - the captain's own fleet workspace, `firstmate-win`, is exactly a workspace resolved that way and it holds three `fm-*` worker tabs.
+  A dispatch from a console window opened by `start.ps1` is unrun.
+- **The focus call is best effort and its EFFECT is unmeasured.**
+  `herdr tab focus` returned ok and the new workspace reported `"focused":true`, but whether the operating system raised a window in front of a captain is not something `pane read` can answer.
+- **The panel row for this screen is proven by its unit tests, not by a browser.**
+  `Get-FmBridgeHouseWork -Holder` is exercised in `tests/FmBridge.Tests.ps1`; what a captain SEES in the panel while a start is under way has not been looked at, because looking at it means opening the page.
