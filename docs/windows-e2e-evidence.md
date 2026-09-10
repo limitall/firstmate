@@ -9576,3 +9576,192 @@ Those nine are the fresh-worktree surface and not this change - `is healthy`, `w
 **That repair is also a trap worth writing down.**
 It leaves `.claude/skills` materialised and `git status` dirty without the skip-worktree flag `CLAUDE.md` gets, so a `git add -A` after a full run sweeps twenty `SKILL.md` files and a deleted symlink into the commit.
 Stage explicit paths, check `git diff main HEAD --name-only`, and re-apply `git update-index --skip-worktree .claude/skills`.
+## 55. The install that should have stopped, and why it did not - `PROVEN (Windows 11) FOR THE CAUSE, ALL FOUR REFUSAL SHAPES ON THE REAL ENTRY POINT, THE REMEDY END TO END AND THE UNTOUCHED CASE; NO SECOND WINDOWS ACCOUNT WAS USED, AND THE CAPTAIN'S FRESH VM IS STILL THEIRS`
+
+Section 53 landed a guard that refuses the wrong-account install before it writes anything.
+On a fresh VM on 2026-09-10 the captain met the plain-English first-run sentence that section shipped, in the browser, after a FULL install.
+Their words: "new errro".
+The guard was supposed to have stopped that install half an hour earlier.
+
+### 55.1 Which of the three possible answers it was, established
+
+The brief named three, and two are ruled out by measurement rather than by argument.
+
+**They did not install from a copy older than the guard.**
+`a2d1b36` is one commit, and it introduced BOTH `Get-FmMachineSessionCheck` and the sentence "Your workspace is ready, but firstmate cannot remember it".
+The captain received that sentence, so their checkout was at or after `a2d1b36`, so the guard was in it.
+
+```
+git show a2d1b36 -- module/Firstmate/Private/FmMachine.ps1 | Select-String '^\+function Get-FmMachineSession'
+  90:+function Get-FmMachineSessionVerdict {
+ 137:+function Get-FmMachineSessionCheck {
+git show a2d1b36 | Select-String 'cannot remember it'
+ 191:+Your workspace is ready, but firstmate cannot remember it: firstmate itself is
+```
+
+**The guard did not fire and get skipped.**
+The halt is `exit 1`, it takes no switch, and the captain completed a full install - so `$plan.Session.Usable` was true when it was read.
+
+That leaves the second answer: the guard did not fire, and it has a hole.
+
+### 55.2 The hole, measured on the real entry point
+
+The captain's shape was staged - a checkout inside another account's user folder, run as the account that is NOT that one - and the real `install.ps1` was run with a sentinel `exit 99` where the halt should be, so a wiring mistake could not install anything.
+The user folders are substituted through `$env:USERPROFILE`, which is the fact `Get-FmMachineLocationCheck` actually reads; a second real Windows account is not needed for the structural half and is not available on this seat.
+
+```
+  PROOF-SENTINEL: execution passed the halt
+  PROOF-SESSION:  Usable=True  Elevated=False RunningAs=[ADMIN\ADMIN] SignedIn=[]
+  PROOF-LOCATION: Usable=False Reason=this checkout is inside another account's user
+                  folder, and firstmate runs as you...
+
+EXIT CODE: 99   (1 = halted, 99 = passed the halt)
+```
+
+**The check that could have stopped it answered correctly, and nothing was listening.**
+`Get-FmMachineLocationCheck` named the captain's fault exactly.
+`install.ps1` printed that sentence as one line of a forty-line plan and installed anyway, because the only verdict wired to the halt was `$plan.Session` - the ACCOUNT comparison, which on this shape is rightly silent.
+
+**So the wrong guard was wired.**
+The account comparison infers "this install will land where the captain cannot reach it" from two Windows facts, one of which was only asked when elevated and can legitimately come back blank.
+The location check answers a stronger question directly from the path, needs neither fact, and cannot be blank.
+It was the one with no halt.
+
+This holds whichever way the captain started their window, which matters because that is the one thing here that cannot be measured from this seat.
+If they installed as their own account from a checkout in another account's folder, the location check was the guard that should have stopped it.
+If they installed from a window belonging to the other account, the account comparison was - and 55.3 is why that one could still have been silent.
+
+### 55.3 The second hole: elevation was a precondition for asking
+
+`Get-FmMachineSessionVerdict` returned early on `if (-not $Elevated) { return $result }`, over the comment "an unelevated run cannot be running as anybody but the person who started it".
+That is not true on Windows.
+`runas /user:`, shift-right-click "Run as different user", a scheduled task and a service all start an UNELEVATED process as another account, and every one of them installs a firstmate the signed-in captain cannot read.
+
+The whole decision surface, driven through the pure verdict before the change - one refusal in ten:
+
+| Elevated | RunningAs | SignedIn | Usable |
+| --- | --- | --- | --- |
+| True | PC\Adit | PC\higet | **False** |
+| True | PC\Adit | PC\Adit | True |
+| True | PC\Adit | *unread* | True |
+| True | *unread* | PC\higet | True |
+| True | *unread* | *unread* | True |
+| False | PC\Adit | PC\higet | True |
+| False | PC\Adit | PC\Adit | True |
+| False | PC\Adit | *unread* | True |
+| False | *unread* | PC\higet | True |
+| False | *unread* | *unread* | True |
+
+Row 6 is the hole: a run that IS somebody else's, said to be fine.
+
+**The reason the question was gated did not survive being measured.**
+The comment said the unelevated path "must not pay for" a CIM query.
+
+```
+Win32_ComputerSystem: 193 ms -> [ADMIN\ADMIN]     (cold)
+Win32_ComputerSystem:  30 ms -> [ADMIN\ADMIN]
+Win32_ComputerSystem:  30 ms -> [ADMIN\ADMIN]
+```
+
+190 ms once, against an install that starts a process per tool and downloads gigabytes.
+It is asked on every run now.
+"Unknown is not a refusal" is unchanged: only two positively-read, different names refuse.
+
+### 55.4 Where the halt now is, and what that saves
+
+The two questions are answered from two strings and one probe write.
+The plan they used to be buried in spends the next half-minute detecting tools:
+
+```
+plan, offline : 11.4 s
+plan, online  : 29.1 s
+plan on a machine with no tools on PATH: 24.5 s
+```
+
+`Get-FmMachineInstallPrerequisite` splits them out, `install.ps1` halts on it before the plan exists, and the plan is handed the verdict the halt was taken on so the captain's checkout takes one probe write per install rather than two.
+
+**Everything still ahead of the halt is either free or survives the remedy.**
+The PowerShell 7 bootstrap runs above it and cannot move: it is in the Windows PowerShell 5.1 block, which has no module to ask.
+It installs into the RUNNING account's own profile, so a captain who moves their checkout and re-runs finds it already there.
+Guarding it would mean a second copy of the location contract in a block that cannot load the module, which is the drift the one-owner rule exists to stop.
+
+**And the refusal now arrives alone.**
+It used to print under forty lines of tool inventory, which is how a stop gets read as one more thing that went wrong rather than as the thing to do.
+
+### 55.5 The four cases, run end to end on the real `install.ps1`
+
+Same sentinel, same staged roots.
+Only the machine FACTS were substituted, and only in the two account cases - the verdict, the wiring, the halt and the exit code are the shipped script.
+
+```
+=== the captain's exact shape: checkout in another account's user folder ===
+  THIS CHECKOUT IS SOMEWHERE THE INSTALL CANNOT FINISH: ...\Users\Adit\firstmate
+    this checkout is inside another account's user folder, and firstmate runs as you...
+    To fix it: move this checkout to ...\Users\higet\firstmate-win and run install.ps1
+               from its new place
+  STOPPING. Nothing has been installed, and nothing above needs undoing.
+  Do the line marked "To fix it" and run this script again.
+EXIT: 1
+
+=== elevated as another account ===
+  THIS INSTALL WOULD BE INSTALLED FOR THE WRONG ACCOUNT:
+    this install is running as PC\Adit, but PC\higet is signed in to Windows...
+    To fix it: close this window, open PowerShell as PC\higet - not "Run as
+               administrator"... - and run install.ps1 there.
+EXIT: 1
+
+=== NOT elevated, running as another account - the hole 55.3 closes ===
+  (identical refusal)
+EXIT: 1
+
+=== correctly placed, correct account - must be untouched and silent ===
+  FIRSTMATE - install
+  PROOF-SENTINEL: execution passed the halt
+EXIT: 99   (12.3 s)
+```
+
+The silent case says nothing whatever about where the checkout is or who is running - not a reassurance, nothing.
+`-DetectOnly` was run against the refusing facts and exited past the halt with the report, as it must.
+
+### 55.6 The remedy sentence, executed rather than reasoned about
+
+The repo was telling the captain two different things for one fault: the install report said `git clone <this repo> "<suggestion>"`, and first run said "move that folder... then run install.ps1 from its new place".
+The remedy now has one owner, `Get-FmMachineLocationCheck`, which sets a `Fix` beside every `Reason`.
+
+The sentence it gives was executed:
+
+```
+1. a checkout at <tmp>\Users\Adit\firstmate, wired by bin/fm-setup.ps1 with
+   -ProfilePath / -HookSettingsPath / -HomePointerPath redirected so nothing
+   on this machine was touched                       -> exit 0, healthy
+2. Move-Item to <tmp>\Users\higet\firstmate-win      -> ok
+3. bin/fm-setup.ps1 re-run from the new place        -> exit 0, healthy
+```
+
+**Two things are stale after the move, and the re-run is what repairs them - which is why it is not garnish.**
+
+| after the move | after the re-run |
+| --- | --- |
+| the profile block still names `...\Users\Adit\firstmate` | it names the new place, and not the old one |
+| `.claude\skills` is an absolute link still pointing into `...\Users\Adit\firstmate\.agents\skills`, a folder that no longer exists | it points at the new checkout's own `.agents\skills` |
+
+`.fm-home` needs nothing: it names the HOME, which does not move.
+
+Only the case with nothing to move - a path holding no checkout - says "clone" now.
+
+### 55.7 Should first run be able to say this at all
+
+Yes, and it stays.
+With the halt wired, an install cannot leave a machine in this state, so the panel is now only reachable when the checkout MOVED or its permissions changed after a good install - which is a real state, and the sentence is right for it.
+Reaching it from a fresh install was the defect, and that is what 55.5 closes.
+
+### 55.8 What was NOT proven here
+
+- **No second Windows account was used.**
+  There is one account on this seat.
+  The location half needs none - it is structural, and `$env:USERPROFILE` is the fact it reads - and the account half substituted the two machine facts exactly as section 53.6 did.
+  That `Win32_ComputerSystem.UserName` reports the console user from a process running as somebody else is still taken from its documented behaviour and is still NOT measured here.
+- **How the captain actually started their window is unknown.**
+  55.2 says why it does not need to be: the fix covers both readings, and neither is guessed at in anything that ships.
+- **The captain's fresh VM has not run this.**
+  Whether their next install ends in a working firstmate is still their measurement.

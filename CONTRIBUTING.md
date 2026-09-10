@@ -317,6 +317,8 @@ module any other way.
   why the route table has exactly one owner (a second one installed two tools from npm packages that were not the software),
   why no route may need administrator, the three-outcome classification and why `older` and `unsupported` must never be blurred,
   and why `install.ps1` carries no `#requires` line.
+  It also owns the two things `install.ps1` refuses over - where the checkout is and which account the run belongs to -
+  and the rule that both are asked before any tool is looked at, because a check whose answer nothing halts on is a check that does not exist.
   It also owns the rule that a launch this machine REFUSES is an outcome and never an exception:
   a captured child launch is on .NET's `CreateProcess` path while an uncaptured one is not,
   PowerShell raises the refusal as a terminating `ApplicationFailedException` whatever the preference says,

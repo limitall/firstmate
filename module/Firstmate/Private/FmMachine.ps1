@@ -334,11 +334,11 @@ function Get-FmMachineShellLine {
 # it is working for).
 #
 # THE DECISION, SEPARATE FROM THE ASKING, and split for a reason that is not
-# tidiness: proving the refusal otherwise needs a second Windows account and a
-# real elevation, so the branch that stops the captain's install would be the
-# one branch no test could reach. Everything here is a pure function of three
-# facts, and Get-FmMachineSessionCheck below is the only part that must run on a
-# real machine to learn them.
+# tidiness: proving the refusal otherwise needs a second Windows account, so the
+# branch that stops the captain's install would be the one branch no test could
+# reach. Everything here is a pure function of three facts, and
+# Get-FmMachineSessionCheck below is the only part that must run on a real
+# machine to learn them.
 function Get-FmMachineSessionVerdict {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -350,39 +350,50 @@ function Get-FmMachineSessionVerdict {
 
     # THE WAY OUT TRAVELS WITH THE VERDICT, because install.ps1 is the caller
     # that most needs it and reads this through the plan rather than by calling
-    # into the module. Elevation is not the fix and is never offered as one:
-    # install.ps1 is built to run unelevated and raises the single administrator
-    # prompt it needs by itself.
+    # into the module. It is filled in on the refusing branch below, where the
+    # accounts it has to name are known; nothing reads it on a verdict that
+    # allows the install.
     $result = [pscustomobject]@{
         Usable    = $true
         Elevated  = $Elevated
         RunningAs = $RunningAs
         SignedIn  = $SignedIn
         Reason    = 'this install is running as the account signed in to Windows'
-        Fix       = 'close this window, open PowerShell normally - NOT "Run as administrator" - and run ' +
-                    'install.ps1 there. The one step that genuinely needs administrator asks for it on its own.'
+        Fix       = ''
     }
 
-    # NOT ELEVATED IS THE END OF IT. An unelevated run cannot be running as
-    # anybody but the person who started it.
-    if (-not $Elevated) { return $result }
-
+    # ELEVATION IS NOT WHAT MAKES A RUN BELONG TO SOMEBODY ELSE, and reading it
+    # as though it were is what this used to get wrong. The rule here was "not
+    # elevated is the end of it - an unelevated run cannot be running as anybody
+    # but the person who started it", which is simply not true on Windows:
+    # `runas /user:`, shift-right-click "Run as different user", a scheduled task
+    # and a service all start an UNELEVATED process as another account, and every
+    # one of them installs a firstmate the signed-in captain cannot read. So
+    # $Elevated is REPORTED and is no longer asked before comparing. It stays on
+    # the record because the install prints it and because it is what tells the
+    # captain WHY their window belongs to someone else.
+    #
     # UNKNOWN IS NOT A REFUSAL, either half of it. A question that was never
     # answered says nothing about whose profile anything lands in, and refusing
     # an install over one would stop captains whose machines are fine.
     if (-not $RunningAs -or -not $SignedIn) {
-        $result.Reason = 'this install is elevated, and the accounts involved could not both be read'
+        $result.Reason = 'the accounts involved could not both be read, so nothing here can say whose profile this install lands in'
         return $result
     }
-    if ($SignedIn -ieq $RunningAs) {
-        $result.Reason = 'this install is elevated as the account signed in to Windows, which installs for that account'
-        return $result
-    }
+    if ($SignedIn -ieq $RunningAs) { return $result }
 
     $result.Usable = $false
     $result.Reason = ("this install is running as $RunningAs, but $SignedIn is signed in to Windows. An install " +
         'belongs to the account that runs it - the checkout, the one-word command written into the PowerShell ' +
         "profile, and the per-user tools would all be installed for $RunningAs, and $SignedIn could use none of them.")
+    # THE WAY OUT NAMES THE ACCOUNT, because "open PowerShell normally" is not
+    # actionable to someone who does not yet know that their window is not
+    # theirs. Elevation is not the fix and is never offered as one: install.ps1
+    # is built to run unelevated and raises the single administrator prompt it
+    # needs by itself.
+    $result.Fix = ("close this window, open PowerShell as $SignedIn - not " +
+        '"Run as administrator", and not a window opened as anyone else - and run install.ps1 there. ' +
+        'The one step that genuinely needs administrator asks for it on its own.')
     $result
 }
 
@@ -412,20 +423,23 @@ function Get-FmMachineSessionCheck {
         Write-Debug "could not read this run's identity: $_"
     }
 
-    # ASKED ONLY WHEN ELEVATED. Win32_ComputerSystem is a CIM query and the
-    # unelevated path is every normal install, which must not pay for it.
+    # ASKED ON EVERY RUN, and it used to be asked only when elevated - "the
+    # unelevated path is every normal install, which must not pay for it". That
+    # reason did not survive being measured: this CIM query is 190 ms cold and
+    # 30 ms warm on the seat that wrote this, against an install that starts a
+    # process per tool and downloads gigabytes. What the saving cost was the
+    # whole unelevated half of the question, and a run does not have to be
+    # elevated to belong to somebody else - see Get-FmMachineSessionVerdict.
     #
     # WHO IS ACTUALLY AT THE KEYBOARD. This reports the interactive console user
-    # even when read from a process elevated as somebody else, which is the whole
+    # even when read from a process running as somebody else, which is the whole
     # reason it is the question asked rather than any environment variable - all
-    # of those describe the elevated token instead.
+    # of those describe the running token instead.
     $signedIn = ''
-    if ($elevated) {
-        try {
-            $signedIn = [string](Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).UserName
-        } catch {
-            Write-Debug "could not read the signed-in user: $_"
-        }
+    try {
+        $signedIn = [string](Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).UserName
+    } catch {
+        Write-Debug "could not read the signed-in user: $_"
     }
 
     Get-FmMachineSessionVerdict -Elevated $elevated -RunningAs $runningAs -SignedIn $signedIn
@@ -475,13 +489,30 @@ function Get-FmMachineLocationCheck {
 
     $suggestion = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE 'firstmate-win' } else { 'a directory in your own profile' }
     $concerns = [System.Collections.Generic.List[string]]::new()
+    # THE REMEDY IS OWNED HERE, one per reason, because the reasons do not share
+    # one. A checkout that already exists is MOVED and the install re-run from
+    # its new place; a path that holds no checkout at all has nothing to move and
+    # is cloned. Both the install's halt and its final report read this rather
+    # than writing a second sentence of their own - two copies of a remedy is how
+    # the repo ended up telling the captain to clone at install time and to move
+    # at first run, for the same fault.
+    #
+    # "MOVE IT, THEN RE-RUN" IS EXECUTED, NOT REASONED ABOUT: a wired checkout
+    # was moved into another folder and install.ps1's setup re-run from there.
+    # The move alone is NOT enough and that is why the second half of the
+    # sentence is not garnish - the profile block still named the old path, and
+    # .claude/skills is an absolute link that survived the move still pointing
+    # into the folder that no longer exists. The re-run repaired both.
+    # docs/windows-e2e-evidence.md section 55 has the run.
     $result = [pscustomobject]@{
         Path       = $Path
         Usable     = $true
         Reason     = ''
         Suggestion = $suggestion
+        Fix        = ''
         Concerns   = @()
     }
+    $moveThere = "move this checkout to $suggestion and run install.ps1 from its new place"
 
     $full = $Path
     try { $full = [System.IO.Path]::GetFullPath($Path) } catch { Write-Debug "could not normalize '$Path': $_" }
@@ -493,6 +524,7 @@ function Get-FmMachineLocationCheck {
         $result.Reason = ('this checkout is on a network share. The one-word command this install writes points straight ' +
             'at start.ps1 here, so it works only while the share is mounted, and Windows applies a stricter execution ' +
             'policy to scripts that come from one.')
+        $result.Fix = $moveThere
         $result.Concerns = @($result.Reason)
         return $result
     }
@@ -514,6 +546,7 @@ function Get-FmMachineLocationCheck {
                 $result.Usable = $false
                 $result.Reason = ("this checkout is on $what. The one-word command this install writes points straight " +
                     'at start.ps1 here, so it stops working the moment that drive is not there.')
+                $result.Fix = $moveThere
                 $result.Concerns = @($result.Reason)
                 return $result
             }
@@ -544,6 +577,7 @@ function Get-FmMachineLocationCheck {
                 'Windows does not let one account write into another one''s folder, so first run is refused the ' +
                 'moment it records where your work goes - and starting firstmate as administrator to get past that ' +
                 'installs everything for the administrator instead of for you.')
+            $result.Fix = $moveThere
             $result.Concerns = @($result.Reason)
             return $result
         }
@@ -560,6 +594,7 @@ function Get-FmMachineLocationCheck {
         $result.Reason = ('this checkout is inside a OneDrive folder. OneDrive turns files into placeholders it fetches on ' +
             'demand and does not carry a junction or a symlink, and this repo commits two links that every install ' +
             'repairs and then verifies - so that verification fails here for a reason nothing in this repo can fix.')
+        $result.Fix = $moveThere
         $result.Concerns = @($result.Reason)
         return $result
     }
@@ -583,6 +618,9 @@ function Get-FmMachineLocationCheck {
     if (-not (Test-Path -LiteralPath $full -PathType Container)) {
         $result.Usable = $false
         $result.Reason = 'there is no directory at this path, so there is nothing to install into.'
+        # THE ONE CASE WITH NOTHING TO MOVE, so it is the one case that does not
+        # say "move it".
+        $result.Fix = "clone this repo into $suggestion and run install.ps1 there"
         $concerns.Add($result.Reason)
         $result.Concerns = @($concerns)
         return $result
@@ -605,6 +643,10 @@ function Get-FmMachineLocationCheck {
         $result.Reason = ("this machine refused a write into the checkout: $($_.Exception.Message) Nothing can be installed " +
             'into a directory that will not accept a file. Security software and Controlled folder access, which protects ' +
             'Documents, are the two that refuse a write this way.')
+        # BOTH HALVES, because this is the one refusal whose cause may be on the
+        # captain's own folder: allowing firstmate there fixes it where the
+        # guard is theirs to lift, and moving it fixes it where it is not.
+        $result.Fix = "allow firstmate to write here, or $moveThere"
         $concerns.Add($result.Reason)
         $result.Concerns = @($concerns)
         return $result
@@ -648,6 +690,58 @@ function Test-FmMachinePathUnder {
     }
 }
 
+# WHERE AND WHO, AS ONE ANSWER, and it is a pure function of the two verdicts
+# for the same reason Get-FmMachineSessionVerdict is: the shape that stops the
+# captain's install cannot be produced on a one-account machine, so the DECISION
+# must be reachable without one. Get-FmMachineInstallPrerequisite is the half
+# that has to run on a real machine.
+#
+# THE ACCOUNT IS PRINTED FIRST, and the order is load-bearing rather than
+# cosmetic. A window running as somebody else makes the location answer wrong
+# too - the checkout is compared against THAT account's profile - so a captain
+# who fixes the window often finds the location was never a problem. The reverse
+# never holds: moving a checkout cannot change whose window this is. Leading with
+# the location would send some captains to move a folder that did not need it.
+#
+# BOTH ARE PRINTED WHEN BOTH ARE WRONG. A captain rebuilding a VM for every
+# attempt must not learn one fault per attempt.
+function Get-FmMachineInstallPrerequisiteVerdict {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)]$Location,
+        [Parameter(Mandatory)]$Session
+    )
+
+    $lines = @()
+    if (-not $Session.Usable) {
+        $lines += @('  THIS INSTALL WOULD BE INSTALLED FOR THE WRONG ACCOUNT:',
+            "    $($Session.Reason)",
+            "    To fix it: $($Session.Fix)",
+            '')
+    }
+    if (-not $Location.Usable) {
+        $lines += @("  THIS CHECKOUT IS SOMEWHERE THE INSTALL CANNOT FINISH: $($Location.Path)",
+            "    $($Location.Reason)",
+            "    To fix it: $($Location.Fix)",
+            '')
+    } elseif (@($Location.Concerns).Count -gt 0) {
+        # A CONCERN IS NOT A REFUSAL, so it is named and the run carries on -
+        # Controlled folder access is off by default, and the write below it is
+        # what finds out.
+        $lines += @("  where this checkout is: $($Location.Path)")
+        foreach ($concern in @($Location.Concerns)) { $lines += "    $concern" }
+        $lines += ''
+    }
+
+    [pscustomobject]@{
+        Usable   = ($Location.Usable -and $Session.Usable)
+        Location = $Location
+        Session  = $Session
+        Lines    = $lines
+    }
+}
+
 # The location, as one line of the install's own verification vocabulary.
 function Get-FmMachineLocationVerification {
     [CmdletBinding()]
@@ -657,12 +751,12 @@ function Get-FmMachineLocationVerification {
     if (-not $Location.Usable) {
         return New-FmInstallCheck -Name 'checkout location' -Status 'missing' -Required `
             -Detail "$($Location.Path) - $($Location.Reason)" `
-            -Fix "clone it somewhere the machine does not guard, and run install.ps1 there: git clone <this repo> `"$($Location.Suggestion)`""
+            -Fix $Location.Fix
     }
     if (@($Location.Concerns).Count -gt 0) {
         return New-FmInstallCheck -Name 'checkout location' -Status 'warn' `
             -Detail "$($Location.Path) - $(@($Location.Concerns)[0])" `
-            -Fix "if anything below is refused, clone into `"$($Location.Suggestion)`" instead"
+            -Fix "if anything below is refused, move this checkout to $($Location.Suggestion) instead"
     }
     New-FmInstallCheck -Name 'checkout location' -Status 'ok' -Detail "$($Location.Path) - $($Location.Reason)"
 }

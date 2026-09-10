@@ -2990,16 +2990,28 @@ Describe 'who is running this install' {
         $verdict.Fix | Should -Match 'install\.ps1'
     }
 
-    It 'says nothing about an install that is not elevated' {
-        $verdict = Get-FmMachineSessionVerdict -Elevated $false -RunningAs 'PC\higet' -SignedIn ''
-        $verdict.Usable | Should -BeTrue
+    It 'stops a run belonging to another account even when it is not elevated' {
+        # THE HOLE THIS CLOSES. The rule used to be "not elevated is the end of
+        # it - an unelevated run cannot be running as anybody but the person who
+        # started it", and that is not true on Windows: `runas /user:`,
+        # shift-right-click "Run as different user", a scheduled task and a
+        # service all start an UNELEVATED process as another account. Every one
+        # of them installs a firstmate the signed-in captain cannot read, which
+        # is the same broken machine by a different door.
+        $verdict = Get-FmMachineSessionVerdict -Elevated $false -RunningAs 'PC\Adit' -SignedIn 'PC\higet'
+        $verdict.Usable | Should -BeFalse -Because 'elevation is not what makes a run belong to somebody else'
+        $verdict.Fix | Should -Match 'PC\\higet' -Because 'the way out has to name the account to open the window as'
     }
 
-    It 'allows an administrator elevating their own account' {
-        # The profile does not change, so everything lands where they will find
-        # it. Refusing this would break machines that work today.
-        $verdict = Get-FmMachineSessionVerdict -Elevated $true -RunningAs 'PC\higet' -SignedIn 'PC\higet'
-        $verdict.Usable | Should -BeTrue
+    It 'says nothing about a run as the signed-in account, elevated or not' {
+        # An administrator elevating their OWN account keeps the same profile, so
+        # everything lands where they will find it. Refusing that would break
+        # machines that work today - and so would refusing the unelevated run,
+        # which is every normal install.
+        foreach ($elevated in @($true, $false)) {
+            (Get-FmMachineSessionVerdict -Elevated $elevated -RunningAs 'PC\higet' -SignedIn 'PC\higet').Usable |
+                Should -BeTrue -Because 'a machine that works today must keep working'
+        }
     }
 
     It 'compares the two accounts without regard to case' {
@@ -3010,15 +3022,47 @@ Describe 'who is running this install' {
     It 'does not refuse over a question it could not answer' {
         # UNKNOWN IS NOT A REFUSAL: an unread account says nothing about whose
         # profile anything lands in, and refusing on it would stop captains
-        # whose machines are fine.
-        (Get-FmMachineSessionVerdict -Elevated $true -RunningAs 'PC\Adit' -SignedIn '').Usable | Should -BeTrue
-        (Get-FmMachineSessionVerdict -Elevated $true -RunningAs '' -SignedIn 'PC\higet').Usable | Should -BeTrue
+        # whose machines are fine. Checked at both elevations now that neither
+        # is a precondition for asking.
+        foreach ($elevated in @($true, $false)) {
+            (Get-FmMachineSessionVerdict -Elevated $elevated -RunningAs 'PC\Adit' -SignedIn '').Usable | Should -BeTrue
+            (Get-FmMachineSessionVerdict -Elevated $elevated -RunningAs '' -SignedIn 'PC\higet').Usable | Should -BeTrue
+        }
     }
 
-    It 'answers on this machine without throwing, and carries a way out' {
+    It 'answers on this machine without throwing, and carries a way out when it refuses' {
         $check = Get-FmMachineSessionCheck
         $check.Usable | Should -BeOfType [bool]
-        $check.Fix | Should -Not -BeNullOrEmpty
+        # THE WAY OUT BELONGS TO THE REFUSAL, not to every verdict. A run that is
+        # allowed has nothing to be shown the way out of, and a Fix carried
+        # anyway could not name the account it has to send the captain to.
+        if ($check.Usable) {
+            $check.Fix | Should -BeNullOrEmpty
+        } else {
+            $check.Fix | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    It 'asks who is signed in whether or not this run is elevated' -Skip:(-not $IsWindows) {
+        # THE SAVING THAT COST THE ANSWER. This used to be asked only when
+        # elevated, to spare the unelevated path a CIM query - measured at 190 ms
+        # cold and 30 ms warm, against an install that starts a process per tool
+        # and downloads gigabytes. On this seat the accounts match, so what is
+        # asserted is that the question was PUT: an unasked one comes back empty.
+        #
+        # COMPARED AGAINST THE MACHINE ITSELF rather than against "not empty",
+        # because a machine with nobody at the console genuinely answers nothing
+        # and a test that demanded a name there would fail for being right.
+        $atTheConsole = ''
+        try { $atTheConsole = [string](Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).UserName }
+        catch { $atTheConsole = '' }
+        if (-not $atTheConsole) {
+            Set-ItResult -Skipped -Because 'nobody is signed in at this machine''s console, so there is no answer to carry'
+            return
+        }
+        $check = Get-FmMachineSessionCheck
+        $check.SignedIn |
+            Should -Be $atTheConsole -Because 'the question is now put on every run, not only an elevated one'
     }
 }
 
@@ -3072,7 +3116,10 @@ Describe 'where this checkout is, asked before anything is attempted' {
         $result.Suggestion | Should -Not -BeNullOrEmpty
         $check = Get-FmMachineLocationVerification -Location $result
         $check.Status | Should -Be 'missing'
-        $check.Fix | Should -Match 'git clone'
+        # THE REPORT NO LONGER WRITES ITS OWN REMEDY. It used to say "git clone"
+        # here while first run told the captain to MOVE the folder, for the same
+        # fault; it reads the verdict's own Fix now, so the two cannot drift.
+        $check.Fix | Should -Be $result.Fix
         $check.Fix | Should -Match ([regex]::Escape($result.Suggestion))
     }
 
@@ -3126,6 +3173,13 @@ Describe 'where this checkout is, asked before anything is attempted' {
             # found - starting elevated is what caused this.
             $result.Reason | Should -Not -Match '(?i)^run (it )?as administrator'
             $result.Reason | Should -Match '(?i)administrator'
+            # THE REMEDY IS EXECUTED ADVICE, and it is the one first run already
+            # gives - a checkout that exists is MOVED, not re-cloned, and the
+            # re-run is the half that repairs the profile block and the absolute
+            # link the move leaves pointing at the folder that is gone.
+            $result.Fix | Should -Match '(?i)^move this checkout to '
+            $result.Fix | Should -Match ([regex]::Escape($env:USERPROFILE))
+            $result.Fix | Should -Match '(?i)run install\.ps1 from its new place'
         }
 
         It 'does not refuse the captain''s own user folder, nor the shared one' {
@@ -3200,9 +3254,160 @@ Describe 'where this checkout is, asked before anything is attempted' {
         $check.Status | Should -Be 'ok'
         # It is a REQUIRED check, so an unusable location makes the run report
         # the machine NOT READY rather than ending on a cheerful note.
-        (Get-FmMachineLocationVerification -Location ([pscustomobject]@{
-                    Path = 'C:\nope'; Usable = $false; Reason = 'refused'; Suggestion = 'C:\good'; Concerns = @('refused')
-                })).Required | Should -BeTrue
+        $refused = Get-FmMachineLocationVerification -Location ([pscustomobject]@{
+                Path = 'C:\nope'; Usable = $false; Reason = 'refused'
+                Suggestion = 'C:\good'; Fix = 'move this checkout to C:\good and run install.ps1 from its new place'
+                Concerns = @('refused')
+            })
+        $refused.Required | Should -BeTrue
+        # ONE OWNER FOR THE REMEDY. The report used to write its own sentence
+        # here - "clone it somewhere the machine does not guard" - while first
+        # run told the captain to MOVE it, for the same fault. It reads the
+        # verdict's own Fix now, so the two cannot drift apart again.
+        $refused.Fix | Should -Be 'move this checkout to C:\good and run install.ps1 from its new place'
+    }
+
+    It 'gives every refusal a way out, and no way out to a location that is fine' {
+        # A REFUSAL WITH NO REMEDY IS THE SHAPE THIS WHOLE AREA EXISTS TO STOP.
+        # install.ps1 prints the Fix line and then tells the captain to do it, so
+        # an empty one would end the run on "STOPPING" and nothing else.
+        $absent = Join-Path $TestDrive 'no-such-checkout'
+        $refused = Get-FmMachineLocationCheck -Path $absent
+        $refused.Usable | Should -BeFalse
+        # THE ONE CASE WITH NOTHING TO MOVE says so instead of saying "move it".
+        $refused.Fix | Should -Match '(?i)^clone this repo into '
+        $refused.Fix | Should -Not -Match '(?i)move this checkout'
+
+        $fine = Get-FmMachineLocationCheck -Path $TestDrive
+        $fine.Usable | Should -BeTrue
+        $fine.Fix | Should -BeNullOrEmpty -Because 'a location that is fine has nothing to fix'
+    }
+}
+
+Describe 'the two questions asked before a single tool is looked at' {
+    # THE CAPTAIN'S SHAPE, AND WHY IT REACHED THEM. Get-FmMachineLocationCheck
+    # answered their case correctly - "this checkout is inside another account's
+    # user folder" - and install.ps1 printed that line and installed anyway,
+    # because the only thing wired to a halt was the ACCOUNT comparison. They lost
+    # a whole install and met the fault at first run, in the browser.
+    #
+    # MEASURED before the fix, on the real entry point with a sentinel where the
+    # halt should be: exit 99, execution past the halt, with the reason already on
+    # screen. docs/windows-e2e-evidence.md section 55 has the run.
+
+    BeforeEach {
+        $script:SavedProfile = $env:USERPROFILE
+        $script:SavedPublic = $env:PUBLIC
+        $script:UsersRoot = Join-Path $TestDrive 'Users'
+        $env:USERPROFILE = Join-Path $script:UsersRoot 'higet'
+        $env:PUBLIC = Join-Path $script:UsersRoot 'Public'
+        foreach ($who in @('higet', 'Adit', 'Public')) {
+            $null = New-Item -ItemType Directory -Path (Join-Path $script:UsersRoot $who) -Force
+        }
+    }
+    AfterEach {
+        $env:USERPROFILE = $script:SavedProfile
+        $env:PUBLIC = $script:SavedPublic
+    }
+
+    It 'refuses the captain''s exact shape: a checkout inside another account''s user folder' {
+        $checkout = Join-Path (Join-Path $script:UsersRoot 'Adit') 'firstmate'
+        $null = New-Item -ItemType Directory -Path $checkout -Force
+
+        $prerequisite = Get-FmMachineInstallPrerequisite -Path $checkout
+
+        $prerequisite.Usable | Should -BeFalse -Because 'nothing installed from here could work'
+        $prerequisite.Location.Usable | Should -BeFalse
+        # THE LOCATION ALONE MUST BE ENOUGH. The account comparison is silent on
+        # this seat - one account, and it matches - which is precisely the shape
+        # that used to sail through.
+        $prerequisite.Session.Usable | Should -BeTrue -Because 'this seat runs as the account signed in to it'
+
+        $text = $prerequisite.Lines -join "`n"
+        $text | Should -Match 'THIS CHECKOUT IS SOMEWHERE THE INSTALL CANNOT FINISH'
+        $text | Should -Match "another account's user folder"
+        $text | Should -Match '(?i)To fix it: move this checkout to '
+        $text | Should -Match '(?i)run install\.ps1 from its new place'
+    }
+
+    It 'says nothing at all about a checkout in the captain''s own folder' {
+        # AN INSTALL THAT IS CORRECTLY PLACED MUST BE UNTOUCHED AND SILENT. Not
+        # "reassured" - silent: a line about where the checkout is, on a machine
+        # where it is fine, is one more thing for the captain to read and weigh.
+        $ok = Join-Path $env:USERPROFILE 'firstmate-win'
+        $null = New-Item -ItemType Directory -Path $ok -Force
+
+        $prerequisite = Get-FmMachineInstallPrerequisite -Path $ok
+
+        $prerequisite.Usable | Should -BeTrue
+        @($prerequisite.Lines).Count | Should -Be 0 -Because 'a machine with nothing wrong with it has nothing to say'
+    }
+
+    It 'names both faults at once, and puts the account before the location' {
+        # THE SHAPE NO ONE-ACCOUNT MACHINE CAN PRODUCE, which is why the decision
+        # is a pure function of the two verdicts.
+        #
+        # ORDER IS LOAD-BEARING. A window running as somebody else makes the
+        # location answer wrong too - the checkout is compared against THAT
+        # account's profile - so a captain sent to move a folder first may move
+        # one that never needed moving. The reverse never holds.
+        #
+        # AND BOTH ARE SAID. A captain who rebuilds a VM for every attempt must
+        # not be given one fault per attempt.
+        $verdict = Get-FmMachineInstallPrerequisiteVerdict -Location ([pscustomobject]@{
+                Path       = 'C:\Users\Adit\firstmate'; Usable = $false
+                Reason     = 'this checkout is inside another account''s user folder'
+                Suggestion = 'C:\Users\higet\firstmate-win'
+                Fix        = 'move this checkout to C:\Users\higet\firstmate-win and run install.ps1 from its new place'
+                Concerns   = @()
+            }) -Session ([pscustomobject]@{
+                Usable = $false; Elevated = $true; RunningAs = 'PC\Adit'; SignedIn = 'PC\higet'
+                Reason = 'this install is running as PC\Adit, but PC\higet is signed in to Windows'
+                Fix    = 'close this window and open PowerShell as PC\higet'
+            })
+
+        $verdict.Usable | Should -BeFalse
+        # -cmatch, NOT -match: PowerShell compares without case by default, and
+        # the lower-case reason lines under each heading match the heading's own
+        # words. The headings are the only lines shouted in capitals.
+        $headings = @($verdict.Lines | Where-Object { $_ -cmatch 'THIS (INSTALL|CHECKOUT)' })
+        $headings.Count | Should -Be 2 -Because 'both faults are the captain''s to fix, and they only get one attempt at a time'
+        $headings[0] | Should -Match 'WRONG ACCOUNT'
+        $headings[1] | Should -Match 'CANNOT FINISH'
+        ($verdict.Lines -join "`n") | Should -Match 'To fix it: close this window and open PowerShell as PC\\higet'
+        ($verdict.Lines -join "`n") | Should -Match 'To fix it: move this checkout to '
+    }
+
+    It 'names a concern without refusing over it' {
+        # Controlled folder access is off by default, so a checkout under
+        # Documents works on most machines. It is NAMED and the run carries on.
+        $verdict = Get-FmMachineInstallPrerequisiteVerdict -Location ([pscustomobject]@{
+                Path     = 'C:\Users\higet\Documents\firstmate-win'; Usable = $true; Reason = 'accepted a write'
+                Suggestion = 'C:\Users\higet\firstmate-win'; Fix = ''; Concerns = @('Controlled folder access protects this')
+            }) -Session ([pscustomobject]@{
+                Usable = $true; Elevated = $false; RunningAs = 'PC\higet'; SignedIn = 'PC\higet'
+                Reason = 'fine'; Fix = ''
+            })
+
+        $verdict.Usable | Should -BeTrue -Because 'a concern must never stop an install'
+        ($verdict.Lines -join "`n") | Should -Match 'Controlled folder access protects this'
+        ($verdict.Lines -join "`n") | Should -Not -Match 'CANNOT FINISH'
+    }
+
+    It 'is what the plan reports, rather than a second answer beside it' -Skip:(-not $IsWindows) {
+        # ONE OWNER, ONE PROBE WRITE. install.ps1 halts on the prerequisite and
+        # then hands the same one to the plan; a plan that asked again would write
+        # a second probe into the captain's checkout and put a second CIM query on
+        # every install.
+        $taken = Get-FmMachineInstallPrerequisite -Path $script:RepoRoot
+        $plan = Get-FmMachineInstallPlan -Offline -RepoRoot $script:RepoRoot -Prerequisite $taken
+
+        $plan.Location | Should -Be $taken.Location -Because 'the plan must carry the verdict the halt was taken on'
+        $plan.Session | Should -Be $taken.Session
+        # And the report opens with the prerequisite's own lines, so install.ps1
+        # and the plan cannot print two different versions of the same paragraph.
+        @($plan.Lines)[0..(@($taken.Lines).Count)] | Select-Object -First @($taken.Lines).Count |
+            Should -Be $taken.Lines
     }
 }
 

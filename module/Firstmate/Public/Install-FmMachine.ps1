@@ -3,6 +3,63 @@ Set-StrictMode -Version Latest
 
 <#
 .SYNOPSIS
+    Can anything be installed from here, as this account, at all - answered
+    before a single tool is looked at.
+
+.DESCRIPTION
+    THE TWO QUESTIONS THAT MAKE EVERY OTHER ANSWER MOOT, and the reason they are
+    a function of their own rather than two fields on the plan.
+
+      WHERE the checkout is    a clone in another account's user folder, on a
+                               share, on a removable drive, inside OneDrive, or
+                               in a directory this machine will not accept a
+                               write into.
+      WHO this run is          a window running as an account other than the one
+                               signed in to Windows, which installs a firstmate
+                               the captain cannot read.
+
+    Both were already asked - and both were asked FIRST, at the top of
+    Get-FmMachineInstallPlan, which then spent the next half-minute detecting
+    tools before handing anything back. install.ps1 could not halt until that
+    was over, so a captain whose install could never work paid for the whole
+    sweep to be told. MEASURED on the seat that wrote this: 29.1 s online, 11.4 s
+    with -Offline, on a machine where every tool is already installed.
+
+    Splitting them out is what lets the refusal come first and come ALONE. It is
+    not a second copy of either check: this is their one caller, the plan calls
+    this, and the lines it renders are the lines the plan prints.
+
+    NOT A REFUSAL BY ITSELF. This reports; install.ps1 decides, and -DetectOnly
+    is exempt there because a run that changes nothing has nothing to protect the
+    captain from.
+
+.PARAMETER Path
+    The checkout to ask about. Defaults to the repo root this module was loaded
+    from.
+
+.OUTPUTS
+    A record: Usable, Location, Session, and the Lines that render them.
+
+.EXAMPLE
+    (Get-FmMachineInstallPrerequisite).Usable
+#>
+function Get-FmMachineInstallPrerequisite {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param([string]$Path = '')
+
+    if (-not $Path) { $Path = Get-FmInstallRepoRoot }
+    # THE DECISION IS SEPARATE FROM THE ASKING, for the reason
+    # Get-FmMachineSessionVerdict already states: the branch that stops the
+    # captain's install must be reachable without a second Windows account. This
+    # half is the only part that has to run on a real machine.
+    Get-FmMachineInstallPrerequisiteVerdict `
+        -Location (Get-FmMachineLocationCheck -Path $Path) `
+        -Session (Get-FmMachineSessionCheck)
+}
+
+<#
+.SYNOPSIS
     Check every requirement this machine has, classify each one, and say where a
     missing one genuinely comes from.
 
@@ -65,6 +122,15 @@ Set-StrictMode -Version Latest
     classified 'unknown-latest' and reported as such, rather than being called
     current on no evidence.
 
+.PARAMETER Prerequisite
+    A Get-FmMachineInstallPrerequisite record this caller has already taken, to
+    be used instead of taking a second one. install.ps1 passes the one it halted
+    on; anything else leaves it out and this asks for itself.
+
+    IT MUST BE THE RECORD FOR -RepoRoot. Nothing checks that, because there is
+    one caller and it passes the same path to both; a record taken for some other
+    checkout would be reported here as if it described this one.
+
 .OUTPUTS
     A plan record: Requirements, Enablers, Runtime, Excluded, and the lines that
     render them.
@@ -78,21 +144,22 @@ function Get-FmMachineInstallPlan {
     param(
         [switch]$SkipOptional,
         [switch]$Offline,
-        [string]$RepoRoot = ''
+        [string]$RepoRoot = '',
+        $Prerequisite = $null
     )
 
     if (-not $RepoRoot) { $RepoRoot = Get-FmInstallRepoRoot }
     $null = Update-FmToolSessionPath -Confirm:$false
-    # WHERE THE CHECKOUT IS, ASKED FIRST. A location this machine guards refuses
-    # the install two thirds of the way through, with a message about whichever
-    # step happened to write first rather than about the location - so the
-    # question is answered before anything is attempted, and the answer is
-    # carried all the way to the final report.
-    $location = Get-FmMachineLocationCheck -Path $RepoRoot
-    # WHO IS RUNNING IT, asked beside WHERE for the same reason: an install that
-    # belongs to the wrong account produces a checkout the captain cannot write
-    # to, and that is discovered at first run, after everything has been done.
-    $session = Get-FmMachineSessionCheck
+    # WHERE THE CHECKOUT IS AND WHO IS RUNNING IT, ASKED FIRST and owned by
+    # Get-FmMachineInstallPrerequisite - see its help for why they are a function
+    # of their own.
+    #
+    # TAKEN FROM THE CALLER WHEN IT ALREADY HAS ONE, because install.ps1 asks
+    # before this to halt early and asking twice would mean a second probe write
+    # into the captain's checkout and a second CIM query for one install.
+    if (-not $Prerequisite) { $Prerequisite = Get-FmMachineInstallPrerequisite -Path $RepoRoot }
+    $location = $Prerequisite.Location
+    $session = $Prerequisite.Session
     $requirements = @()
 
     foreach ($entry in (Get-FmToolCatalog)) {
@@ -221,26 +288,12 @@ function Get-FmMachineInstallPlan {
     # the bottom of a report as something for them to go and run.
     $runtime = Get-FmToolRuntimeStatus
 
-    $lines = @()
-    # FIRST, because it is the only one that makes every line below it untrue:
-    # the report describes what this ACCOUNT has, and the captain is a different
-    # one.
-    if (-not $session.Usable) {
-        $lines += @('  THIS INSTALL WOULD BE INSTALLED FOR THE WRONG ACCOUNT:',
-            "    $($session.Reason)",
-            "    To fix it: $($session.Fix)",
-            '')
-    }
-    if (-not $location.Usable) {
-        $lines += @("  THIS CHECKOUT IS SOMEWHERE THE INSTALL CANNOT FINISH: $($location.Path)",
-            "    $($location.Reason)",
-            "    Clone it here instead, and run install.ps1 from there: $($location.Suggestion)",
-            '')
-    } elseif (@($location.Concerns).Count -gt 0) {
-        $lines += @("  where this checkout is: $($location.Path)")
-        foreach ($concern in @($location.Concerns)) { $lines += "    $concern" }
-        $lines += ''
-    }
+    # FIRST, because these are the only lines that make every line below them
+    # untrue: the report describes what this ACCOUNT has from THIS checkout, and
+    # both of those can be the wrong one. Rendered by the prerequisite so that
+    # install.ps1, which prints them before this plan exists, prints the same
+    # text rather than a second version of it.
+    $lines = @() + $Prerequisite.Lines
     $lines += '  what this machine has:'
     foreach ($enabler in $enablers) {
         $mark = if ($enabler.Satisfied) { '[ok]' } else { '[missing]' }

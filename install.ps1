@@ -59,10 +59,13 @@ installs, the run still finishes, and it ends by telling you herdr could not be
 proven and naming the command. -Unattended skips the whole step and says so,
 because a consent dialog nobody is there to see is a run that stops forever.
 
-WHERE THE CHECKOUT IS, ASKED FIRST. A clone somewhere Windows guards refuses a
-write two thirds of the way in, with a message about whichever step happened to
-write first rather than about the location. This asks before anything is
-attempted, and answers by WRITING rather than by guessing.
+WHERE THE CHECKOUT IS AND WHO IS RUNNING THIS, ASKED FIRST AND ANSWERED BY
+STOPPING. A clone somewhere Windows guards, or a window running as an account
+other than the one signed in, refuses a write two thirds of the way in - with a
+message about whichever step happened to write first rather than about the
+cause. Both are asked before anything is attempted and before any tool is even
+looked at, the location one is answered by WRITING rather than by guessing, and a
+run that could not have worked stops there having installed nothing.
 
 WHAT IT INSTALLS, YOU CAN FIND. A per-user install registers nothing by itself,
 so this run adds PowerShell 7 to your own Start menu and prints where the
@@ -419,37 +422,56 @@ Say ''
 Say '  FIRSTMATE - install'
 Say ''
 
-# ---- 1. what this machine has, and what it needs ----------------------------
-$plan = Get-FmMachineInstallPlan -SkipOptional:$SkipOptional -Offline:$Offline -RepoRoot $PSScriptRoot
-foreach ($line in $plan.Lines) { Say $line }
-Say ''
-
-# ---- 1a. an install that would belong to somebody else STOPS HERE -----------
+# ---- 1. an install that could never work STOPS HERE, BEFORE ANYTHING ELSE ---
 #
-# THE ONE REFUSAL THIS SCRIPT MAKES BEFORE DOING ANYTHING, and it is a refusal
-# rather than a warning because carrying on is what produces the broken machine.
-# Every step below writes into the profile of whoever is running this, so an
-# elevated-as-another-account run installs a firstmate the signed-in captain
-# cannot read, cannot write to, and cannot update - and the first thing they see
-# of it is first run being refused a file in a folder they never chose.
+# THE ONE REFUSAL THIS SCRIPT MAKES, and it is a refusal rather than a warning
+# because carrying on is what produces the broken machine. Two things make an
+# install unable to land where the captain will find it: a window running as
+# another account, and a checkout somewhere this machine will not let the install
+# finish. Either one makes every step below write into a place the captain cannot
+# read, and the first thing they see of it is first run being refused a file in a
+# folder they never chose.
+#
+# ASKED BEFORE THE PLAN, not after it. Both questions are answered from two
+# strings and one probe write, and the plan then spends half a minute detecting
+# tools - so a captain whose install could never work used to pay for that whole
+# sweep before being told. MEASURED at 29.1 s online on the seat that wrote this.
+#
+# AND IT ARRIVES ALONE. This used to print under forty lines of tool inventory,
+# which is exactly how a stop gets read as one more thing that went wrong rather
+# than as the thing to do. The plan below prints the same lines again when the
+# run is allowed to continue, because there they are context rather than a
+# verdict; on the refusing path they are the only thing on screen.
+#
+# BOTH ARE REPORTED BEFORE EITHER STOPS THE RUN. A captain with two of these
+# should learn both now, not one per attempt.
 #
 # -DetectOnly IS EXEMPT. It changes nothing by definition, so reporting what it
 # found is the whole job and there is nothing to protect them from.
 #
 # NOT A UAC PROMPT AND NOT A RETRY. This run cannot drop its own privileges, so
 # the only honest move is to say what is wrong and let them start the right
-# window - which is also why the fix line never says "run as administrator".
+# window - which is also why the fix lines never say "run as administrator".
 #
-# THE REASON IS ALREADY ON SCREEN, printed with the plan immediately above, so
-# this says what to DO and does not repeat it. A refusal that restates its own
-# paragraph reads as two problems.
-if (-not $plan.Session.Usable -and -not $DetectOnly) {
-    Warn '  STOPPING, because this would install firstmate for the wrong account.'
+# PRINTED HERE ONLY ON THE PATH THAT STOPS. A -DetectOnly run carries on to the
+# plan, which renders these same lines at the top of its report - so printing
+# them here as well would show the captain the same paragraph twice in the one
+# run that is allowed to continue.
+$prerequisite = Get-FmMachineInstallPrerequisite -Path $PSScriptRoot
+if (-not $prerequisite.Usable -and -not $DetectOnly) {
+    foreach ($line in $prerequisite.Lines) { Say $line }
+    Warn '  STOPPING. Nothing has been installed, and nothing above needs undoing.'
     Warn ''
-    Warn "  $($plan.Session.Fix)"
+    Warn '  Do the line marked "To fix it" and run this script again.'
     Warn ''
     exit 1
 }
+
+# ---- 2. what this machine has, and what it needs ----------------------------
+$plan = Get-FmMachineInstallPlan -SkipOptional:$SkipOptional -Offline:$Offline -RepoRoot $PSScriptRoot `
+    -Prerequisite $prerequisite
+foreach ($line in $plan.Lines) { Say $line }
+Say ''
 
 foreach ($enabler in $plan.Enablers) {
     if ($enabler.Satisfied) { continue }
@@ -458,7 +480,7 @@ foreach ($enabler in $plan.Enablers) {
     Say ''
 }
 
-# ---- 2. unsupported versions are TOLD, never repaired uninvited --------------
+# ---- 3. unsupported versions are TOLD, never repaired uninvited --------------
 foreach ($requirement in $plan.Unsupported) {
     Warn "  $($requirement.Label) cannot work at the version installed."
     Warn "    $($requirement.Reason)"
@@ -467,7 +489,7 @@ foreach ($requirement in $plan.Unsupported) {
     Say ''
 }
 
-# ---- 2a. a module below the floor is INSTALLED BESIDE what is there ----------
+# ---- 3a. a module below the floor is INSTALLED BESIDE what is there ----------
 # Not the same case as the block above, and the difference is what it does to the
 # copy already on the machine: PowerShell keeps every version of a module in its
 # own version directory, so this adds one and removes nothing. Windows ships
@@ -480,7 +502,7 @@ foreach ($requirement in $plan.Superseded) {
     Say ''
 }
 
-# ---- 2b. and so is a tool this machine will not start ------------------------
+# ---- 3b. and so is a tool this machine will not start ------------------------
 # Installing a second copy into the same place would be refused in the same way,
 # so this is told rather than repaired, exactly like the block above.
 foreach ($requirement in $plan.Unusable) {
@@ -496,14 +518,14 @@ if ($DetectOnly) {
     exit 0
 }
 
-# ---- 3. the optional updates, one question each -----------------------------
+# ---- 4. the optional updates, one question each -----------------------------
 $agreed = @()
 foreach ($requirement in $plan.Older) {
     if (Confirm-Update -Question $requirement.Question) { $agreed += $requirement.Name }
 }
 if ($plan.Older.Count -gt 0) { Say '' }
 
-# ---- 3a. the ONE step that needs administrator ------------------------------
+# ---- 4a. the ONE step that needs administrator ------------------------------
 #
 # THE CAPTAIN'S INSTRUCTION, and it overrides a rule this installer set itself:
 # everything must be done from this script, with nothing left for them to run by
@@ -550,7 +572,7 @@ if (-not $plan.Runtime.Present) {
     }
 }
 
-# ---- 3b. the one large download, asked before it starts ---------------------
+# ---- 4b. the one large download, asked before it starts ---------------------
 # Only when the engine is going to be there to use it: -SkipOptional drops the
 # engine, and 1.4 GB for a program that will not be installed is pure waste.
 #
@@ -566,7 +588,7 @@ if ($speechWanted) {
     Say ''
 }
 
-# ---- 4. install ---------------------------------------------------------------
+# ---- 5. install ---------------------------------------------------------------
 # Running this script IS the consent to install what is missing; that is the
 # whole job it was invoked for, so it is not re-asked one tool at a time.
 Say '  Installing what is missing, and proving the result. This takes a few minutes.'

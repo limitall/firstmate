@@ -477,6 +477,157 @@ Describe 'the two entry points at the repo root' {
     }
 }
 
+Describe 'install.ps1 stops before it writes, or does not stop at all' {
+    # WHAT THE CAPTAIN GOT INSTEAD, on a fresh VM they rebuild for every attempt:
+    # a FULL install from a checkout sitting in another account's user folder,
+    # and then, at first run, in the browser, a sentence telling them to move the
+    # folder and start again. Their words: "new errro".
+    #
+    # THE MEASUREMENT THAT FOUND IT. install.ps1 was run on the real entry point
+    # with a sentinel where the halt should be. It printed
+    # "this checkout is inside another account's user folder" - the location
+    # check answered correctly - and then exited 99, past the halt: the only
+    # verdict wired to a stop was the ACCOUNT comparison, and on a machine with
+    # one account that comparison is rightly silent.
+    #
+    # SO THIS DRIVES THE REAL FILE, and substitutes only the two things a
+    # one-account machine cannot produce: the module it loads, and what that
+    # module says about where the checkout is and who is running. The decision -
+    # halt or carry on, and the exit code - is the shipped script.
+    BeforeAll {
+        $script:HaltRepoRoot = Split-Path -Parent $PSScriptRoot
+
+        # A root holding the REAL install.ps1 and a bin/fm-module-load.ps1 that
+        # answers the one question the script asks before deciding. A sentinel
+        # stands where the tool sweep begins, so a run that gets past the halt
+        # says so and still installs nothing.
+        function New-HaltRoot {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+                Justification = 'A Pester fixture builder that writes only into TestDrive; -WhatIf would leave the case asserting against a stub that was never written.')]
+            param(
+                [Parameter(Mandatory)][string]$Directory,
+                [Parameter(Mandatory)][bool]$LocationUsable,
+                [Parameter(Mandatory)][bool]$SessionUsable
+            )
+            $bin = Join-Path $Directory 'bin'
+            $null = New-Item -ItemType Directory -Path $bin -Force
+            Copy-Item -LiteralPath (Join-Path $script:HaltRepoRoot 'install.ps1') `
+                -Destination (Join-Path $Directory 'install.ps1') -Force
+            $prelude = @'
+param([string]$RequiredCommand)
+function Get-FmMachineInstallPrerequisite {
+    param([string]$Path = '')
+    $lines = @()
+    if ($env:FM_TEST_SESSION_USABLE -ne '1') {
+        $lines += @('  THIS INSTALL WOULD BE INSTALLED FOR THE WRONG ACCOUNT:', '    running as PC\Adit', '    To fix it: open PowerShell as PC\higet', '')
+    }
+    if ($env:FM_TEST_LOCATION_USABLE -ne '1') {
+        $lines += @("  THIS CHECKOUT IS SOMEWHERE THE INSTALL CANNOT FINISH: $Path", '    inside another account''s user folder', '    To fix it: move this checkout to C:\Users\higet\firstmate-win and run install.ps1 from its new place', '')
+    }
+    [pscustomobject]@{
+        Usable   = (($env:FM_TEST_SESSION_USABLE -eq '1') -and ($env:FM_TEST_LOCATION_USABLE -eq '1'))
+        Location = [pscustomobject]@{ Usable = ($env:FM_TEST_LOCATION_USABLE -eq '1') }
+        Session  = [pscustomobject]@{ Usable = ($env:FM_TEST_SESSION_USABLE -eq '1') }
+        Lines    = $lines
+    }
+}
+function Get-FmMachineInstallPlan {
+    param([switch]$SkipOptional, [switch]$Offline, [string]$RepoRoot = '', $Prerequisite = $null)
+    [Console]::Out.WriteLine('FM-PAST-THE-HALT')
+    [Console]::Out.WriteLine("FM-PLAN-REUSED=[$([bool]$Prerequisite)]")
+    exit 99
+}
+'@
+            [System.IO.File]::WriteAllText((Join-Path $bin 'fm-module-load.ps1'), $prelude)
+            [pscustomobject]@{
+                Script   = Join-Path $Directory 'install.ps1'
+                Location = $LocationUsable
+                Session  = $SessionUsable
+            }
+        }
+
+        function Invoke-HaltRoot {
+            param([Parameter(Mandatory)]$Root, [string[]]$Arguments = @())
+            $command = ("`$env:FM_TEST_LOCATION_USABLE='$(if ($Root.Location) { '1' } else { '0' })'; " +
+                "`$env:FM_TEST_SESSION_USABLE='$(if ($Root.Session) { '1' } else { '0' })'; " +
+                "& '$($Root.Script)' $($Arguments -join ' '); exit `$LASTEXITCODE")
+            $text = & pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $command 2>&1 |
+                ForEach-Object { $_.ToString() }
+            [pscustomobject]@{ Text = ($text -join "`n"); ExitCode = $LASTEXITCODE }
+        }
+    }
+
+    It 'stops on a checkout inside another account''s user folder, which is the captain''s exact shape' {
+        $root = New-HaltRoot -Directory (Join-Path $TestDrive 'halt-location') -LocationUsable $false -SessionUsable $true
+        $result = Invoke-HaltRoot -Root $root
+
+        $result.Text | Should -Not -Match 'FM-PAST-THE-HALT' -Because 'this is the install that used to run to completion'
+        $result.ExitCode | Should -Be 1
+        $result.Text | Should -Match "inside another account's user folder"
+        $result.Text | Should -Match 'STOPPING'
+        # THE STOP HAS TO BE ACTIONABLE, and it has to say that nothing was done -
+        # a captain who thinks a half-install is sitting on their machine cleans
+        # up before retrying, and there is nothing to clean up.
+        $result.Text | Should -Match '(?i)nothing has been installed'
+        $result.Text | Should -Match '(?i)move this checkout to '
+    }
+
+    It 'stops on a window running as the wrong account' {
+        $root = New-HaltRoot -Directory (Join-Path $TestDrive 'halt-session') -LocationUsable $true -SessionUsable $false
+        $result = Invoke-HaltRoot -Root $root
+
+        $result.Text | Should -Not -Match 'FM-PAST-THE-HALT'
+        $result.ExitCode | Should -Be 1
+        $result.Text | Should -Match 'WRONG ACCOUNT'
+        # NEVER THE WORKAROUND THAT CAUSED IT. "if start with admin then it works
+        # fine" is what put the install in the wrong profile.
+        $result.Text | Should -Not -Match '(?i)run as administrator to'
+    }
+
+    It 'stops before a single tool is looked at, not after the whole sweep' {
+        # THE COST OF BEING TOLD LATE. Both questions are answered from two
+        # strings and one probe write; the plan then spends half a minute
+        # detecting tools - 29.1 s online on the seat that measured it. A captain
+        # whose install could never work used to pay for all of it, and read the
+        # stop at the bottom of forty lines of inventory.
+        $root = New-HaltRoot -Directory (Join-Path $TestDrive 'halt-early') -LocationUsable $false -SessionUsable $true
+        $result = Invoke-HaltRoot -Root $root
+
+        $result.Text | Should -Not -Match 'FM-PAST-THE-HALT' -Because 'the plan is what looks at tools, and it must not be reached'
+        $result.Text | Should -Not -Match 'what this machine has'
+    }
+
+    It 'says nothing whatsoever when the checkout and the account are both fine' {
+        # AN INSTALL THAT IS CORRECTLY PLACED MUST BE UNTOUCHED AND SILENT.
+        $root = New-HaltRoot -Directory (Join-Path $TestDrive 'halt-clean') -LocationUsable $true -SessionUsable $true
+        $result = Invoke-HaltRoot -Root $root
+
+        $result.Text | Should -Match 'FM-PAST-THE-HALT'
+        $result.ExitCode | Should -Be 99
+        $result.Text | Should -Not -Match 'STOPPING'
+        $result.Text | Should -Not -Match 'WRONG ACCOUNT'
+        $result.Text | Should -Not -Match 'CANNOT FINISH'
+        # ASKED ONCE. The plan is handed the verdict the halt was taken on, so
+        # the captain's checkout takes one probe write per install and not two.
+        $result.Text | Should -Match 'FM-PLAN-REUSED=\[True\]'
+    }
+
+    It 'still reports without stopping under -DetectOnly, and says it once' {
+        # -DetectOnly CHANGES NOTHING BY DEFINITION, so reporting what it found is
+        # the whole job and there is nothing to protect the captain from. It reads
+        # the paragraph from the plan, so printing it at the halt as well would
+        # show them the same thing twice in the one run allowed to continue.
+        $root = New-HaltRoot -Directory (Join-Path $TestDrive 'halt-detect') -LocationUsable $false -SessionUsable $false
+        $result = Invoke-HaltRoot -Root $root -Arguments @('-DetectOnly')
+
+        $result.Text | Should -Match 'FM-PAST-THE-HALT'
+        $result.ExitCode | Should -Be 99
+        $result.Text | Should -Not -Match 'STOPPING'
+        @([regex]::Matches($result.Text, 'WRONG ACCOUNT')).Count |
+            Should -Be 0 -Because 'the plan renders that paragraph, and this run never printed one of its own'
+    }
+}
+
 Describe 'start.ps1 in the shell a clean machine actually opens' {
     # WHY THIS EXISTS. The captain's first SUCCESSFUL install ended on an error.
     # They typed .\start.ps1 in the Windows PowerShell 5.1 window they had just
