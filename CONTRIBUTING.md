@@ -632,15 +632,27 @@ built for and states what it still cannot prove.
   action. If you find yourself adding a rule to the prompt to stop the screen
   saying something, the check belongs in the courier instead - a prompt is a
   request, exactly as the translator note above says.
-- **Narrow that gate by grammar, never by listing the phrase that just went
-  wrong.** A list of phrases has now fallen one defect behind three times here:
-  `Test-FmBridgeDescribingWord` across four live turns, the verb-reading fix in
-  `docs/windows-e2e-evidence.md` section 48, and the determiner-reading fix in
-  section 51. Prefer a closed class English cannot extend - the articles, the
-  determiners, the copulas - and measure the change against a corpus of ordinary
-  replies AND fabrications on both an empty board and a busy one, because the
-  gate is at its tightest on a fresh install and that is the morning the captain
-  is certain to be looking. Section 51.6 has the negative controls.
+- **Do not decide from grammar whether a phrase is the NAME of work.** Three
+  commits narrowed that gate by reading English - the verb reading, then the
+  determiner reading, then the copula reading - and the next live phrasing broke
+  it every time, because the set of ways English writes a noun phrase is open
+  and no reading of one closes it. The fourth attempt is not a fourth narrowing.
+  Two closed sets decide it instead: the records hold every real name, and the
+  determiners are a class English has not extended in centuries, so a bare
+  phrase is an identifier and a determined one is a common noun. Everything else
+  is prose and reaches the gate only as a MENTION, which is delivered.
+- **A list may only live on the claim side of that gate.** What is enumerable
+  there - `Get-FmBridgeReportedState`, the figure rules, the recommendation
+  verbs - is a small register this system's own status lines already write, and
+  a gap in it costs a mention that should have been held. A gap on the naming
+  side costs a true reply, which is what the captain hit four times. Grow the
+  claim vocabulary freely; never grow a list of phrases that are "not names".
+- **Measure both directions before and after, on an empty board and a busy
+  one.** A corpus of ordinary replies AND one of fabrications, because a change
+  that fixes one direction silently pays for it in the other, and the gate is at
+  its tightest on a fresh install - the morning the captain is certain to be
+  looking. Prove the line negatively too, by loosening the shipped source and
+  counting the tests that turn red: sections 51.6 and 53.5 have those controls.
 - **What the SCREEN is, as opposed to what it knows, is a per-home fact.** Who
   this home's firstmate is - made for whom, by whom, for what - lives in
   `config/identity` and rides on the fleet reading, so the prompt and the reply

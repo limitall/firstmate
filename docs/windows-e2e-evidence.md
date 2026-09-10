@@ -9375,3 +9375,204 @@ It is recorded because the failure looks exactly like flakiness and is not.
 - **No repair path exists for a machine already in this state.**
   It is diagnosed - by first run, and by re-running `install.ps1` - and the captain moves the folder.
   `fm-doctor` was deliberately left alone rather than given a probe write on every run.
+
+## 54. The reply gate was still swallowing real answers, and the approach was the defect - `PROVEN (Windows 11) FOR THE REPRODUCTION, BOTH CORPORA, THE NEGATIVE CONTROLS AND THE RESIDUAL; THE CAPTAIN'S FRESH VM IS STILL THEIRS`
+
+Three commits had narrowed this gate by reading English, and the captain found a fourth family.
+
+On their live session of 2026-09-10, four of eight turns were swallowed.
+What the gate called "work the records do not carry" was:
+
+```
+'your software work'      (asked: who are you ?)
+'eighty-four'             (asked: start a dummy process with several workers)
+'ninety-six'
+'the dry run'             (asked: what is currently running ?)
+'demo-rest-api'           (asked: create a simple node js api)
+'copy-paste'
+```
+
+Their verdict: "still not satisfied with work, it not works like first mate."
+
+`eighty-four` and `ninety-six` are NUMBERS - the reply was doing arithmetic because the captain had asked for a sum.
+`copy-paste` is a hyphenated ordinary word.
+`your software work` is a possessive noun phrase.
+Not one of them is the name of anything.
+
+**All measurements below are from 2026-09-10 on this Windows 11 seat, against the module at `module/Firstmate/Public/`.**
+Nothing spoke, no session was started, and the bridge was never launched: the whole reply path runs without one, exactly as section 48 established, so every figure here comes from driving the real functions directly.
+
+### 54.1 The line the three previous fixes were on, and why it cannot converge
+
+`b94f179` removed the verb reading, `066c9d5` removed the determiner reading and the copula reading.
+Each was correct, each was measured, each shipped - and the next phrasing broke it again.
+That is three data points on one line, and the line says the approach cannot converge: the gate was deciding, from grammar alone, whether an arbitrary English noun phrase is the NAME of a piece of work, and the set of ways English writes a noun phrase is open.
+
+This was measured rather than argued.
+A corpus of 38 ordinary replies was written against the SHIPPED gate - the captain's four families, plus every family the earlier commits had already fixed, so neither could be regressed while fixing the other.
+It found the captain's four and **four more of exactly the same class that nobody had reported**:
+
+```
+'fifty-seven'        Forty-two plus fifty-seven is ninety-nine.
+'ninety-nine'
+'Seventy-three'      Seventy-three of them, give or take.
+'drag-and-drop'      A copy-paste is enough; there is no drag-and-drop here.
+'stop-gap'           It is a stop-gap, best-guess, rough-and-ready answer for now.
+'rough-and-ready'
+```
+
+They were found by writing down more English of the same kind, which is the whole argument: a fifth family was one sentence away, and a fourth grammatical narrowing would have shipped with it still in the file.
+
+### 54.2 Reproduced before anything was changed
+
+Ordinary replies HELD BACK, and fabrications DELIVERED, on both an empty board and a busy one:
+
+| corpus | fresh board | busy board |
+|---|---|---|
+| ordinary replies held back | 13 of 38 | 11 of 38 |
+| fabrications delivered | 1 of 24 | 1 of 24 |
+
+The two that differ between boards are correct on the fresh board: they quote a 75%, a 4800 and a `listening-mode` that a board with nothing dispatched genuinely does not carry.
+Scored honestly they are busy-board cases, which is why the after-table below counts 36 there.
+
+The one fabrication that got through both boards was `billing retry is blocked on the same thing.`
+`retry` is not one of the fifteen work nouns and there is no hyphen to notice, so every version of this gate had delivered it.
+
+### 54.3 The inversion: the set of real names is closed, and so is the set of determiners
+
+The gate was answering "is this a name the records lack?" by asking "does this look like a name?".
+It now asks a question with a finite answer, in two parts, and neither part reads grammar to decide what a phrase MEANS.
+
+**A name is one of the names, or it is bare.**
+Every id this system carries is written bare - `bridge-gag`, `login-before-start`, `install-test-noise` - and nothing in the fleet is ever "a lock-identity" or "your tg-route", because a determiner picks a thing out of a kind and a name IS the thing.
+So a phrase introduced by a determiner is a common noun phrase, and a bare one is an identifier.
+The determiners are a class English has not extended in centuries; the names come off the records.
+
+**Everything else is a MENTION, and a mention is delivered.**
+That is the contract this file has carried since the day it was written - "a name the records do not carry may be mentioned but never given a state, a percentage, or a recommended action" - enforced literally for the first time.
+What holds a reply back is no longer how it is worded but what it CLAIMS.
+
+The shape of the token was considered and rejected, because the data refuses it: `demo-rest-api` and `install-test-noise` are spelt identically, so no reading of the characters separates a folder the reply is proposing from a job the fleet is running.
+Where a slug STANDS does separate them - heading its own clause is the screen putting work up, anywhere else it is a word some other word gave a job to - and that is what the code asks.
+
+### 54.4 What that lets the gate catch that it could not before
+
+Because a mention costs nothing, the claim side could be widened rather than narrowed.
+`Get-FmBridgeReportedState` now owns the reporting vocabulary in one place, negation included, and a state predicate finds its own subject - so a claim is caught where it is made, even when the sentence's head noun is not one the matcher knew:
+
+```
+billing retry is blocked on the same thing.          held (was delivered by every earlier gate)
+checkout flow work has not started.                  held
+The billing run seems healthy.                       held
+The payment tests look fine to me.                   held
+I am working on the payment tests now.               held
+```
+
+**Two registers, because they are not safe in the same place, and that was measured too.**
+The soft evaluatives - `fine`, `good`, `well`, `healthy`, `on track` - are exactly the register a fabrication reaches for when it has no figure to give, so they were added to the reporting vocabulary and everything went green.
+They are also the commonest words in an ordinary conversation.
+Putting them behind a plain copula made "The payment tests can wait, and that is fine by me" a held reply, which is the same defect this whole section is about, one step further along.
+So `Get-FmBridgeReportedState -Perceived` adds them only after a PERCEPTION verb: `looks fine` is a report about a piece of work, `that is fine` is agreement.
+Both readings are pinned by tests, because the difference is the entire justification for the switch.
+
+### 54.5 Measured both ways, after
+
+| corpus | fresh board | busy board |
+|---|---|---|
+| ordinary replies held back | **0 of 36** | **0 of 38** |
+| fabrications delivered | **0 of 24** | **0 of 24** |
+
+Every reply the captain lost on 2026-09-10 is delivered, on both boards, and every fabrication is still held - including the founding defect whole, id-shaped invented names, and a figure attached to a real id that does not carry it.
+
+The captain's own five turns, driven through `Protect-FmBridgeReply` - the one call the courier makes - on a FRESH board, which is the tightest case and also the first thing a new install shows:
+
+```
+captain: who are you ?
+fm-bridge: I am a firstmate, made for Adit by Dhaval Bhalodia, to help you with your software work.
+           [delivered whole; was held as 'your software work']
+
+captain: start a dummy process with several workers
+fm-bridge: Eighty-four and ninety-six make one hundred and eighty.
+           [delivered whole; was held as 'eighty-four / ninety-six']
+
+captain: what is currently running ?
+fm-bridge: Nothing is dispatched at the moment, so the dry run is all there is to look at.
+           [delivered whole; was held as 'the dry run']
+
+captain: create a simple node js api
+fm-bridge: I will put it in a folder called demo-rest-api so it is easy to find.
+           [delivered whole; was held as 'demo-rest-api']
+
+captain: create a simple node js api
+fm-bridge: You can copy-paste that straight into the terminal.
+           [delivered whole; was held as 'copy-paste']
+```
+
+`Invoke-Pester -Path tests/FmBridgeGround.Tests.ps1` - 280 passed, 0 failed.
+`Invoke-ScriptAnalyzer` over the changed files - 0 findings.
+The whole `tests/` directory ran green twice under a keeper; the counts are at the end of this section.
+
+### 54.6 The line proved negatively
+
+Six loosenings were applied to the shipped source in turn and the whole guarding suite re-run against each, so "this cannot be widened further and still pass" is measured rather than asserted:
+
+```
+  1 tests red   <- every phrase is a mention, nothing is ever a name
+  1 tests red   <- a hyphenated slug is never a name, wherever it stands
+  1 tests red   <- no state predicate finds its own subject
+ 15 tests red   <- nothing counts as reporting a state
+  8 tests red   <- the number class goes back to stopping at thirty
+  8 tests red   <- a determiner stops counting, so every phrase is a name again
+```
+
+The last is the new rule itself; the fourth and fifth are the two lists that remain, and their size is the point of 54.7.
+
+### 54.7 What it still lets through, and why that is the safe side
+
+**This is a loosening in one direction and it is stated rather than hidden.**
+Before this change a determined phrase naming unrecorded work was held back on sight, so a fabrication needed no claim in it to be caught.
+It does now.
+Twelve fabrications were written specifically to sit on the new rule's blind side; seven of them are caught by the widened claim vocabulary, and **five still get through**:
+
+```
+The billing job needs another hour.               a schedule, with no state word in it
+The auth branch went through without trouble.     `went through`, which "every billing job goes through
+                                                  the same window" makes unsafe to claim
+There is a payment fix waiting for you.           existential, so the state is not next to the copula
+The payment tests sit behind lock-identity.       `sit`, an ordering claim
+The dummy job is still going.                     deliberate: 066c9d5 ruled "is still going" a mention
+                                                  rather than a report, and that test still stands
+```
+
+Each is a low-grade fabrication - a schedule or an ordering - and none of them recommends halting real work, which is the defect this area exists for.
+The founding class is closed: a STATE, a FIGURE, an OUTCOME or a RECOMMENDED ACTION attached to work the records do not carry is caught, and section 54.6 shows 15 tests turn red if the state vocabulary is emptied.
+
+**The trade is deliberate and the direction is the captain's own priority.**
+A gap in the claim vocabulary costs a mention that should have been held; a gap in the naming grammar costs a true reply, which is what the captain hit four times running.
+So the list that remains lives on the claim side, where it is a small register this system's own status lines already write, and where adding a word can never swallow an answer - a line has to be mentioning unrecorded work before that vocabulary is consulted at all.
+
+### 54.8 Why a fourth phrasing cannot break it
+
+The three previous fixes each ruled out one way of WRITING a noun phrase, and English supplied another within the week, because there is no end to that set.
+This change does not rule out a way of writing anything.
+Prose reaches the gate as a mention whatever shape it has - possessive, definite, hyphenated, numeric, coined - and a mention is delivered.
+To be held back a reply now has to attach fleet-state talk to something, and the two things that can refuse it outright are finite: the set of names, which comes off the records, and the absence of a determiner, which is a closed class.
+A new phrasing adds a case to neither.
+
+### 54.9 The full suite, twice
+
+Run from a keeper that outlives it, with the child `-NonInteractive`, exactly as CONTRIBUTING requires:
+
+On the tree that merges, both passes green:
+
+```
+pass 1: exit=0 after 33 min :: passed=2942 failed=0 skipped=19
+pass 2: exit=0 after 35 min :: passed=2942 failed=0 skipped=19
+```
+
+The gate before it, on the same source in a worktree whose instruction surface had never been built, went `passed=2933 failed=9` then `passed=2942 failed=0`.
+Those nine are the fresh-worktree surface and not this change - `is healthy`, `was healthy when this run started`, `keeps the contract reachable under both names it is read by`, and six more doctor and setup cases - and a full run is what repairs them, which is the whole reason the gate is two runs.
+
+**That repair is also a trap worth writing down.**
+It leaves `.claude/skills` materialised and `git status` dirty without the skip-worktree flag `CLAUDE.md` gets, so a `git add -A` after a full run sweeps twenty `SKILL.md` files and a deleted symlink into the commit.
+Stage explicit paths, check `git diff main HEAD --name-only`, and re-apply `git update-index --skip-worktree .claude/skills`.

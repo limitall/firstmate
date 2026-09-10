@@ -120,6 +120,49 @@ function Get-FmBridgeOrdinaryHyphenation {
     )
 }
 
+function Get-FmBridgeNumberWord {
+    <#
+        .SYNOPSIS
+        English's number words, in full.
+
+        .DESCRIPTION
+        A CLOSED CLASS, and finished the day it is written, which is the only
+        reason it may be a list at all. English has coined no new number word in
+        living memory, so unlike a list of phrases this one cannot fall behind.
+
+        THE DEFECT IT ENDS. The captain asked for a sum and the reply did the
+        arithmetic; the gate held it back for naming work called `eighty-four`
+        and `ninety-six`. The class was already half here - `one` to `ten`, then
+        `twelve`, `twenty`, `thirty` and nothing after - so `forty` through
+        `ninety` were read as the first word of a compound name. Half a closed
+        class is the same trap as no closed class, which this file has already
+        paid for once over the pronouns.
+
+        Hyphenation is how English writes a compound number, so both halves are
+        needed: `eighty-four` is one number, not a word in front of a name.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+    return [string[]]@(
+        'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+        'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen',
+        'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty', 'thirty',
+        'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety',
+        'hundred', 'thousand', 'million', 'billion',
+        # The ordinals, which are the same class doing the same job: "the
+        # twenty-first run" counts rather than names.
+        'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh',
+        'eighth', 'ninth', 'tenth', 'eleventh', 'twelfth', 'thirteenth',
+        'fourteenth', 'fifteenth', 'sixteenth', 'seventeenth', 'eighteenth',
+        'nineteenth', 'twentieth', 'thirtieth', 'fortieth', 'fiftieth',
+        'sixtieth', 'seventieth', 'eightieth', 'ninetieth', 'hundredth',
+        'thousandth', 'millionth',
+        # The fractions English hyphenates a number to.
+        'half', 'quarter', 'thirds', 'quarters', 'halves'
+    )
+}
+
 function Test-FmBridgeDescribingWord {
     <#
         .SYNOPSIS
@@ -171,8 +214,7 @@ function Test-FmBridgeDescribingWord {
     # makes freely, and adding them one at a time is how a list stays permanently
     # one behind - `furthest-along` was the third live turn's false positive
     # after `mis-pairings` and `Active work`.
-    $numberWords = @('one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
-        'nine', 'ten', 'half', 'quarter', 'twelve', 'twenty', 'thirty')
+    $numberWords = Get-FmBridgeNumberWord
     $comparatives = @('more', 'most', 'less', 'least', 'best', 'worst', 'better', 'worse',
         'further', 'furthest', 'nearer', 'nearest', 'closer', 'closest', 'earlier',
         'earliest', 'later', 'latest', 'longer', 'longest', 'shorter', 'shortest')
@@ -415,6 +457,64 @@ function Test-FmBridgePluralWord {
     if ($lower.Length -lt 3) { return $false }
     if ($lower -match '(?:ss|us|is)$') { return $false }
     $lower.EndsWith('s')
+}
+
+function Get-FmBridgeReportedState {
+    <#
+        .SYNOPSIS
+        The words a reply reports the state of a piece of work with.
+
+        .DESCRIPTION
+        WHICH SIDE OF THE GATE A LIST MAY LIVE ON. Naming is decided by grammar
+        because English can name a thing in unboundedly many ways, and four
+        attempts to enumerate that failed in a row. Reporting is different:
+        `green`, `blocked`, `at 40 percent`, `stop it and start the other one`
+        is a small, domain-bound register that this system's own status lines
+        already write, so it can be listed - and this is the ONLY list left in
+        the gate whose gaps cost the captain anything.
+
+        AND THE GAP COSTS THE SAFE THING. A word missing here lets a mention
+        through that should have been held; it can never hold back a true reply,
+        because a line has to be mentioning unrecorded work before this is
+        consulted at all. That is the opposite of the naming lists, whose gaps
+        swallowed real answers four times. So this is where completeness is
+        worth buying, and the naming side is where it never was.
+
+        THE VOCABULARY IS THE RECORDS' OWN - the states a status line carries -
+        plus the handful of words English reports an outcome with.
+
+        .PARAMETER Perceived
+        Add the words that report well or badly WITHOUT naming a status, which is
+        the register a fabrication reaches for when it has no figure to give:
+        "the payment tests look fine", "the billing run seems healthy".
+
+        THEY ARE ONLY SAFE AFTER A PERCEPTION VERB, which is why they are behind
+        a switch rather than in the list above. `looks fine` is a report about a
+        piece of work; `that is fine` is ordinary agreement, and English says it
+        constantly. Reading the second as a claim would hold back a reply for the
+        commonest two words in a conversation, which is the exact defect this
+        whole area has been paying for.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([switch]$Perceived)
+
+    if ($Perceived) {
+        return [string[]]@((Get-FmBridgeReportedState) + @(
+                'fine', 'good', 'healthy', 'well', 'on track', 'right', 'sound'
+            ))
+    }
+    return [string[]]@(
+        # What a status line says.
+        'working', 'done', 'failed', 'blocked', 'paused', 'ready', 'running',
+        # What a reply says about a run.
+        'green', 'red', 'finished', 'landed', 'merged', 'passed', 'passing',
+        'stalled', 'complete', 'completed', 'clean', 'broken', 'started',
+        'stopped', 'queued', 'waiting', 'quiet', 'idle', 'live', 'happening',
+        'under way', 'in flight', 'out of date', 'up to date', 'on hold',
+        'gone through', 'come back', 'picked up', 'coming along',
+        'progressing', 'moving'
+    )
 }
 
 function Test-FmBridgeNamingPhrase {
@@ -789,6 +889,17 @@ function Test-FmBridgeGrounded {
         records carry, or a name the captain themselves used in the question they
         just asked. Nothing else can put a name on the screen.
 
+        AND WHAT COUNTS AS A NAME IS NOT DECIDED BY READING ENGLISH, which is
+        the one thing three earlier fixes had in common and the reason the
+        captain found a fourth phrase family. A phrase introduced by a
+        determiner is a common noun phrase - "the dry run", "your software
+        work", "a smaller job" - and reaches this as a MENTION whatever it says
+        about work, because a determiner picks a thing out of a kind and a name
+        IS the thing. A BARE phrase is how this system writes an id, so it still
+        has to have a source. The determiners are a closed class and the names
+        come off the records; between them there is nothing left to guess at,
+        and a phrasing nobody has written yet adds a case to neither.
+
         A PERCENTAGE. Every percentage must be one the records carry, and when a
         known name shares the line with it, it must be THAT name's percentage.
         This is the criterion the captain can check by looking left at the panel,
@@ -857,6 +968,28 @@ function Test-FmBridgeGrounded {
 
     $common = [System.Collections.Generic.HashSet[string]]::new(
         [string[]](Get-FmBridgeCommonModifier), [StringComparer]::OrdinalIgnoreCase)
+    $determiners = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]](Get-FmBridgeDeterminer), [StringComparer]::OrdinalIgnoreCase)
+
+    # REPORTING A STATE, in one pattern built from the one owner. `not` and
+    # `never` are in it because "the checkout flow work has not started" reports
+    # on invented work exactly as firmly as "has started" does - a denial about
+    # something that does not exist is still a claim that it does.
+    $asRegex = { param($words) (($words | ForEach-Object { ($_ -replace ' ', '[\s-]+') }) -join '|') }
+    $stateWords = & $asRegex (Get-FmBridgeReportedState)
+    $perceivedWords = & $asRegex (Get-FmBridgeReportedState -Perceived)
+    $mods = '(?:been\s+|still\s+|now\s+|not\s+|never\s+|already\s+|just\s+)*'
+
+    # TWO REGISTERS, BECAUSE THEY ARE NOT SAFE IN THE SAME PLACE. After a copula
+    # only a status word is a report, so "that is fine" stays ordinary English.
+    # After a PERCEPTION verb the soft words are reports too - "the payment tests
+    # look fine" is a progress claim with no status word in it anywhere, and a
+    # fabrication with no figure to give reaches for precisely that register.
+    $statePattern = '(?i)(?:\b(?:is|are|am|was|were|has|have|had|stays?|stayed|remains?|' +
+    'remained|came\s+back|come\s+back|will\s+be|would\s+be|should\s+be)\s+' +
+    "$mods(?:$stateWords)\b" +
+    '|\b(?:looks?|looked|seems?|seemed|sounds?|sounded|feels?|felt)\s+' +
+    "$mods(?:$perceivedWords)\b)"
     # Longest first, so `tests` is not matched as `test` with a stray `s` after
     # it and read as a singular where the grammar below turns on the plural.
     $workNouns = ((Get-FmBridgeWorkNoun).Word | Sort-Object -Property Length -Descending |
@@ -928,6 +1061,29 @@ function Test-FmBridgeGrounded {
             if (Test-FmBridgeWordsRecorded -Text $raw -Ground $Ground) { continue }
             if (Test-FmBridgeDescribingWord -Text $raw) { continue }
             if ($askedKeys.Contains($key)) { $ungroundedHere.Add($raw); continue }
+
+            # IS IT STANDING AS AN IDENTIFIER, or is it a word in a sentence?
+            # This is the question three grammatical narrowings kept answering
+            # with the token's own shape, and the shape cannot answer it:
+            # `demo-rest-api` and `install-test-noise` are spelt the same way,
+            # so no reading of the characters tells a folder the reply is
+            # proposing from a job the fleet is running.
+            #
+            # WHERE IT STANDS DOES ANSWER IT. A name heads its clause - that is
+            # what "tg-route is quiet" is - while an ordinary compound is
+            # somewhere in the middle of one, doing a job some other word gave
+            # it: "you can copy-paste that", "a folder called demo-rest-api",
+            # "a stop-gap answer". So a slug with nothing in front of it in its
+            # own clause is the screen putting a name up as work; anywhere else
+            # it is a word, and a word is a mention.
+            #
+            # A COMMA IS NOT A CLAUSE BOUNDARY here, deliberately: "a stop-gap,
+            # best-guess, rough-and-ready answer" is one noun phrase with two
+            # commas in it, and reading those as clause starts would call the
+            # second and third compounds names.
+            $before = $line.Substring(0, $m.Index)
+            $clause = $before -replace '^.*[;:]', ''
+            if ($clause -match '[A-Za-z]') { $ungroundedHere.Add($raw); continue }
             $found.Add("names work the records do not carry: '$raw'")
         }
 
@@ -1024,13 +1180,105 @@ function Test-FmBridgeGrounded {
             # test is for. It joins the captain's own words as something that
             # may be MENTIONED and may not be reported on, and the three rules
             # below decide which it is.
-            $leadsIndefinite = $false
-            foreach ($word in @($introducer)) {
-                if ($word) { $leadsIndefinite = @('a', 'an') -contains $word.ToLowerInvariant(); break }
-            }
-            if ($leadsIndefinite) { $indefiniteHere.Add($phrase); continue }
+            # A DETERMINER IS A COMMON NOUN'S MARK, NOT A NAME'S, and this is the
+            # rule that stops the guard parsing English. The previous commit got
+            # half of it - `a` and `an` introduce SOME member of a kind - and
+            # left `the`, `your`, `this` and the rest standing, so the captain's
+            # screen went on holding "your software work" and "the dry run".
+            #
+            # ENGLISH SETTLES IT WITHOUT A DICTIONARY, and the records prove the
+            # premise: every id this system carries - `bridge-gag`,
+            # `login-before-start`, `install-test-noise` - is written bare.
+            # Nothing in the fleet is ever "a lock-identity" or "your tg-route",
+            # because a determiner picks a thing out of a kind and a name IS the
+            # thing. So a determined phrase is not the screen naming work; it is
+            # the screen describing some work, and what it goes on to SAY about
+            # it is the only thing that can be a claim.
+            #
+            # THIS IS WHY A FOURTH PHRASING CANNOT BREAK IT. The three fixes
+            # before this one each ruled out one way of writing a noun phrase -
+            # a verb reading, a determiner reading, a copula reading - and
+            # English immediately supplied another, because the set of ways to
+            # write a noun phrase is open. The set of determiners is closed, and
+            # so is the set of names; asking which of those two a phrase belongs
+            # to is a question with a finite answer, and no new phrasing adds a
+            # case to either side.
+            #
+            # DEMOTED, NOT EXCUSED. "The payment run came back clean" and "A
+            # payment fix has landed" are inventions and stay held - not because
+            # of how they name, but because of what they report. The three rules
+            # below are what decides that, and a determiner never reaches them.
+            $leading = ''
+            foreach ($word in @($introducer)) { if ($word) { $leading = $word.ToLowerInvariant(); break } }
+            if (@('a', 'an') -contains $leading) { $indefiniteHere.Add($phrase); continue }
+            if ($determiners.Contains($leading)) { $ungroundedHere.Add($phrase); continue }
 
+            # BARE, SO IT IS A NAME. Nothing introduced it, which is how this
+            # system writes an id and how "Payment tests are green" claims one.
             $found.Add("names work the records do not carry: '$phrase'")
+        }
+
+        # WHAT THE STATE IS BEING REPORTED OF, when no rule above saw a name at
+        # all. `billing retry is blocked on the same thing` named work that does
+        # not exist and went through every version of this gate, because `retry`
+        # is not one of the fifteen work nouns and there is no hyphen to notice.
+        # Enumerating more work nouns is the losing move again - English has a
+        # noun for a piece of work whenever it wants one.
+        #
+        # SO THE CLAIM IS WHAT FINDS THE NAME, rather than the other way round.
+        # A state predicate has a subject; if that subject is bare - no
+        # determiner, so not a common noun - and the records have never used
+        # those words, then the screen has put up a name and reported on it.
+        # This is the inversion the whole change is: the gate stops asking
+        # "does this look like a name" of every phrase in the reply, and asks
+        # "is this one of the names" only of the thing a claim is actually
+        # about.
+        foreach ($hit in [regex]::Matches($line, $statePattern)) {
+            $ahead = @([regex]::Matches($line.Substring(0, $hit.Index),
+                    '[A-Za-z][A-Za-z0-9-]*') | ForEach-Object { $_.Value })
+            # WALK BACK TO WHAT INTRODUCED IT, and read what stopped the walk.
+            # A determiner in front is fine here - the phrase is still what the
+            # state is being reported OF, and whether it is a name or a mention
+            # stopped mattering the moment a claim was attached to it. Anything
+            # else that stops the walk - a verb, a preposition, a pronoun - means
+            # what was collected is not the subject at all, so nothing is said.
+            #
+            # A DESCRIBING WORD DOES NOT STOP THIS WALK, unlike the one above,
+            # and the difference is deliberate. `billing retry` and `the billing
+            # run` read as a describing word in front of a noun to any suffix
+            # rule - `-ing` is `-ing` - which is exactly how they went through
+            # every version of this gate. Up there a wrong guess costs a
+            # swallowed reply, so the walk stops early; here it costs a
+            # delivered invention, so it does not.
+            $subject = [System.Collections.Generic.List[string]]::new()
+            $isSubject = $true
+            for ($w = $ahead.Count - 1; $w -ge 0; $w--) {
+                $word = $ahead[$w]
+                if ($determiners.Contains($word)) { break }
+                if ($common.Contains($word)) { $isSubject = $false; break }
+                $subject.Insert(0, $word)
+            }
+            if (-not $isSubject -or $subject.Count -lt 2) { continue }
+            $phrase = ($subject -join ' ')
+            $key = ConvertTo-FmBridgeWorkKey -Text $phrase
+            if ($Ground.Names.Contains($key)) { continue }
+
+            # THE HEAD NOUN IS THE CATEGORY, NOT THE NAME, and only the words in
+            # front of it can be invented. `work`, `run` and `tests` are what the
+            # panel calls a row, so they are not words a record has to have
+            # written - "the reply path work is under way" is describing work the
+            # records describe in those very words, and holding it back for the
+            # word `work` would be refusing the records to protect them.
+            $naming = [string[]]@($subject)
+            if (@(Get-FmBridgeWorkNoun).Word -contains $subject[-1].ToLowerInvariant()) {
+                $naming = [string[]]@($subject | Select-Object -First ($subject.Count - 1))
+            }
+            if (-not $naming.Count) { continue }
+            if (Test-FmBridgeWordsRecorded -Text ($naming -join ' ') -Ground $Ground) { continue }
+            $saidIt = $true
+            foreach ($word in $naming) { if (-not $askedWords.Contains($word)) { $saidIt = $false; break } }
+            if ($saidIt) { continue }
+            $found.Add("reports on '$phrase', which the records do not carry at all")
         }
 
         # Every percentage is checkable against the panel by looking left, so
@@ -1126,9 +1374,7 @@ function Test-FmBridgeGrounded {
         # word missing from it costs a mention that should have been held, never
         # a true reply held back, because a line has to be naming unrecorded
         # work before this is consulted at all.
-        if ($line -match ('(?i)\b(?:is|are|was|were|has|have|had|came\s+back)\s+(?:been\s+|still\s+|now\s+)?' +
-                '(?:green|red|ready|done|finished|failed|blocked|running|landed|merged|passed|passing|' +
-                'stalled|paused|complete|completed|clean|broken|under\s+way|in\s+flight|out\s+of\s+date)\b') -or
+        if ($line -match $statePattern -or
             $line -match '(?i)\b(?:finished|landed|merged|completed|failed|stalled)\s+(?:overnight|already|today|yesterday|just\s+now)\b') {
             $found.Add("gives a state to '$($mentioned[0])', which the records do not carry at all")
         }

@@ -991,13 +991,26 @@ Describe 'the identity this home carries' {
     }
 
     # WITHOUT THE IDENTITY IT IS INVENTION, and this is what says the fix is the
-    # identity rather than some accident of the wording. Same sentence, same
-    # empty board, no identity set: `Adit app` is a name nothing substantiates.
+    # identity rather than some accident of the wording. Same words, same empty
+    # board, no identity set: `Adit app` is a name nothing substantiates, so
+    # reporting a state for it is invention.
+    #
+    # THE SENTENCE REPORTS, WHERE IT USED TO ONLY NAME. The gate no longer holds
+    # a reply back for putting a determined noun phrase on screen, because four
+    # live turns proved it cannot tell one from ordinary English - "your
+    # software work", "the dry run". What still separates the two boards is what
+    # the reply is allowed to SAY about those words, which is the thing the
+    # identity was ever evidence for.
     It 'still calls those words invention when no identity is set' {
         $ground = script:New-Ground -Empty -NoCapacity
-        $out = Test-FmBridgeGrounded -Text 'I look after the Adit app work.' `
+        $out = Test-FmBridgeGrounded -Text 'The Adit app work is blocked.' `
             -Ground $ground -Asked 'who are you'
         $out.Grounded | Should -BeFalse
+
+        # And the identity is what turns it, rather than the wording.
+        $with = script:New-Ground -Empty -NoCapacity -Identity $script:AditIdentity
+        (Test-FmBridgeGrounded -Text 'I look after the Adit app work.' `
+                -Ground $with -Asked 'who are you').Grounded | Should -BeTrue
     }
 
     # THE WORDS, NOT THE ARITHMETIC. A figure written into the identity file is
@@ -1139,9 +1152,15 @@ Describe 'the captain own words, for as long as the conversation lasts' {
     # THE DEFECT. The captain typed "create one dummy task in which you start
     # multiple crewmates" and the reply naming it back one turn later was held
     # for inventing `the dummy job`. Their own word, from their own screen.
+    # THE NAME IS BARE, and that is now what makes this test able to tell the
+    # two turns apart. A determined phrase - "the dummy job" - is a mention
+    # whoever introduced it, because four live turns proved the gate cannot tell
+    # one from "the dry run" or "your software work". A BARE one is how this
+    # system writes an id, so it still has to have a source, and the captain's
+    # earlier words are still one.
     It 'counts a name the captain introduced on an earlier turn' {
         $ground = script:New-Ground -Empty -NoCapacity
-        $said = 'Not yet. The dummy job is still going and I will tell you the moment it lands.'
+        $said = 'Not yet. Dummy tests are what you asked me to set up, and I will say when they land.'
 
         # As it was: their word is gone the instant the turn ends.
         (Test-FmBridgeGrounded -Text $said -Ground $ground -Asked 'is it finished ?').Grounded |
@@ -1172,5 +1191,227 @@ Describe 'the captain own words, for as long as the conversation lasts' {
     ) {
         (Test-FmBridgeGrounded -Text $Said -Ground (script:New-Ground) -Asked 'and now ?' `
                 -AlsoAsked @('make me a dummy task')).Grounded | Should -BeFalse
+    }
+}
+
+Describe 'the gate stops parsing English' {
+
+    # THE DEFECT, from the captain's live session on 2026-09-10. Three commits
+    # had narrowed this gate by grammar - the verb reading, the determiner
+    # reading, the copula reading - and each time the next phrasing broke it
+    # again. Four of eight turns were swallowed, and what the gate called "work
+    # the records do not carry" was: a possessive noun phrase, two spelt-out
+    # NUMBERS, an ordinary definite noun phrase, and two HYPHENATED WORDS.
+    #
+    # Not one of them is the name of anything. The approach was the defect: the
+    # gate was deciding, from grammar alone, whether an arbitrary English noun
+    # phrase is the NAME of a piece of work, and English is open, so there was
+    # always another phrasing.
+    BeforeAll {
+        $script:Fresh = script:New-Ground -Empty -NoCapacity
+        $script:Board = script:New-Ground
+    }
+
+    It 'delivers every reply the captain lost on 2026-09-10' -ForEach @(
+        # 'your software work' - a possessive noun phrase.
+        @{ Why = 'a possessive noun phrase'; Asked = 'who are you ?'
+            Said = 'I am a firstmate, made for Adit by Dhaval Bhalodia, to help you with your software work.'
+        }
+        # 'eighty-four', 'ninety-six' - the reply was doing arithmetic, because
+        # the captain had asked for a sum.
+        @{ Why = 'spelt-out numbers'; Asked = 'start a dummy process with several workers'
+            Said = 'Eighty-four and ninety-six make one hundred and eighty.'
+        }
+        # 'the dry run' - an ordinary definite noun phrase.
+        @{ Why = 'an ordinary definite noun phrase'; Asked = 'what is currently running ?'
+            Said = 'Nothing is dispatched at the moment, so the dry run is all there is to look at.'
+        }
+        # 'demo-rest-api', 'copy-paste' - a name for a thing being made, and an
+        # ordinary hyphenated word.
+        @{ Why = 'an id-shaped name for a thing being made'; Asked = 'create a simple node js api'
+            Said = 'I will put it in a folder called demo-rest-api so it is easy to find.'
+        }
+        @{ Why = 'a hyphenated ordinary word'; Asked = 'create a simple node js api'
+            Said = 'You can copy-paste that straight into the terminal.'
+        }
+    ) {
+        foreach ($ground in @($script:Fresh, $script:Board)) {
+            (Test-FmBridgeGrounded -Text $Said -Ground $ground -Asked $Asked).Grounded |
+                Should -BeTrue -Because "$Why claims nothing about the fleet"
+        }
+    }
+
+    # THE FAMILIES NOBODY HAS REPORTED YET, and the reason a fourth narrowing
+    # was not the answer. Every one of these was held back by the shipped gate
+    # before this change, and none of them was in anyone's list of phrases to
+    # fix - they were found by writing down more English of the same kind. That
+    # is four more phrase families on one line, on top of the captain's four.
+    It 'delivers the families the next live turn would have found' -ForEach @(
+        @{ Asked = 'what is forty two plus fifty seven ?'; Said = 'Forty-two plus fifty-seven is ninety-nine.' }
+        @{ Asked = 'how many ?'; Said = 'Seventy-three of them, give or take.' }
+        @{ Asked = 'how do I move it ?'; Said = 'A copy-paste is enough; there is no drag-and-drop here.' }
+        @{ Asked = 'what shape is it in ?'; Said = 'It is a stop-gap, best-guess, rough-and-ready answer for now.' }
+        @{ Asked = 'how do I hand it over ?'; Said = 'A hand-over note and a walk-through is usually enough.' }
+        @{ Asked = 'can you check it ?'; Said = 'I can do the quick test first and the slow one after.' }
+    ) {
+        foreach ($ground in @($script:Fresh, $script:Board)) {
+            (Test-FmBridgeGrounded -Text $Said -Ground $ground -Asked $Asked).Grounded |
+                Should -BeTrue -Because 'it is prose, whatever shape its words have'
+        }
+    }
+
+    # THE OTHER DIRECTION, and the reason this is not a loosening. The gate
+    # catches MORE than it did, because the question it asks is now about what
+    # the reply CLAIMS rather than about how the reply is worded - and a claim
+    # can be found wherever it is made, including in a sentence whose head noun
+    # is not one the old matcher knew.
+    It 'holds back a state attached to work the records do not carry' -ForEach @(
+        # `retry` is not one of the fifteen work nouns and there is no hyphen to
+        # notice, so every earlier version of this gate delivered this one.
+        @{ Why = 'a bare name the work-noun list never covered'
+            Said = 'billing retry is blocked on the same thing.'
+        }
+        @{ Why = 'an id-shaped name with a state'; Said = 'payment-tests is green and ready to merge.' }
+        @{ Why = 'an id-shaped name with a figure'; Said = 'billing-retry is at 40 percent.' }
+        @{ Why = 'an id-shaped name with an action'
+            Said = 'Stop lock-identity and start auth-rewrite instead.'
+        }
+        @{ Why = 'a name reported on in the panel spelling'; Said = 'checkout flow work has not started.' }
+    ) {
+        foreach ($ground in @($script:Fresh, $script:Board)) {
+            (Test-FmBridgeGrounded -Text $Said -Ground $ground -Asked 'what is happening?').Grounded |
+                Should -BeFalse -Because "it attaches a claim to $Why"
+        }
+    }
+
+    # A STATE ON A REAL ID THAT HAS NO SUCH STATE. The name is real, so no
+    # naming rule can catch it; the figure has to.
+    It 'holds back a figure attached to a real id that does not carry it' -ForEach @(
+        @{ Said = 'lock-identity is at 30 percent.' }
+        @{ Said = 'ui-readonly is at 90 percent and voice-quality at 80 percent.' }
+    ) {
+        (Test-FmBridgeGrounded -Text $Said -Ground $script:Board -Asked 'what is happening?').Grounded |
+            Should -BeFalse
+    }
+
+    # THE DETERMINER IS THE WHOLE RULE, so it is worth more than one case. Each
+    # of these puts an invented modifier in front of a work noun and claims
+    # nothing about it; the gate held every one of them back before this change,
+    # and English has an unbounded supply of them.
+    It 'delivers a determined phrase that claims nothing' -ForEach @(
+        @{ Said = 'The payment tests can wait until you say otherwise.' }
+        @{ Said = 'That was the billing run, not a dispatch.' }
+        @{ Said = 'I have not touched your checkout work.' }
+        @{ Said = 'This payment task is one you would have to start yourself.' }
+        @{ Said = 'Every billing job goes through the same window.' }
+        @{ Said = 'I look after your software work and I keep the records straight.' }
+    ) {
+        (Test-FmBridgeGrounded -Text $Said -Ground $script:Board -Asked 'what is happening?').Grounded |
+            Should -BeTrue -Because 'a determiner picks a thing out of a kind rather than naming one'
+    }
+
+    # WHERE A SLUG STANDS DECIDES WHETHER IT IS A NAME. Heading its own clause
+    # is the screen putting work up; anywhere else it is a word some other word
+    # gave a job to. Nothing in the SHAPE of `demo-rest-api` separates it from
+    # `install-test-noise`, so the shape is not what is asked.
+    It 'reads a slug heading its clause as a name and one inside a clause as a word' {
+        (Test-FmBridgeGrounded -Text 'auth-rewrite covers the login path.' `
+                -Ground $script:Board -Asked 'what is happening?').Grounded |
+            Should -BeFalse -Because 'nothing introduced it, so it is standing as an id'
+
+        (Test-FmBridgeGrounded -Text 'You can copy-paste that straight into the terminal.' `
+                -Ground $script:Board -Asked 'how do I move it ?').Grounded |
+            Should -BeTrue -Because 'a verb gave it its job, so it is a word in a sentence'
+    }
+
+    # WHAT THE RULE IS, asserted rather than described. A determiner marks a
+    # common noun; a name is bare. Same head noun, same invented modifier, same
+    # board - only the determiner differs, and it decides whether the phrase can
+    # be a name at all.
+    It 'reads a determined phrase as a mention and a bare one as a name' {
+        $mention = Test-FmBridgeGrounded -Text 'The payment tests can wait.' `
+            -Ground $script:Board -Asked 'what is happening?'
+        $mention.Grounded | Should -BeTrue -Because 'a determiner picks a thing out of a kind'
+
+        $name = Test-FmBridgeGrounded -Text 'Payment tests are green.' `
+            -Ground $script:Board -Asked 'what is happening?'
+        $name.Grounded | Should -BeFalse -Because 'a bare noun phrase is how this system writes an id'
+    }
+}
+
+Describe 'Get-FmBridgeNumberWord' {
+
+    # THE DEFECT. The captain asked for a sum, the reply did the arithmetic, and
+    # the gate held it back for naming work called `eighty-four` and
+    # `ninety-six`. The class was half here - one to ten, then twelve, twenty,
+    # thirty and nothing after - so forty through ninety read as the first word
+    # of a compound name. Half a closed class is the same trap as no closed
+    # class, which this file had already paid for once over the pronouns.
+    It 'carries every ten English hyphenates a unit to' -ForEach @(
+        @{ Word = 'twenty' }, @{ Word = 'thirty' }, @{ Word = 'forty' }, @{ Word = 'fifty' }
+        @{ Word = 'sixty' }, @{ Word = 'seventy' }, @{ Word = 'eighty' }, @{ Word = 'ninety' }
+    ) {
+        (Get-FmBridgeNumberWord) | Should -Contain $Word
+    }
+
+    It 'reads a compound number as description rather than as a name' -ForEach @(
+        @{ Word = 'eighty-four' }, @{ Word = 'ninety-six' }, @{ Word = 'forty-two' }
+        @{ Word = 'fifty-seven' }, @{ Word = 'ninety-nine' }, @{ Word = 'seventy-three' }
+        @{ Word = 'twenty-first' }, @{ Word = 'three-quarters' }
+    ) {
+        Test-FmBridgeDescribingWord -Text $Word | Should -BeTrue
+    }
+
+    It 'is lowercase, single words, and lists nothing twice' {
+        $n = @(Get-FmBridgeNumberWord)
+        foreach ($word in $n) { $word | Should -Match '^[a-z]+$' }
+        @($n | Select-Object -Unique).Count | Should -Be $n.Count
+    }
+}
+
+Describe 'Get-FmBridgeReportedState' {
+
+    # WHICH SIDE OF THE GATE A LIST MAY LIVE ON. This is the only list left
+    # whose gaps cost the captain anything, and what they cost is a mention that
+    # should have been held - never a true reply held back, because a line has
+    # to be mentioning unrecorded work before this is consulted at all. That is
+    # the opposite failure direction from the naming lists, which swallowed real
+    # answers four times running.
+    It 'carries the states a status line actually writes' -ForEach @(
+        @{ Word = 'working' }, @{ Word = 'done' }, @{ Word = 'failed' }
+        @{ Word = 'blocked' }, @{ Word = 'paused' }, @{ Word = 'ready' }
+    ) {
+        (Get-FmBridgeReportedState) | Should -Contain $Word
+    }
+
+    It 'is lowercase and lists nothing twice' {
+        $s = @(Get-FmBridgeReportedState)
+        foreach ($word in $s) { $word | Should -Match '^[a-z ]+$' }
+        @($s | Select-Object -Unique).Count | Should -Be $s.Count
+    }
+
+    # A DENIAL IS STILL A CLAIM. "the checkout flow work has not started" reports
+    # on invented work exactly as firmly as "has started" does.
+    It 'reads a negated state as a state' {
+        (Test-FmBridgeGrounded -Text 'The checkout flow work has not started.' `
+                -Ground (script:New-Ground) -Asked 'what is happening?').Grounded | Should -BeFalse
+    }
+
+    # THE SOFT WORDS ARE ONLY SAFE AFTER A PERCEPTION VERB, which is the whole
+    # reason they sit behind a switch. `looks fine` reports on a piece of work;
+    # `that is fine` is ordinary agreement, and English says it constantly.
+    It 'carries the soft words only when they are perceived' {
+        (Get-FmBridgeReportedState) | Should -Not -Contain 'fine'
+        (Get-FmBridgeReportedState -Perceived) | Should -Contain 'fine'
+    }
+
+    It 'reads a perceived report as a claim and ordinary agreement as neither' {
+        (Test-FmBridgeGrounded -Text 'The payment tests look fine to me.' `
+                -Ground (script:New-Ground) -Asked 'what is happening?').Grounded |
+            Should -BeFalse -Because 'looks fine reports on a piece of work'
+
+        (Test-FmBridgeGrounded -Text 'The payment tests can wait, and that is fine by me.' `
+                -Ground (script:New-Ground) -Asked 'what is happening?').Grounded |
+            Should -BeTrue -Because 'that is fine is agreement, not a report'
     }
 }
