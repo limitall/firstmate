@@ -1130,9 +1130,27 @@ Describe 'Get-FmBridgeHomeHolder' {
     # the screen and start again - which throws those seconds away.
     It 'says this screen is still taking charge while its own session is young' {
         $h = Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242 `
-            -SessionAge ([timespan]::FromSeconds(3))
+            -SessionStartedUtc ([datetime]::UtcNow.AddSeconds(-3))
         $h.Holder | Should -Be 'starting'
         $h.CanAct | Should -BeFalse
+    }
+
+    # THE ARITHMETIC ITSELF, PINNED, because getting it wrong looks exactly like
+    # the defect this whole state exists to remove. The first version took a
+    # duration and the bridge computed it as `(Get-Date) - $Session.Started`;
+    # `Started` is UTC, so on a seat five and a half hours ahead a session one
+    # second old reported five and a half hours of age and read `none` again.
+    # MEASURED on the real clone this was being proven in.
+    It 'reads a session stamped the way New-FmBridgeSession stamps it as a start in progress' {
+        # The same expression module/Firstmate/Public/FmBridge.ps1 uses.
+        $stamped = [datetime]::UtcNow
+        (Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242 `
+            -SessionStartedUtc $stamped).Holder | Should -Be 'starting'
+    }
+
+    It 'treats a clock that reads backwards as a start in progress rather than a failed one' {
+        (Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242 `
+            -SessionStartedUtc ([datetime]::UtcNow.AddHours(2))).Holder | Should -Be 'starting'
     }
 
     # "Nearly ready" has to stop being true at some point, and that point is the
@@ -1140,7 +1158,7 @@ Describe 'Get-FmBridgeHomeHolder' {
     # and no record is ever coming.
     It 'stops calling it a start once the session is past the bound one could finish in' {
         $h = Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242 `
-            -SessionAge ([timespan]::FromSeconds((Get-FmBridgeHelmGraceSeconds) + 1))
+            -SessionStartedUtc ([datetime]::UtcNow.AddSeconds(-((Get-FmBridgeHelmGraceSeconds) + 5)))
         $h.Holder | Should -Be 'none'
     }
 
@@ -1151,7 +1169,7 @@ Describe 'Get-FmBridgeHomeHolder' {
             $env:FM_SESSION_START_TIMEOUT = "$([int]$before + 600)"
             Get-FmBridgeHelmGraceSeconds | Should -BeGreaterThan $before
             (Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242 `
-                -SessionAge ([timespan]::FromSeconds($before + 60))).Holder | Should -Be 'starting'
+                -SessionStartedUtc ([datetime]::UtcNow.AddSeconds(-($before + 60)))).Holder | Should -Be 'starting'
         } finally {
             if ($null -eq $saved) { Remove-Item Env:\FM_SESSION_START_TIMEOUT -ErrorAction SilentlyContinue }
             else { $env:FM_SESSION_START_TIMEOUT = $saved }
@@ -1165,9 +1183,9 @@ Describe 'Get-FmBridgeHomeHolder' {
             [pscustomobject]@{ State = 'held'; ProcessId = 4242; Text = '' }
         }
         (Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242 `
-            -SessionAge ([timespan]::FromSeconds(1))).Holder | Should -Be 'self'
+            -SessionStartedUtc ([datetime]::UtcNow)).Holder | Should -Be 'self'
         (Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 999 `
-            -SessionAge ([timespan]::FromSeconds(1))).Holder | Should -Be 'elsewhere'
+            -SessionStartedUtc ([datetime]::UtcNow)).Holder | Should -Be 'elsewhere'
     }
 
     It 'says nobody rather than inventing a session when it was given none' {
@@ -1212,7 +1230,7 @@ Describe 'Get-FmBridgeHomeHolder' {
             [pscustomobject]@{ State = $State; ProcessId = 25876; Text = '' }
         }
         (Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242 `
-            -SessionAge ([timespan]::FromSeconds(2))).Holder | Should -Be 'starting'
+            -SessionStartedUtc ([datetime]::UtcNow.AddSeconds(-2))).Holder | Should -Be 'starting'
     }
 
     # Promising the captain an action this cannot deliver is worse than

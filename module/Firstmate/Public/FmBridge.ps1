@@ -1484,12 +1484,24 @@ function Get-FmBridgeHomeHolder {
         action this cannot deliver, or a window that is not there, are the two
         worse mistakes.
 
-        AGE, NOT ALIVENESS, IS WHAT THIS IS TOLD. -SessionAge absent means there
-        is no live session hosting this screen, so nothing is on its way and the
-        answer is `none`. The bridge knows both facts about its own child and
-        collapses them into the one this needs; probing an arbitrary process id
-        for liveness here would call a stranger's process "this screen's
-        session" the moment the number was reused.
+        WHEN IT STARTED, NOT WHETHER IT IS ALIVE, IS WHAT THIS IS TOLD.
+        -SessionStartedUtc absent means there is no live session hosting this
+        screen, so nothing is on its way and the answer is `none`. The bridge
+        knows both facts about its own child and collapses them into the one this
+        needs; probing an arbitrary process id for liveness here would call a
+        stranger's process "this screen's session" the moment the number was
+        reused.
+
+        AND THE SUBTRACTION IS DONE HERE, WHICH IS THE WHOLE POINT OF TAKING A
+        TIMESTAMP RATHER THAN A DURATION. New-FmBridgeSession stamps `Started`
+        with [datetime]::UtcNow; the first version of this took a timespan and
+        the caller computed it as `(Get-Date) - $Session.Started`, which on this
+        seat is local time minus UTC - five and a half HOURS of apparent age on a
+        session one second old, landing every first turn straight back in `none`.
+        MEASURED, on the real clone this was being proven in. Both halves of the
+        comparison are UtcNow here, so there is no offset for a caller to get
+        wrong. A clock that makes the answer negative is a clock oddity rather
+        than evidence a start has failed, and reads as `starting` for free.
 
         NOT A LOCK CHANGE. This reads the same record `Invoke-FmLock -Status`
         reads and writes nothing; how the record is taken, broken or renewed is
@@ -1501,9 +1513,10 @@ function Get-FmBridgeHomeHolder {
     param(
         [Parameter(Mandatory)][string]$HomePath,
         [int]$SessionProcessId = 0,
-        # How long this bridge's own hosted session has been alive. Absent (or
-        # null) means there is no live session to be on its way to the helm.
-        [Parameter()][AllowNull()][Nullable[timespan]]$SessionAge = $null
+        # When this bridge's own hosted session started, in UTC - the `Started`
+        # field New-FmBridgeSession stamps. Absent (or null) means there is no
+        # live session to be on its way to the helm.
+        [Parameter()][AllowNull()][Nullable[datetime]]$SessionStartedUtc = $null
     )
 
     $holder = 'none'
@@ -1522,7 +1535,8 @@ function Get-FmBridgeHomeHolder {
         } else {
             'elsewhere'
         }
-    } elseif ($null -ne $SessionAge -and $SessionAge.TotalSeconds -le (Get-FmBridgeHelmGraceSeconds)) {
+    } elseif ($null -ne $SessionStartedUtc -and
+        ([datetime]::UtcNow - $SessionStartedUtc).TotalSeconds -le (Get-FmBridgeHelmGraceSeconds)) {
         $holder = 'starting'
     }
 

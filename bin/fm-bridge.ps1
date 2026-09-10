@@ -204,13 +204,17 @@ function Get-Holder {
         [Parameter()][AllowNull()][object]$Session
     )
     if (-not $HomePath) { return '' }
-    $age = $null
+    # HANDED OVER WHOLE, never turned into a duration here. The session's own
+    # `Started` stamp is UTC and Get-FmBridgeHomeHolder compares it against UTC;
+    # its header carries what happened the one time this end did the arithmetic.
+    $startedUtc = $null
     $sessionPid = 0
     if ($null -ne $Session -and -not $Session.Process.HasExited) {
-        $age = (Get-Date) - $Session.Started
+        $startedUtc = $Session.Started
         $sessionPid = $Session.Process.Id
     }
-    (Get-FmBridgeHomeHolder -HomePath $HomePath -SessionProcessId $sessionPid -SessionAge $age).Holder
+    (Get-FmBridgeHomeHolder -HomePath $HomePath -SessionProcessId $sessionPid `
+        -SessionStartedUtc $startedUtc).Holder
 }
 
 # SAID IN THE WINDOW THE CAPTAIN CAN NOW SEE. Taking the helm is measured at
