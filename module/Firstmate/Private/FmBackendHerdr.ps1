@@ -945,6 +945,59 @@ function New-FmHerdrTask {
     }
 }
 
+# ConvertTo-FmPaneCommand: one command, wrapped so it survives being typed into
+# a pane. THE ONE OWNER of that wrapping, because there are two callers now - a
+# worker's launch command and firstmate's own console command - and the rule is
+# a property of the pane's shell rather than of either caller.
+#
+# THE PANE'S SHELL IS NOT PowerShell 7. MEASURED on the captain's laptop: a herdr
+# pane opens `powershell.exe` 5.1, which has no $PSNativeCommandArgumentPassing
+# at all and always applies the legacy command-line quoting - and legacy quoting
+# does not escape a double quote inside the argument. A worker's brief is full of
+# quoted commands, so its own quotes ended the argument early and the next
+# option-shaped token became a flag: a brief containing `-Seconds` aborted the
+# launch outright with `error: unknown option '-Seconds'`, and every other brief
+# arrived silently mangled, which is worse.
+#
+# So the command is run BY PowerShell 7, whose argument passing is exact. The only
+# text that crosses the 5.1 boundary is the wrapped script, and it must carry no
+# double quote of its own. ConvertTo-FmPowerShellLiteral does the escaping
+# mechanically rather than by hand-counted quoting.
+function ConvertTo-FmPaneCommand {
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Inner)
+
+    if (-not $Inner) { throw 'error: refusing to build a pane command out of nothing' }
+    if ($Inner.Contains('"')) {
+        # "carries no double quote" is the whole reason this survives the 5.1
+        # boundary, and every caller composes with single quotes - so a double
+        # quote here means an interpolated VALUE brought one in. Refusing is the
+        # only safe answer: emitting it would put us back to a command that
+        # arrives silently mangled, which is precisely what this removes.
+        throw ('error: the pane command would carry a double quote, which the pane shell (Windows PowerShell ' +
+            '5.1) cannot quote safely; remove it from the interpolated value rather than typing a command ' +
+            "that may arrive mangled: $Inner")
+    }
+    'pwsh -NoProfile -Command ' + (ConvertTo-FmPowerShellLiteral $Inner)
+}
+
+# Set-FmHerdrTabFocus: bring one tab to the front. Every other create in this
+# file passes --no-focus deliberately - a spawn must never steal the captain's
+# window - so this is the one deliberate exception, used only for the console
+# the captain themself asked to see.
+function Set-FmHerdrTabFocus {
+    [OutputType([bool])]
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string]$Session,
+        [Parameter(Mandatory)][string]$TabId
+    )
+    if (-not $PSCmdlet.ShouldProcess("herdr tab $TabId", 'focus')) { return $false }
+    $result = Invoke-FmHerdrCli -Session $Session -Arguments @('tab', 'focus', $TabId)
+    [bool]$result.Ok
+}
+
 # --- send, capture, submit ---------------------------------------------------
 
 # Send-FmHerdrTextLine: send one line of text then submit, ATOMICALLY - the

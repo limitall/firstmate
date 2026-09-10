@@ -1,11 +1,13 @@
 <#
 .SYNOPSIS
-start.ps1 - start firstmate. One command; everything else happens in the browser.
+start.ps1 - start firstmate. One command, and it opens a window you can watch it
+work in, with the browser page on the same session.
 
 .DESCRIPTION
 This is the only thing that needs running by hand. It checks the machine is
-ready, starts the engine, opens the browser, and hands over - from that point
-every activity happens in the page.
+ready, opens firstmate's own window, starts the engine there, and opens the
+browser at it - so the captain can either talk to the page or watch the same
+firstmate working in the window, including every crewmate CLI it starts.
 
 It is deliberately at the repo root rather than in bin/, because it is the one
 entry point that is not for firstmate's own use: it is for the captain, once.
@@ -14,7 +16,8 @@ WHAT IT DOES
   1. checks the tools that must be present, and says plainly what is missing
   2. checks this machine is signed in, and offers to do it while you are here
   3. repairs the home if setup has never run here
-  4. starts the bridge, which hosts a real firstmate session
+  4. opens firstmate's own window and starts the bridge in it, which hosts a
+     real firstmate session - so the captain can watch it work
   5. opens the browser at the page, carrying this run's key
 
 WHAT IT DOES NOT DO. It installs nothing, and it does not keep its own list of
@@ -37,13 +40,18 @@ Loopback port for the browser. Default 7433.
 .PARAMETER NoBrowser
 Start the engine without opening a browser.
 
+.PARAMETER NoWindow
+Run the engine in this terminal rather than opening firstmate's own window.
+What every start did before the captain asked to be able to watch one.
+
 .EXAMPLE
 ./start.ps1
 #>
 [CmdletBinding()]
 param(
     [ValidateRange(1024, 65535)][int]$Port = 7433,
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [switch]$NoWindow
 )
 
 # ============================================================================
@@ -327,15 +335,64 @@ if ($needsSetup) {
     & (Join-Path $root 'bin' 'fm-setup.ps1') | Out-Null
 }
 
-# ---- 4. the engine ----------------------------------------------------------
-[Console]::Out.WriteLine('  Starting the engine and opening your browser.')
-[Console]::Out.WriteLine('  Everything happens in the page from here. Ctrl+C stops it.')
-[Console]::Out.WriteLine()
-
+# ---- 4. the engine, in a window the captain can watch -----------------------
+#
+# THE CAPTAIN'S JUDGEMENT ON THE WHOLE PRODUCT, and the reason this section is
+# no longer three lines:
+#
+#     still not satisfied with work, it not works like first mate. on start
+#     firstmate it must open herder and in that go to project folder and start
+#     claude with dangerous skip command so user can see cli also
+#
+# What this used to do was run the engine right here and open a browser. On a
+# machine where `firstmate` is typed at a shim, "right here" is a console the
+# captain never sees, so the only surface they had was a page that talks about
+# work. Everything real - the session taking the helm, every turn, every spawn,
+# every refusal, and every crewmate's own `claude` CLI - was happening where
+# nobody was looking.
+#
+# So it opens firstmate's own window first and runs the engine THERE. The page
+# still opens, from inside that window, and still holds the helm; module/
+# Firstmate/Public/FmConsole.ps1 owns why this is one session in two surfaces
+# rather than two sessions fighting over one home.
+#
 # A HASHTABLE, not an array. Splatting an array passes its elements
 # positionally, so `@('-Port', 7433)` arrived as the literal string '-Port' bound
 # to the first positional parameter and failed to convert to an int.
 $bridgeArgs = @{ Port = $Port }
 if ($NoBrowser) { $bridgeArgs['NoLaunch'] = $true }
-& (Join-Path $root 'bin' 'fm-bridge.ps1') @bridgeArgs
+$bridgeScript = Join-Path $root 'bin' 'fm-bridge.ps1'
+
+# Single quotes throughout, because the pane's shell is Windows PowerShell 5.1
+# and a double quote is the one thing that cannot cross into it. Start-FmConsole
+# wraps this for that shell and refuses in a sentence rather than an exception.
+$consoleOpened = $false
+if (-not $NoWindow) {
+    $where = Get-FmConsoleDirectory -HomePath (Get-FmBridgeWorkspace -RepoRoot $root) -CheckoutPath $root
+    $inner = "& '$bridgeScript' -Port $Port"
+    if ($NoBrowser) { $inner += ' -NoLaunch' }
+    $console = Start-FmConsole -Cwd $where.Path -Command $inner -Confirm:$false
+    if ($console.Ok) {
+        $consoleOpened = $true
+        [Console]::Out.WriteLine("  Firstmate is running in its own window, at $($where.Path).")
+        [Console]::Out.WriteLine('  Watch it work there; your browser is opening on the same session.')
+        [Console]::Out.WriteLine('  Closing that window stops it.')
+        [Console]::Out.WriteLine()
+    } else {
+        # SAID, NEVER SWALLOWED. A captain who asked for a window they can watch
+        # and silently got the old behaviour would think the change never
+        # shipped. This is the one place that knows why.
+        [Console]::Out.WriteLine('  No window could be opened to run firstmate in:')
+        [Console]::Out.WriteLine("    $($console.Reason)")
+        [Console]::Out.WriteLine('  Running it here instead, so you can still watch it.')
+        [Console]::Out.WriteLine()
+    }
+}
+
+if (-not $consoleOpened) {
+    [Console]::Out.WriteLine('  Starting the engine and opening your browser.')
+    [Console]::Out.WriteLine('  Watch it work here; everything you ask for happens in the page. Ctrl+C stops it.')
+    [Console]::Out.WriteLine()
+    & $bridgeScript @bridgeArgs
+}
 

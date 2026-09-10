@@ -1117,10 +1117,57 @@ Describe 'Get-FmBridgeHomeHolder' {
         New-Item -ItemType Directory -Path (Join-Path $script:CanActHome 'state') -Force | Out-Null
     }
 
-    It 'says nobody holds this home when nothing does' {
+    It 'says nobody holds this home when nothing does and nothing is hosting this screen' {
         $h = Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242
         $h.Holder | Should -Be 'none'
         $h.CanAct | Should -BeFalse
+    }
+
+    # THE TWENTY-SEVEN SECONDS THE CAPTAIN TYPED INTO. Measured on a real clone,
+    # 2026-09-10: the record is free from the instant the browser opens until the
+    # hosted session's own start finishes and takes it. Reading that as `none`
+    # told them nothing was coming, and the route built on it told them to close
+    # the screen and start again - which throws those seconds away.
+    It 'says this screen is still taking charge while its own session is young' {
+        $h = Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242 `
+            -SessionAge ([timespan]::FromSeconds(3))
+        $h.Holder | Should -Be 'starting'
+        $h.CanAct | Should -BeFalse
+    }
+
+    # "Nearly ready" has to stop being true at some point, and that point is the
+    # bound the session start itself runs under: past it the digest was cut off
+    # and no record is ever coming.
+    It 'stops calling it a start once the session is past the bound one could finish in' {
+        $h = Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242 `
+            -SessionAge ([timespan]::FromSeconds((Get-FmBridgeHelmGraceSeconds) + 1))
+        $h.Holder | Should -Be 'none'
+    }
+
+    It 'moves that point with the bound rather than keeping a second copy of it' {
+        $before = Get-FmBridgeHelmGraceSeconds
+        $saved = $env:FM_SESSION_START_TIMEOUT
+        try {
+            $env:FM_SESSION_START_TIMEOUT = "$([int]$before + 600)"
+            Get-FmBridgeHelmGraceSeconds | Should -BeGreaterThan $before
+            (Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242 `
+                -SessionAge ([timespan]::FromSeconds($before + 60))).Holder | Should -Be 'starting'
+        } finally {
+            if ($null -eq $saved) { Remove-Item Env:\FM_SESSION_START_TIMEOUT -ErrorAction SilentlyContinue }
+            else { $env:FM_SESSION_START_TIMEOUT = $saved }
+        }
+    }
+
+    # A session that is genuinely holding the home is never described as one
+    # that is still on its way to it, however young it is.
+    It 'prefers the record over the clock whenever the record says something' {
+        Mock -CommandName Get-FmSessionLockStatus -ModuleName Firstmate -MockWith {
+            [pscustomobject]@{ State = 'held'; ProcessId = 4242; Text = '' }
+        }
+        (Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242 `
+            -SessionAge ([timespan]::FromSeconds(1))).Holder | Should -Be 'self'
+        (Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 999 `
+            -SessionAge ([timespan]::FromSeconds(1))).Holder | Should -Be 'elsewhere'
     }
 
     It 'says nobody rather than inventing a session when it was given none' {
@@ -1156,6 +1203,18 @@ Describe 'Get-FmBridgeHomeHolder' {
             Should -Be 'none' -Because $Because
     }
 
+    # The same records, with a live young session of this bridge's own under
+    # them: still not a window, but now something IS on the way to the helm.
+    It 'reads a dead or missing record as a start in progress when its own session is young' -ForEach @(
+        @{ State = 'stale' }, @{ State = 'free' }, @{ State = 'unreadable' }, @{ State = 'invalid' }
+    ) {
+        Mock -CommandName Get-FmSessionLockStatus -ModuleName Firstmate -MockWith {
+            [pscustomobject]@{ State = $State; ProcessId = 25876; Text = '' }
+        }
+        (Get-FmBridgeHomeHolder -HomePath $script:CanActHome -SessionProcessId 4242 `
+            -SessionAge ([timespan]::FromSeconds(2))).Holder | Should -Be 'starting'
+    }
+
     # Promising the captain an action this cannot deliver is worse than
     # understating what it can do, so anything it could not read counts as no.
     It 'says nobody rather than guessing when it cannot read who holds this home' {
@@ -1178,7 +1237,7 @@ Describe 'Get-FmBridgeRoute' {
     }
 
     It 'gives a route, never a refusal' -ForEach @(
-        @{ Holder = 'elsewhere' }, @{ Holder = 'none' }
+        @{ Holder = 'elsewhere' }, @{ Holder = 'starting' }, @{ Holder = 'none' }
     ) {
         $route = Get-FmBridgeRoute -Holder $Holder
         $route | Should -Not -BeNullOrEmpty
@@ -1188,7 +1247,7 @@ Describe 'Get-FmBridgeRoute' {
     }
 
     It 'keeps machinery out of the route as well' -ForEach @(
-        @{ Holder = 'elsewhere' }, @{ Holder = 'none' }
+        @{ Holder = 'elsewhere' }, @{ Holder = 'starting' }, @{ Holder = 'none' }
     ) {
         $route = Get-FmBridgeRoute -Holder $Holder
         foreach ($word in @('lock', 'read-only', 'pid', 'dispatch', 'merge', 'checkout', 'worktree')) {
@@ -1206,7 +1265,7 @@ Describe 'Get-FmBridgeRoute' {
     # open". There was none. No answer this can give may assert one except the
     # single case where the record says a live session holds the home.
     It 'never claims the captain already has a window open' -ForEach @(
-        @{ Holder = 'self' }, @{ Holder = 'none' }
+        @{ Holder = 'self' }, @{ Holder = 'starting' }, @{ Holder = 'none' }
     ) {
         $route = Get-FmBridgeRoute -Holder $Holder
         $route | Should -Not -Match '(?i)window (the captain |you )?already ha'
@@ -1217,15 +1276,37 @@ Describe 'Get-FmBridgeRoute' {
         $route = Get-FmBridgeRoute -Holder 'none'
         $route | Should -Match '(?i)NO other'
         $route | Should -Match '(?i)never send the captain to one'
-        # And it still carries a step that exists. `\s+` rather than a space:
-        # the route is wrapped for reading, so any phrase in it can fall across
-        # a line break.
-        $route | Should -Match '(?i)running firstmate\s+again'
+        # And it still carries a step that exists: the window firstmate itself
+        # is running in, which is where the reason is printed. `\s+` rather than
+        # a space, because the route is wrapped for reading and any phrase in it
+        # can fall across a line break.
+        $route | Should -Match '(?i)window firstmate\s+itself\s+is\s+running\s+in'
     }
 
-    # A three-way answer with only two shapes would be the boolean back again.
-    It 'answers the two cannot-act cases differently' {
-        Get-FmBridgeRoute -Holder 'none' | Should -Not -Be (Get-FmBridgeRoute -Holder 'elsewhere')
+    # THE SECOND WRONG ROUTE, AND THE ONE THIS TASK WAS SENT FOR. Taking the
+    # helm was measured at twenty-seven seconds on a real clone, so a captain who
+    # types when the page opens lands in a start that is under way - and telling
+    # them to close the screen and run firstmate again is the one instruction
+    # that makes the wait longer. No answer may carry it, in any case.
+    It 'never tells the captain to restart firstmate' -ForEach @(
+        @{ Holder = 'self' }, @{ Holder = 'elsewhere' }, @{ Holder = 'starting' }, @{ Holder = 'none' }
+    ) {
+        $route = Get-FmBridgeRoute -Holder $Holder
+        $route | Should -Not -Match '(?i)running firstmate\s+again'
+        $route | Should -Not -Match '(?i)run\s+firstmate\s+again'
+        $route | Should -Not -Match '(?i)clos(e|ing) (it|this)[^.]*again'
+    }
+
+    It 'says a start under way is under way, and offers to hold what they want started' {
+        $route = Get-FmBridgeRoute -Holder 'starting'
+        $route | Should -Match '(?i)taking charge'
+        $route | Should -Match '(?i)nearly ready'
+    }
+
+    # A four-way answer with fewer shapes would be the boolean back again.
+    It 'answers the three cannot-act cases differently' {
+        $routes = @('elsewhere', 'starting', 'none') | ForEach-Object { Get-FmBridgeRoute -Holder $_ }
+        (@($routes | Sort-Object -Unique)).Count | Should -Be 3
     }
 
     It 'refuses a holder it does not recognise rather than guessing a route' {
@@ -1420,7 +1501,7 @@ Describe 'the reply never answers with a limitation' {
     }
 
     It 'carries the real route, not a polite deferral' -ForEach @(
-        @{ Holder = 'none' }, @{ Holder = 'elsewhere' }
+        @{ Holder = 'none' }, @{ Holder = 'elsewhere' }, @{ Holder = 'starting' }
     ) {
         $prompt = New-FmBridgeTurnPrompt -Text 'start the payment tests' -Fleet $script:EmptyFleet -Holder $Holder
         $prompt | Should -Match ([regex]::Escape((Get-FmBridgeRoute -Holder $Holder)))

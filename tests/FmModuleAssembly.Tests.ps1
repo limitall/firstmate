@@ -901,6 +901,10 @@ param([string]$RequiredCommand)
 exit 0
 '@
             } else {
+                # The console stub REFUSES, which is the shape a machine with no
+                # session provider on it returns - so these cases run the engine
+                # the way start.ps1 does when it cannot open a window, and reach
+                # the stub bridge below exactly as they always did.
                 @'
 param([string]$RequiredCommand)
 [Console]::Out.WriteLine("FM-MARKER=[$env:FM_SHELL_RELAUNCHED]")
@@ -908,6 +912,15 @@ function Get-FmSignInStatus { [pscustomobject]@{ SignedIn = $true } }
 function Get-FmSignInDecision {
     param($Status, [switch]$CaptainPresent, [string]$Answer = '')
     [pscustomobject]@{ SignIn = $false; Proceed = $true; Lines = @() }
+}
+function Get-FmBridgeWorkspace { param([string]$RepoRoot) '' }
+function Get-FmConsoleDirectory {
+    param([string]$HomePath, [string]$CheckoutPath)
+    [pscustomobject]@{ Path = $CheckoutPath; Kind = 'checkout'; Detail = 'stub' }
+}
+function Start-FmConsole {
+    param([string]$Cwd, [string]$Command, [string]$Label = 'firstmate')
+    [pscustomobject]@{ Ok = $false; Reason = 'no session provider in this fixture'; Cwd = $Cwd }
 }
 '@
             }

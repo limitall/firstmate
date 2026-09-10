@@ -1443,39 +1443,67 @@ function Get-FmBridgeHomeHolder {
         what, and a verb list of what it could not do. The bridge knows the same
         fact from one comparison and can say it in one sentence of English.
 
-        THREE ANSWERS, NOT TWO, AND THE THIRD IS WHY THIS REPLACED A BOOLEAN.
-        This used to answer only "can it act", and everything that was not
-        `self` collapsed into one word. Get-FmBridgeRoute then had to guess what
-        the other case was, guessed the reassuring one, and told a captain with
-        no second window open to go and use it. MEASURED on the captain's fresh
-        VM, 2026-09-09: they typed `firstmate` at a bare command prompt and were
-        sent to a window that has never existed. `elsewhere` and `none` are
-        different facts about their machine and the captain acts on them
-        differently, so they are different answers.
+        FOUR ANSWERS, AND EACH ONE WAS PAID FOR. This began as a boolean, where
+        everything that was not `self` collapsed into one word; Get-FmBridgeRoute
+        then had to guess what the other case was, guessed the reassuring one,
+        and told a captain with no second window open to go and use it. MEASURED
+        on the captain's fresh VM, 2026-09-09: they typed `firstmate` at a bare
+        command prompt and were sent to a window that has never existed. That
+        bought `elsewhere` and `none`.
+
+        `starting` was bought by the next run of the same command. Taking the
+        helm is not instant - the session start runs on the hosted session's own
+        open hook - and MEASURED on a real clone, 2026-09-10, the record went
+
+            t+ 0s  lock: free          <- the browser opens HERE
+            t+27s  lock: held by live harness pid 34740
+
+        with nothing sent to the session at all. Every turn the captain types in
+        those twenty-seven seconds read `none`, which then told them the screen
+        had not taken charge and that closing it and running firstmate again is
+        what puts it in charge. It was already taking charge, and following that
+        advice throws the twenty-seven seconds away and starts them again. A
+        screen that is on its way to the helm and a screen that will never get
+        there are different facts, so they are different answers.
 
         THE COMPARISON. This home is held by exactly one live session at a time,
         and the holder is recorded.
 
           self       the holder IS the hosted session - it can act
           elsewhere  the holder is another LIVE harness - a real second window
-          none       nothing holds it, or the record could not be read
+          starting   nobody holds it YET and this screen's own session is alive
+                     and still inside the window in which it takes the helm
+          none       nobody holds it and nobody is on the way: there is no live
+                     hosted session, or this one is long past the bound in which
+                     a session start either finishes or is cut off
 
         `Get-FmSessionLockStatus` reports `held` only for a process that is both
-        alive and a harness, so a dead or stale holder is `none` and never
-        `elsewhere` - there is no window to send anyone to. Anything unreadable
-        is `none` for the same reason it used to mean cannot-act: promising the
-        captain an action this cannot deliver, or a window that is not there, are
-        the two worse mistakes.
+        alive and a harness, so a dead or stale holder is never `elsewhere` -
+        there is no window to send anyone to. Anything unreadable is `none` for
+        the same reason it used to mean cannot-act: promising the captain an
+        action this cannot deliver, or a window that is not there, are the two
+        worse mistakes.
+
+        AGE, NOT ALIVENESS, IS WHAT THIS IS TOLD. -SessionAge absent means there
+        is no live session hosting this screen, so nothing is on its way and the
+        answer is `none`. The bridge knows both facts about its own child and
+        collapses them into the one this needs; probing an arbitrary process id
+        for liveness here would call a stranger's process "this screen's
+        session" the moment the number was reused.
 
         NOT A LOCK CHANGE. This reads the same record `Invoke-FmLock -Status`
         reads and writes nothing; how the record is taken, broken or renewed is
-        untouched.
+        untouched, and `starting` is a statement about this bridge's own child
+        rather than a claim on the home.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string]$HomePath,
-        [int]$SessionProcessId = 0
+        [int]$SessionProcessId = 0,
+        # How long this bridge's own hosted session has been alive. Absent (or
+        # null) means there is no live session to be on its way to the helm.
+        [Parameter()][AllowNull()][Nullable[timespan]]$SessionAge = $null
     )
 
     $holder = 'none'
@@ -1494,6 +1522,8 @@ function Get-FmBridgeHomeHolder {
         } else {
             'elsewhere'
         }
+    } elseif ($null -ne $SessionAge -and $SessionAge.TotalSeconds -le (Get-FmBridgeHelmGraceSeconds)) {
+        $holder = 'starting'
     }
 
     [pscustomobject]@{
@@ -1501,6 +1531,34 @@ function Get-FmBridgeHomeHolder {
         Holder     = $holder
         CanAct     = ($holder -eq 'self')
     }
+}
+
+function Get-FmBridgeHelmGraceSeconds {
+    <#
+        .SYNOPSIS
+        How long a hosted session may still be on its way to the helm before
+        this screen stops calling it that.
+
+        .DESCRIPTION
+        DERIVED, NEVER A SECOND CONSTANT. The hosted session takes the helm from
+        its own session-start hook, and that hook's digest is a bounded child:
+        past its bound it is cut off and no record is ever written. So the
+        moment a session stops being "still starting" and becomes "not going to"
+        is that same bound, and Get-FmSessionStartBudgetSeconds owns it - raise
+        FM_SESSION_START_TIMEOUT on a slow machine and this moves with it.
+
+        THE HEADROOM IS FOR WHAT HAPPENS BEFORE THE BOUND STARTS. This clock
+        starts when the bridge starts the process; the digest's own clock starts
+        later, after the CLI is up and the hook has launched a PowerShell child.
+        Thirty seconds covers that gap generously, and being generous is the
+        right direction: a screen that says "nearly ready" for slightly too long
+        is a smaller injury than one that calls a healthy session a failed one.
+    #>
+    [OutputType([int])]
+    [CmdletBinding()]
+    param()
+
+    (Get-FmSessionStartBudgetSeconds) + 30
 }
 
 function Test-FmBridgeVoiceAllowed {
@@ -1601,18 +1659,29 @@ function Get-FmBridgeRoute {
         this line, instead it should give the solution" - is a demand for a real
         next step, not for a reassuring sentence.
 
-        SO THE ROUTE IS DERIVED FROM WHO ACTUALLY HOLDS THE HOME, and there are
-        three answers rather than two. `self` needs no route at all - this screen
-        does the thing. `elsewhere` means a second live session really is in
-        charge, and only then is naming that window the truth. `none` means
-        nothing has taken charge, so there is nowhere to send them: the honest
-        step is to say so in their own terms and offer the restart that would
-        put this screen in charge, which is the same one command they already
-        typed once.
+        SO THE ROUTE IS DERIVED FROM WHO ACTUALLY HOLDS THE HOME. `self` needs
+        no route at all - this screen does the thing. `elsewhere` means a second
+        live session really is in charge, and only then is naming that window the
+        truth. `starting` means this screen's own session is on its way to the
+        helm right now. `none` means nothing has taken charge and nothing is on
+        its way.
 
-        STILL NEVER A REFUSAL. `none` says what IS possible from here and what
-        makes the rest possible again; it does not describe the arrangement, and
-        Get-FmBridgeHomeHolder owns the fact it is built from.
+        THE RESTART WAS THE SECOND WRONG ROUTE, and it is gone. `none` used to
+        offer "closing it and running firstmate again is what puts it in charge",
+        written to cover the first seconds of a cold start as well as a genuine
+        failure. One sentence cannot honestly be both. MEASURED on a real clone,
+        2026-09-10: the helm is taken twenty-seven seconds after the browser
+        opens, so a captain who types on arrival was told to throw those seconds
+        away and start again - and if the cause was NOT the clock, restarting
+        does not fix it either, so the advice was wrong in both readings it was
+        trying to serve. `starting` now carries the wait and says the progress is
+        real; `none` points at the window firstmate is running in, which is where
+        the reason is actually printed and which the captain can now see.
+
+        STILL NEVER A REFUSAL. Every route says what IS possible from here and
+        what makes the rest possible again; none of them describes the
+        arrangement, and Get-FmBridgeHomeHolder owns the facts they are built
+        from.
 
         RETURNED TO THE SESSION, NOT TO THE SCREEN. This is guidance in the turn
         prompt; the session writes the actual sentence, in the captain's
@@ -1622,8 +1691,8 @@ function Get-FmBridgeRoute {
     [CmdletBinding()]
     [OutputType([string])]
     param(
-        # 'self', 'elsewhere' or 'none' - Get-FmBridgeHomeHolder's answer.
-        [Parameter(Mandatory)][ValidateSet('self', 'elsewhere', 'none')][string]$Holder
+        # Get-FmBridgeHomeHolder's answer.
+        [Parameter(Mandatory)][ValidateSet('self', 'elsewhere', 'starting', 'none')][string]$Holder
     )
 
     if ($Holder -eq 'self') { return '' }
@@ -1636,22 +1705,37 @@ function Get-FmBridgeRoute {
                 'everything you CAN do from here.'
             ) -join "`n")
     }
+    if ($Holder -eq 'starting') {
+        # THE FIRST HALF MINUTE OF THE CAPTAIN'S OWN COMMAND. They typed
+        # `firstmate`, the page opened, and they spoke to it before the session
+        # underneath had finished taking the helm. The one thing that must never
+        # come out of this case is an instruction to close it and begin again:
+        # it is the only advice that makes the wait longer.
+        return (@(
+                "This screen is taking charge of the captain's work right now - a start takes a"
+                'short while and it is under way. Say that it is nearly ready to start and stop'
+                'work, never that it has failed to. Never send the captain to another window,'
+                'and never propose starting over - that is the one thing that would make the'
+                'wait longer. Lead with what you CAN do: tell them anything about what is'
+                'under way, and take down what they want started so it goes the moment this'
+                'is ready.'
+            ) -join "`n")
+    }
     # THE CAPTAIN'S OWN CASE. They typed one command and this screen is what
     # answered, so there is no second window and you may not invent one.
     #
-    # "NOT YET" RATHER THAN "NOT AT ALL", because this is also what the first
-    # seconds look like. Taking charge is measured at around twenty seconds from
-    # a cold start, so a captain who types the moment the page opens can land
-    # here while it is still happening. Both readings have to be true of the
-    # same sentence: hence "has not taken charge yet", and the restart offered
-    # as what to do IF it stays that way rather than as the immediate step.
+    # And no restart is offered. `starting` above owns the case where waiting is
+    # the answer; this one is a session that is not coming, and the reason is
+    # printed in the window firstmate itself is running in - a herdr window the
+    # captain can see, or the terminal they typed in when herdr could not open
+    # one. Sending them somewhere real is the whole point of this function.
     @(
         "Nothing has taken charge of the captain's work on this machine, and there is NO other"
         'firstmate window open - so never send the captain to one, and never say they already'
-        'have one. What you may say is that this screen has not taken charge of starting and'
-        'stopping work yet, and that if it stays that way, closing it and running firstmate'
-        'again is what puts it in charge. Lead with what you CAN do: tell them anything about'
-        'what is under way, and write out whatever they want to hand on.'
+        'have one. What you may say is that starting and stopping work is not available from'
+        'this screen yet, and that the window firstmate itself is running in prints the reason'
+        'it is not. Lead with what you CAN do: tell them anything about what is under way, and'
+        'write out whatever they want to hand on.'
     ) -join "`n"
 }
 
@@ -2015,7 +2099,12 @@ function Get-FmBridgeFleet {
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
-    param([Parameter(Mandatory)][string]$HomePath)
+    param(
+        [Parameter(Mandatory)][string]$HomePath,
+        # Passed straight to Get-FmBridgeHouseWork, which owns why this screen's
+        # own row may not say `ready` while the reply beside it says otherwise.
+        [Parameter()][AllowEmptyString()][ValidateSet('', 'self', 'elsewhere', 'starting', 'none')][string]$Holder = ''
+    )
 
     $state = Join-Path $HomePath 'state'
     $tasks = @()
@@ -2112,7 +2201,7 @@ function Get-FmBridgeFleet {
         Tasks     = @($tasks | Sort-Object Id)
         Decisions = @($decisions)
         Activity  = @($activity | Sort-Object Order -Descending | Select-Object -First 24)
-        House     = @(Get-FmBridgeHouseWork)
+        House     = @(Get-FmBridgeHouseWork -Holder $Holder)
         Capacity  = (Get-FmBridgeCapacity)
         # WHO THIS HOME'S FIRSTMATE IS, carried in the same reading as the work
         # so the prompt and the reply gate cannot hold two different answers to
@@ -2173,9 +2262,9 @@ function New-FmBridgeTurnPrompt {
         [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
         [Parameter(Mandatory)]$Fleet,
         # Who holds the home, from Get-FmBridgeHomeHolder. A hosted session that
-        # holds it needs no route at all; the other two answers are different
-        # next steps for the captain, not two shades of the same one.
-        [ValidateSet('self', 'elsewhere', 'none')][string]$Holder = 'self',
+        # holds it needs no route at all; the other three answers are different
+        # next steps for the captain, not three shades of the same one.
+        [ValidateSet('self', 'elsewhere', 'starting', 'none')][string]$Holder = 'self',
         # A change of address made since the last turn, carried along rather than
         # given a blocking round trip of its own.
         [string]$Address = ''
@@ -2446,17 +2535,34 @@ function Get-FmBridgeHouseWork {
 
         NAMED IN THE CAPTAIN'S NOUNS. `AGENTS.md` section 9 binds on a panel
         exactly as in chat, so nothing here surfaces a script name.
+
+        "READY" IS A CLAIM, AND FOR HALF A MINUTE IT WAS THE WRONG ONE. This
+        screen's own row said `ready` from the instant the process existed, while
+        the reply beside it was saying the screen was still taking charge. The
+        panel and the answer are two renderings of one machine and they may not
+        disagree, so the row is told who holds the home and says the same thing
+        the reply does.
     #>
     [CmdletBinding()]
     [OutputType([object[]])]
-    param()
+    param(
+        # Get-FmBridgeHomeHolder's answer, when the caller has it. Empty means
+        # not stated, which reads as ready exactly as it always did.
+        [Parameter()][AllowEmptyString()][ValidateSet('', 'self', 'elsewhere', 'starting', 'none')][string]$Holder = ''
+    )
+
+    $screenDetail = switch ($Holder) {
+        'starting' { 'taking charge' }
+        'none' { 'not in charge' }
+        default { 'ready' }
+    }
 
     # Script actually being RUN, to plain noun. Anything not named here is
     # deliberately not shown: an unrecognised process is not evidence of work the
     # captain cares about, and guessing a label for it would put machinery back
     # on the screen.
     $known = @{
-        'fm-bridge'  = @{ Name = 'This screen'; Detail = 'ready' }
+        'fm-bridge'  = @{ Name = 'This screen'; Detail = $screenDetail }
         'fm-tg-poll' = @{ Name = 'Listening to your phone'; Detail = 'ready' }
         'fm-watch'   = @{ Name = 'Watching for progress'; Detail = 'ready' }
         'fm-doctor'  = @{ Name = 'Health check'; Detail = 'running' }

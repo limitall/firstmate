@@ -189,6 +189,51 @@ function Start-Engine {
     $s
 }
 
+# WHO HOLDS THE HOME, read in ONE place. Two surfaces are built from it - the
+# panel paints this screen's own row from it, and the turn prompt carries the
+# route derived from it - and a screen that read it twice could paint "ready"
+# beside a reply saying it was still taking charge. Age rather than liveness is
+# what Get-FmBridgeHomeHolder is handed; its own header owns why.
+function Get-Holder {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter()][AllowEmptyString()][string]$HomePath,
+        # Taken as a parameter rather than read from the enclosing scope, for the
+        # same reason Start-Engine takes its own.
+        [Parameter()][AllowNull()][object]$Session
+    )
+    if (-not $HomePath) { return '' }
+    $age = $null
+    $sessionPid = 0
+    if ($null -ne $Session -and -not $Session.Process.HasExited) {
+        $age = (Get-Date) - $Session.Started
+        $sessionPid = $Session.Process.Id
+    }
+    (Get-FmBridgeHomeHolder -HomePath $HomePath -SessionProcessId $sessionPid -SessionAge $age).Holder
+}
+
+# SAID IN THE WINDOW THE CAPTAIN CAN NOW SEE. Taking the helm is measured at
+# around half a minute from a cold start, and until it happens this screen cannot
+# start or stop anything - which used to be visible only as a strange answer in
+# the page. Printed on CHANGE, so a page polling every few seconds does not fill
+# the window with the same line.
+$script:holderSaid = ''
+function Show-HolderChange {
+    [CmdletBinding()]
+    [OutputType([void])]
+    param([Parameter()][AllowEmptyString()][string]$Holder)
+
+    if (-not $Holder -or $Holder -eq $script:holderSaid) { return }
+    $script:holderSaid = $Holder
+    switch ($Holder) {
+        'self' { [Console]::Out.WriteLine('fm-bridge: in charge of this machine - the screen can start and stop work') }
+        'starting' { [Console]::Out.WriteLine('fm-bridge: taking charge of this machine...') }
+        'elsewhere' { [Console]::Out.WriteLine('fm-bridge: another firstmate holds this workspace; this screen is reporting only') }
+        'none' { [Console]::Out.WriteLine('fm-bridge: nothing is in charge of this machine - the lines above say why') }
+    }
+}
+
 if ($configured) {
     $session = Start-Engine -HomePath $home_ -Suppressed $NoEngine.IsPresent -ModelName $Model -CheckoutPath $root
 } else {
@@ -445,7 +490,9 @@ try {
                 }
 
                 if ($path -eq '/api/fleet') {
-                    $fleet = Get-FmBridgeFleet -HomePath $home_
+                    $holder = Get-Holder -HomePath $home_ -Session $session
+                    Show-HolderChange -Holder $holder
+                    $fleet = Get-FmBridgeFleet -HomePath $home_ -Holder $holder
                     # Cleared as it is handed over, so one utterance is asked
                     # once however many tabs are polling - and REFUSED entirely
                     # while a page is holding or awaiting its own capture, which
@@ -619,13 +666,15 @@ try {
                     # panel is painting from, made once and used for both halves,
                     # so the reply cannot describe a fleet the panel is not
                     # showing. New-FmBridgeTurnPrompt carries the whole argument.
-                    $fleet = Get-FmBridgeFleet -HomePath $home_
+                    # ONE READ, FOUR ANSWERS, AND THE PANEL PAINTED FROM THE
+                    # SAME ONE. Whether this screen is in charge, whether it is
+                    # still on its way there, and whether a second window exists
+                    # are one fact about who holds the home - read once, before
+                    # the reading the panel and the reply are both built from.
+                    $holder = Get-Holder -HomePath $home_ -Session $session
+                    Show-HolderChange -Holder $holder
+                    $fleet = Get-FmBridgeFleet -HomePath $home_ -Holder $holder
                     $ground = Get-FmBridgeGround -Fleet $fleet
-                    # ONE READ, THREE ANSWERS. Whether this screen is in charge
-                    # and whether a second window exists are the same fact about
-                    # who holds the home, so they are read together rather than
-                    # asked twice and risking two different answers in one turn.
-                    $holder = (Get-FmBridgeHomeHolder -HomePath $home_ -SessionProcessId $session.Process.Id).Holder
                     # A name change set since the last turn rides along with this
                     # one, so it takes effect in THIS conversation rather than at
                     # the next restart - and without its own blocking round trip.

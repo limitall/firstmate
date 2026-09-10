@@ -1110,6 +1110,26 @@ function Set-FmSessionStartCompletion {
 # so the child is a real `pwsh` process started from the entry script - which is
 # also what the bash version does with its own re-exec.
 
+# Get-FmSessionStartBudgetSeconds: how long a session start is given before it is
+# cut off. THE ONE OWNER of that number, because a second reader appeared: the
+# browser screen has to know how long its own session may still be on its way to
+# the helm before "still taking charge" stops being true, and that answer is this
+# bound. Two copies of it would drift the moment FM_SESSION_START_TIMEOUT was
+# raised on a slow machine, and the screen would then start calling a healthy
+# session a failed one.
+function Get-FmSessionStartBudgetSeconds {
+    [OutputType([int])]
+    [CmdletBinding()]
+    param()
+
+    # A non-positive or non-numeric budget is not a budget, so an unusable value
+    # falls back to the default rather than removing the bound.
+    if ($env:FM_SESSION_START_TIMEOUT -match '^\d+$' -and [int]$env:FM_SESSION_START_TIMEOUT -gt 0) {
+        return [int]$env:FM_SESSION_START_TIMEOUT
+    }
+    120
+}
+
 function Invoke-FmSessionStartBounded {
     [CmdletBinding()]
     param(
@@ -1117,12 +1137,7 @@ function Invoke-FmSessionStartBounded {
         [switch]$Reemit
     )
 
-    $budget = 120
-    if ($env:FM_SESSION_START_TIMEOUT -match '^\d+$' -and [int]$env:FM_SESSION_START_TIMEOUT -gt 0) {
-        # A non-positive or non-numeric budget is not a budget, so an unusable
-        # value falls back to the default rather than removing the bound.
-        $budget = [int]$env:FM_SESSION_START_TIMEOUT
-    }
+    $budget = Get-FmSessionStartBudgetSeconds
 
     $tempRoot = [System.IO.Path]::GetTempPath()
     $stageFile = Join-Path $tempRoot ("fm-session-start-stage." + [System.IO.Path]::GetRandomFileName())
