@@ -1014,10 +1014,23 @@ param([int]$Port, [switch]$NoLaunch)
         # has no business leaving a variable behind. Both entry points are checked
         # because both set it and both used to leave it: install.ps1 poisoned the
         # window it ends in, and start.ps1 poisoned its own on the first Ctrl+C.
+        #
+        # -SkipSpeechModel, AND IT IS NOT COSMETIC. This case runs the SHIPPED
+        # entry point rather than a stubbed copy, which is the point of it - so
+        # the hermetic PSModulePath above does not apply here and the stub SHELL
+        # is the only thing standing between it and a real install. MEASURED
+        # 2026-09-11, once and never reproduced since: the stub was not resolved,
+        # the real installer carried on, and because a suite has no captain at
+        # the keyboard Confirm-SpeechModel took its documented default, which is
+        # YES. That is a 1.4 GB download inside a test, and the run spent thirty-
+        # nine minutes on it before failing the assertion below. The flag costs
+        # nothing when the stub works and removes the only large irreversible
+        # action this file can take when it does not.
+        $safely = @{ 'start.ps1' = ''; 'install.ps1' = ' -SkipSpeechModel' }
         foreach ($entry in @('start.ps1', 'install.ps1')) {
             $stub = New-StubShell -Directory (Join-Path $TestDrive "stub-restore-$entry")
             $result = Invoke-FiveOne -Command ("`$env:PATH = '$stub;' + `$env:PATH; " +
-                "& '$(Join-Path $script:RepoRoot $entry)'; " +
+                "& '$(Join-Path $script:RepoRoot $entry)'$($safely[$entry]); " +
                 "[Console]::Out.WriteLine('FM-LEFTOVER=[' + `$env:FM_SHELL_RELAUNCHED + ']')")
 
             $result.Text | Should -Match 'FM-RELAUNCH' -Because "$entry has to have actually relaunched for this to mean anything"
