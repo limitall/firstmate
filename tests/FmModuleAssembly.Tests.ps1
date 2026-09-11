@@ -808,6 +808,23 @@ Describe 'the marker that bounds the shell switch' {
         $script:WindowsPowerShell = Join-Path $env:WINDIR 'System32' 'WindowsPowerShell' 'v1.0' 'powershell.exe'
         $script:System32 = Join-Path $env:WINDIR 'System32'
         $script:Pwsh = Join-Path $PSHOME 'pwsh.exe'
+        # THE MODULE PATH A FIXTURE CHILD IS GIVEN, and it is neutralised for
+        # exactly the reason PATH is: a root below stubs bin/fm-module-load.ps1
+        # so the entry point cannot reach the real module, and an inherited
+        # PSModulePath carrying <checkout>/module hands it back through the other
+        # door - PowerShell AUTOLOADS Firstmate on the first unresolved Fm* call.
+        #
+        # THE COST OF NOT DOING THIS WAS THE WHOLE SUITE. install.ps1 then ran
+        # FOR REAL inside the fixture: the full tool sweep, the vendor lookups,
+        # and finally a question nobody was there to answer, in a child with no
+        # console. It never returned, and the run hung for as long as it was
+        # left - MEASURED at 11.6 hours before it was killed, twice, and
+        # reproduced on unmodified main. docs/windows-e2e-evidence.md section 56.
+        #
+        # $PSHOME\Modules AND NOTHING ELSE: enough for the built-in cmdlets the
+        # entry points use before their own module, and no path this repo or this
+        # machine could publish Firstmate on.
+        $script:HermeticModulePath = Join-Path $PSHOME 'Modules'
 
         function Test-FiveOneHere {
             $IsWindows -and (Test-Path -LiteralPath $script:WindowsPowerShell -PathType Leaf)
@@ -862,8 +879,18 @@ Describe 'the marker that bounds the shell switch' {
             Copy-Item -LiteralPath (Join-Path $script:RepoRoot $Script) -Destination (Join-Path $Directory $Script) -Force
             # BOTH ENTRY POINTS DOT-SOURCE THIS, AND THEY WANT DIFFERENT THINGS
             # FROM IT. Everything install.ps1 does after the gate is behind it,
-            # and an `exit` in a dot-sourced script ends its caller, so for that
-            # one the prelude IS the end of the run. start.ps1 reaches it later,
+            # and the `exit 0` below is meant to be the end of the run for that
+            # one.
+            #
+            # IT IS NOT, AND THE ROOT MUST NOT DEPEND ON IT BEING SO. Measured:
+            # the caller carries on past the dot-source and reaches its own first
+            # Fm* call, which is meant to fail as not-found and end the run
+            # there. That failure is the ONLY thing stopping it, and it stops
+            # being a failure the moment the child can autoload the real module -
+            # see $script:HermeticModulePath, which is what actually keeps this
+            # root a fixture.
+            #
+            # start.ps1 reaches it later,
             # for the sign-in check, and has to carry on past it to the engine -
             # so it gets a sign-in that says "nothing to ask" instead, which is
             # the shape Get-FmSignInDecision returns on a healthy machine.
@@ -1024,6 +1051,7 @@ param([int]$Port, [switch]$NoLaunch)
         foreach ($entry in @('start.ps1', 'install.ps1')) {
             $copy = New-EntryPointRoot -Script $entry -Directory (Join-Path $TestDrive "spent-$entry")
             $output = & $script:Pwsh -NoProfile -ExecutionPolicy Bypass -Command (
+                "`$env:PSModulePath = '$script:HermeticModulePath'; " +
                 "`$env:FM_SHELL_RELAUNCHED = '$PID'; `$env:PATH = '$tools;$script:System32'; & '$copy'") 2>&1
             $text = (@($output | ForEach-Object { [string]$_ }) -join "`n")
 
@@ -1055,6 +1083,7 @@ param([int]$Port, [switch]$NoLaunch)
         $copy = New-EntryPointRoot -Script 'start.ps1' -Directory (Join-Path $TestDrive 'window-path')
 
         $output = & $script:Pwsh -NoProfile -ExecutionPolicy Bypass -Command (
+            "`$env:PSModulePath = '$script:HermeticModulePath'; " +
             "`$env:PATH = '$tools;$script:System32'; & '$copy' -NoBrowser") 2>&1
         $text = (@($output | ForEach-Object { [string]$_ }) -join "`n")
 
@@ -1545,6 +1574,66 @@ Describe 'Only one Firstmate module is ever loaded in a test process' {
             if ($text -notmatch 'InModuleScope') { continue }
             if ($text -notmatch 'Import-FmTestModule') {
                 $bad.Add("$($file.Name) uses InModuleScope but does not import through Import-FmTestModule")
+            }
+        }
+        ($bad -join '; ') | Should -Be ''
+    }
+}
+
+Describe 'No test hands the module to the tests that come after it' {
+    # THE SAME DISEASE AS THE SILENCERS BELOW, through the other process-global
+    # that changes what OTHER files do: $env:PSModulePath. A file that prepends
+    # <checkout>/module to it and does not put it back leaves every later file -
+    # and every child pwsh any of them starts - able to AUTOLOAD Firstmate.
+    #
+    # WHAT THAT COST, measured twice and reproduced on unmodified main: the
+    # entry-point fixture above stubs bin/fm-module-load.ps1 so install.ps1
+    # cannot reach the real module, and a leaked PSModulePath handed it back.
+    # install.ps1 then ran FOR REAL inside the fixture - the whole tool sweep,
+    # the vendor lookups, and finally a question nobody was there to answer - in
+    # a child with no console. The suite hung for 11.6 hours before it was
+    # killed, at a test that passes in under two seconds on its own.
+    # docs/windows-e2e-evidence.md section 56 has both runs.
+    #
+    # THE FIXTURE NO LONGER DEPENDS ON THIS BEING TRUE - $script:HermeticModulePath
+    # is what actually keeps it a fixture - and this is still here because the
+    # leak reaches every other child process the suite starts, not only that one.
+    It 'puts $env:PSModulePath back when it has prepended to it' {
+        $bad = [System.Collections.Generic.List[string]]::new()
+        foreach ($file in (Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File | Sort-Object Name)) {
+            $text = [System.IO.File]::ReadAllText($file.FullName)
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+            $sets = @($ast.FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                        $n.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                        $n.Left.VariablePath.UserPath -match '^env:PSModulePath$' }, $true))
+            if ($sets.Count -eq 0) { continue }
+            # A file that restores it names the saved value somewhere; one that
+            # only ever prepends does not. The check is deliberately this blunt:
+            # what matters is that the author thought about putting it back.
+            if ($text -match '\$env:PSModulePath\s*=\s*\$script:Saved') { continue }
+            $bad.Add(("$($file.Name):$($sets[0].Extent.StartLineNumber) prepends to `$env:PSModulePath and never " +
+                    'restores it - save it in the file-level BeforeAll and put it back in a top-level AfterAll'))
+        }
+        ($bad -join '; ') | Should -Be ''
+    }
+
+    It 'gives each file at most one top-level AfterAll, because a second replaces the first' {
+        # MEASURED while fixing the leak above: adding a second top-level
+        # AfterAll to a file that already had one did not add a teardown, it
+        # replaced the existing one - and the file reported zero tests rather
+        # than failing. A teardown that silently stops running is the worst shape
+        # this could take, so it is checked rather than remembered.
+        $bad = [System.Collections.Generic.List[string]]::new()
+        foreach ($file in (Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.Tests.ps1' -File | Sort-Object Name)) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+            $topLevel = @($ast.EndBlock.Statements | Where-Object {
+                    $_ -is [System.Management.Automation.Language.PipelineAst] -and
+                    $_.PipelineElements.Count -eq 1 -and
+                    $_.PipelineElements[0] -is [System.Management.Automation.Language.CommandAst] -and
+                    "$($_.PipelineElements[0].CommandElements[0])" -eq 'AfterAll' })
+            if ($topLevel.Count -gt 1) {
+                $bad.Add("$($file.Name) has $($topLevel.Count) top-level AfterAll blocks - only the last one runs; merge them")
             }
         }
         ($bad -join '; ') | Should -Be ''

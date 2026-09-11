@@ -634,6 +634,13 @@ built for and states what it still cannot prove.
   action. If you find yourself adding a rule to the prompt to stop the screen
   saying something, the check belongs in the courier instead - a prompt is a
   request, exactly as the translator note above says.
+- **A test that changes a process-global puts it back, and `$env:PSModulePath` is one.**
+  A file that prepends this checkout's `module` to it and does not restore it lets every later file, and every child process any of them starts, autoload `Firstmate` by name.
+  That is how a fixture which had deliberately stubbed the module out ended up running the real `install.ps1` and hanging the whole suite for 11.6 hours, twice, on `main` as well as on a branch.
+  A fixture that stubs the module load must ALSO neutralise `PSModulePath` in the child it starts, the same way it already neutralises `PATH` - restoring the leak is hygiene, but the fixture may not depend on it.
+  `docs/windows-e2e-evidence.md` section 56 has the measurements; `tests/FmModuleAssembly.Tests.ps1` guards both halves.
+- **One top-level `AfterAll` per test file, placed before the first `Describe`.**
+  A second one replaces the first instead of joining it, and the file then reports zero tests rather than failing; one written after the `Describe` blocks never registers at all.
 - **Do not decide from grammar whether a phrase is the NAME of work.** Three
   commits narrowed that gate by reading English - the verb reading, then the
   determiner reading, then the copula reading - and the next live phrasing broke

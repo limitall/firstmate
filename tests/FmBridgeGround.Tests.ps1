@@ -29,6 +29,13 @@ Set-StrictMode -Version Latest
 
 BeforeAll {
     $script:Root = Split-Path -Parent $PSScriptRoot
+    # PUT BACK IN AN AfterAll, because this is process-global and every test
+    # file that runs after this one inherits it. A child pwsh started by a
+    # later suite then AUTOLOADS Firstmate from here, which is how a fixture
+    # that had deliberately stubbed the module out ended up running the real
+    # installer and hanging the whole suite - docs/windows-e2e-evidence.md
+    # section 56.
+    $script:SavedModulePath = $env:PSModulePath
     $env:PSModulePath = "$(Join-Path $script:Root 'module')$([IO.Path]::PathSeparator)$env:PSModulePath"
     Import-Module Firstmate -Force
 
@@ -76,6 +83,14 @@ BeforeAll {
     # This home's answer to "who are you", as the captain wrote it.
     $script:AditIdentity =
     'I am a firstmate, made for Adit by Dhaval Bhalodia, to help you work on the Adit app products.'
+}
+
+AfterAll {
+    # Restores what the file-level BeforeAll prepended. Placed here, ahead of
+    # every Describe, because that is where a top-level AfterAll is actually
+    # registered against this file's own container - appended at the end of the
+    # file it does not run, and the leak survives. Measured.
+    $env:PSModulePath = $script:SavedModulePath
 }
 
 Describe 'ConvertTo-FmBridgeWorkKey' {

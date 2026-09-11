@@ -9765,3 +9765,93 @@ Reaching it from a fresh install was the defect, and that is what 55.5 closes.
   55.2 says why it does not need to be: the fix covers both readings, and neither is guessed at in anything that ships.
 - **The captain's fresh VM has not run this.**
   Whether their next install ends in a working firstmate is still their measurement.
+
+## 56. The suite could not finish, on any branch - `PROVEN (Windows 11) FOR THE HANG, THE CAUSE, THE CONTROL ON UNMODIFIED MAIN AND THE FIX`
+
+The two-run gate is the last step of every task here.
+It ran for **11.6 hours** and was killed, twice, without finishing once.
+It was not slow: it was stopped dead at one test, and that test passes in under two seconds when its file is run on its own.
+
+This section exists because the failure looked exactly like flakiness and was not, and because the first reading - "the machine was low on memory" - was wrong and was believed for one whole attempt.
+
+### 56.1 What it looked like
+
+Both times, the last line written was the same:
+
+```
+Describing the marker that bounds the shell switch
+  [+] switches from the very window an install ends in ...        726ms
+  [+] still refuses when pwsh really is a shell below 7 ...      2.11s
+  [+] leaves the window the captain typed in exactly as ...      1.32s
+  [+] switches from a window still carrying the literal ...      1.22s
+  <nothing, for as long as it was left>
+```
+
+The next case is `is spent by the time either entry point reaches its own work`.
+A child `pwsh` was alive underneath it the whole time, running the real `install.ps1` out of a Pester fixture, at **61 CPU seconds and climbing, 295 MB resident**.
+Spinning, not blocked.
+
+### 56.2 It is not the branch, and that was measured rather than assumed
+
+`main` was exported to a scratch tree with `git archive` and the full suite run there in the identical hidden keeper shape.
+It wedged at the same `Describing`, on the same case.
+That tree carries no line of the install-halt work this branch is about.
+
+| probe | result |
+| --- | --- |
+| the wedged child's exact command, replayed on its own | exits in 1 s |
+| this branch's `install.ps1` vs **main's**, same fixture | both exit 1 in ~1 s, same output |
+| `FmModuleAssembly.Tests.ps1` alone, in the keeper's exact hidden `-NonInteractive` shape | 56 passed, exit 0, 251 s |
+| `$env:PSModulePath` padded with 40 extra entries | 1.8 s against 1.7 s - no effect |
+| `FmBounded` + `FmJobCustody` + `FmModuleAssembly` (job-object suspects) | 81 passed, exit 0, 299 s |
+| the first 15 files of the suite + `FmModuleAssembly` | **wedged** |
+| **the whole suite on unmodified `main`** | **wedged, same case** |
+
+### 56.3 The cause
+
+Four test files prepend this checkout's `module` directory to `$env:PSModulePath` in their file-level `BeforeAll` and never put it back:
+`FmBridge`, `FmBridgeGround`, `FmBridgeScreen`, `FmHomeIdentity`.
+`$env:PSModulePath` is process-global, so from the first of those onward every later file - and every child process any of them starts - can resolve `Firstmate` by name.
+
+`FmModuleAssembly.Tests.ps1` builds entry-point fixture roots that hold the REAL `install.ps1` next to a **stubbed** `bin/fm-module-load.ps1`, so the entry point cannot reach the module.
+Its comment said an `exit` in a dot-sourced script ends its caller, "so for that one the prelude IS the end of the run".
+Measured: it does not.
+Execution carries on to `install.ps1`'s own first `Fm*` call, and what actually ended the run was that call failing as not-found.
+
+Put those two together and the stub stops being a stub.
+With the leaked `PSModulePath` inherited, the child **autoloads the real Firstmate module**, the call resolves, and `install.ps1` runs FOR REAL inside the fixture: the whole tool sweep, the vendor lookups over the network, and finally a question put to a child process that has no console and was never given `-NonInteractive`.
+It never returns.
+
+Proved directly, with everything else held constant:
+
+```
+without <checkout>\module on PSModulePath | main's install.ps1 : exited 1 in 1.2s
+without <checkout>\module on PSModulePath | this branch's      : exited 1 in 1.1s
+WITH    <checkout>\module on PSModulePath | main's install.ps1 : STILL RUNNING at 45s, CPU 34.8s
+WITH    <checkout>\module on PSModulePath | this branch's      : STILL RUNNING at 45s, CPU 34.5s
+```
+
+**This was always going to reach a captain.**
+The profile block every install writes puts `<checkout>/module` on `PSModulePath`, so a captain running `Invoke-Pester ./tests` from their own shell starts where the leak leaves the suite.
+
+### 56.4 The fix, in three parts
+
+1. **The fixture is made hermetic.** Both entry-point child launches now set `$env:PSModulePath` to `$PSHOME\Modules` and nothing else, exactly as they already neutralise `PATH`. A root that deliberately stubs the module load must not let the real module in through the other door. This is the part that matters: it holds whatever any other file does to `PSModulePath`, and on a captain's own machine.
+2. **The leak is closed at source.** The four files save `PSModulePath` in their `BeforeAll` and restore it in a top-level `AfterAll`. The leak reaches every other child process the suite starts, not only that one fixture.
+3. **Both are guarded.** `No test hands the module to the tests that come after it` fails a file that prepends to `$env:PSModulePath` without restoring it, beside the existing silencing-preference guard, which is the same disease through a different process-global.
+
+### 56.5 One more thing the fix had to learn
+
+The first restore was appended as a second top-level `AfterAll` at the end of `FmHomeIdentity.Tests.ps1`, which already had one.
+It did not run, and the file reported **zero tests** rather than failing.
+A second top-level `AfterAll` replaces the first rather than joining it, and a teardown that silently stops running is the worst shape this could take - so the two teardowns were merged, and `gives each file at most one top-level AfterAll` checks it.
+
+Placement matters as well: a top-level `AfterAll` written after the `Describe` blocks does not register against the file's container.
+It goes immediately after the file-level `BeforeAll`, which is where the files that already restore `PATH` put theirs.
+
+### 56.6 What this section does NOT claim
+
+- **The hang is fixed; the 11.6-hour runs were never completed.**
+  What is proven is the cause, the control on unmodified `main`, and that the case now passes in 1.82 s with the whole file green at 58.
+- **No memory limit was ever found.**
+  The harness reported the machine low on memory during the first attempt and that reading was believed for one attempt. It was wrong: the control run wedged with 8.5 GB free, and the wedge reproduces in a single child process on an idle machine.

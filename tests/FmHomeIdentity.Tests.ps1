@@ -16,6 +16,8 @@ Set-StrictMode -Version Latest
 
 BeforeAll {
     $script:Root = Split-Path -Parent $PSScriptRoot
+    # Put back in the AfterAll below, which says why.
+    $script:SavedModulePath = $env:PSModulePath
     $env:PSModulePath = "$(Join-Path $script:Root 'module')$([IO.Path]::PathSeparator)$env:PSModulePath"
     Import-Module Firstmate -Force
 
@@ -31,6 +33,16 @@ BeforeAll {
 }
 
 AfterAll {
+    # ONE top-level AfterAll per file: a second one does not run beside the
+    # first, it takes its place, and this file discovered that by reporting
+    # zero tests. Both teardowns belong in here.
+    #
+    # PSModulePath is restored because it is process-global and every test file
+    # that runs after this one inherits it. A child pwsh started by a later suite
+    # then AUTOLOADS Firstmate from here, which is how a fixture that had
+    # deliberately stubbed the module out ended up running the real installer and
+    # hanging the whole suite - docs/windows-e2e-evidence.md section 56.
+    $env:PSModulePath = $script:SavedModulePath
     Remove-Item -LiteralPath $script:Config -Recurse -Force -ErrorAction SilentlyContinue
 }
 
