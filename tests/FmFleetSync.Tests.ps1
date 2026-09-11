@@ -26,6 +26,17 @@ BeforeAll {
         $result
     }
 
+    # The clone below is the one git call in this file that Invoke-TestGit cannot
+    # cover, because it runs in no directory yet - and it was the one whose result
+    # was discarded. A transient failure there leaves the next line writing into a
+    # directory that does not exist, which is reported from two calls away as a
+    # missing file. tests/FmTeardown.Tests.ps1 carries the measurement.
+    function Assert-TestClone {
+        param([Parameter(Mandatory)]$Result, [Parameter(Mandatory)][string]$Path)
+        if ($Result.Ok) { return }
+        throw "test fixture could not clone to $Path (exit $($Result.ExitCode)): $($Result.StdErr)"
+    }
+
     function New-TestCommit {
         # A Pester fixture builder: it writes only into TestDrive.
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
@@ -57,7 +68,7 @@ BeforeAll {
         New-TestCommit -Path $upstream -Name 'seed.txt'
 
         $clone = Join-Path $projects $Name
-        $null = Invoke-FmChildProcess -FilePath 'git' -ArgumentList @('clone', '-q', '--', $upstream, $clone)
+        Assert-TestClone -Result (Invoke-FmChildProcess -FilePath 'git' -ArgumentList @('clone', '-q', '--', $upstream, $clone)) -Path $clone
         $null = Invoke-TestGit -Directory $clone -Arguments @('config', 'user.email', 'test@example.invalid')
         $null = Invoke-TestGit -Directory $clone -Arguments @('config', 'user.name', 'Test')
 
@@ -334,7 +345,7 @@ Describe 'Invoke-FmFleetSync' {
         $fleet = New-TestFleet
         Set-TestRegistry -Fleet $fleet -Mode 'direct-PR'
         $second = Join-Path $fleet.Projects 'other'
-        $null = Invoke-FmChildProcess -FilePath 'git' -ArgumentList @('clone', '-q', '--', $fleet.Upstream, $second)
+        Assert-TestClone -Result (Invoke-FmChildProcess -FilePath 'git' -ArgumentList @('clone', '-q', '--', $fleet.Upstream, $second)) -Path $second
         $lines = @(Invoke-FmFleetSync -ProjectsDir $fleet.Projects -RegistryPath $fleet.Registry)
         ($lines -join "`n") | Should -BeLike '*thing: already current*'
         ($lines -join "`n") | Should -BeLike '*other: already current*'

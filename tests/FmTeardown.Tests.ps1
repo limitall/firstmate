@@ -36,15 +36,29 @@ BeforeAll {
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
             Justification = 'Pester fixtures that build and remove disposable temp repos. -WhatIf on a fixture would leave the test asserting against a repo that was never created.')]
         param([Parameter(Mandatory)][string]$Path)
-        $null = Invoke-FmChildProcess -FilePath 'git' -ArgumentList @('init', '-q', '--bare', '-b', 'main', $Path)
+        Assert-TestGit -Result (Invoke-FmChildProcess -FilePath 'git' -ArgumentList @('init', '-q', '--bare', '-b', 'main', $Path)) -What "init a bare origin at $Path"
         $Path
+    }
+
+    # A FIXTURE THAT FAILS MUST SAY SO WHERE IT FAILED. `git clone` was run with
+    # its result discarded, so a transient failure - a loaded machine, a locked
+    # temp directory - produced no error at all, and the next line's Set-Content
+    # reported `Could not find a part of the path ...\project\README.md` from
+    # inside a helper two calls away. MEASURED 2026-09-11: exactly that, once, in
+    # run 2 of a two-run gate, reported as a teardown behaviour failure when git
+    # was what had gone wrong. Checking costs one line and turns an hour of
+    # archaeology into a sentence.
+    function Assert-TestGit {
+        param([Parameter(Mandatory)]$Result, [Parameter(Mandatory)][string]$What)
+        if ($Result.Ok) { return }
+        throw "test fixture could not $What (exit $($Result.ExitCode)): $($Result.StdErr)"
     }
 
     function New-TestClone {
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
             Justification = 'Pester fixtures that build and remove disposable temp repos. -WhatIf on a fixture would leave the test asserting against a repo that was never created.')]
         param([Parameter(Mandatory)][string]$Origin, [Parameter(Mandatory)][string]$Path)
-        $null = Invoke-FmChildProcess -FilePath 'git' -ArgumentList @('clone', '-q', $Origin, $Path)
+        Assert-TestGit -Result (Invoke-FmChildProcess -FilePath 'git' -ArgumentList @('clone', '-q', $Origin, $Path)) -What "clone $Origin to $Path"
         $null = Invoke-FmGit -Directory $Path -Arguments @('config', 'user.email', 'test@example.invalid')
         $null = Invoke-FmGit -Directory $Path -Arguments @('config', 'user.name', 'Test')
         $Path
