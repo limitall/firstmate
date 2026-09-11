@@ -9855,3 +9855,19 @@ It goes immediately after the file-level `BeforeAll`, which is where the files t
   What is proven is the cause, the control on unmodified `main`, and that the case now passes in 1.82 s with the whole file green at 58.
 - **No memory limit was ever found.**
   The harness reported the machine low on memory during the first attempt and that reading was believed for one attempt. It was wrong: the control run wedged with 8.5 GB free, and the wedge reproduces in a single child process on an idle machine.
+
+### 56.7 The five failures that were the runner, not the tree
+
+With the hang fixed the suite completed twice, identically: **2951 passed, 5 failed**, 2411 s and 2408 s.
+All five reduce to one root - `Get-FmParentProcessId -Id $PID` answering `$null` - and the four `FmLock` ones are downstream of it, because lock ownership and harness ancestry are both built on parent-process identity.
+
+That is the runner, not the tree.
+The gate was started detached from a shell that exits as soon as the launch returns, so the process running Pester was ORPHANED long before those files ran, and `Get-FmParentProcessId` is right to answer `$null` for a parent that has exited - a dead parent's id can be recycled onto anything.
+
+```
+FmIdentity + FmLock, live parent      : 99 passed, 0 failed
+FmIdentity + FmLock, parent exited    : 95 passed, 4 failed   (parentAlive=False)
+```
+
+The first two attempts to reproduce this proved nothing, because waiting on the child kept the launching shell alive; the probe above only works by deliberately outliving it.
+The rule that came out of it is in `CONTRIBUTING.md`: a long detached run needs an anchor process that WAITS on it.

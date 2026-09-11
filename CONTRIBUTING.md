@@ -634,6 +634,11 @@ built for and states what it still cannot prove.
   action. If you find yourself adding a rule to the prompt to stop the screen
   saying something, the check belongs in the courier instead - a prompt is a
   request, exactly as the translator note above says.
+- **Run the suite from a process whose own parent is still alive.**
+  `FmIdentity` and `FmLock` are built on parent-process identity, and `Get-FmParentProcessId` answers `$null` for a parent that has exited - which is correct, because a dead parent's id can be recycled onto anything.
+  A detached runner whose launching shell exits is therefore orphaned by the time those files run, and five cases fail for a reason that is nothing to do with the code.
+  Measured: 99 passed / 0 failed with a live parent, 95 / 4 orphaned, on the same tree.
+  A long detached run needs an anchor process that WAITS on it, so the process running Pester keeps a live parent for the whole run.
 - **A test that changes a process-global puts it back, and `$env:PSModulePath` is one.**
   A file that prepends this checkout's `module` to it and does not restore it lets every later file, and every child process any of them starts, autoload `Firstmate` by name.
   That is how a fixture which had deliberately stubbed the module out ended up running the real `install.ps1` and hanging the whole suite for 11.6 hours, twice, on `main` as well as on a branch.
