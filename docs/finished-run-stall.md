@@ -113,6 +113,7 @@ Two shapes deliberately fail towards `processes`: a recycled pid that makes an u
 | --- | --- |
 | `bin/fm-run-liveness.ps1 <task-id>` | one line - `liveness: <processes\|none\|unknown> · task: <id> · <detail> [· pids: …]`. Exit 0 for any answered reading including `unknown`; exit 2 only on usage. |
 | the watcher's stale wake | every non-terminal stale and every wedge escalation carries a `[run-liveness: …]` clause, so the wake itself says what was measured and a supervisor never re-derives it. The `processes` wording names the pids and says outright not to tell the worker its run has finished. |
+| the watcher's wedge timer | a `processes` reading at the threshold defers the escalation and re-surfaces it once per `FM_PAUSE_RESURFACE_SECS` as a recheck that says live processes do not prove progress; `none` and `unknown` escalate on the old schedule. `docs/supervision.md` owns the rule. |
 | `bin/fm-crew-state.ps1` | the status-log fallback line - the one path with no authority of its own - gains `run-liveness: …`. That path is where a crew waiting on a live run and a crew waiting on a finished one used to read identically. |
 
 The reading is taken only where the question is otherwise unanswered: a busy pane and an attributed no-mistakes run both already answer it, and neither pays for a process-table read.

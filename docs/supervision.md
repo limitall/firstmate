@@ -156,6 +156,24 @@ has the measurement. A wedge alarm that fires while nothing is wrong trains the
 supervisor to acknowledge without looking, which is the one thing a real wedge
 needs nobody to do.
 
+**A quiet pane with its own run still going defers, and still comes back.**
+The commonest quiet pane is not busy at all: a worker that started a background run and ended its turn.
+It surfaces once, and its wedge timer then escalated every `FM_STALE_ESCALATE_SECS` for as long as the run lasted, each escalation deleting its timer and the next poll starting it again.
+One live home delivered 81 such alarms out of 92, every one carrying its own `run-liveness` clause saying work was in flight.
+So `Invoke-FmWedgeTimerCheck` takes that one reading at the threshold, and only a `processes` answer defers.
+The idle window restarts, the escalation count is neither advanced nor reset, and the deferral chain re-surfaces once per `FM_PAUSE_RESURFACE_SECS` through the same `Invoke-FmAbsorbedResurface` a declared pause uses, worded as a recheck: "rechecked on a long cadence not a wedge; live processes do not prove progress".
+`none`, `unknown` and a build with no reading escalate exactly as before, and a chain ends the moment one reading stops saying `processes`.
+It is a deferral rather than a cancellation because a live process is not progress: a run can hang on a prompt nobody will answer, and `docs/finished-run-stall.md` is why the reading is trusted for "something is running" and for nothing more.
+Upstream reached the same shape through worktree writes (#2524); this port already had the stronger signal for its commonest case.
+`docs/windows-e2e-evidence.md` section 61 has the reproduction and the controls.
+
+**A parked worker is bounded by its declaration, not its pane.**
+`Get-FmPauseStateClass` answers `none` for a live agent even under a declared `paused:` or `captain-held` wait, so a worker genuinely waiting on a decision is never silenced, and that routes every parked-but-live worker through the non-terminal surface on first sight of each stale hash.
+An idle parked pane still ticks a clock, so each tick used to wake firstmate again: the surface queued its wake before reading the re-surface throttle, and the hash-change path wiped the throttle on every tick.
+The throttle is now read first, advanced only by a wake that fires, and kept across a tick, because `Clear-FmStaleHashTracking` resets the per-hash half alone.
+It is also bound to the declaration through `Get-FmStaleWaitDeclaration` - the status file's signature while its last line declares the wait - so a replacement declaration wakes once instead of inheriting the old silence.
+That is upstream #3532.
+
 ## Two guards, two different questions
 
 `Invoke-FmGuard` is **pull**-based: it fires when some other supervision command
@@ -197,21 +215,21 @@ staleness but can never swallow a wake.
 
 | Function | Absent behaviour |
 | --- | --- |
-| `Test-FmSignalActionable` | signal treated as actionable - surfaced |
+| `Test-FmSignalReasonIsActionable` | signal treated as actionable - surfaced |
 | `Test-FmSignalCrewProvablyWorking` | crew treated as not working - surfaced |
 | `Invoke-FmValidatedCheck` (owned since the bounded-execution area landed - `docs/bounded-execution.md`) | check refused **without execution**, reported as `check: rejected unauthenticated state checks` |
 | `Get-FmRecordedWindows`, `Get-FmBackendCapture` | pane staleness skipped, noted once in the triage log |
-| `Get-FmWindowKind`, `Get-FmWindowTask`, `Test-FmWindowBusy`, `Get-FmBackendAgentAlive` | not proven working / not a secondmate / agent state unknown |
+| `Get-FmWindowKind`, `Convert-FmWindowToTask`, `Test-FmWindowBusy`, `Get-FmBackendAgentAlive` | not proven working / not a secondmate / no task / agent state unknown |
 | `Test-FmStaleIsTerminal`, `Test-FmCrewProvablyWorking`, `Get-FmCrewAbsorbClass` | non-terminal, not working, class `none` - surfaced |
-| `Get-FmLastStatusLine`, `Test-FmStatusPaused`, `Test-FmStatusPausedOrCaptainHeld` | no declared pause |
-| `Get-FmCaptainRelevantStatuses`, `Set-FmStatusSurfaced` | heartbeat backstop finds nothing |
-| `Get-FmOpenDecisions` | the drain prints no OPEN DECISIONS section |
+| `Get-FmLastStatusLine`, `Test-FmStatusIsPaused`, `Test-FmStatusIsPausedOrCaptainHeld` | no declared pause, so no declared-wait throttle either |
+| `Get-FmCaptainRelevantStatus` (`Set-FmStatusSurfaced` is this area's own) | heartbeat backstop finds nothing |
+| `Get-FmOpenDecision` | the drain prints no OPEN DECISIONS section |
 | `Get-FmSupervisionInstructions` (LANDED - see below) | guards fall back to the generic repair sentence |
 | `Get-FmHarness` (LANDED - `Public/Get-FmHarness.ps1`) | supervision model defaults to `persistent` (the stricter one) |
 | `Get-FmPrimaryTangleBranch`, `Get-FmDefaultBranch` (owned since `Public/FmTangle.ps1` landed - see below) | no worktree-tangle alarm |
 | `Invoke-FmPrCheckMigration`, `Repair-FmPrPollRetirementAll`, `Publish-FmPrPollRetirement` | migration assumed done, no retirement recovery |
 | `Invoke-FmPendingReplyTick`, `Invoke-FmProceventReconcile` | no-op |
-| `Get-FmTaskRunLiveness` (LANDED - `Public/FmRunLiveness.ps1`) | stale reasons carry no run-liveness clause; a supervisor is back to deriving it by hand, which is what `docs/finished-run-stall.md` records going wrong |
+| `Get-FmTaskRunLiveness` (LANDED - `Public/FmRunLiveness.ps1`) | stale reasons carry no run-liveness clause, so a supervisor is back to deriving it by hand, which is what `docs/finished-run-stall.md` records going wrong; and no wedge escalation is ever deferred |
 
 ## The two seams that now have owners
 
@@ -271,8 +289,9 @@ therefore appends a `[run-liveness: ...]` clause read through the seam above:
 `none`, `N live process(es)` with their pids, or `unknown` saying the check did
 NOT run. `docs/finished-run-stall.md` owns why - the ad-hoc derivation this
 replaced declared nine genuinely-running suites finished - and the `processes`
-wording exists specifically to stop that steer being repeated. Nothing about the
-surface/absorb decision changed; only the evidence attached to it.
+wording exists specifically to stop that steer being repeated.
+The same reading also decides one thing: whether a wedge escalation is deferred, as "A quiet pane with its own run still going defers" above describes.
+An escalation or recheck and its clause come from that one reading, so they cannot disagree.
 
 ## Environment
 
@@ -290,6 +309,8 @@ Same names and defaults as the bash originals: `FM_POLL` (15), `FM_HEARTBEAT`
 `FM_RUN_LIVENESS_DISABLE=1` turns off the run-liveness reading the stale clause
 quotes; every verdict then becomes `unknown`, which every caller already treats as
 no information. Those two are this port's only additions here.
+With the reading off nothing is deferred, so every wedge escalates on its original schedule.
+`FM_PAUSE_RESURFACE_SECS` paces the in-flight recheck as well as the declared pause, deliberately one knob, so the two rechecks cannot drift apart.
 
 ## Not verified on Windows
 

@@ -386,6 +386,161 @@ function Invoke-FmProceventSurface {
 
 # --- wedge timer and pause cadence -------------------------------------------
 
+function Test-FmResurfaceThrottleHolds {
+    <#
+        Does a re-surface throttle marker still suppress a recheck? It holds while
+        it exists, is younger than PauseResurfaceSecs, and - when -Scope names a
+        declaration - was written for THAT declaration.
+
+        The scope is what stops a replacement wait inheriting the old one's
+        silence. A worker that appends a new `paused:` line has declared a new
+        wait, and a throttle a previous declaration earned must not quiet it.
+        Get-FmPathAge reads a missing marker as 999999, so "never re-surfaced"
+        never holds.
+    #>
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$Throttle,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Scope,
+        [Parameter(Mandatory)][hashtable]$Settings
+    )
+    if ((Get-FmPathAge -Path $Throttle) -ge $Settings.PauseResurfaceSecs) { return $false }
+    if ($Scope -and (Get-FmFileTextOrEmpty -Path $Throttle) -ne $Scope) { return $false }
+    return $true
+}
+
+function Invoke-FmAbsorbedResurface {
+    <#
+        resurface_absorbed. One bounded re-surface for a pane the watcher is
+        deliberately absorbing, so no absorb can rot invisibly. <Age> is how long
+        the current absorb has held and <Throttle> is the per-window marker
+        recording the last re-surface, so once past PauseResurfaceSecs the pane
+        wakes once per window rather than every poll.
+
+        Shared by the declared-pause absorb and the in-flight wedge deferral so
+        the two cadences cannot drift apart; each caller owns its own marker and
+        reason. A -Scope binds the throttle to one declaration (see
+        Test-FmResurfaceThrottleHolds) and is what the marker then holds, so the
+        non-terminal surface can read the same marker for the same wait.
+
+        Returns without waking while either the absorb or the throttle is inside
+        the window; otherwise it enqueues, advances the throttle, and unwinds
+        through New-FmWakeDelivery exactly as an inline wake does.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Window,
+        [Parameter(Mandatory)][string]$Throttle,
+        [Parameter(Mandatory)][long]$Age,
+        [Parameter(Mandatory)][string]$Reason,
+        [AllowEmptyString()][string]$Scope = '',
+        [Parameter(Mandatory)][hashtable]$Context,
+        [Parameter(Mandatory)][hashtable]$Settings
+    )
+    if ($Age -lt $Settings.PauseResurfaceSecs) { return }
+    if (Test-FmResurfaceThrottleHolds -Throttle $Throttle -Scope $Scope -Settings $Settings) { return }
+    if (-not (Add-FmWakeRecord -Kind stale -Key $Window -Payload $Reason -Context $Context)) {
+        throw 'fm-watch: could not enqueue an absorbed-pane recheck'
+    }
+    $marker = if ($Scope) { $Scope } else { (Get-FmUnixTime).ToString() + "`n" }
+    Set-FmFileTextLf -Path $Throttle -Text $marker
+    New-FmWakeDelivery -Reason $Reason -Context $Context
+}
+
+function Get-FmStaleWaitDeclaration {
+    <#
+        The declaration a parked worker's re-surface throttle is bound to:
+        `declared:<size:mtime>` of its status file while the last line declares a
+        wait (`paused:` or `captain-held`), and '' otherwise.
+
+        The status file's signature identifies the declaration because a new
+        declaration is a new append: the same wait keeps its signature for as
+        long as it stands, and a replacement changes it. The pane cannot be the
+        key - an idle parked pane still ticks a clock or a token counter, which
+        changes its hash without changing what is being waited on.
+    #>
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Task,
+        [Parameter(Mandatory)][hashtable]$Context
+    )
+    if (-not $Task) { return '' }
+    $statusFile = Join-Path $Context.State "$Task.status"
+    $last = Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @($statusFile) -Default ''
+    if (-not (Invoke-FmSeam -Name 'Test-FmStatusIsPausedOrCaptainHeld' -Arguments @($last) -Default $false)) { return '' }
+    $sig = Get-FmFileSignature -Path $statusFile
+    if (-not $sig) { return '' }
+    return "declared:$sig"
+}
+
+function Clear-FmInflightDeferral {
+    <#
+        Drop a window's in-flight deferral chain wherever its idle timer starts
+        over, so the chain's age - and with it the recheck cadence - is measured
+        from the CURRENT quiet stretch. A chain left over from an earlier stretch
+        would make the next deferral recheck at once: noise, never silence, but
+        still wrong.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Window,
+        [Parameter(Mandatory)][hashtable]$Context
+    )
+    $key = Get-FmWindowKey -Window $Window
+    foreach ($name in @(".inflight-since-$key", ".inflight-resurfaced-$key")) {
+        $p = Join-Path $Context.State $name
+        try { Remove-FmStateFile -Path $p } catch { Write-Debug "watch: could not clear state marker $p; the next deferral may recheck early: $_" }
+    }
+}
+
+function Invoke-FmWedgeInflightDeferral {
+    <#
+        Defer ONE wedge escalation for a quiet pane whose task has live processes
+        of its own - a worker waiting on its background run. That is the shape
+        behind 81 of 92 alerts one live home delivered: each escalated while its
+        own liveness clause said work was in flight, deleted its timer, and was
+        re-armed by the next poll, every StaleEscalateSecs, for hours.
+
+        Deliberately a DEFERRAL, not a cancellation, because live processes do
+        not prove progress: a run can hang on a prompt nobody will answer, and
+        docs/finished-run-stall.md is why the reading is trusted for "something is
+        running" and for nothing more. So:
+          - the idle timer restarts, and the next window takes a fresh reading;
+            the moment it answers `none` or `unknown`, the ordinary escalation
+            fires on the ordinary schedule;
+          - .inflight-since-<key> holds when the first deferred window opened,
+            and ages the whole chain, so the pane still re-surfaces once every
+            PauseResurfaceSecs through Invoke-FmAbsorbedResurface - worded as a
+            recheck, never as a new alarm;
+          - the escalation counter is neither advanced (this is not an
+            escalation) nor reset (a later genuine wedge keeps the
+            demand-deep-inspection history it had already earned).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Window,
+        [Parameter(Mandatory)][string]$SinceFile,
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][long]$Since,
+        [Parameter(Mandatory)][string]$Note,
+        [Parameter(Mandatory)][hashtable]$Context,
+        [Parameter(Mandatory)][hashtable]$Settings
+    )
+    $key = Get-FmWindowKey -Window $Window
+    $now = Get-FmUnixTime
+    $chainFile = Join-Path $Context.State ".inflight-since-$key"
+    $chainStart = Get-FmFirstLine -Path $chainFile
+    if ($chainStart -notmatch '^[0-9]+$' -or [long]$chainStart -gt $now) {
+        $chainStart = [string]$Since
+        Set-FmFileTextLf -Path $chainFile -Text "$chainStart`n"
+    }
+    $quiet = $now - [long]$chainStart
+    $idle = $now - $Since
+    Set-FmFileTextLf -Path $SinceFile -Text ("$now`n")
+
+    $reason = "stale: $Window (quiet ${quiet}s with work in flight, rechecked on a long cadence not a wedge; live processes do not prove progress - confirm the run is still advancing)$Note"
+    Invoke-FmAbsorbedResurface -Window $Window -Throttle (Join-Path $Context.State ".inflight-resurfaced-$key") `
+        -Age $quiet -Reason $reason -Context $Context -Settings $Settings
+    Write-FmTriageLog -Message "absorbed $Label (work in flight, idle ${idle}s, quiet ${quiet}s; escalation deferred): $Window" -Context $Context -Settings $Settings
+}
+
 function Invoke-FmWedgeTimerCheck {
     <#
         wedge_timer_check. Repeat-poll bookkeeping for a stale hash already
@@ -393,6 +548,13 @@ function Invoke-FmWedgeTimerCheck {
         watcher restart between recording the hash and the timer), or escalate
         once StaleEscalateSecs have elapsed. Never re-reads crew state - the
         costly read already happened at classification time.
+
+        At the threshold, and only there, it takes ONE run-liveness reading. A
+        task with live processes of its own defers the escalation
+        (Invoke-FmWedgeInflightDeferral); `none`, `unknown` and a build with no
+        reading at all escalate exactly as before, because only positive evidence
+        may quiet an alarm. The same reading supplies the escalation's clause, so
+        the decision and the words a supervisor reads cannot disagree.
 
         At WedgeDemandInspectCount consecutive escalations on the SAME pane the
         reason itself carries a demand-deep-inspection marker, so the wake
@@ -409,6 +571,8 @@ function Invoke-FmWedgeTimerCheck {
     )
     $since = Get-FmFirstLine -Path $SinceFile
     if ($since -notmatch '^[0-9]+$') {
+        # A new idle window: its deferral chain, if any, belonged to the old one.
+        Clear-FmInflightDeferral -Window $Window -Context $Context
         Set-FmFileTextLf -Path $SinceFile -Text ((Get-FmUnixTime).ToString() + "`n")
         Write-FmTriageLog -Message "absorbed $Label timer reset: $Window" -Context $Context -Settings $Settings
         return
@@ -416,6 +580,15 @@ function Invoke-FmWedgeTimerCheck {
 
     $age = (Get-FmUnixTime) - [long]$since
     if ($age -lt $Settings.StaleEscalateSecs) { return }
+
+    $liveness = Get-FmWatchRunLiveness `
+        -Task (Invoke-FmSeam -Name 'Convert-FmWindowToTask' -Arguments @($Window, $Context.State) -Default '') `
+        -Context $Context
+    if ($liveness.State -eq 'processes') {
+        Invoke-FmWedgeInflightDeferral -Window $Window -SinceFile $SinceFile -Label $Label -Since ([long]$since) `
+            -Note $liveness.Note -Context $Context -Settings $Settings
+        return
+    }
 
     $prev = Get-FmFirstLine -Path $EscalationFile
     if ($prev -notmatch '^[0-9]+$') { $prev = '0' }
@@ -426,13 +599,12 @@ function Invoke-FmWedgeTimerCheck {
     if ($n -ge $Settings.WedgeDemandInspectCount) {
         $reason = "stale: $Window (idle ${age}s, possible wedge, escalation $n, demand-deep-inspection: same pane has wedge-escalated $n times in a row - do not re-absorb on the run-step/pane state alone)"
     }
-    $reason = $reason + (Get-FmWatchRunLivenessNote `
-            -Task (Invoke-FmSeam -Name 'Convert-FmWindowToTask' -Arguments @($Window, $Context.State) -Default '') `
-            -Context $Context)
+    $reason = $reason + $liveness.Note
     if (-not (Add-FmWakeRecord -Kind stale -Key $Window -Payload $reason -Context $Context)) {
         throw 'fm-watch: could not enqueue wedge escalation'
     }
     try { Remove-FmStateFile -Path $SinceFile } catch { Write-Debug "watch: could not clear wedge timer $SinceFile; the next cycle re-reads the old start time: $_" }
+    Clear-FmInflightDeferral -Window $Window -Context $Context
     New-FmWakeDelivery -Reason $reason -Context $Context
 }
 
@@ -448,17 +620,33 @@ function Clear-FmPauseState {
     }
 }
 
+function Clear-FmStaleHashTracking {
+    <#
+        clear_stale_hash_tracking: the hash-scoped half of Clear-FmPauseTracking -
+        the stale suppressor, its wedge timer and escalation count, and the
+        in-flight deferral chain. Split out so a caller that must keep a window's
+        DECLARATION-scoped pause state (its .paused-* flag, recheck and re-surface
+        throttle) can still reset the per-hash half alone.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Window,
+        [Parameter(Mandatory)][hashtable]$Context
+    )
+    $key = Get-FmWindowKey -Window $Window
+    foreach ($name in @(".stale-$key", ".stale-since-$key", ".wedge-escalations-$key")) {
+        $p = Join-Path $Context.State $name
+        try { Remove-FmStateFile -Path $p } catch { Write-Debug "watch: could not clear state marker $p; the watcher may re-read a stale verdict: $_" }
+    }
+    Clear-FmInflightDeferral -Window $Window -Context $Context
+}
+
 function Clear-FmPauseTracking {
     param(
         [Parameter(Mandatory)][string]$Window,
         [Parameter(Mandatory)][hashtable]$Context
     )
     Clear-FmPauseState -Window $Window -Context $Context
-    $key = Get-FmWindowKey -Window $Window
-    foreach ($name in @(".stale-$key", ".stale-since-$key", ".wedge-escalations-$key")) {
-        $p = Join-Path $Context.State $name
-        try { Remove-FmStateFile -Path $p } catch { Write-Debug "watch: could not clear state marker $p; the watcher may re-read a stale verdict: $_" }
-    }
+    Clear-FmStaleHashTracking -Window $Window -Context $Context
 }
 
 function Invoke-FmPausedStale {
@@ -471,7 +659,9 @@ function Invoke-FmPausedStale {
 
         The re-surface age is anchored on the STATUS FILE mtime, not a per-hash
         marker, so a churny idle pane (a ticking clock, a token counter) cannot
-        keep resetting the cadence the way a hash-tied timer would.
+        keep resetting the cadence the way a hash-tied timer would. The throttle
+        is bound to the current declaration (Get-FmStaleWaitDeclaration), which
+        is how the non-terminal surface reads the same marker for the same wait.
     #>
     param(
         [Parameter(Mandatory)][string]$Window,
@@ -487,6 +677,7 @@ function Invoke-FmPausedStale {
         $p = Join-Path $Context.State $name
         try { Remove-FmStateFile -Path $p } catch { Write-Debug "watch: could not clear state marker $p; the watcher may re-read a stale verdict: $_" }
     }
+    Clear-FmInflightDeferral -Window $Window -Context $Context
 
     $statusFile = Join-Path $Context.State "$Task.status"
     # The foundation's Get-FmPathMtime returns a [datetime], not epoch seconds.
@@ -496,23 +687,19 @@ function Invoke-FmPausedStale {
     $mtime = Get-FmPathMtime -Path $statusFile
     $age = if ($null -eq $mtime) { 0L } else { [long][Math]::Floor(([datetime]::UtcNow - $mtime).TotalSeconds) }
 
-    $resurfacedFile = Join-Path $Context.State ".paused-resurfaced-$key"
-    $resurfacedAge = Get-FmPathAge -Path $resurfacedFile
-    if ($age -ge $Settings.PauseResurfaceSecs -and $resurfacedAge -ge $Settings.PauseResurfaceSecs) {
-        $reason = "stale: $Window (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
-        if (-not (Add-FmWakeRecord -Kind stale -Key $Window -Payload $reason -Context $Context)) {
-            throw 'fm-watch: could not enqueue paused-stale recheck'
-        }
-        Set-FmFileTextLf -Path $resurfacedFile -Text ((Get-FmUnixTime).ToString() + "`n")
-        New-FmWakeDelivery -Reason $reason -Context $Context
-    }
+    Invoke-FmAbsorbedResurface -Window $Window -Throttle (Join-Path $Context.State ".paused-resurfaced-$key") -Age $age `
+        -Reason "stale: $Window (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)" `
+        -Scope (Get-FmStaleWaitDeclaration -Task $Task -Context $Context) -Context $Context -Settings $Settings
     Write-FmTriageLog -Message "absorbed stale (paused, awaiting external, age ${age}s): $Window" -Context $Context -Settings $Settings
 }
 
-function Get-FmWatchRunLivenessNote {
+function Get-FmWatchRunLiveness {
     <#
-        The run-liveness clause a stale reason carries, or '' when this build has
-        no owner for the reading.
+        One run-liveness reading for a stale decision, as {State, Note}: State is
+        `processes`, `none`, `unknown`, or '' when this build has no owner for
+        the reading; Note is the clause a stale reason carries, '' when there is
+        no owner. Deciding and describing from ONE reading is the point - the
+        wedge deferral and the words a supervisor reads must never disagree.
 
         WHY A STALE REASON CARRIES THIS AT ALL. A quiet pane is the same shape
         whether the worker is waiting on a run that is still going or on one that
@@ -526,67 +713,105 @@ function Get-FmWatchRunLivenessNote {
 
         An absent, throwing or inconclusive reading says the check did NOT run,
         which is this repo's rule for a step with no answer - never silence,
-        which would read as "nothing is running".
+        which would read as "nothing is running". For the same reason only a
+        `processes` State may defer anything; every other State escalates.
     #>
-    [OutputType([string])]
+    [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$Task,
         [Parameter(Mandatory)][hashtable]$Context
     )
-    if (-not $Task) { return '' }
-    if (-not (Test-FmSeam -Name 'Get-FmTaskRunLiveness')) { return '' }
+    if (-not $Task -or -not (Test-FmSeam -Name 'Get-FmTaskRunLiveness')) {
+        return [pscustomobject]@{ State = ''; Note = '' }
+    }
     $dataPath = Join-Path $Context.Home 'data'
     $reading = Invoke-FmSeam -Name 'Get-FmTaskRunLiveness' -Arguments @($Task, $Context.State, $dataPath) -Default $null
     if ($null -eq $reading -or -not ($reading.PSObject.Properties.Name -contains 'State')) {
-        return ' [run-liveness: unknown - the reading did NOT run]'
+        return [pscustomobject]@{ State = 'unknown'; Note = ' [run-liveness: unknown - the reading did NOT run]' }
     }
     switch ([string]$reading.State) {
         'none' {
-            return ' [run-liveness: none - no live process for this task beyond its agent, so nothing it could be waiting on is still running]'
+            return [pscustomobject]@{
+                State = 'none'
+                Note  = ' [run-liveness: none - no live process for this task beyond its agent, so nothing it could be waiting on is still running]'
+            }
         }
         'processes' {
             $ids = @($reading.ProcessId)
-            return " [run-liveness: $($ids.Count) live process(es) for this task - pids $($ids -join ', ') - work IS in flight; do not tell this worker its run has finished]"
+            return [pscustomobject]@{
+                State = 'processes'
+                Note  = " [run-liveness: $($ids.Count) live process(es) for this task - pids $($ids -join ', ') - work IS in flight; do not tell this worker its run has finished]"
+            }
         }
         default {
             $detail = ''
             if ($reading.PSObject.Properties.Name -contains 'Detail') { $detail = [string]$reading.Detail }
-            return " [run-liveness: unknown - $detail; this check did NOT run]"
+            return [pscustomobject]@{ State = 'unknown'; Note = " [run-liveness: unknown - $detail; this check did NOT run]" }
         }
     }
 }
 
 function Invoke-FmNonTerminalStaleSurface {
-    <# surface_nonterminal_stale. Takes no settings: like the bash original it
-       surfaces unconditionally and writes no triage line, so there is no bound
-       or cadence to read. #>
+    <#
+        surface_nonterminal_stale. Surface a stale pane no classifier could
+        resolve, so firstmate inspects it: it may have finished through an
+        interactive menu that wrote no status, be waiting on a decision, or be
+        wedged.
+
+        Get-FmPauseStateClass deliberately answers `none` for a still-LIVE agent
+        even under a declared wait, so a worker genuinely waiting on a decision is
+        never silenced - which routes every parked-but-live worker here, on first
+        sight of each distinct stale hash. An idle parked pane still churns its
+        hash (a clock, a token counter), so without a bound one declared wait
+        re-alarms firstmate for its whole duration.
+
+        So a declared wait holds this path to the same once-per-PauseResurfaceSecs
+        cadence Invoke-FmAbsorbedResurface owns, through the same
+        .paused-resurfaced-<key> marker bound to the same declaration. The FIRST
+        sight of a declaration still wakes, and the throttle is read BEFORE
+        anything is queued and advanced only by a wake that really fires: a
+        throttle written by the wake it should have prevented bounds nothing,
+        which is what this path used to do. An undeclared stale is never
+        throttled here.
+    #>
     param(
         [Parameter(Mandatory)][string]$Window,
         [Parameter(Mandatory)][string]$Hash,
-        [Parameter(Mandatory)][hashtable]$Context
+        [Parameter(Mandatory)][hashtable]$Context,
+        [Parameter(Mandatory)][hashtable]$Settings
     )
     $key = Get-FmWindowKey -Window $Window
     $task = Invoke-FmSeam -Name 'Convert-FmWindowToTask' -Arguments @($Window, $Context.State) -Default ''
-    # Read once and reuse: the queued record and the delivered reason must not
-    # disagree about what was measured, and one process-table read per surface is
-    # the whole cost of this evidence.
-    $reason = "stale: $Window" + (Get-FmWatchRunLivenessNote -Task $task -Context $Context)
-    if (-not (Add-FmWakeRecord -Kind stale -Key $Window -Payload $reason -Context $Context)) {
-        throw 'fm-watch: could not enqueue non-terminal stale'
+    $declaration = Get-FmStaleWaitDeclaration -Task $task -Context $Context
+    $throttle = Join-Path $Context.State ".paused-resurfaced-$key"
+    $throttled = $declaration -and (Test-FmResurfaceThrottleHolds -Throttle $throttle -Scope $declaration -Settings $Settings)
+
+    $reason = ''
+    if (-not $throttled) {
+        # Read once and reuse: the queued record and the delivered reason must not
+        # disagree about what was measured, and one process-table read per surface
+        # is the whole cost of this evidence - which a throttled sight never pays.
+        $reason = "stale: $Window" + (Get-FmWatchRunLiveness -Task $task -Context $Context).Note
+        if (-not (Add-FmWakeRecord -Kind stale -Key $Window -Payload $reason -Context $Context)) {
+            throw 'fm-watch: could not enqueue non-terminal stale'
+        }
     }
     Set-FmFileTextLf -Path (Join-Path $Context.State ".stale-$key") -Text $Hash
     $sinceFile = Join-Path $Context.State ".stale-since-$key"
     try { Remove-FmStateFile -Path $sinceFile } catch { Write-Debug "watch: could not clear wedge timer $sinceFile; the next cycle re-reads the old start time: $_" }
+    Clear-FmInflightDeferral -Window $Window -Context $Context
 
-    $last = Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @((Join-Path $Context.State "$task.status")) -Default ''
-    $held = Invoke-FmSeam -Name 'Test-FmStatusIsPausedOrCaptainHeld' -Arguments @($last) -Default $false
-    if ($held) {
+    if ($declaration) {
         Set-FmFileTextLf -Path (Join-Path $Context.State ".paused-$key") -Text ''
         Set-FmFileTextLf -Path (Join-Path $Context.State ".paused-rechecked-$key") -Text ((Get-FmUnixTime).ToString() + "`n")
-        Set-FmFileTextLf -Path (Join-Path $Context.State ".paused-resurfaced-$key") -Text ((Get-FmUnixTime).ToString() + "`n")
+        if (-not $throttled) { Set-FmFileTextLf -Path $throttle -Text $declaration }
     }
     else {
         Clear-FmPauseState -Window $Window -Context $Context
+    }
+    if ($throttled) {
+        Write-FmTriageLog -Message "absorbed non-terminal stale (declared wait already re-surfaced this window): $Window" -Context $Context -Settings $Settings
+        return
     }
     New-FmWakeDelivery -Reason $reason -Context $Context
 }

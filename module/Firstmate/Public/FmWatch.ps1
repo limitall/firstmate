@@ -489,6 +489,7 @@ function Invoke-FmWatchStaleCycle {
                 else {
                     Remove-FmStateFile -Path $sinceFile
                     Remove-FmStateFile -Path $escalationFile
+                    Clear-FmInflightDeferral -Window $window -Context $Context
                 }
                 $stillHeld = [bool](Invoke-FmSeam -Name 'Test-FmStatusIsPausedOrCaptainHeld' `
                         -Arguments @((Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @((Join-Path $Context.State "$task.status")) -Default '')) -Default $false)
@@ -506,14 +507,29 @@ function Invoke-FmWatchStaleCycle {
             Set-FmFileTextLf -Path $countFile -Text "0`n"
             Remove-FmStateFile -Path $sinceFile
             Remove-FmStateFile -Path $escalationFile
+            Clear-FmInflightDeferral -Window $window -Context $Context
             $lastNow = Invoke-FmSeam -Name 'Get-FmLastStatusLine' -Arguments @((Join-Path $Context.State "$task.status")) -Default ''
             $heldNow = [bool](Invoke-FmSeam -Name 'Test-FmStatusIsPausedOrCaptainHeld' -Arguments @($lastNow) -Default $false)
             if (-not (Test-FmAfk -Context $Context) -and $heldNow -and -not $busyNow) {
-                if ((Get-FmPauseStateClass -Window $window -Task $task -Context $Context -Settings $Settings) -eq 'paused') {
-                    Invoke-FmPausedStale -Window $window -Task $task -Hash $hash -Context $Context -Settings $Settings
-                }
-                else {
-                    Clear-FmPauseTracking -Window $window -Context $Context
+                switch (Get-FmPauseStateClass -Window $window -Task $task -Context $Context -Settings $Settings) {
+                    'paused' {
+                        Invoke-FmPausedStale -Window $window -Task $task -Hash $hash -Context $Context -Settings $Settings
+                    }
+                    'none' {
+                        # Inconclusive, but the declared wait itself still stands,
+                        # so only the per-hash bookkeeping resets. The re-surface
+                        # throttle bounds the DECLARATION, not the pane: an idle
+                        # parked pane that ticks a clock changes hash without
+                        # changing what it waits on, and clearing the throttle here
+                        # handed that same wait a fresh window on every tick - the
+                        # first sight of each new hash reaches the non-terminal
+                        # surface, so the whole wait re-alarmed far inside
+                        # PauseResurfaceSecs.
+                        Clear-FmStaleHashTracking -Window $window -Context $Context
+                    }
+                    default {
+                        Clear-FmPauseTracking -Window $window -Context $Context
+                    }
                 }
             }
             elseif ([System.IO.File]::Exists($pausedFlag)) {
@@ -573,6 +589,7 @@ function Invoke-FmWatchStaleTriage {
         if (-not $alreadyClassified) {
             if (Invoke-FmSeam -Name 'Test-FmCrewProvablyWorking' -Arguments @($Task) -Default $false) {
                 Set-FmFileTextLf -Path $StaleFile -Text $Hash
+                Clear-FmInflightDeferral -Window $Window -Context $Context
                 Set-FmFileTextLf -Path $SinceFile -Text ((Get-FmUnixTime).ToString() + "`n")
                 Write-FmTriageLog -Context $Context -Settings $Settings `
                     -Message "absorbed stale (provably working, overriding a stale captain-relevant status): $Window"
@@ -583,6 +600,7 @@ function Invoke-FmWatchStaleTriage {
                 }
                 Set-FmFileTextLf -Path $StaleFile -Text $Hash
                 Remove-FmStateFile -Path $SinceFile
+                Clear-FmInflightDeferral -Window $Window -Context $Context
                 Set-FmStatusSurfaced -Path (Join-Path $Context.State "$Task.status") -Context $Context
                 New-FmWakeDelivery -Reason "stale: $Window" -Context $Context
             }
@@ -616,7 +634,7 @@ function Invoke-FmWatchStaleTriage {
                 # No running pipeline, no exact busy verdict, no declared pause:
                 # surface now so firstmate inspects the inconclusive state rather
                 # than leaving a finish to wait out the timer.
-                Invoke-FmNonTerminalStaleSurface -Window $Window -Hash $Hash -Context $Context
+                Invoke-FmNonTerminalStaleSurface -Window $Window -Hash $Hash -Context $Context -Settings $Settings
             }
         }
         return

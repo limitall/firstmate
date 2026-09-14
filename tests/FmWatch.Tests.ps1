@@ -400,6 +400,135 @@ Describe 'Wedge timer' {
     }
 }
 
+Describe 'Wedge deferral while work is in flight' {
+    # The 2026-09 noise, at the timer that made it: 81 of 92 alerts one live home
+    # delivered were wedge escalations whose own clause said work IS in flight.
+    # A live process defers the escalation; it never cancels it, because a run can
+    # hang with its processes alive (docs/finished-run-stall.md).
+    BeforeAll {
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            $ids = if ($script:StubLiveness -eq 'processes') { @(4242, 4243) } else { @() }
+            return [pscustomobject]@{ TaskId = $TaskId; State = $script:StubLiveness; ProcessId = $ids; AgentProcessId = @(9); Detail = 'staged' }
+        }
+
+        function Invoke-TimerCheck {
+            Invoke-FmWedgeTimerCheck -Window 's:1' -SinceFile $script:Since -Label 'non-terminal stale' `
+                -EscalationFile $script:Esc -Context $script:Ctx -Settings $script:Settings
+        }
+
+        function Set-IdleFor {
+            param([Parameter(Mandatory)][int]$Seconds)
+            Set-FmFileTextLf -Path $script:Since -Text (((Get-FmUnixTime) - $Seconds).ToString() + "`n")
+        }
+    }
+    AfterAll {
+        foreach ($n in @('Get-FmTaskRunLiveness', 'Invoke-TimerCheck', 'Set-IdleFor')) {
+            Remove-Item -Path "function:$n" -ErrorAction SilentlyContinue
+        }
+    }
+    BeforeEach {
+        $script:TestHome = New-TestHome
+        $script:Ctx = Get-FmWakeContext
+        $env:FM_STALE_ESCALATE_SECS = '240'
+        $env:FM_PAUSE_RESURFACE_SECS = '3600'
+        $script:Settings = Get-FmWatchSettings
+        $script:Since = Join-Path $script:Ctx.State '.stale-since-s_1'
+        $script:Esc = Join-Path $script:Ctx.State '.wedge-escalations-s_1'
+        $script:Chain = Join-Path $script:Ctx.State '.inflight-since-s_1'
+        $script:Throttle = Join-Path $script:Ctx.State '.inflight-resurfaced-s_1'
+        $script:StubLiveness = 'processes'
+    }
+    AfterEach { Remove-TestHome -Path $script:TestHome }
+
+    It 'defers the escalation while the task has live processes, and restarts the idle window' {
+        Set-IdleFor -Seconds 300
+
+        { Invoke-TimerCheck } | Should -Not -Throw
+        Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+        [long](Get-FmFirstLine -Path $script:Since) | Should -BeGreaterOrEqual ((Get-FmUnixTime) - 5)
+        (Get-FmFileTextOrEmpty -Path (Join-Path $script:Ctx.State '.watch-triage.log')) | Should -BeLike '*escalation deferred*'
+    }
+
+    It 'still escalates on the unchanged schedule the moment the reading says nothing is running' {
+        $script:StubLiveness = 'none'
+        Set-IdleFor -Seconds 240
+
+        { Invoke-TimerCheck } | Should -Throw
+        $row = @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0]
+        $row | Should -BeLike '*possible wedge, escalation 1)*'
+        $row | Should -BeLike '*run-liveness: none*'
+    }
+
+    It 'escalates when the reading could not be made, because only positive evidence may quiet an alarm' {
+        $script:StubLiveness = 'unknown'
+        Set-IdleFor -Seconds 240
+
+        { Invoke-TimerCheck } | Should -Throw
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -BeLike '*possible wedge, escalation 1)*'
+    }
+
+    It 'neither advances nor resets the escalation history it defers' {
+        Set-FmFileTextLf -Path $script:Esc -Text "2`n"
+        Set-IdleFor -Seconds 300
+        Invoke-TimerCheck
+        (Get-FmFirstLine -Path $script:Esc) | Should -Be '2'
+
+        # The run ends: the next escalation carries the history it had earned.
+        $script:StubLiveness = 'none'
+        Set-IdleFor -Seconds 300
+        { Invoke-TimerCheck } | Should -Throw
+        $row = @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0]
+        $row | Should -BeLike '*escalation 3, demand-deep-inspection*'
+        [System.IO.File]::Exists($script:Chain) | Should -BeFalse
+    }
+
+    It 're-surfaces a long deferral once per window, worded as a recheck and never as a wedge' {
+        $env:FM_PAUSE_RESURFACE_SECS = '600'
+        $script:Settings = Get-FmWatchSettings
+        Set-FmFileTextLf -Path $script:Chain -Text (((Get-FmUnixTime) - 900).ToString() + "`n")
+        Set-IdleFor -Seconds 300
+
+        { Invoke-TimerCheck } | Should -Throw
+        $row = @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0]
+        $row | Should -Match "\tstale\ts:1\tstale: s:1 \(quiet 9\d\ds with work in flight, rechecked on a long cadence not a wedge"
+        $row | Should -BeLike '*live processes do not prove progress*'
+        $row | Should -BeLike '*pids 4242, 4243 - work IS in flight*'
+        $row | Should -Not -BeLike '*possible wedge*'
+        [System.IO.File]::Exists($script:Esc) | Should -BeFalse
+
+        # The next window of the same chain stays quiet: once per window, not per check.
+        Set-IdleFor -Seconds 300
+        { Invoke-TimerCheck } | Should -Not -Throw
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 1
+    }
+
+    It 'stays quiet until the deferral itself has lasted a whole window' {
+        $env:FM_PAUSE_RESURFACE_SECS = '600'
+        $script:Settings = Get-FmWatchSettings
+        # The first deferred window opened 300s ago: the chain starts there.
+        Set-IdleFor -Seconds 300
+
+        { Invoke-TimerCheck } | Should -Not -Throw
+        [long](Get-FmFirstLine -Path $script:Chain) | Should -BeLessOrEqual ((Get-FmUnixTime) - 299)
+        Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+    }
+
+    It 'measures a deferral from the current quiet stretch, not a finished one' {
+        $env:FM_PAUSE_RESURFACE_SECS = '600'
+        $script:Settings = Get-FmWatchSettings
+        # A chain left behind by an earlier stretch, then a new idle window opens.
+        Set-FmFileTextLf -Path $script:Chain -Text (((Get-FmUnixTime) - 5000).ToString() + "`n")
+        Invoke-TimerCheck
+        [System.IO.File]::Exists($script:Chain) | Should -BeFalse
+
+        # So that window's first deferral is not an instant recheck.
+        Set-IdleFor -Seconds 300
+        { Invoke-TimerCheck } | Should -Not -Throw
+        Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+    }
+}
+
 Describe 'Window keys and pane hashing' {
     It 'maps a window to the same state-file key the bash watcher uses' {
         Get-FmWindowKey -Window 'fm:1.2' | Should -Be 'fm_1_2'
@@ -552,20 +681,40 @@ Describe 'Pane staleness with the backend present' {
         function Get-FmRecordedWindows { param($State) return @('sess:1') }
         function Get-FmBackendCapture { param($Window, $State, $Lines) return $script:StubPane }
         function Get-FmWindowKind { param($Window, $State) return 'ship' }
-        function Get-FmWindowTask { param($Window, $State) return 'alpha' }
         function Test-FmWindowBusy { param($Window, $State, $Tail) return $script:StubBusy }
         function Test-FmStaleIsTerminal { param($Window, $State) return $script:StubTerminal }
         function Test-FmCrewProvablyWorking { param($Task) return $script:StubCrewWorking }
         function Get-FmCrewAbsorbClass { param($Task) return $script:StubAbsorbClass }
+        # The real Test-FmStatusIsPausedOrCaptainHeld reads this line, so a test
+        # declares a wait by staging a `paused:` line here - not by a flag.
         function Get-FmLastStatusLine { param($Path) return $script:StubLastLine }
-        function Test-FmStatusPaused { param($Line) return $script:StubPaused }
-        function Test-FmStatusPausedOrCaptainHeld { param($Line) return $script:StubPaused }
         function Get-FmBackendAgentAlive { param($Window, $State) return $script:StubAgentAlive }
 
         function New-StaleTaskMeta {
             <# Give sess:1 a real task record, so Convert-FmWindowToTask resolves
                it to alpha and the busy bound reads alpha's own evidence. #>
             Set-FmFileTextLf -Path (Join-Path $script:Ctx.State 'alpha.meta') -Text "window=sess:1`n"
+        }
+
+        function Invoke-StaleCycle {
+            <# One stale-cycle poll, answering the wake it delivered or '' - the
+               shape a supervisor sees across re-arms of a real watcher. #>
+            param([Parameter(Mandatory)][hashtable]$Settings)
+            try { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $Settings }
+            catch {
+                if ($_.Exception.Data.Contains('FmWakeReason')) { return [string]$_.Exception.Data['FmWakeReason'] }
+                throw
+            }
+            return ''
+        }
+
+        function Set-ParkedStatus {
+            <# Declare a wait the way a worker does: append a `paused:` line. #>
+            param([Parameter(Mandatory)][string]$Line)
+            # The append grows the file, so a replacement declaration always gets a
+            # new size:mtime signature, whatever second it lands in.
+            Add-FmWakeQueueBytes -Path (Join-Path $script:Ctx.State 'alpha.status') -Record "$Line`n"
+            $script:StubLastLine = $Line
         }
 
         function Set-EvidenceAge {
@@ -584,10 +733,10 @@ Describe 'Pane staleness with the backend present' {
         }
     }
     AfterAll {
-        foreach ($n in @('Get-FmRecordedWindows', 'Get-FmBackendCapture', 'Get-FmWindowKind', 'Get-FmWindowTask',
+        foreach ($n in @('Get-FmRecordedWindows', 'Get-FmBackendCapture', 'Get-FmWindowKind',
                 'Test-FmWindowBusy', 'Test-FmStaleIsTerminal', 'Test-FmCrewProvablyWorking', 'Get-FmCrewAbsorbClass',
-                'Get-FmLastStatusLine', 'Test-FmStatusPaused', 'Test-FmStatusPausedOrCaptainHeld', 'Get-FmBackendAgentAlive',
-                'New-StaleTaskMeta', 'Set-EvidenceAge')) {
+                'Get-FmLastStatusLine', 'Get-FmBackendAgentAlive',
+                'New-StaleTaskMeta', 'Set-EvidenceAge', 'Invoke-StaleCycle', 'Set-ParkedStatus')) {
             Remove-Item -Path "function:$n" -ErrorAction SilentlyContinue
         }
     }
@@ -601,7 +750,6 @@ Describe 'Pane staleness with the backend present' {
         $script:StubCrewWorking = $false
         $script:StubAbsorbClass = 'none'
         $script:StubLastLine = 'working: going'
-        $script:StubPaused = $false
         $script:StubAgentAlive = 'dead'
         Set-FmFileTextLf -Path (Join-Path $script:Ctx.State 'alpha.status') -Text "working: going`n"
     }
@@ -666,7 +814,6 @@ Describe 'Pane staleness with the backend present' {
     }
 
     It 'absorbs a declared pause on the long recheck cadence rather than wedging it' {
-        $script:StubPaused = $true
         $script:StubAbsorbClass = 'paused'
         1..3 | ForEach-Object { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $script:Settings }
 
@@ -748,9 +895,11 @@ Describe 'Pane staleness with the backend present' {
     }
 
     It 'carries the reading into a wedge escalation too' {
+        # A `processes` reading defers the escalation instead, and carries the same
+        # clause into its recheck ('Wedge deferral while work is in flight').
         function Get-FmTaskRunLiveness {
             param($TaskId, $StatePath, $DataPath, $Table)
-            return [pscustomobject]@{ TaskId = $TaskId; State = 'processes'; ProcessId = @(555); AgentProcessId = @(9); Detail = 'x' }
+            return [pscustomobject]@{ TaskId = $TaskId; State = 'none'; ProcessId = @(); AgentProcessId = @(9); Detail = 'x' }
         }
         try {
             $env:FM_STALE_ESCALATE_SECS = '1'
@@ -759,7 +908,7 @@ Describe 'Pane staleness with the backend present' {
             { Invoke-FmWedgeTimerCheck -Window 'sess:1' -SinceFile (Join-Path $script:Ctx.State '.stale-since-sess_1') `
                     -Label 'test' -EscalationFile (Join-Path $script:Ctx.State '.wedge-escalations-sess_1') `
                     -Context $script:Ctx -Settings $settings } | Should -Throw
-            @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -Match 'run-liveness: 1 live process'
+            @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] | Should -Match 'possible wedge.*run-liveness: none - no live process'
         }
         finally {
             Remove-Item -Path 'function:Get-FmTaskRunLiveness' -ErrorAction SilentlyContinue
@@ -846,6 +995,134 @@ Describe 'Pane staleness with the backend present' {
         Set-FmFileTextLf -Path $since -Text (((Get-FmUnixTime) - 240).ToString() + "`n")
         { Invoke-FmWatchStaleCycle -Context $script:Ctx -Settings $settings } | Should -Throw
         @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[1] | Should -BeLike '*possible wedge, escalation 1)*'
+    }
+
+    It 'defers a quiet pane waiting on its live run, and alarms it again the moment the run ends' {
+        # The live 2026-09 shape end to end: an idle agent behind a frozen pane,
+        # not busy, class `none`, with its background run still going.
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            $ids = if ($script:StubLiveness -eq 'processes') { @(4242) } else { @() }
+            return [pscustomobject]@{ TaskId = $TaskId; State = $script:StubLiveness; ProcessId = $ids; AgentProcessId = @(9); Detail = 'staged' }
+        }
+        try {
+            $script:StubLiveness = 'processes'
+            $env:FM_STALE_ESCALATE_SECS = '240'
+            $settings = Get-FmWatchSettings
+            New-StaleTaskMeta
+            $since = Join-Path $script:Ctx.State '.stale-since-sess_1'
+
+            # First sight still surfaces once, with the reading attached.
+            1..2 | ForEach-Object { Invoke-StaleCycle -Settings $settings | Should -BeNullOrEmpty }
+            Invoke-StaleCycle -Settings $settings | Should -BeLike 'stale: sess:1 `[run-liveness: 1 live process*'
+
+            # Then window after window of a quiet pane with work in flight: nothing.
+            Invoke-StaleCycle -Settings $settings | Should -BeNullOrEmpty
+            foreach ($window in 1..5) {
+                Set-FmFileTextLf -Path $since -Text (((Get-FmUnixTime) - 240).ToString() + "`n")
+                Invoke-StaleCycle -Settings $settings | Should -BeNullOrEmpty -Because "window $window has work in flight"
+            }
+            @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 1
+
+            # The run ends and the pane stays frozen: the wedge alarm is back on
+            # the very next threshold, not an hour later.
+            $script:StubLiveness = 'none'
+            Set-FmFileTextLf -Path $since -Text (((Get-FmUnixTime) - 240).ToString() + "`n")
+            Invoke-StaleCycle -Settings $settings | Should -BeLike '*possible wedge, escalation 1)*run-liveness: none*'
+        }
+        finally { Remove-Item -Path 'function:Get-FmTaskRunLiveness' -ErrorAction SilentlyContinue }
+    }
+
+    It 'defers a busy pane past its bound the same way while its own run is alive' {
+        # The busy bound routes through the same wedge timer, so a foreground run
+        # behind a busy footer takes the same deferral - and loses it the same way.
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            $ids = if ($script:StubLiveness -eq 'processes') { @(4242) } else { @() }
+            return [pscustomobject]@{ TaskId = $TaskId; State = $script:StubLiveness; ProcessId = $ids; AgentProcessId = @(9); Detail = 'staged' }
+        }
+        try {
+            $script:StubLiveness = 'processes'
+            $script:StubBusy = $true
+            $env:FM_BUSY_TURN_MAX_SECS = '600'
+            $env:FM_STALE_ESCALATE_SECS = '240'
+            $settings = Get-FmWatchSettings
+            New-StaleTaskMeta
+            1..2 | ForEach-Object { Invoke-StaleCycle -Settings $settings | Should -BeNullOrEmpty }
+            $since = Join-Path $script:Ctx.State '.stale-since-sess_1'
+
+            Set-EvidenceAge -Seconds 7200
+            Set-FmFileTextLf -Path $since -Text (((Get-FmUnixTime) - 300).ToString() + "`n")
+            Invoke-StaleCycle -Settings $settings | Should -BeNullOrEmpty
+            (Get-FmFileTextOrEmpty -Path (Join-Path $script:Ctx.State '.watch-triage.log')) |
+                Should -BeLike '*absorbed busy (no observed progress) (work in flight*escalation deferred*'
+
+            $script:StubLiveness = 'none'
+            Set-EvidenceAge -Seconds 7200
+            Set-FmFileTextLf -Path $since -Text (((Get-FmUnixTime) - 300).ToString() + "`n")
+            Invoke-StaleCycle -Settings $settings | Should -BeLike '*possible wedge, escalation 1)*'
+        }
+        finally { Remove-Item -Path 'function:Get-FmTaskRunLiveness' -ErrorAction SilentlyContinue }
+    }
+
+    It 'holds a parked live worker to one wake per window however often its pane ticks' {
+        # Upstream #3532's shape: a declared wait, a live agent, and a footer clock
+        # that changes the pane hash every few seconds. Each new hash used to reach
+        # the non-terminal surface with its throttle wiped, and wake again.
+        $script:StubAgentAlive = 'alive'
+        New-StaleTaskMeta
+        Set-ParkedStatus -Line 'paused: waiting on the upstream release'
+
+        1..2 | ForEach-Object { Invoke-StaleCycle -Settings $script:Settings | Should -BeNullOrEmpty }
+        Invoke-StaleCycle -Settings $script:Settings | Should -BeLike 'stale: sess:1*'
+
+        foreach ($tick in 1..4) {
+            $script:StubPane = "footer clock tick $tick"
+            1..4 | ForEach-Object { Invoke-StaleCycle -Settings $script:Settings | Should -BeNullOrEmpty -Because "tick $tick is the same wait" }
+        }
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 1
+        (Get-FmFileTextOrEmpty -Path (Join-Path $script:Ctx.State '.watch-triage.log')) |
+            Should -BeLike '*declared wait already re-surfaced this window*'
+    }
+
+    It 'wakes once for a replacement declaration rather than letting it inherit the old silence' {
+        $script:StubAgentAlive = 'alive'
+        New-StaleTaskMeta
+        Set-ParkedStatus -Line 'paused: waiting on the upstream release'
+        1..2 | ForEach-Object { $null = Invoke-StaleCycle -Settings $script:Settings }
+        Invoke-StaleCycle -Settings $script:Settings | Should -BeLike 'stale: sess:1*'
+
+        Set-ParkedStatus -Line 'paused: waiting on the captain to rotate the key'
+        $script:StubPane = 'a new wait'
+        1..2 | ForEach-Object { Invoke-StaleCycle -Settings $script:Settings | Should -BeNullOrEmpty }
+        Invoke-StaleCycle -Settings $script:Settings | Should -BeLike 'stale: sess:1*'
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue).Count | Should -Be 2
+    }
+
+    It 'still re-surfaces a parked worker once its window has passed' {
+        $env:FM_PAUSE_RESURFACE_SECS = '600'
+        $settings = Get-FmWatchSettings
+        $script:StubAgentAlive = 'alive'
+        New-StaleTaskMeta
+        Set-ParkedStatus -Line 'paused: waiting on the upstream release'
+        1..2 | ForEach-Object { $null = Invoke-StaleCycle -Settings $settings }
+        Invoke-StaleCycle -Settings $settings | Should -BeLike 'stale: sess:1*'
+
+        [System.IO.File]::SetLastWriteTimeUtc((Join-Path $script:Ctx.State '.paused-resurfaced-sess_1'), [DateTime]::UtcNow.AddSeconds(-601))
+        $script:StubPane = 'footer clock tick after the window'
+        1..2 | ForEach-Object { Invoke-StaleCycle -Settings $settings | Should -BeNullOrEmpty }
+        Invoke-StaleCycle -Settings $settings | Should -BeLike 'stale: sess:1*'
+    }
+
+    It 'never lets a leftover declared-wait throttle quiet a worker that declares nothing' {
+        # The bound belongs to a declaration. A marker outliving one must not
+        # silence the inconclusive stale this surface exists to show.
+        New-StaleTaskMeta
+        Set-FmFileTextLf -Path (Join-Path $script:Ctx.State '.paused-resurfaced-sess_1') `
+            -Text ('declared:' + (Get-FmFileSignature -Path (Join-Path $script:Ctx.State 'alpha.status')))
+
+        1..2 | ForEach-Object { Invoke-StaleCycle -Settings $script:Settings | Should -BeNullOrEmpty }
+        Invoke-StaleCycle -Settings $script:Settings | Should -BeLike 'stale: sess:1*'
     }
 }
 

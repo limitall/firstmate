@@ -10445,3 +10445,177 @@ The same three cases failed in every run, and none is this change's: they arrive
 
 - `done, and the configured recent-Done retention.keeps only the configured most recent Done rows and archives the surplus` and `differential parity with the tasks-axi markdown backend.produces a byte-identical backlog and archive for the same mutation sequence`: the merged root `.tasks.toml` is read by the backlog tests through the checkout's home, so the archive goes to `<checkout>/data/done-archive.md` instead of the test's own directory.
 - `this checkout's own instruction surface.declares a trigger for every skill, so no skill is dead weight`: the merged `.agents/skills/quiet` and `.agents/skills/captain-hold-lifecycle` have no trigger in `AGENTS.md`.
+
+---
+
+## 61. Eighty-one wedge alarms on workers that were working, and a parked worker that woke on every tick - `PROVEN (Windows 11) FOR THE LIVE SHAPE, BOTH REPRODUCTIONS, BOTH FIXES, THE ALARM RETURNING WHEN THE RUN ENDS AND SIX NEGATIVE CONTROLS; NOT RE-OBSERVED ON A LIVE FLEET`
+
+Dated 2026-09-14, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\25\firstmate-win`, PowerShell 7.6.6, Pester 6.1.0, PSScriptAnalyzer 1.25.0, git 2.49.0.windows.1, Windows 11 Pro 10.0.26200.
+Written on `fm/port-wedge-noise` over `main` at `b27e51e`, rebased onto `2c0f67b` (section 58, the worker-base lane), then onto `dee018a` (section 59, the decision-close lane), then onto `762f845` (section 60, the launch-flags lane) before landing.
+`data/upstream-review/report.md` item T1.2 chose it; upstream's answers are #2524 (the wedge half) and #3532.
+
+### 61.1 What the live home recorded
+
+Read-only, from `C:\Users\ADMIN\firstmate-win\state` on the day this was written:
+
+| measure | value |
+| --- | --- |
+| lines in `.watch-deliveries.log` | 95 |
+| of those, "possible wedge" escalations | 82 |
+| of those 82, carrying `work IS in flight` in the same line | 82 |
+| of those 82, already at `demand-deep-inspection` | 69 |
+| "absorbed non-terminal stale timer reset" lines on 2026-09-10 / 2026-09-11 | 100 / 176 |
+
+The report counted 81 of 92 and 146 resets a few hours earlier; both logs are bounded and still growing, so the figures moved and the shape did not.
+One pane's timeline shows it plainly - a reset every four and a half minutes for three hours, each one restarting the timer an escalation had just deleted:
+
+```
+[2026-09-11T17:23:56+0500] absorbed non-terminal stale timer reset: default:w9:p1K
+[2026-09-11T17:28:27+0500] absorbed non-terminal stale timer reset: default:w9:p1K
+[2026-09-11T17:32:56+0500] absorbed non-terminal stale timer reset: default:w9:p1K
+...
+[2026-09-11T20:23:20+0500] absorbed non-terminal stale timer reset: default:w9:p1K
+```
+
+### 61.2 An idle worker really does read `none`
+
+The deferral would never end, and would itself be a defect, if an idle Claude worker kept live descendants of its own.
+`Get-FmTaskRunLiveness` against the three other lanes live on this machine, taken in one process so no reading could race the next:
+
+```
+== port-decision-close none agent=95932
+== port-launch-flags none agent=87220
+== port-worker-base none agent=24664
+```
+
+The same readings through `bin/fm-run-liveness.ps1` a minute earlier had said `processes` for two of them; by the time their pids were looked up those processes were gone, which is the shape of a lane's own short-lived tool calls.
+A reading taken from inside a lane about itself always finds its own tool shell, so it says nothing about that lane.
+
+### 61.3 The reproduction
+
+A scratch home, one task record naming a real worktree directory, and a real launcher - a `pwsh` whose command line names the task's `brief.md` - with a real sleeping `pwsh` child: a worker waiting on its background run, read by the REAL `Get-FmTaskRunLiveness` against the real process table.
+Only the pane seams are stubbed, because no herdr pane may be driven: the pane is constant and not busy, the crew class is `none` and the agent is alive, which is what the live panes read.
+`Invoke-FmWatchStaleCycle` then runs once a second and every delivered wake is recorded, which is what a watcher re-armed after each wake delivers.
+`FM_STALE_ESCALATE_SECS=3` stands in for 240 so a window costs seconds.
+
+On unmodified `main`, 40 seconds:
+
+```
+reading before the loop: processes (2 live process(es) for alpha)
+delivered wakes in 40s: 8
+  14:29:38 stale: sess:1 [run-liveness: 2 live process(es) for this task - pids 62832, 97480 - work IS in flight; ...]
+  14:29:43 stale: sess:1 (idle 3s, possible wedge, escalation 1) [run-liveness: 2 live process(es) ... work IS in flight; ...]
+  14:29:48 stale: sess:1 (idle 3s, possible wedge, escalation 2) [...]
+  14:29:53 stale: sess:1 (idle 3s, possible wedge, escalation 3, demand-deep-inspection: ...) [...]
+  ...
+  14:30:14 stale: sess:1 (idle 3s, possible wedge, escalation 7, demand-deep-inspection: ...) [...]
+```
+
+That is the live shape exactly, including a timer reset logged between every pair.
+
+The parked half, same script with a declared `paused: waiting on the upstream release`, nothing running, a footer clock that changes the pane every five seconds, and `FM_PAUSE_RESURFACE_SECS=600`:
+
+```
+delivered wakes in 40s: 8
+  14:31:08 stale: sess:1 [...]
+  14:31:12 stale: sess:1 [...]
+  ... one per tick ...
+  14:31:42 stale: sess:1 [...]
+```
+
+Eight wakes inside a window that promises one.
+
+### 61.4 The same runs on the fix
+
+```
+=== in-flight (escalate 3s, recheck window 12s) ===
+delivered wakes in 40s: 3
+  14:36:51 stale: sess:1 [run-liveness: 2 live process(es) for this task - pids 26488, 29820 - work IS in flight; ...]
+  14:37:06 stale: sess:1 (quiet 14s with work in flight, rechecked on a long cadence not a wedge; live processes do not prove progress - confirm the run is still advancing) [run-liveness: 2 live process(es) ...]
+  14:37:19 stale: sess:1 (quiet 27s with work in flight, rechecked on a long cadence not a wedge; ...) [...]
+triage log:
+  absorbed non-terminal stale (work in flight, idle 5s, quiet 5s; escalation deferred): sess:1
+  ...
+=== parked (window 600s, tick 5s) ===
+delivered wakes in 40s: 1
+  14:37:43 stale: sess:1 [...]
+triage log:
+  absorbed non-terminal stale (declared wait already re-surfaced this window): sess:1
+  absorbed stale (paused, awaiting external, age 20s): sess:1
+  ...
+```
+
+The recheck window was shrunk to 12 seconds so the recheck itself could be seen inside the run; at the defaults, a worker waiting on its run gets one surface and then one recheck an hour.
+
+**The direction that matters more: the alarm comes back when the run ends.**
+The same script, killing the background child 15 seconds in while its launcher stays alive, so the reading becomes `none` exactly as it does for a worker whose run has finished:
+
+```
+  14:41:49 stale: sess:1 [run-liveness: 1 live process(es) for this task - pids 30660 - work IS in flight; ...]
+  14:42:02 -- background run killed; reading now none (no live process for alpha beyond its agent)
+  14:42:03 stale: sess:1 (idle 3s, possible wedge, escalation 1) [run-liveness: none - no live process for this task beyond its agent, ...]
+  14:42:08 stale: sess:1 (idle 3s, possible wedge, escalation 2) [...]
+  14:42:13 stale: sess:1 (idle 3s, possible wedge, escalation 3, demand-deep-inspection: ...) [...]
+```
+
+One second after the reading changed, the ordinary escalation fired on the ordinary schedule.
+A first attempt staged the launcher with `-WindowStyle Hidden`, which gave it a `conhost.exe` child that the reading rightly counted as a live process; a herdr pane has no such child, so the staging was changed to `-NoNewWindow` rather than the reading being taught to ignore it.
+
+### 61.5 Negative controls
+
+Each fix site broken on its own, then `Wedge timer`, `Wedge deferral while work is in flight` and `Pane staleness with the backend present` run, with the file restored byte for byte afterwards:
+
+| break | red |
+| --- | --- |
+| A - `processes` never defers | 6: every deferral case, and the end-to-end "defers a quiet pane waiting on its live run" |
+| B - the non-terminal surface ignores the throttle | 1: "holds a parked live worker to one wake per window however often its pane ticks" |
+| C - a pane tick wipes the declaration's throttle (the hash-change path back to `Clear-FmPauseTracking`) | 1: the same case |
+| D - the throttle is not bound to its declaration | 1: "wakes once for a replacement declaration rather than letting it inherit the old silence" |
+| E - a timer reset keeps an old deferral chain | 1: "measures a deferral from the current quiet stretch, not a finished one" |
+| F - a deferral never re-surfaces (`-Age 0`) | 1: "re-surfaces a long deferral once per window, worded as a recheck and never as a wedge" |
+
+A first version of control F replaced a continued line and left the file unparseable, which turned all 34 red; it proved nothing and was replaced by the one above.
+
+### 61.6 Suite and analyzer
+
+Whole `tests/` directory, each run a `-NonInteractive` child of a keeper whose own parent was a detached anchor, stdin redirected, bounded at 75 minutes:
+
+| tree | run | passed | failed | skipped | seconds |
+| --- | --- | --- | --- | --- | --- |
+| over `b27e51e` | 1 | 3011 | 3 | 19 | 3237 |
+| over `b27e51e` | 2 | 3011 | 3 | 19 | 2438 |
+| rebased onto `2c0f67b` | 1 | 3017 | 3 | 19 | 2320 |
+| rebased onto `2c0f67b` | 2 | 3017 | 3 | 19 | 2318 |
+| rebased onto `dee018a` | 1 | 3040 | 3 | 19 | 2297 |
+| rebased onto `762f845` (the commit that lands) | 1 | 3065 | 3 | 19 | 2409 |
+| rebased onto `762f845` (the commit that lands) | 2 | 3065 | 3 | 19 | 2431 |
+
+The `dee018a` gate has one run because `main` advanced again before its second finished; that tree no longer lands, so it was stopped rather than completed.
+`tests/FmWatch.Tests.ps1` passed every case in every counted run - 72, then 76 once the decision-close lane's own watcher cases joined the file.
+`Invoke-ScriptAnalyzer -Path . -Recurse` reported 0 findings after each completed pair.
+
+**One gate was discarded, and why is worth keeping.**
+The first gate on `dee018a` ran 3031 passed / 12 failed: the 3 below plus 9 in `FmContract` ("is healthy") and `FmInstall` (the doctor and setup cases).
+Rebasing onto `dee018a` rewrote `AGENTS.md`, which on Windows replaces the file under the name and silently breaks the `CLAUDE.md` hardlink, so `CLAUDE.md` still held the old 57543 bytes against the new 57714 - exactly the trap `CONTRIBUTING.md` describes for editing `AGENTS.md`, reached through `git rebase` instead of an editor.
+That gate was stopped by its own process tree, `CLAUDE.md` deleted and re-linked with `bin/fm-ensure-agents-md.ps1`, and the gate re-run; every gate since starts only after the mirror is verified byte-identical and hardlinked.
+
+The same 3 failed in every counted run, and none of them is this change's:
+
+- `FmBacklog`: "keeps only the configured most recent Done rows and archives the surplus" and "produces a byte-identical backlog and archive for the same mutation sequence".
+  The merge of the original firstmate added its `.tasks.toml` at the repository root, and the backlog configuration reads `.tasks.toml` from the home - which in the suite is this checkout - so the archive went to `<checkout>/data/done-archive.md` instead of beside the test's own backlog.
+- `FmContract`: "declares a trigger for every skill, so no skill is dead weight" names `captain-hold-lifecycle, quiet`, two skills the same merge added with no trigger in `AGENTS.md`.
+
+The worker-base lane found the same three first; firstmate's answer (`merge-suite-red`, option B) is that one separate lane owns the merge fallout and each lane's gate reports them as known and pre-existing.
+The stray `data/done-archive.md` those two backlog cases leave in the checkout was deleted afterwards.
+
+### 61.7 What was NOT proven here
+
+- **No live fleet has run the fix.**
+  The reproduction uses a real process table and a real liveness reading, but stubbed pane seams; no herdr pane was driven and no real worker was supervised by the changed watcher.
+  Whether the live home's delivery log goes quiet is the next day of supervision.
+- **A hung run with live processes is caught only at the recheck.**
+  Nothing here measures progress, only liveness, so a run blocked on a prompt nobody will answer now surfaces once an hour as a recheck rather than every four minutes as a wedge.
+  That is the trade the brief chose, and the recheck's own words say live processes do not prove progress.
+- **The busy-pane bound shares the deferral and was not reproduced against real processes.**
+  `Test-FmBusyTurnOverAge` routes through the same `Invoke-FmWedgeTimerCheck`, so a busy pane past its bound whose own run is alive now defers too.
+  "defers a busy pane past its bound the same way while its own run is alive" covers that route with a staged reading; the real-process reproduction above is the idle pane only.
