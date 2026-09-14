@@ -83,10 +83,14 @@ section 2 lists the state-file formats).
   every backlog verb takes its retention archive from `<home>/.tasks.toml` even
   when `-Path` names a fixture, and `tasks-axi` takes it from its working
   directory's, so a fixture prune appended rows to `<checkout>/data/done-archive.md`.
-  Point `FM_HOME` and the working directory at a directory the test owns.
-  `tests/FmBacklog.Tests.ps1` does both for its whole file and ends by checking
-  the checkout received no fixture row; `docs/windows-e2e-evidence.md` section 62
-  has the run.
+  It is not only the backlog: landing, promotion and fleet sync run the
+  supervision guard against the resolved home, which rewrote a seeded
+  `state/.guard-watcher-stale-banner`. Point `FM_HOME` - and, for anything that
+  runs `tasks-axi`, the working directory - at a directory the test owns.
+  `tests/FmBacklog.Tests.ps1`, `tests/FmDelivery.Tests.ps1` and
+  `tests/FmFleetSync.Tests.ps1` do it for the whole file and each carries a check
+  that fails when the pin is removed; `docs/windows-e2e-evidence.md` section 62
+  has the runs, including a full suite against a seeded home under a file watcher.
 - **A test that reads the MACHINE has to stage the machine.** The clean VM's ten
   failures were all this shape: a test asserted a behaviour and silently also
   required something about the seat it was written on. `Get-FmSpeechEngineStatus`

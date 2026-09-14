@@ -83,6 +83,34 @@ BeforeAll {
         $null = Invoke-FmGit -Directory $project -Arguments @('checkout', '-q', 'main')
         [pscustomobject]@{ Root = $root; State = $state; Project = $project; Branch = $Branch }
     }
+
+    # Landing and promotion run the supervision guard against the home they
+    # resolve, and with nothing pinned that is this checkout - in the primary
+    # checkout, the captain's own state/. Measured on a seeded home: this file
+    # rewrote state/.guard-watcher-stale-banner. So it runs in an empty home.
+    $script:SavedHomeEnv = @{}
+    foreach ($name in @('FM_HOME', 'FM_STATE_OVERRIDE', 'STATE', 'FM_CONFIG_OVERRIDE', 'FM_WAKE_QUEUE', 'FM_WAKE_QUEUE_LOCK')) {
+        $script:SavedHomeEnv[$name] = [System.Environment]::GetEnvironmentVariable($name)
+        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    }
+    $env:FM_HOME = Join-Path $TestDrive 'home'
+    New-Item -ItemType Directory -Path $env:FM_HOME -Force | Out-Null
+}
+
+AfterAll {
+    foreach ($name in $script:SavedHomeEnv.Keys) {
+        if ($null -eq $script:SavedHomeEnv[$name]) {
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -LiteralPath "Env:$name" -Value $script:SavedHomeEnv[$name]
+        }
+    }
+}
+
+Describe 'the home this file runs in' {
+    It 'is under TestDrive, never the checkout, because the guard these commands run writes to it' {
+        (Get-FmWakeContext).State | Should -BeLike "$TestDrive*"
+    }
 }
 
 Describe 'Get-FmDeliveryModeSupport' {

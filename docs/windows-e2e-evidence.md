@@ -10620,7 +10620,7 @@ The stray `data/done-archive.md` those two backlog cases leave in the checkout w
   `Test-FmBusyTurnOverAge` routes through the same `Invoke-FmWedgeTimerCheck`, so a busy pane past its bound whose own run is alive now defers too.
   "defers a busy pane past its bound the same way while its own run is alive" covers that route with a staged reading; the real-process reproduction above is the idle pane only.
 
-## 62. Running the suite from the primary checkout would have written test rows into the captain's own archive - `PROVEN (Windows 11) FOR THE LEAK IN BOTH IMPLEMENTATIONS, THE FIX, AND THE NEGATIVE CONTROLS THAT PUT EACH HALF BACK`
+## 62. Running the suite from the primary checkout would have written into the captain's own records - `PROVEN (Windows 11) FOR THE ARCHIVE LEAK IN BOTH IMPLEMENTATIONS, THE GUARD WRITE, EACH FIX AND ITS NEGATIVE CONTROL, AGAINST A SEEDED HOME UNDER A FILE WATCHER`
 
 Merging the Linux firstmate in beside this port brought its tracked `.tasks.toml` to the repository root, pinning `data/backlog.md`, `data/done-archive.md` and `done_keep = 10`.
 For the primary home those are exactly the defaults this port already resolves, so firstmate's own behaviour did not change.
@@ -10676,3 +10676,26 @@ Both are now gap-recording stubs with their triggers in `AGENTS.md` sections 13 
 Adopting upstream's refined captain-hold rules is left as its own piece of work: this port's `-Until` hold becomes dispatchable on its date rather than coming back as a captain's call, so the rules cannot simply be copied onto `bin/fm-backlog.ps1`.
 
 `FmContract.Tests.ps1` alone, after the instruction surface was built by hand: `P=39 F=0`.
+
+### 62.5 The backlog was not the only way in: the supervision guard
+
+A worktree with an empty home cannot show a write that only happens when there is something to write about, so the proof was re-run against a home shaped like a live primary checkout.
+The worktree was seeded with synthetic records naming no real pane: a task meta, a status line, a watcher beacon two days stale, a guard banner marker reading `seed-episode`, a pending wake, a backlog with twelve Done rows, an archive, and `config/captain-name`.
+A `FileSystemWatcher` over `data/`, `state/` and `config/` logged every create, change, delete and rename for the whole run, and a SHA-256 manifest was taken before and after.
+
+The full suite on `8f178f6d`, seeded and watched, wrote into that home exactly once: thirteen events at one moment, taking `state/.guard-watcher-stale-banner.lock` and rewriting the marker from `seed-episode` to `stale-beacon`.
+Nothing else under `data/`, `state/` or `config/` changed; the manifest differs in that one file.
+The same run's nine failures were the worktree's own `CLAUDE.md` gone stale after a rebase rewrote `AGENTS.md` - every one is the doctor or the contract test reporting "a different file from AGENTS.md" - and not the seeding.
+
+The write is `Invoke-FmDeliveryGuard`, which `Invoke-FmMergeLocal`, `Invoke-FmPromote` and `Invoke-FmFleetSync` call first, running `Invoke-FmGuard` against whatever home `Get-FmWakeContext` resolves.
+With `FM_HOME` unset that is the checkout.
+A marker is one-shot per episode, so the watcher saw only the first suite to arrive; running the files alone on a re-seeded home showed both `FmDelivery.Tests.ps1` and `FmFleetSync.Tests.ps1` doing it.
+On the captain's primary checkout that is their real supervision record: a run with work in flight and a stale watcher suppresses the next genuine banner, and a run with nothing in flight deletes the marker.
+
+Both files now pin `FM_HOME` to a `TestDrive` home for the whole file, clearing the state and queue overrides the guard also reads, and each starts with `the home this file runs in`, asserting the guard's state directory is under `TestDrive`.
+
+```
+FmDelivery + FmFleetSync, fixed, seeded home watched:      P=68 F=0, no events, marker still seed-episode
+negative control, the FM_HOME pin removed from both files: P=66 F=2 - exactly the two new checks;
+                                                           13 events, marker rewritten to stale-beacon
+```
