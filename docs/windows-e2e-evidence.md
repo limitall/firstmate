@@ -1412,7 +1412,9 @@ Expected 5, because the contract says 4 and names 5: afk, fmx-respond,
 process-event-sources, firstmate-orca, firstmate-codexapp, but got 4.
 ```
 
-### 9.7 An instruction the PRODUCT prints that does not work - `FOUND, NOT FIXED (cross-area)`
+### 9.7 An instruction the PRODUCT prints that does not work - `FOUND HERE; FIXED IN SECTION 59`
+
+Section 59 took the first option below, and also made `fm-send.ps1` refuse a flag it does not declare.
 
 Found while checking that no rule in the ported contract names machinery this
 port lacks. This one is the same defect class in the opposite direction: the
@@ -4078,6 +4080,7 @@ Proven for the single-open case, for a message naming `key=<slug>` while two are
 open, and - equally - for the case it REFUSES to guess: two open and none named
 closes nothing, records the words, and says so.
 A tier-1 question never closes a decision.
+Section 59 later gave `fm-send.ps1` the flag, and found that a key named from the phone was matched fleet-wide; it now closes only when exactly one piece of work has that key open.
 
 ### 27.6 What was NOT proven here, and cannot be without the captain's decision
 
@@ -10182,3 +10185,125 @@ On the fixed tree the file passes 34, skips 1 (the symlink case that needs a pri
   The acquisition was driven through `New-FmIsolatedWorktree`, which is every step of a spawn before a pane exists; no herdr pane, harness or brief was involved, as this task's brief requires.
 - **The stale `origin` of firstmate-win itself was left exactly as it was.**
   Whether that remote should exist at all is the captain's, not this code's.
+
+---
+
+## 59. An answered decision never closed, and the hint for closing one typed a flag into the worker - `PROVEN (Windows 11) FOR THE REPRODUCTION, THE WHOLE ANSWER CYCLE THROUGH REAL ENTRY POINTS, SIX NEGATIVE CONTROLS AND THE CLOSE THAT DOES NOT WAKE; NO REAL WORKER PANE WAS TYPED INTO`
+
+Dated 2026-09-14, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\24\firstmate-win`, PowerShell 7.6.6, Pester 6.1.0, git 2.49.0.windows.1, Windows 11 Pro 10.0.26200.
+Written on `fm/port-decision-close` over `main` at `b27e51e`, and rebased onto `2c0f67b` before the suite runs in 59.5.
+Upstream's answer to the same problem is `bin/fm-send.sh --resolve-key` (#1842, #2490, #3696) and its self-announced append (#2287); nothing was copied from it.
+
+### 59.1 Reproduced on unmodified main
+
+A throwaway home, one task, one open decision, and the drain's own hint followed exactly as printed through the real `bin/fm-send.ps1`.
+Only the delivery was replaced, by a global alias that records what would have been typed.
+
+```
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+alpha [key=api-shape] needs-decision: flat or nested response
+OPEN DECISIONS: close one by answering it: bin/fm-send.ps1 <task> -ResolveKey <key> '<answer>'
+--- running: fm-send.ps1 alpha -ResolveKey api-shape 'use the flat one'
+exit code: 0
+typed into the worker: [-ResolveKey api-shape use the flat one]
+still open after the send: 1 (api-shape)
+status file:
+needs-decision [key=api-shape]: flat or nested response
+```
+
+Nothing in chat closed a decision at all: the brief's promise that "firstmate's reply normally writes that closing line at answer time" had no code behind it.
+
+### 59.2 What was decided, and why
+
+- **The answer is the close.**
+  `bin/fm-send.ps1 <task> -ResolveKey <key> '<answer>'` appends `resolved [key=<key>]: answered: <answer>` only after a confirmed delivery, then re-folds the stream to prove the key closed.
+  An unconfirmed send closes nothing.
+- **A key that would close nothing is refused before anything is typed.**
+  Mistyped, already closed, another worker's, reserved, or a hold with work blocked by it.
+  Delivering the answer while its decision stays open is the defect itself, and exiting 0 would claim the opposite; refusing costs one resend.
+- **A key is matched inside the task being answered, never across the fleet.**
+  Two workers can both ask `[key=api-shape]`, and every unkeyed decision is `default`.
+- **The captain hold closes in the same act** when the backlog attributes it to that task (the teardown gate's own attribution rule) and nothing is blocked by it.
+  With dependent work it stays open and is named, because `decision-hold-lifecycle` requires the decision to be written into that work first.
+- **The close does not wake the session that wrote it.**
+  `Add-FmTaskStatus -SelfAnnounced` moves the watcher's `.seen-*` marker past exactly that line, under the append lock, and only when the marker already matched the file before the append.
+- **The phone channel had the fleet-wide match.**
+  `Resolve-FmTelegramDecision -Key` took the first task with that key open; it now answers `ambiguous` when more than one has it.
+- **`fm-send.ps1` refuses a lone dash-word it does not declare** (exit 2, nothing sent), so a mistyped flag or a bash-style `--resolve-key` can never become chat again.
+
+### 59.3 The whole answer cycle, through real entry points
+
+The same throwaway-home shape, with the real `fm-watch.ps1`, `fm-wake-drain.ps1` and `fm-send.ps1` as separate processes; only the herdr submit was replaced.
+
+```
+== 1. the worker raises a decision; the watcher wakes firstmate
+watcher exit 0: signal: ...\state\alpha.status
+== 2. firstmate drains: the listing and the hint it prints
+alpha [key=api-shape] needs-decision: flat or nested response
+OPEN DECISIONS: close one by answering it: bin/fm-send.ps1 <task> -ResolveKey <key> '<answer>' (a line without [key=...] has the key default)
+ack exit 0
+== 3. the bash-style flag a model might type is refused, nothing typed
+error: fm-send.ps1 has no parameter '--resolve-key'; it would have been typed into the worker as text, so nothing was sent. ...
+exit 2
+== 4. a mistyped key is refused before anything is typed
+error: -ResolveKey 'api-shap' names no open decision or blocker in ...\state\alpha.status and no captain hold attributed to alpha - it is already closed, mistyped, or belongs to another task. Nothing was sent. ...
+exit 1
+typed so far: []
+== 5. the hint, followed as printed
+closed decision 'api-shape' for alpha
+exit 0
+typed into the worker: [use the flat one]
+status file now:
+  needs-decision [key=api-shape]: flat or nested response
+  resolved [key=api-shape]: answered: use the flat one
+== 6. the next watcher run: does firstmate's own close wake it?
+watcher exit 0, printed lines: 0, queue bytes: 0
+== 7. the next drain lists nothing open
+OPEN DECISIONS lines: 0
+== 8. the worker's next line still wakes firstmate
+watcher exit 0: 1 signal line(s)
+```
+
+`tests/FmWorker.Tests.ps1` carries step 5 as a test through the real entry point, and `tests/FmWatch.Tests.ps1` carries step 6 with its control: the same close written without `-SelfAnnounced` wakes the watcher.
+
+### 59.4 Negative controls
+
+Each guard was backed out in the source and the new tests run against it.
+
+| Guard backed out | Tests that turned red |
+|---|---|
+| `-SelfAnnounced` ignored | does not wake the session with its own close |
+| phone key match narrowed to the first task again | refuses to guess when the named key is waiting in more than one piece of work |
+| hint names a flag `fm-send.ps1` does not declare | names only flags bin/fm-send.ps1 declares in the close hint it prints |
+| lone dash-word refusal removed | refuses a flag it does not declare instead of typing it into the worker as text |
+| a key open nowhere accepted silently | refuses a key that is not open; refuses a key that is already closed; matches a key only inside the task it answers |
+| holds looked up without attribution | never closes a hold the backlog attributes to other work |
+
+Eight red for six reversions; all restored and green again before the suite runs below.
+
+### 59.5 Suite numbers
+
+Two consecutive full runs of `Invoke-Pester -Path ./tests`, each in a `-NonInteractive` child of a keeper whose own parent stayed alive, on tree `cd611ef` - this branch rebased onto `main` at `2c0f67b`, identical to what is committed here except this document, which no test reads.
+
+```
+run 1  Passed 3027  Failed 3  Skipped 19  NotRun 0  (37m40s)
+run 2  Passed 3027  Failed 3  Skipped 19  NotRun 0  (36m52s)
+```
+
+`tests/FmAnalyzer.Tests.ps1`, the repo-wide zero-finding sweep, passed in both.
+The same three cases failed in both runs, and they fail identically on the tree before this branch's rebase (run on `b27e51e`: Passed 3021, Failed 3, twice):
+
+- `done, and the configured recent-Done retention` and `differential parity with the tasks-axi markdown backend` - the upstream merge put a root `.tasks.toml` in the checkout, and those tests resolve their configuration through the checkout, so the archive lands in `<checkout>/data/done-archive.md` instead of the fixture's directory.
+- `declares a trigger for every skill` - the merged upstream skills `captain-hold-lifecycle` and `quiet` have no trigger in `AGENTS.md` section 13.
+
+None of the three touches a file this branch changed; they are the merge's, and the `merge-fallout` lane owns their fix.
+
+### 59.6 What was NOT proven
+
+- **No real worker pane was typed into.**
+  The brief for this lane forbids driving herdr lifecycle, so every run replaced the one herdr submit call; delivery confirmation itself is unchanged and is proven elsewhere in this file.
+- **A watcher already mid-scan** while firstmate appends its close can still wake once.
+  That is the safe direction and was reasoned rather than measured; the emitted protocol runs the watcher in the foreground between turns, so the session appending is not also watching.
+- **The phone path still closes a decision before the worker has the answer.**
+  That is the existing design of that channel (the words are recorded for firstmate's next turn) and was not changed; firstmate then relays the answer without `-ResolveKey`.
+- **Several keys at once** go as `-ResolveKey a,b` from PowerShell; through `pwsh -File` a comma list arrives as one string and is refused as a malformed key rather than split.
