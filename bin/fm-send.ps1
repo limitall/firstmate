@@ -20,6 +20,14 @@ Exit codes: 0 delivered, 1 refusal or unconfirmed delivery, 2 usage.
 
 .EXAMPLE
 ./bin/fm-send.ps1 my-task -Key Escape
+
+.EXAMPLE
+./bin/fm-send.ps1 my-task -ResolveKey api-shape 'use the flat shape'
+Answer the open decision api-shape and close it in the same act. The key is
+checked before anything is typed, and a key that would close nothing is refused
+with nothing sent; the close is written only after a confirmed delivery. A
+decision listed without [key=...] has the key default. Send-FmText's help owns
+the contract.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -28,6 +36,7 @@ param(
     [string]$FirstmateHome = '',
     [int]$Retries = 3,
     [double]$SleepSeconds = 0.4,
+    [string[]]$ResolveKey = @(),
     [Parameter(ValueFromRemainingArguments)][string[]]$Message = @()
 )
 
@@ -57,6 +66,10 @@ if ($Key -and $text) {
     [Console]::Error.WriteLine('error: pass either -Key or a message, not both')
     exit 2
 }
+if ($Key -and $ResolveKey.Count -gt 0) {
+    [Console]::Error.WriteLine('error: -ResolveKey cannot accompany -Key; answering a decision takes a text answer')
+    exit 2
+}
 if (-not $Key -and -not $text) {
     [Console]::Error.WriteLine('usage: fm-send.ps1 <target> <message...> | fm-send.ps1 <target> -Key <key>')
     exit 2
@@ -66,8 +79,14 @@ try {
     if ($Key) {
         $null = Send-FmText -Target $Target -Key $Key -FirstmateHome $FirstmateHome
     } else {
-        $null = Send-FmText -Target $Target -Text $text -FirstmateHome $FirstmateHome `
-            -Retries $Retries -SleepSeconds $SleepSeconds
+        $sent = Send-FmText -Target $Target -Text $text -FirstmateHome $FirstmateHome `
+            -Retries $Retries -SleepSeconds $SleepSeconds -ResolveKey $ResolveKey
+        if ($sent) {
+            foreach ($k in $sent.Resolved) { [Console]::Out.WriteLine("closed decision '$k' for $($sent.TaskId)") }
+            foreach ($id in $sent.HoldsClosed) { [Console]::Out.WriteLine("closed captain hold '$id'") }
+            foreach ($line in $sent.HoldsLeftOpen) { [Console]::Out.WriteLine("note: $line") }
+            foreach ($line in $sent.Warnings) { [Console]::Error.WriteLine("warning: $line") }
+        }
     }
     exit 0
 } catch {

@@ -27,7 +27,7 @@ time:
 | --- | --- | --- |
 | `Get-FmHarnessLaunchCommand -Harness -BriefPath [-Model] [-Effort] [-Kind]` | `launch_template`, `model_flag_for_harness`, `effort_flag_for_harness` | `Start-FmWorker` |
 | `Get-FmTaskRecord -Path`, `Write-FmTaskRecord -Path -Fields` | `state/<id>.meta` reads/writes | spawn, control plane, teardown, digest |
-| `Add-FmTaskStatus -StateDir -TaskId -State -Note [-Key]` | `echo "<verb>: <note>" >> state/<id>.status` | every status writer, incl. `Add-FmStatusEvent` |
+| `Add-FmTaskStatus -StateDir -TaskId -State -Note [-Key] [-SelfAnnounced]` | `echo "<verb>: <note>" >> state/<id>.status` | every status writer, incl. `Add-FmStatusEvent` |
 
 `Start-FmWorker` (backend area) calls `Resolve-FmSpawnPlan` before it touches the
 fleet; that is the one seam between the dispatch decisions and the endpoint

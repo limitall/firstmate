@@ -83,6 +83,12 @@ Each `state/*.status` and `state/*.turn-ended` is compared against a persisted
 - two writes in the same second cannot slip through a strict newer-than test;
 - `.seen-*` advances only *after* the wake is surfaced or deliberately absorbed,
   so a watcher killed mid-cycle re-surfaces rather than swallows.
+- the one other writer of `.seen-*` is a line firstmate's own session appends
+  and reads anyway - the close an answered decision gets, through
+  `Add-FmTaskStatus -SelfAnnounced`. `Add-FmStatusLineSelfAnnounced` moves the
+  marker past exactly that line, under the append lock, and only when the marker
+  already matched the file before it; a worker line that landed first leaves the
+  marker alone, so the watcher still wakes on the whole span.
 
 `Wait-FmWatchInterval` may additionally use a `FileSystemWatcher` to end the
 terminal sleep early. It is **never** a source of truth. The contract is that no

@@ -243,6 +243,65 @@ Describe 'Watcher cycle' {
     }
 }
 
+Describe 'A status line firstmate writes for itself' {
+    # The close an answered decision gets is written by the very turn that reads
+    # it. These run the real watcher entry point between writes, the way the
+    # session-kept cycle does, so "no wake" is measured rather than inferred.
+    BeforeEach {
+        $script:TestHome = New-TestHome
+        $script:Ctx = Get-FmWakeContext
+        $script:Status = Join-Path $script:Ctx.State 'alpha.status'
+        # The worker raises a decision, and the watcher delivers that wake.
+        Set-FmFileTextLf -Path $script:Status -Text "needs-decision [key=api-shape]: flat or nested`n"
+        $raised = Invoke-WatchScript
+        ($raised.Output -join "`n") | Should -BeLike '*signal:*alpha.status*'
+        # ...and the turn handling it drains and acknowledges, so the next watcher
+        # starts clean instead of resurfacing this wake.
+        $null = Invoke-FmWakeDrain -Context $script:Ctx
+        $null = Read-FmRecoveryMarker -Marker $script:Ctx.RecoveryMarker
+        $gen = (Get-FmRecoveryMarkerToken).Split(':')[-1]
+        Invoke-FmWakeDrain -AckThrough (Get-FmWakeMaxSeq -Path $script:Ctx.Queue) -RecoveryGeneration $gen `
+            -Context $script:Ctx | Should -Be 0
+    }
+    AfterEach { Remove-TestHome -Path $script:TestHome }
+
+    It 'does not wake the session with its own close' {
+        $null = Add-FmTaskStatus -StateDir $script:Ctx.State -TaskId 'alpha' -State 'resolved' -Key 'api-shape' `
+            -Note 'answered: use the flat one' -SelfAnnounced -Confirm:$false
+
+        $r = Invoke-WatchScript
+        @($r.Output | Where-Object { $_ }).Count | Should -Be 0
+        Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+        [System.IO.File]::ReadAllLines($script:Status)[-1] | Should -Be 'resolved [key=api-shape]: answered: use the flat one'
+    }
+
+    It 'wakes on the same close written the ordinary way, which is what the switch prevents' {
+        $null = Add-FmTaskStatus -StateDir $script:Ctx.State -TaskId 'alpha' -State 'resolved' -Key 'api-shape' `
+            -Note 'answered: use the flat one' -Confirm:$false
+
+        $r = Invoke-WatchScript
+        ($r.Output -join "`n") | Should -BeLike '*signal:*alpha.status*'
+    }
+
+    It 'still wakes on a worker line that landed before the close' {
+        Add-FmStateLine -Path $script:Status -Line 'needs-decision [key=db]: which store' -Confirm:$false
+        $null = Add-FmTaskStatus -StateDir $script:Ctx.State -TaskId 'alpha' -State 'resolved' -Key 'api-shape' `
+            -Note 'answered: use the flat one' -SelfAnnounced -Confirm:$false
+
+        $r = Invoke-WatchScript
+        ($r.Output -join "`n") | Should -BeLike '*signal:*alpha.status*'
+    }
+
+    It 'still wakes on a worker line that lands after the close' {
+        $null = Add-FmTaskStatus -StateDir $script:Ctx.State -TaskId 'alpha' -State 'resolved' -Key 'api-shape' `
+            -Note 'answered: use the flat one' -SelfAnnounced -Confirm:$false
+        Add-FmStateLine -Path $script:Status -Line 'blocked: the flat shape breaks the client' -Confirm:$false
+
+        $r = Invoke-WatchScript
+        ($r.Output -join "`n") | Should -BeLike '*signal:*alpha.status*'
+    }
+}
+
 Describe 'Heartbeat backstop' {
     BeforeEach { $script:TestHome = New-TestHome; $script:Ctx = Get-FmWakeContext }
     AfterEach { Remove-TestHome -Path $script:TestHome }

@@ -286,6 +286,7 @@ A persistent secondmate is recorded in the secondmate registry and runtime state
 
 Steer a worker with short single-line messages through fail-closed `bin/fm-send.ps1`; put long instructions in a file.
 `fm-send` is the data plane for text the worker should read; never use its text path for interrupt, exit, or other lifecycle control, because routing-marked lifecycle text becomes chat the worker reasons about instead of executing.
+When a steer answers an open decision or blocker, pass `-ResolveKey <key>` so the answer itself closes that record at answer time; `bin/fm-send.ps1 -?` owns the contract.
 Drive a worker's lifecycle through `bin/fm-control.ps1 <task-id> interrupt|exit`, which owns the per-runtime mechanics, verifies each action, and never tears down or discards anything.
 There is no `relaunch` verb here; it is refused by name, and `stuck-crewmate-recovery` owns the two-step replacement that takes its place.
 Read a worker's pane with `Get-FmPane <target>`, which returns the bounded capture alongside herdr's native busy state and the recovery-grade agent state, so you always know which source you are trusting.

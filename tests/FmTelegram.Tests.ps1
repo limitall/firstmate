@@ -659,6 +659,27 @@ Describe 'answering a waiting question closes it' {
         $open[0].Key | Should -Be 'api-shape'
     }
 
+    It 'refuses to guess when the named key is waiting in more than one piece of work' {
+        # A key is only unique inside the status stream that opened it; taking
+        # the first match fleet-wide answered whichever task sorted first.
+        $null = Add-FmTaskStatus -StateDir $script:AnswerState -TaskId 'payments' -State 'needs-decision' `
+            -Key 'api-shape' -Note 'flat or nested response' -Confirm:$false
+        $null = Add-FmTaskStatus -StateDir $script:AnswerState -TaskId 'checkout' -State 'needs-decision' `
+            -Key 'api-shape' -Note 'one endpoint or two' -Confirm:$false
+
+        $decision = Resolve-FmTelegramDecision -Answer 'key=api-shape flat' -Key 'api-shape' -FirstmateHome $script:AnswerHome
+        $decision.Closed | Should -BeFalse
+        $decision.Reason | Should -Be 'ambiguous'
+        $decision.Open.Count | Should -Be 2
+        (Get-FmOpenDecisionScan -StatePath $script:AnswerState).Count | Should -Be 2
+
+        $handled = Receive-FmTelegramCommand -Text 'key=api-shape go flat' -FirstmateHome $script:AnswerHome
+        $handled.Closed | Should -BeFalse
+        $handled.Reply | Should -Match 'more than one'
+        $handled.Recorded | Should -BeTrue
+        (Get-FmOpenDecisionScan -StatePath $script:AnswerState).Count | Should -Be 2
+    }
+
     It 'refuses to guess when several are waiting and none is named' {
         $null = Add-FmTaskStatus -StateDir $script:AnswerState -TaskId 'payments' -State 'needs-decision' `
             -Key 'api-shape' -Note 'flat or nested response' -Confirm:$false

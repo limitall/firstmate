@@ -312,8 +312,10 @@ function Write-FmOpenDecisionsSection {
     if ($omitted -gt 0) {
         [Console]::Out.WriteLine("OPEN DECISIONS: $omitted more omitted (byte cap)")
     }
-    # This hint is followed as printed, so it may only name what exists: the one
-    # it replaced named a flag bin/fm-send.ps1 never had, and the steer carried
-    # that flag to the worker as text.
-    [Console]::Out.WriteLine('OPEN DECISIONS: sending an answer with bin/fm-send.ps1 does not close one on this build; it stays open until a resolved line carrying its key lands in state/<task>.status')
+    # Answerer-closes hint: the send that answers a listed decision also closes
+    # it, so closure never depends on the busy worker writing a matching resolved
+    # line. It is followed as printed, so it may only name what fm-send.ps1
+    # declares - an earlier one named a flag it did not have, and the steer
+    # carried that flag to the worker as text.
+    [Console]::Out.WriteLine("OPEN DECISIONS: close one by answering it: bin/fm-send.ps1 <task> -ResolveKey <key> '<answer>' (a line without [key=...] has the key default)")
 }

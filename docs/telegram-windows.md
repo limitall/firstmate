@@ -143,6 +143,7 @@ The list of choices is capped at three and what is left out is counted out loud.
   about; there is nothing else it could be.
 - **A message that answers a waiting question** belongs to the work that asked it.
   A closed decision names its own work exactly, and no inference beats that.
+  A key the message names is only unique inside the work that opened it, so when two pieces of work have that key open - every unkeyed question is `default` - it asks rather than closing whichever sorted first.
 
 **"Any news?" works because the record remembers.**
 Where nothing is named and several are running, routing follows the work the last

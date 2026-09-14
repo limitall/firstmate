@@ -53,6 +53,7 @@ Do not relay reviewer labels or gate output as if they settled the decision.
 ## Answering the worker
 
 Send the worker one exact decision naming the finding, the action, and any instructions it needs, as a single line through `bin/fm-send.ps1 <task-id> '<decision>'`.
+When the worker raised it as a keyed decision, add `-ResolveKey <key>` so the answer closes that record.
 Require the worker to report the outcome and to process every follow-on step until completion or a genuinely new escalation.
 Resume fleet supervision immediately after the decision lands.
 

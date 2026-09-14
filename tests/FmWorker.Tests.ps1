@@ -336,6 +336,194 @@ Describe 'Send-FmText' {
     }
 }
 
+Describe 'Send-FmText -ResolveKey: answering a decision closes it' {
+    BeforeAll {
+        # TASKS_AXI_FILE would point the backlog lookup out of the test home, and
+        # Complete-FmBacklogTask reads this home's configuration through FM_HOME.
+        $script:savedResolveEnv = @{}
+        foreach ($name in @('TASKS_AXI_FILE', 'FM_HOME')) {
+            $script:savedResolveEnv[$name] = [System.Environment]::GetEnvironmentVariable($name)
+        }
+        Remove-Item -LiteralPath 'Env:TASKS_AXI_FILE' -ErrorAction SilentlyContinue
+
+        function Add-Line {
+            param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$Line)
+            [System.IO.File]::AppendAllText($Path, (($Line -join "`n") + "`n"))
+        }
+    }
+    AfterAll {
+        foreach ($name in $script:savedResolveEnv.Keys) {
+            if ($null -eq $script:savedResolveEnv[$name]) {
+                Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+            } else {
+                Set-Item -LiteralPath "Env:$name" -Value $script:savedResolveEnv[$name]
+            }
+        }
+    }
+    BeforeEach {
+        $script:fmHome = New-TestHome -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString()))
+        $env:FM_HOME = $script:fmHome
+        $script:stateDir = Join-Path $script:fmHome 'state'
+        $script:status = Join-Path $script:stateDir 'alpha.status'
+        $script:backlog = Join-Path $script:fmHome 'data' 'backlog.md'
+        New-Item -ItemType Directory -Path (Join-Path $script:fmHome 'data') -Force | Out-Null
+        New-TaskRecord -StateDir $script:stateDir -TaskId 'alpha'
+        Add-Line -Path $script:status -Line 'needs-decision [key=api-shape]: flat or nested response'
+        Mock Start-Sleep { }
+        Mock Send-FmHerdrTextSubmit { 'empty' }
+    }
+
+    It 'closes the decision it answers, after delivery, carrying the answer' {
+        $result = Send-FmText -Target 'alpha' -Text 'use the flat one' -ResolveKey 'api-shape' `
+            -FirstmateHome $script:fmHome -Confirm:$false
+
+        $result.Delivered | Should -BeTrue
+        $result.Resolved | Should -Be @('api-shape')
+        [System.IO.File]::ReadAllLines($script:status)[-1] | Should -Be 'resolved [key=api-shape]: answered: use the flat one'
+        (Get-FmOpenDecision -Path $script:status).Count | Should -Be 0
+        Should -Invoke Send-FmHerdrTextSubmit -Times 1 -ParameterFilter { $Text -eq 'use the flat one' }
+    }
+
+    It 'closes a decision raised without a key through the key default' {
+        Add-Line -Path $script:status -Line 'blocked: which port do we bind'
+        $null = Send-FmText -Target 'alpha' -Text 'use 9090' -ResolveKey 'default' -FirstmateHome $script:fmHome -Confirm:$false
+        $open = Get-FmOpenDecision -Path $script:status
+        $open.Count | Should -Be 1
+        $open[0].Key | Should -Be 'api-shape'
+    }
+
+    It 'refuses a key that is not open, and types nothing' {
+        Mock Send-FmHerdrTextSubmit { throw 'must not send an answer that closes nothing' }
+        $before = [System.IO.File]::ReadAllBytes($script:status)
+
+        { Send-FmText -Target 'alpha' -Text 'use the flat one' -ResolveKey 'api-shap' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw "*-ResolveKey 'api-shap' names no open decision*Nothing was sent*"
+        Should -Invoke Send-FmHerdrTextSubmit -Times 0
+        [System.IO.File]::ReadAllBytes($script:status) | Should -Be $before
+    }
+
+    It 'refuses a key that is already closed, and says how to send the answer anyway' {
+        Add-Line -Path $script:status -Line 'resolved [key=api-shape]: use the flat one'
+        { Send-FmText -Target 'alpha' -Text 'use the flat one' -ResolveKey 'api-shape' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*without -ResolveKey if it is already closed*'
+        Should -Invoke Send-FmHerdrTextSubmit -Times 0
+    }
+
+    It 'matches a key only inside the task it answers, never another worker with the same key' {
+        New-TaskRecord -StateDir $script:stateDir -TaskId 'beta'
+        $beta = Join-Path $script:stateDir 'beta.status'
+        Add-Line -Path $beta -Line 'needs-decision [key=port]: which port'
+
+        { Send-FmText -Target 'alpha' -Text 'use 9090' -ResolveKey 'port' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw "*-ResolveKey 'port' names no open decision*"
+        (Get-FmOpenDecision -Path $beta).Count | Should -Be 1
+        Should -Invoke Send-FmHerdrTextSubmit -Times 0
+    }
+
+    It 'closes nothing when the answer was not confirmed delivered' {
+        Mock Send-FmHerdrTextSubmit { 'pending' }
+        { Send-FmText -Target 'alpha' -Text 'use the flat one' -ResolveKey 'api-shape' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*delivery unconfirmed*'
+        (Get-FmOpenDecision -Path $script:status).Count | Should -Be 1
+    }
+
+    It 'closes nothing under -WhatIf' {
+        $result = Send-FmText -Target 'alpha' -Text 'use the flat one' -ResolveKey 'api-shape' -FirstmateHome $script:fmHome -WhatIf
+        $result | Should -BeNullOrEmpty
+        (Get-FmOpenDecision -Path $script:status).Count | Should -Be 1
+        Should -Invoke Send-FmHerdrTextSubmit -Times 0
+    }
+
+    It 'refuses a malformed, repeated or keyboard-key use before sending' {
+        { Send-FmText -Target 'alpha' -Text 'x' -ResolveKey 'api shape' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*not a valid decision key*'
+        { Send-FmText -Target 'alpha' -Text 'x' -ResolveKey 'api-shape', 'api-shape' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*named twice*'
+        { Send-FmText -Target 'alpha' -Key 'Escape' -ResolveKey 'api-shape' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*cannot accompany -Key*'
+        { Send-FmText -Target 'alpha' -Text '   ' -ResolveKey 'api-shape' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*non-empty answer*'
+        Should -Invoke Send-FmHerdrTextSubmit -Times 0
+        (Get-FmOpenDecision -Path $script:status).Count | Should -Be 1
+    }
+
+    It 'refuses a reserved key whose fold would ignore an answer, before sending' {
+        Add-Line -Path $script:status -Line 'needs-decision [key=pending-reply-7]: pending-reply-7 reply: still waiting'
+        (@(Get-FmOpenDecision -Path $script:status) | Where-Object { $_.Key -eq 'pending-reply-7' }) | Should -Not -BeNullOrEmpty
+        { Send-FmText -Target 'alpha' -Text 'fine' -ResolveKey 'pending-reply-7' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*reserved*Nothing was sent*'
+        Should -Invoke Send-FmHerdrTextSubmit -Times 0
+    }
+
+    It 'says the answer landed and must not be resent when the close itself fails' {
+        Mock Add-FmTaskStatus { throw 'the disk refused the write' }
+        { Send-FmText -Target 'alpha' -Text 'use the flat one' -ResolveKey 'api-shape' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*answer was delivered to alpha*the disk refused the write*close it with: Import-Module*Add-FmTaskStatus*Do not resend the answer*'
+        Should -Invoke Send-FmHerdrTextSubmit -Times 1
+    }
+
+    It 'closes the captain hold filed for the decision in the same act' {
+        $null = Add-FmBacklogTask -Id 'api-shape' -Title 'decide what data/alpha/report.md recommends' `
+            -Path $script:backlog -Date '2026-09-01' -Confirm:$false
+        $null = Set-FmBacklogHold -Id 'api-shape' -Reason 'captain must choose the shape' -Kind captain `
+            -Path $script:backlog -Confirm:$false
+
+        $result = Send-FmText -Target 'alpha' -Text 'use the flat one' -ResolveKey 'api-shape' `
+            -FirstmateHome $script:fmHome -Confirm:$false
+
+        $result.HoldsClosed | Should -Be @('api-shape')
+        $hold = Get-FmBacklogTask -Id 'api-shape' -Path $script:backlog
+        $hold.State | Should -Be 'done'
+        $hold.Body | Should -BeLike '*answered: use the flat one*'
+        # The teardown gate's own attribution now finds nothing unresolved.
+        Get-FmDecisionHoldForTask -TaskId 'alpha' -Task (Get-FmBacklog -Path $script:backlog) | Should -BeNullOrEmpty
+    }
+
+    It 'leaves a hold open while work is blocked by it, and still closes the status decision' {
+        $null = Add-FmBacklogTask -Id 'api-shape' -Title 'decide what data/alpha/report.md recommends' `
+            -Path $script:backlog -Date '2026-09-01' -Confirm:$false
+        $null = Set-FmBacklogHold -Id 'api-shape' -Reason 'captain must choose the shape' -Kind captain `
+            -Path $script:backlog -Confirm:$false
+        $null = Add-FmBacklogTask -Id 'build-api' -Title 'build the chosen shape' -BlockedBy 'api-shape' `
+            -Path $script:backlog -Date '2026-09-01' -Confirm:$false
+
+        $result = Send-FmText -Target 'alpha' -Text 'use the flat one' -ResolveKey 'api-shape' `
+            -FirstmateHome $script:fmHome -Confirm:$false
+
+        $result.Resolved | Should -Be @('api-shape')
+        $result.HoldsClosed | Should -BeNullOrEmpty
+        $result.HoldsLeftOpen[0] | Should -BeLike "*captain hold 'api-shape' stays open: build-api is blocked by it*"
+        (Get-FmBacklogTask -Id 'api-shape' -Path $script:backlog).State | Should -Be 'queued'
+    }
+
+    It 'refuses a key that is only a hold with work blocked by it, because it would close nothing' {
+        [System.IO.File]::WriteAllText($script:status, "working: reading`n")
+        $null = Add-FmBacklogTask -Id 'api-shape' -Title 'decide what data/alpha/report.md recommends' `
+            -Path $script:backlog -Date '2026-09-01' -Confirm:$false
+        $null = Set-FmBacklogHold -Id 'api-shape' -Reason 'captain must choose the shape' -Kind captain `
+            -Path $script:backlog -Confirm:$false
+        $null = Add-FmBacklogTask -Id 'build-api' -Title 'build the chosen shape' -BlockedBy 'api-shape' `
+            -Path $script:backlog -Date '2026-09-01' -Confirm:$false
+
+        { Send-FmText -Target 'alpha' -Text 'use the flat one' -ResolveKey 'api-shape' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*build-api is blocked by*Nothing was sent*'
+        Should -Invoke Send-FmHerdrTextSubmit -Times 0
+    }
+
+    It 'never closes a hold the backlog attributes to other work' {
+        $null = Add-FmBacklogTask -Id 'api-shape' -Title 'an unrelated call with the same name' `
+            -Path $script:backlog -Date '2026-09-01' -Confirm:$false
+        $null = Set-FmBacklogHold -Id 'api-shape' -Reason 'captain must decide' -Kind captain `
+            -Path $script:backlog -Confirm:$false
+
+        $result = Send-FmText -Target 'alpha' -Text 'use the flat one' -ResolveKey 'api-shape' `
+            -FirstmateHome $script:fmHome -Confirm:$false
+        $result.Resolved | Should -Be @('api-shape')
+        $result.HoldsClosed | Should -BeNullOrEmpty
+        (Get-FmBacklogTask -Id 'api-shape' -Path $script:backlog).State | Should -Be 'queued'
+    }
+}
+
 Describe 'bin/fm-send.ps1' {
     BeforeAll {
         $script:sendEntry = Join-Path $PSScriptRoot '..' 'bin' 'fm-send.ps1'
@@ -354,6 +542,30 @@ Describe 'bin/fm-send.ps1' {
             $text | Should -BeLike "*has no parameter '$flag'*"
             $text | Should -BeLike '*nothing was sent*'
         }
+    }
+
+    It 'answers and closes a decision end to end, typing only the answer' {
+        # The real entry point, its real parameter binding and the real close;
+        # only the herdr submit is replaced, by a global alias that outranks the
+        # module's own function. This is the shape the printed hint used to break.
+        $fmHome = New-TestHome -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString()))
+        $state = Join-Path $fmHome 'state'
+        New-TaskRecord -StateDir $state -TaskId 'alpha'
+        [System.IO.File]::WriteAllText((Join-Path $state 'alpha.status'), "needs-decision [key=api-shape]: flat or nested response`n")
+        $typed = Join-Path $TestDrive 'typed.txt'
+        $driver = Join-Path $TestDrive 'answer-driver.ps1'
+        [System.IO.File]::WriteAllText($driver, @'
+param($Entry, $FmHome, $Typed)
+function global:Stub-FmSubmit { param($Target, $Text, $Retries, $EnterSleepSeconds, $SettleSeconds) [System.IO.File]::AppendAllText($Typed, "$Text`n"); 'empty' }
+Set-Alias -Name Send-FmHerdrTextSubmit -Value Stub-FmSubmit -Scope Global
+& $Entry alpha -ResolveKey api-shape 'use the flat one' -FirstmateHome $FmHome
+exit $LASTEXITCODE
+'@)
+        $out = @(pwsh -NoProfile -NonInteractive -File $driver -Entry $script:sendEntry -FmHome $fmHome -Typed $typed 2>$null)
+        $LASTEXITCODE | Should -Be 0
+        $out | Should -Contain "closed decision 'api-shape' for alpha"
+        [System.IO.File]::ReadAllText($typed) | Should -Be "use the flat one`n"
+        (Get-FmOpenDecision -Path (Join-Path $state 'alpha.status')).Count | Should -Be 0
     }
 
     It 'still sends a quoted message that merely contains a dash-word' {

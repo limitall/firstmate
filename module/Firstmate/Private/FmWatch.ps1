@@ -239,8 +239,7 @@ function Get-FmWatchSignalChanges {
         foreach ($file in ($files | Sort-Object)) {
             $sig = Get-FmFileSignature -Path $file
             if (-not $sig) { continue }
-            $base = [System.IO.Path]::GetFileName($file)
-            $seenFile = Join-Path $Context.State ('.seen-' + ($base -replace '\.', '_'))
+            $seenFile = Get-FmSignalSeenPath -StateDir $Context.State -SignalFile $file
             if ($sig -ne (Get-FmFileTextOrEmpty -Path $seenFile)) {
                 $results.Add([pscustomobject]@{ SeenFile = $seenFile; Signature = $sig; Path = $file })
             }
@@ -255,6 +254,78 @@ function Set-FmSignalSeen {
         Justification = 'Persisting the observed signature is what accounts for a wake already delivered; skipping it would redeliver forever.')]
     param([Parameter(Mandatory)][object]$Change)
     Set-FmFileTextLf -Path $Change.SeenFile -Text $Change.Signature
+}
+
+function Get-FmSignalSeenPath {
+    <# The .seen-* marker for one signal file: state/.seen-<name with dots as underscores>. #>
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$StateDir,
+        [Parameter(Mandatory)][string]$SignalFile
+    )
+    $base = [System.IO.Path]::GetFileName($SignalFile)
+    return (Join-Path $StateDir ('.seen-' + ($base -replace '\.', '_')))
+}
+
+function Add-FmStatusLineSelfAnnounced {
+    <#
+        Append one line to a status file on behalf of the session that is going to
+        read it anyway, and account for exactly those bytes so the watcher does not
+        wake that session with its own write. Returns $true when the line was
+        accounted for, $false when it was appended and left for the watcher; a
+        failed append throws.
+
+        The case this exists for is firstmate answering a decision: the send that
+        delivers the answer also appends its `resolved` line, and without this the
+        next watcher run reports that line back to the very turn that wrote it.
+        Port of fm_wake_status_append_self_announced (bin/fm-wake-lib.sh).
+
+        The marker advances ONLY when it already matched the file as it stood
+        before the append - every earlier byte was presented or absorbed - and the
+        file grew by exactly this line. Anything else means bytes somebody else
+        wrote are in play, so the marker is left alone and the watcher wakes on the
+        whole span: a spurious wake costs one turn, a swallowed worker line costs a
+        missed decision. The append lock is held throughout so no writer using
+        Add-FmStateLine can land between the two readings; one that bypasses it
+        changes the size and falls back the same way.
+
+        A watcher already mid-scan when this runs can still capture the new bytes
+        before the marker moves and wake once. That is the safe direction, and the
+        emitted protocol runs the watcher in the foreground between turns, so the
+        session appending here is not also watching.
+    #>
+    [OutputType([bool])]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal helper; its one caller (Add-FmTaskStatus -SelfAnnounced) owns ShouldProcess for the append.')]
+    param(
+        [Parameter(Mandatory)][string]$StateDir,
+        [Parameter(Mandatory)][string]$StatusFile,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Line
+    )
+
+    $statusFull = Resolve-FmFullPath -Path $StatusFile
+    $seenFile = Get-FmSignalSeenPath -StateDir $StateDir -SignalFile $statusFull
+    $lineBytes = [System.Text.UTF8Encoding]::new($false).GetByteCount($Line) + 1
+
+    Invoke-FmWithLock -Path (Get-FmAppendLockPath -Path $statusFull) -ScriptBlock {
+        # The signature is size:mtime, so its first field is the size it describes.
+        $before = Get-FmFileSignature -Path $statusFull
+        Add-FmStateLine -Path $statusFull -Line $Line -NoLock -Confirm:$false
+
+        if (-not $before) { return $false }
+        if ((Get-FmFileTextOrEmpty -Path $seenFile) -ne $before) { return $false }
+        $after = Get-FmFileSignature -Path $statusFull
+        if (-not $after) { return $false }
+        if ([long]$after.Split(':')[0] -ne ([long]$before.Split(':')[0] + $lineBytes)) { return $false }
+        try {
+            Set-FmFileTextLf -Path $seenFile -Text $after
+            return $true
+        } catch {
+            # The watcher may hold the marker open for a moment; leaving it
+            # unmoved wakes the session once, which is the safe failure.
+            return $false
+        }
+    }
 }
 
 # --- process-event surfacing -------------------------------------------------

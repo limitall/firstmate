@@ -222,17 +222,17 @@ function Test-FmTelegramCommand {
 function Resolve-FmTelegramDecision {
     <#
         .SYNOPSIS
-        Close an open decision with the captain's answer. The closure the wake
-        drain has always printed a command for and never had.
+        Close an open decision with the captain's answer from the phone.
 
         .DESCRIPTION
-        THE PROBLEM THIS SOLVES. The drain tells firstmate to close a decision
-        with a flag bin/fm-send.ps1 does not have, and that entry point ends its
-        parameter block with a remaining-arguments list, so the flag is not
-        refused - it is absorbed into the message body. Run as printed, it sends
-        the worker the literal text of the flag and closes nothing. Answering a
-        decision is the most valuable thing the captain can do from a phone, and
-        it routed through exactly that.
+        WHY THE PHONE HAS ITS OWN CLOSE. Answering a decision is the most
+        valuable thing the captain can do from a phone, and that answer reaches
+        firstmate before it reaches any worker. In chat, the send that delivers
+        an answer to the worker closes the decision (Send-FmText -ResolveKey);
+        here the captain's words are recorded for firstmate's next turn and the
+        decision closes now, so it is not raised with the captain again. When
+        firstmate then relays the answer, the decision is already closed and the
+        relay goes without -ResolveKey.
 
         WHAT CLOSING MEANS. A needs-decision or blocked line OPENS a keyed
         decision in a task's own durable stream, and only a resolved line carrying
@@ -244,11 +244,16 @@ function Resolve-FmTelegramDecision {
         append is also a status write, so firstmate is notified and reads the
         answer on its next turn - the answer is never only a closure.
 
-        WHEN IT WILL NOT GUESS. With -Key, it closes exactly that key or reports
-        that it is not open. Without one, it closes the single open decision when
-        there is exactly one, and REFUSES when there are several: closing the
-        wrong question would be a silent, wrong answer, and a captain told "there
-        is more than one waiting" can settle it in one more message.
+        WHEN IT WILL NOT GUESS. With -Key, it closes that key when exactly one
+        piece of work has it open, reports that it is not open when none does,
+        and REFUSES when more than one does: a key is only unique inside the
+        status stream that opened it - two workers can both ask [key=api-shape],
+        and every keyless decision is `default` - so taking the first match
+        fleet-wide answered whichever task sorted first. Without a key, it closes
+        the single open decision when there is exactly one, and refuses when there
+        are several. Closing the wrong question would be a silent, wrong answer,
+        and a captain told "there is more than one waiting" can settle it in one
+        more message.
 
         .PARAMETER Answer
         The captain's words, recorded verbatim as the resolution note.
@@ -304,13 +309,22 @@ function Resolve-FmTelegramDecision {
 
         $target = $null
         if ($Key) {
-            $target = @($open | Where-Object { $_.Key -eq $Key }) | Select-Object -First 1
-            if (-not $target) {
+            # Compared as the fold compares keys, and never narrowed to the first
+            # match: the same key open in two tasks is two different questions.
+            $named = @($open | Where-Object { $_.Key -eq $Key })
+            if ($named.Count -eq 0) {
                 $result.Reason = 'unknown-key'
                 $result.Key = $Key
                 $result.Open = @($open | ForEach-Object { ConvertTo-FmBridgePlainText -Text $_.Note })
                 return $result
             }
+            if ($named.Count -gt 1) {
+                $result.Reason = 'ambiguous'
+                $result.Key = $Key
+                $result.Open = @($named | ForEach-Object { ConvertTo-FmBridgePlainText -Text $_.Note })
+                return $result
+            }
+            $target = $named[0]
         } elseif ($open.Count -eq 1) {
             $target = $open[0]
         } else {

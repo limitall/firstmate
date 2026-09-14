@@ -57,7 +57,7 @@ If the worktree or ownership cannot be reconciled safely, leave all state intact
 Escalate in order:
 
 1. Read the pane with `Get-FmPane fm-<id>`.
-2. If the crewmate is waiting on a question its brief already answers, answer in one line with `bin/fm-send.ps1 <task-id> '<answer>'`.
+2. If the crewmate is waiting on a question its brief already answers, answer in one line with `bin/fm-send.ps1 <task-id> '<answer>'`, adding `-ResolveKey <key>` when it raised the question as a decision.
    `fm-send` fails closed on an unresolved home and exits non-zero when the Enter was positively swallowed, so a zero exit is real evidence the line landed.
 3. If the crewmate is confused or looping, interrupt with `bin/fm-control.ps1 <task-id> interrupt`, then redirect with one corrective line through `fm-send`.
    Claude fires no hook for a manual interrupt, so the control plane reports only the delivered key and makes no cancellation claim; confirm the interrupt landed by reading the pane, not by trusting the exit code.

@@ -592,8 +592,10 @@ Describe 'the OPEN DECISIONS section' {
         $hint.Count | Should -Be 1
         $declared = (Get-Command -Name (Join-Path $script:RepoRoot 'bin' 'fm-send.ps1')).Parameters.Keys
         $command = $hint[0].Substring($hint[0].IndexOf('fm-send.ps1'))
-        foreach ($flag in [regex]::Matches($command, '(?<=\s)-([A-Za-z]+)')) {
-            $declared | Should -Contain $flag.Groups[1].Value -Because "the hint tells firstmate to pass -$($flag.Groups[1].Value)"
+        $flags = @([regex]::Matches($command, '(?<=\s)-([A-Za-z]+)') | ForEach-Object { $_.Groups[1].Value })
+        $flags | Should -Contain 'ResolveKey' -Because 'answering a listed decision is how it closes'
+        foreach ($flag in $flags) {
+            $declared | Should -Contain $flag -Because "the hint tells firstmate to pass -$flag"
         }
     }
 }

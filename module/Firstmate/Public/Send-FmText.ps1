@@ -25,17 +25,28 @@ a loud failure.
 FM_HOME must be explicit (-FirstmateHome or the environment variable), so a
 steer cannot silently resolve against another home.
 
-NOT PORTED (each belongs to another area; see docs/send-windows.md):
-  --resolve-key decision closure, the from-firstmate routing marker, the
-  parent-owned pending-reply expectation, and remote secondmate delivery.
-  Those are status-ledger, marker, and remote-transport contracts, not send
-  mechanics, and inventing them here would fork three shared file formats.
+ANSWERING A DECISION CLOSES IT. -ResolveKey names the open decision (or
+blocker) this text answers, in the target task's own records. Every key is
+checked BEFORE anything is typed, and one that would close nothing is refused
+with nothing sent. After a confirmed delivery the send appends
+`resolved [key=<key>]: answered: <text>` to state/<task>.status without waking
+this session, and closes the captain hold decision-hold-lifecycle filed under
+that key when no work is blocked by it. An unconfirmed send closes nothing.
+Private/FmDecisionClose.ps1 owns the contract; a decision listed without
+[key=...] has the key `default`.
+
+NOT PORTED: the from-firstmate routing marker, the parent-owned pending-reply
+expectation, and remote secondmate delivery. Those are marker and
+remote-transport contracts, not send mechanics (AGENTS.md section 14).
 
 .EXAMPLE
 Send-FmText -Target my-task -Text 'push the branch and open the PR'
 
 .EXAMPLE
 Send-FmText -Target my-task -Key Escape
+
+.EXAMPLE
+Send-FmText -Target my-task -Text 'use the flat shape' -ResolveKey api-shape
 #>
 function Send-FmText {
     [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Text')]
@@ -46,7 +57,8 @@ function Send-FmText {
         [string]$FirstmateHome = '',
         [int]$Retries = 3,
         [double]$SleepSeconds = 0.4,
-        [double]$PostSubmitSettleSeconds = 1
+        [double]$PostSubmitSettleSeconds = 1,
+        [AllowEmptyCollection()][string[]]$ResolveKey = @()
     )
 
     if (-not $FirstmateHome) { $FirstmateHome = $env:FM_HOME }
@@ -68,6 +80,21 @@ function Send-FmText {
             'herdr session provider only, and refuses to send into a backend it cannot verify')
     }
     $endpoint = $resolved.Target
+
+    # Checked before anything is typed: a key that closes nothing is refused
+    # with nothing sent, never discovered after the answer has landed.
+    $closure = $null
+    if ($ResolveKey.Count -gt 0) {
+        if ($PSCmdlet.ParameterSetName -eq 'Key') {
+            throw 'error: -ResolveKey cannot accompany -Key; answering a decision takes a text answer. Nothing was sent.'
+        }
+        if (-not $resolved.TaskId) {
+            throw ("error: -ResolveKey needs a task recorded in this home; an explicit backend target has no decision " +
+                'records here. Nothing was sent.')
+        }
+        $closure = Get-FmDecisionClosurePlan -FirstmateHome $FirstmateHome -TaskId $resolved.TaskId `
+            -Key $ResolveKey -Answer $Text
+    }
 
     if ($PSCmdlet.ParameterSetName -eq 'Key') {
         if (-not (Test-FmControlBackendSupportsKey -Backend $resolved.Backend -Key $Key)) {
@@ -120,16 +147,25 @@ function Send-FmText {
         }
     }
 
+    $closed = [pscustomobject]@{ Resolved = @(); HoldsClosed = @(); HoldsLeftOpen = @() }
+    if ($closure) {
+        $closed = Complete-FmDecisionClosure -Plan $closure -DeliveredTo "$($resolved.TaskId) ($endpoint)"
+    }
+
     # Submit confirmation only proves the text was accepted; the harness needs
     # a beat to spin up the turn before its busy state shows, so an immediate
     # peek would otherwise catch the stale idle pane.
     if ($PostSubmitSettleSeconds -gt 0) { Start-Sleep -Seconds $PostSubmitSettleSeconds }
 
     [pscustomobject]@{
-        Target    = $endpoint
-        TaskId    = $resolved.TaskId
-        Delivered = $true
-        Verdict   = $verdict
-        Text      = $Text
+        Target        = $endpoint
+        TaskId        = $resolved.TaskId
+        Delivered     = $true
+        Verdict       = $verdict
+        Text          = $Text
+        Resolved      = $closed.Resolved
+        HoldsClosed   = $closed.HoldsClosed
+        HoldsLeftOpen = $closed.HoldsLeftOpen
+        Warnings      = @(if ($closure) { $closure.Warnings })
     }
 }

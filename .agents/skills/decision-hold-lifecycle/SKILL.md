@@ -33,6 +33,8 @@ Use `bin/fm-backlog.ps1`; its header and `-h` output own the exact grammar:
 - Mark it captain-held so it is not dispatchable and shows up as a Captain's Call item: `bin/fm-backlog.ps1 hold <key> -Reason '<what the captain must decide>' -Kind captain`.
 - Block each dependent work item on that key: `bin/fm-backlog.ps1 block <dependent-id> -By <key>`.
 - After the captain answers, write the exact durable decision into the dependent item's note, unblock it, and close the hold: `bin/fm-backlog.ps1 done <key> -Note '<the captain's decision, verbatim in substance>'`.
+- When the answer goes to the live worker that raised the decision, send it with `bin/fm-send.ps1 <task-id> -ResolveKey <key> '<answer>'`: that closes the worker's status decision and, when the backlog attributes the hold to that task and nothing is blocked by it, the hold too, in the same act.
+  With dependent work it leaves the hold open and names that work, so the step above still applies.
 
 Because no script attests the inventory here, the completion attestation is yours: before declaring the investigation or review complete, state in the same turn either the full list of keys you filed or that the reviewed surface contained no unresolved captain decision.
 Do not declare completion and then go looking.

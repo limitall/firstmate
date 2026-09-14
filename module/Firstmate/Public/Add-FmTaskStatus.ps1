@@ -25,6 +25,12 @@ The append itself is the foundation's (Add-FmStateLine): it is LF-only, BOM-free
 and serialized on a sibling lock, which this port measured to matter - .NET's
 FileMode.Append writes at a remembered offset, so concurrent appends without that
 lock silently overwrite each other's lines.
+
+-SelfAnnounced is for a line firstmate's own session writes and will read
+anyway - the close an answered decision gets. The watcher then does not wake
+that session with its own line, while a line anyone else wrote before it still
+wakes it (Add-FmStatusLineSelfAnnounced owns the rule). Never pass it for a line
+another process must be told about.
 #>
 function Add-FmTaskStatus {
     [CmdletBinding(SupportsShouldProcess)]
@@ -34,7 +40,8 @@ function Add-FmTaskStatus {
         [Parameter(Mandatory)][string]$TaskId,
         [Parameter(Mandatory)][string]$State,
         [Parameter(Mandatory)][AllowEmptyString()][string]$Note,
-        [Parameter()][AllowEmptyString()][string]$Key = ''
+        [Parameter()][AllowEmptyString()][string]$Key = '',
+        [switch]$SelfAnnounced
     )
     if ($State -match '[\s:\[\]]') {
         throw "error: '$State' is not a status verb (a verb carries no whitespace, colon, or key token)"
@@ -49,6 +56,10 @@ function Add-FmTaskStatus {
     $flat = ($Note -replace "`r`n", ' ') -replace "[`r`n]", ' '
     $line = if ($Key -and $Key -ne 'default') { "$State [key=$Key]: $flat" } else { "${State}: $flat" }
     if (-not $PSCmdlet.ShouldProcess($path, "append '$line'")) { return $null }
-    Add-FmStateLine -Path $path -Line $line -Confirm:$false
+    if ($SelfAnnounced) {
+        $null = Add-FmStatusLineSelfAnnounced -StateDir $StateDir -StatusFile $path -Line $line
+    } else {
+        Add-FmStateLine -Path $path -Line $line -Confirm:$false
+    }
     $line
 }
