@@ -38,6 +38,21 @@ $ErrorActionPreference = 'Stop'
 
 $text = ($Message -join ' ').Trim()
 
+# PowerShell does not refuse a switch this script does not declare: the trailing
+# remaining-arguments list takes it, value and all, and it would be TYPED into
+# the worker as part of the steer while this script exits 0. That is how a
+# printed close hint naming a missing flag delivered `-ResolveKey api-shape
+# <answer>` to a worker as chat. A lone dash-word is therefore refused here,
+# before anything is resolved or sent; a message that really contains one goes
+# as a single quoted argument, which never arrives as a lone token.
+$flagLike = @($Message | Where-Object { $_ -match '^--?[A-Za-z][A-Za-z0-9-]*$' })
+if ($flagLike.Count -gt 0) {
+    [Console]::Error.WriteLine(("error: fm-send.ps1 has no parameter '$($flagLike[0])'; it would have been typed into the " +
+        'worker as text, so nothing was sent. Check the flag against fm-send.ps1 -? or, if the message really ' +
+        'contains that word, pass the whole message as one quoted argument.'))
+    exit 2
+}
+
 if ($Key -and $text) {
     [Console]::Error.WriteLine('error: pass either -Key or a message, not both')
     exit 2

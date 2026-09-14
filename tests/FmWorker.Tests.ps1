@@ -336,6 +336,38 @@ Describe 'Send-FmText' {
     }
 }
 
+Describe 'bin/fm-send.ps1' {
+    BeforeAll {
+        $script:sendEntry = Join-Path $PSScriptRoot '..' 'bin' 'fm-send.ps1'
+    }
+
+    It 'refuses a flag it does not declare instead of typing it into the worker as text' {
+        # The home names no task, so a regression that let the flag through would
+        # stop at "not resolvable" (exit 1) and never reach a backend.
+        $emptyHome = New-TestHome -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString()))
+        $stderr = Join-Path $TestDrive 'flag.err'
+        foreach ($flag in @('-NoSuchFlag', '--resolve-key')) {
+            pwsh -NoProfile -NonInteractive -File $script:sendEntry ghost $flag api-shape 'use the flat one' `
+                -FirstmateHome $emptyHome 2>$stderr | Out-Null
+            $LASTEXITCODE | Should -Be 2 -Because "$flag must be refused before anything is sent"
+            $text = Get-Content -Raw -LiteralPath $stderr
+            $text | Should -BeLike "*has no parameter '$flag'*"
+            $text | Should -BeLike '*nothing was sent*'
+        }
+    }
+
+    It 'still sends a quoted message that merely contains a dash-word' {
+        # One quoted argument is never a lone token, so it reaches resolution -
+        # which refuses the unknown task, proving the flag check let it pass.
+        $emptyHome = New-TestHome -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString()))
+        $stderr = Join-Path $TestDrive 'quoted.err'
+        pwsh -NoProfile -NonInteractive -File $script:sendEntry ghost 'retry with -Force' `
+            -FirstmateHome $emptyHome 2>$stderr | Out-Null
+        $LASTEXITCODE | Should -Be 1
+        Get-Content -Raw -LiteralPath $stderr | Should -BeLike '*not resolvable*'
+    }
+}
+
 Describe 'Get-FmPane' {
     BeforeEach {
         $script:fmHome = New-TestHome -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString()))

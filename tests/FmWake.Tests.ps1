@@ -575,6 +575,29 @@ Describe 'Invoke-FmWakeDrain' {
     }
 }
 
+Describe 'the OPEN DECISIONS section' {
+    BeforeEach { $script:TestHome = New-TestHome; $script:Ctx = Get-FmWakeContext }
+    AfterEach { Remove-TestHome -Path $script:TestHome }
+
+    It 'names only flags bin/fm-send.ps1 declares in the close hint it prints' {
+        # The hint is followed as printed. One that named a flag fm-send.ps1 did
+        # not have typed that flag into a worker as chat and closed nothing.
+        Set-FmFileTextLf -Path (Join-Path $script:Ctx.State 'alpha.status') `
+            -Text "needs-decision [key=api-shape]: flat or nested response`n"
+        $drain = Join-Path $script:RepoRoot 'bin' 'fm-wake-drain.ps1'
+        $printed = @(pwsh -NoProfile -NonInteractive -File $drain 2>$null)
+        $printed | Should -Contain 'alpha [key=api-shape] needs-decision: flat or nested response'
+
+        $hint = @($printed | Where-Object { $_ -like 'OPEN DECISIONS:*fm-send.ps1*' })
+        $hint.Count | Should -Be 1
+        $declared = (Get-Command -Name (Join-Path $script:RepoRoot 'bin' 'fm-send.ps1')).Parameters.Keys
+        $command = $hint[0].Substring($hint[0].IndexOf('fm-send.ps1'))
+        foreach ($flag in [regex]::Matches($command, '(?<=\s)-([A-Za-z]+)')) {
+            $declared | Should -Contain $flag.Groups[1].Value -Because "the hint tells firstmate to pass -$($flag.Groups[1].Value)"
+        }
+    }
+}
+
 Describe 'Module assembly' {
     <#
         Cross-area integrity, not a wake-queue concern - parked here until the
