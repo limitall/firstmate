@@ -133,7 +133,7 @@ A genuine stall - a completion notice produced and never delivered - would still
 What changed is that the supervisor no longer has to guess, and the guess it used to make was wrong.
 
 One thing bounds the detection, and it is not this area's to fix.
-The clause rides the watcher's existing stale cadence, and this port has no automatic watcher arm (`AGENTS.md` section 14), so the reading reaches a supervisor when a watcher is running - the session-kept foreground cycle - and not otherwise.
+The clause rides the watcher's existing stale cadence, so the reading reaches a supervisor when a watcher is running and not otherwise - which is now every turn end with supervision needed, since the Stop-owned arm landed (`docs/supervision.md`, "The arm layer"), and was the session-kept foreground cycle before it.
 That is the same bound every other stale wake already has; nothing here made it narrower, and widening it would be the supervision redesign this work deliberately stayed out of.
 ## Tests
 

@@ -165,7 +165,10 @@ loaded in pieces:
   decide deny. The `cd` owner now exists (`Test-FmCdCommandPolicy`, see
   `docs/cd-guard-windows.md`); `arm` and `subagent` are still unported, so those
   two hooks are deliberately inert rather than accidentally so;
-- a missing `Invoke-FmWatchArm` leaves the Stop auto-arm silent and inert;
+- a missing `Invoke-FmWatchArm` leaves the Stop auto-arm silent and inert. That
+  owner has landed (`docs/supervision.md`, "The arm layer"), so the branch is now
+  a partial-build degradation rather than this port's steady state, and
+  `tests/FmHooks.Tests.ps1` stages it at the `Resolve-FmSessionCommand` seam;
 - any unexpected exception in `bin/fm-claude-hook.ps1` exits 0 with a diagnostic
   on stderr. A hook that crashes must never take a session with it.
 

@@ -7,12 +7,15 @@
     WHY THIS FILE MATTERS MORE HERE THAN IN BASH. On Linux this renderer prints
     one of six harness protocols. This port dispatches exactly one harness, so
     what it really has to get right is the OTHER axis: whether an automatic
-    re-arm owner exists in this build at all. Until it does, the Claude
-    Stop-hook auto-arm is registered and inert, and the session itself has to
-    keep the cycle. Emitting the Stop-owned protocol in that state would tell
-    the captain a mechanism is running when nothing is, which is the exact
-    failure this port exists to avoid - so the protocol is selected from the
-    seam that is actually present, not from a constant.
+    re-arm owner exists in this build at all. Invoke-FmWatchArm has since landed
+    (docs/supervision.md, "The arm layer"), so the probe answers yes and the
+    Stop-owned protocol is what this build emits. The other branch stays and is
+    still tested, because a build assembled without that owner has a registered
+    and INERT Stop hook and a session that must keep the cycle itself. Emitting
+    the Stop-owned protocol in that state would tell the captain a mechanism is
+    running when nothing is, which is the exact failure this port exists to
+    avoid - so the protocol is selected from the seam that is actually present,
+    not from a constant.
 
     Two call shapes bind here, and both are load-bearing:
 
@@ -106,10 +109,11 @@ function Get-FmSupervisionOrdinaryWakeLine {
     return '- Ordinary wake: drain, handle the wake, then start the next FOREGROUND bin/fm-watch.ps1 cycle yourself while supervision is still needed.'
 }
 
-# The Claude protocol for a build whose automatic arm owner has landed. This
-# describes machinery that exists in this repo today (Invoke-FmClaudeStopAutoArm
-# and the registered Stop hook); only its arm dependency decides which of the
-# two protocols is the true one, which is why the choice is probed.
+# The Claude protocol for a build whose automatic arm owner has landed, which is
+# this one. Every part it describes exists here today: the registered Stop hook,
+# Invoke-FmClaudeStopAutoArm, and now Invoke-FmWatchArm. Only that last
+# dependency decides which of the two protocols is the true one, which is why
+# the choice is probed rather than written down as a constant.
 function Get-FmSupervisionClaudeArmedProtocol {
     [OutputType([array])]
     [CmdletBinding()]
@@ -131,9 +135,10 @@ function Get-FmSupervisionClaudeArmedProtocol {
     )
 }
 
-# The Claude protocol for THIS build. AGENTS.md section 8 states the same
-# obligation in prose; this is the machine-emitted form of it, so the session
-# gets the procedure rather than only the rule.
+# The Claude protocol for a build with NO arm owner. It is no longer what this
+# build emits, and it is not dead either: a partially assembled module must still
+# get a procedure it can actually follow. AGENTS.md section 8 states the same
+# rule in prose - follow whichever protocol the digest emitted.
 function Get-FmSupervisionClaudeManualProtocol {
     [OutputType([array])]
     [CmdletBinding()]
