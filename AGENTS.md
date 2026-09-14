@@ -343,8 +343,8 @@ Whenever work is under way, keep exactly one live supervision cycle using the em
 Do not substitute another harness's wait shape, use a backgrounded job, or create a second cycle when a healthy one already exists.
 
 **The digest emits that protocol, and it reports what this build actually has.**
-There is no automatic re-arm here (section 14), so the block names the arm as unavailable and gives you the session-kept cycle instead: run `bin/fm-watch.ps1` in the FOREGROUND while work is under way, handle the wake it exits on, and drain the queue at the start of that turn.
-It is selected from the seams present at run time rather than from a constant, so the day an arm owner lands the emitted protocol changes with it.
+The Stop hook now owns routine re-arm: at every turn end with supervision needed it establishes or attaches one home-scoped cycle through `bin/fm-watch-arm.ps1`, so do not arm another cycle yourself after an ordinary wake.
+The block is selected from the seams present at run time rather than from a constant, so a build without that arm owner names it as unavailable and gives you the session-kept FOREGROUND `bin/fm-watch.ps1` cycle instead - follow whichever protocol the digest actually emitted.
 Never background the watcher with `&`, `Start-Job`, or `Start-Process`: a child reaped when the tool call returns leaves no watcher running and a false "already running" read off the dying process.
 Never end a turn with work in flight on the assumption that something else is watching.
 If the digest ever prints `SUPERVISION INSTRUCTIONS: NOT EMITTED`, that is a step that did not run rather than one that passed - keep the foreground cycle yourself and report the gap.
@@ -516,7 +516,6 @@ Each is a plain absence, not a degraded imitation: never simulate one, and tell 
 - **Automatic wiring for the voice channel.** The voice channel itself is complete - `fm-say` speaks and `fm-ask` asks and listens, both off until `config/voice` exists (section 9) - but nothing calls either by itself, so no escalation becomes audible and no question is asked aloud without deliberate wiring. There is no wake word: each listen is one bounded window opened by one call.
 - **Remote secondmates.** Secondmate spawning, charter briefs and retirement work locally; the seeding, convergence, liveness sweep, cross-home handoff, and every remote route are absent, and `data/secondmates.md` is hand-maintained except for the row a retirement removes.
 - **Harnesses other than `claude`, and backends other than `herdr`** (section 4).
-- **The automatic watcher arm.** The Claude Stop auto-arm hook is registered but has no arm owner to call, so nothing re-arms the watcher between turns. The emitted supervision block names this and gives the session-kept foreground cycle instead (section 8). Harness detection and the supervision block themselves ARE ported.
 - **The deferred network stage.** No session start makes a network call here, so GitHub authentication and the project clone refresh are unverified until you run them deliberately (section 3). The digest's `NETWORK CHECKS` section names exactly what it has not confirmed.
 - **The session-start trace context, the PR-check area, and the quota-axi compatibility probe.** Each is bound by name somewhere and defined nowhere, deliberately; `tests/FmModuleAssembly.Tests.ps1` carries the full registry with a written reason for every one, and refuses any new undefined by-name call.
 - **The `relaunch` control verb.** Refused by name; `stuck-crewmate-recovery` owns the explicit exit-then-respawn replacement.

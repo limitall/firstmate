@@ -8,9 +8,11 @@ Native PowerShell 7 port of how firstmate learns something happened.
 | `module/Firstmate/Public/FmWake.ps1` | `bin/fm-wake-drain.sh` | `Add-FmWake`, `Get-FmWake`, `Invoke-FmWakeDrain` |
 | `module/Firstmate/Private/FmWatch.ps1` | `bin/fm-watch.sh`, `bin/fm-push-transition-lib.sh` | signal scan, wedge timer, pause cadence, triage log, terminal wait |
 | `module/Firstmate/Public/FmWatch.ps1` | `bin/fm-watch.sh` (main entry) | `Start-FmWatch` |
+| `module/Firstmate/Private/FmWatchArm.ps1` | `bin/fm-watch-arm.sh` (helpers) | cycle confirmation, the lifecycle ledger, delivery-record resolution, home-scoped restart |
+| `module/Firstmate/Public/FmWatchArm.ps1` | `bin/fm-watch-arm.sh` (main entry) | `Invoke-FmWatchArm` |
 | `module/Firstmate/Private/FmGuard.ps1` | `bin/fm-supervision-lib.sh`, `bin/fm-primary-scope-lib.sh` | supervision status, primary scope, banner episode dedup, the liveness beacon |
 | `module/Firstmate/Public/FmGuard.ps1` | `bin/fm-guard.sh`, `bin/fm-turnend-guard.sh` | `Invoke-FmGuard`, `Invoke-FmTurnEndGuard`, `Update-FmWatcherBeacon` |
-| `bin/fm-watch.ps1`, `bin/fm-wake-drain.ps1` | `bin/fm-watch.sh`, `bin/fm-wake-drain.sh` | thin entry points |
+| `bin/fm-watch.ps1`, `bin/fm-watch-arm.ps1`, `bin/fm-wake-drain.ps1` | the same three bash scripts | thin entry points |
 
 ## The queue record is a hard contract
 
@@ -174,6 +176,87 @@ The throttle is now read first, advanced only by a wake that fires, and kept acr
 It is also bound to the declaration through `Get-FmStaleWaitDeclaration` - the status file's signature while its last line declares the wait - so a replacement declaration wakes once instead of inheriting the old silence.
 That is upstream #3532.
 
+## The arm layer
+
+`Invoke-FmWatchArm` (`Public/FmWatchArm.ps1`, internals in
+`Private/FmWatchArm.ps1`, entry point `bin/fm-watch-arm.ps1`) is the port of
+`bin/fm-watch-arm.sh`. The watcher above is deliberately ONE-SHOT: one actionable
+reason closes one cycle. The arm is the layer that establishes the next cycle and
+then tells the truth about it, which is what lets the Claude Stop hook own
+continuity instead of the model remembering a re-arm step.
+
+**It prints exactly one classification line, then the wake.**
+
+```
+watcher: started pid=<N> (beacon fresh)     launched one and confirmed it
+watcher: attached pid=<N> (beacon <age>s)   a verified live successor holds the lock
+watcher: FAILED - <cause>                   no cycle could be confirmed
+```
+
+`Invoke-FmClaudeStopAutoArm` classifies that output: a line matching
+`^(signal:|stale:|check:|heartbeat($|:))` is an actionable close it translates
+into an exit-2 rewake, and anything else is a non-actionable close it rechecks
+`Test-FmWatcherHealthy` against before retrying. Changing these lines changes
+that hook's behaviour.
+
+**It never reports a cycle it did not verify, and never returns a clean empty
+success.** A dead pid, a recycled pid, a lock belonging to another home, and a
+stale beacon all fail the one honesty gate, `Test-FmWatcherHealthy`. A cycle that
+ends with no reason line and no healthy successor is resolved against the
+watcher's identity-bound delivery record in `state/.watch-deliveries.log`: a
+record matching that watcher's pid AND its process identity reports that wake and
+exits 0, and only a cycle that delivered nothing is the typed failure. An empty
+success is the one thing an auto-arm would read as "supervision is fine".
+
+**One cycle per home, followed rather than left.** A healthy cycle is attached
+to, never doubled, and an attached arm follows identity-matched successors so the
+harness notify fires when supervision actually ends, not on an immediate empty
+wake.
+
+**Home scope is the safety boundary.** Nothing in this area enumerates or matches
+processes by name, image path, or command line: every decision comes from this
+home's `state/.watch.lock` and its `fm-home`, `watcher-path` and `pid-identity`
+fields. `--restart` resolves exactly the pid that lock records, proves it is
+still this home's watcher, and stops only that; a live pid that is NOT this
+home's watcher is neither signalled nor cleared. `AGENTS.md` section 8 states the
+rule and `docs/windows-e2e-evidence.md` section 63.2 measures both halves with
+real sibling processes.
+
+**Where this port differs from bash, deliberately.**
+
+- No signal traps: PowerShell has none for TERM, so the child is held in a
+  kill-on-close Job Object instead. A killed arm still takes its watcher down
+  with it, which is the guarantee the bash trap provided.
+- `--restart` stops with `Kill`, because Windows has no TERM. The watcher's own
+  cleanup therefore does not run; the lock it leaves names a dead pid, and
+  `Lock-FmPath`'s stale-owner recovery publishes downtime before evicting it, so
+  the replacement cycle still starts from a recorded gap. That is why a forced
+  restart normally closes on `check: rearm-resurface`.
+- The lifecycle ledger's `signal=` field is always `none`: Windows has no signal
+  half to an exit status. The field is kept so a row written here and one written
+  by bash have the same shape.
+- `--handling-delivered` and `FM_WATCH_PREDECESSOR_ARM_PID` successor
+  back-linking are NOT ported. Both serve the Pi, omp and OpenCode adapters, and
+  this port dispatches only claude.
+
+**The lifecycle ledger.** One tab-separated row per observed cycle in
+`state/.watch-cycle-exits.log`, carrying arm and watcher pids, origin, start and
+end times, exit code, classified reason, beacon age, lock identity before and
+after the close, and successor disposition. It is diagnostic evidence, never a
+supervision dependency: every write is bounded by
+`FM_WATCH_CYCLE_LOG_MAX_BYTES` / `FM_WATCH_CYCLE_LOG_KEEP_LINES` and best-effort,
+so an observability failure cannot stall a healthy cycle.
+`state/.watch-triage.log` stays exclusively the watcher's absorbed-wake log and
+is never written by the arm.
+
+**Its own knobs**: `FM_ARM_CONFIRM_TIMEOUT` (30 - bash's Git Bash default rather
+than its Linux one, because confirming a cycle here costs a pwsh cold start and a
+module import), `FM_ARM_ATTACH_POLL_MS` (500 - bash's fractional-seconds
+`FM_ARM_ATTACH_POLL` expressed in whole milliseconds) and
+`FM_ARM_RESTART_WAIT_MS` (5000). Grace comes from `FM_GUARD_GRACE`, and the arm
+pins its resolved value into the watcher it starts so the two judge staleness by
+the same number.
+
 ## Two guards, two different questions
 
 `Invoke-FmGuard` is **pull**-based: it fires when some other supervision command
@@ -200,6 +283,8 @@ absorbing is the watcher working.
 
 ```powershell
 pwsh bin/fm-watch.ps1                 # block, classify, exit on the first actionable wake
+pwsh bin/fm-watch-arm.ps1             # establish ONE verified cycle, or say it could not
+pwsh bin/fm-watch-arm.ps1 --restart   # stop only THIS home's watcher, then own a fresh cycle
 pwsh bin/fm-wake-drain.ps1            # present durable records (does not consume)
 pwsh bin/fm-wake-drain.ps1 -AckThrough 42 -RecoveryGeneration 1234.5678.ab12
 ```
@@ -336,6 +421,13 @@ pwsh -NoProfile -c 'Invoke-Pester -Path ./tests'
 `FmGuard.Tests.ps1`. `FmWatch.Tests.ps1` drives `bin/fm-watch.ps1` and
 `bin/fm-wake-drain.ps1` out-of-process, the way a harness arms them.
 
+`FmWatchArm.Tests.ps1` adds nine, and they start REAL watcher processes against
+disposable homes rather than stubbing the child: a cycle that is never confirmed,
+a beacon nobody writes, a child reaped when the call returns, and a sibling home
+signalled by mistake are all invisible to a stubbed test, and they are the
+defects this layer exists to prevent. Two of them run a second home's watcher
+alongside the first to pin the home-scope boundary.
+
 ## The emitted supervision block
 
 `Public/FmSupervision.ps1` publishes `Get-FmSupervisionInstructions`, the port of
@@ -345,11 +437,12 @@ digest and the one repair sentence every guard and turn-end banner ends with.
 **The protocol it emits is selected from the seams present at run time, not from
 a constant.** On Linux this renderer picks between six harness protocols; this
 port dispatches one harness, so the axis that actually matters here is whether an
-automatic re-arm owner exists in the build at all. It does not
-(`Invoke-FmWatchArm` is in the registry of deliberate absences), so the Claude
-Stop auto-arm is registered and inert, and the block says so and hands the
-session the foreground cycle. Emitting the Stop-owned protocol in that state
-would tell the captain a mechanism is running when nothing is.
+automatic re-arm owner exists in the build at all. `Invoke-FmWatchArm` landed
+(see "The arm layer" below), so the probe now answers yes and the block emits the
+Stop-owned protocol. The other branch is still live and still tested: a build
+assembled without that owner gets the session-kept foreground cycle instead,
+because emitting the Stop-owned protocol in that state would tell the captain a
+mechanism is running when nothing is.
 
 Two call shapes bind, and both are load-bearing:
 

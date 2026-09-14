@@ -516,6 +516,16 @@ Describe 'Invoke-FmClaudeStopAutoArm' {
     }
 
     It 'stays inert when the arm owner is not loaded' {
+        # The absence is STAGED at the resolver seam now that Invoke-FmWatchArm
+        # exists: with the owner loaded, a test that merely declined to define it
+        # would arm a real watcher and stop testing the branch it names
+        # (CONTRIBUTING.md, "A degradation test stops testing degradation once
+        # the owner lands"). Every other name still resolves for real.
+        Mock Resolve-FmSessionCommand {
+            if ($Name -contains 'Invoke-FmWatchArm') { return $null }
+            return (Get-Command -Name $Name -CommandType Function, Cmdlet, Alias -ErrorAction SilentlyContinue |
+                    Select-Object -First 1)
+        }
         New-TestPrimaryHome -InFlight | Out-Null
         (Invoke-FmClaudeStopAutoArm -Payload (New-StopPayload)).ExitCode | Should -Be 0
     }
@@ -571,6 +581,24 @@ Describe 'Invoke-FmClaudeStopAutoArm' {
         $decision = Invoke-FmClaudeStopAutoArm -Payload (New-StopPayload)
         $decision.ExitCode | Should -Be 0
         (Get-FmHookEpochRecord -State $state).Outcome | Should -Be 'failed-suppressed'
+    }
+
+    It 'translates the REAL arm owner''s refusal, not just a stub''s' {
+        # Every case above hands the hook a stub, which pins the CONTRACT but
+        # cannot catch the by-name break this repo has paid for twice: a resolved
+        # owner whose real output the caller then classifies differently. This one
+        # runs the landed Invoke-FmWatchArm. The home is not a checkout, so there
+        # is no bin/fm-watch.ps1 to start and the arm refuses in milliseconds -
+        # which is the half of the wiring that needs no watcher to prove.
+        $home_ = New-TestPrimaryHome -InFlight
+        $state = Join-Path $home_ 'state'
+        function Test-FmWatcherHealthy { param($State, $Grace) $false }
+
+        $decision = Invoke-FmClaudeStopAutoArm -Payload (New-StopPayload)
+        $decision.ExitCode | Should -Be 2
+        $decision.Stderr[0] | Should -BeLike 'firstmate watcher auto-arm FAILED - *'
+        $decision.Stderr | Should -Contain 'watcher: FAILED - no live watcher with a fresh beacon'
+        (Get-FmHookEpochRecord -State $state).Outcome | Should -Be 'failed'
     }
 
     It 'admits exactly one owner, so one event epoch maps to one recovery turn' {
@@ -657,6 +685,14 @@ Describe 'bin/fm-claude-hook.ps1 end to end' {
         [System.IO.File]::WriteAllText(
             (Join-Path $script:E2ERoot 'module' 'Firstmate' 'Private' 'ZZTestWatcherStub.ps1'),
             "function Test-FmWatcherHealthy { param(`$State, `$Grace) `$false }`n")
+
+        # This checkout deliberately has NO arm owner, so the Stop auto-arm takes
+        # its documented inert path here. Without that, a transport case would
+        # start a real blocking watcher inside the fixture, and the beacon it
+        # leaves behind would then satisfy the turn-end guard case below - which
+        # is a transport suite silently testing supervision instead.
+        # tests/FmWatchArm.Tests.ps1 is where the arm itself is exercised.
+        Remove-Item -LiteralPath (Join-Path $script:E2ERoot 'module' 'Firstmate' 'Public' 'FmWatchArm.ps1') -Force
 
         # The e2e checkout must also be a PLAIN git repository, because that is
         # what the cd guard scopes itself to. Without this the guard is inert and

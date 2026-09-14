@@ -1433,7 +1433,6 @@ Describe 'cross-area bindings' {
         'Invoke-FmPrCheckMigration' = 'ABSENT. The PR-check area. The watcher treats the migration as done and still refuses any check it cannot authenticate.'
         'Repair-FmPrPollRetirementAll' = 'ABSENT. The PR-check area: there are no retirement receipts to recover after a lost poll.'
         'Publish-FmPrPollRetirement' = 'ABSENT. The PR-check area: no merged-poll retirement receipt is ever published here.'
-        'Invoke-FmWatchArm' = 'ABSENT. No automatic watcher arm. The Claude Stop auto-arm stays inert, and Get-FmSupervisionInstructions emits the session-kept foreground protocol instead of promising a mechanism that would not run.'
         'Start-FmStartupNetwork' = 'ABSENT. The deferred network stage. The digest reports NETWORK CHECKS: NOT CONFIRMED and names exactly what is unverified.'
         'Invoke-FmStartupNetworkHarvest' = 'ABSENT. The deferred network stage: there is no bounded worker whose result could be harvested.'
         'Set-FmTraceContextSessionStart' = 'ABSENT. The trace-context library: no state/.trace-context-effective is refreshed at startup.'

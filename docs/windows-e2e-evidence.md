@@ -10724,3 +10724,131 @@ Earlier gates on the first commit alone, over `2c0f67b` and without a seeded hom
   The three files fixed here pin it; the seeded run proves the rest of the suite writes nothing to the home it resolves, which covers that shape only as far as a test resolves its home the same way in both.
 - **The watcher can miss a second writer of a one-shot record.**
   The guard marker is written once per episode, which is how the first sweep saw one file and not two; after the fix the marker was left at a value the guard would rewrite, so any remaining writer would have shown.
+
+## 63. The Stop hook finally has an arm to call - `PROVEN (Windows 11) FOR THE ARM ITSELF END TO END OVER REAL WATCHER PROCESSES, BOTH SIBLING-HOME BOUNDARIES AND EVERY REFUSAL; THE LIVE CLAUDE STOP HOOK WAS NEVER FIRED`
+
+`Test-FmSupervisionAutoArmAvailable` probed for `Invoke-FmWatchArm`, nothing defined it, and so every part of the Stop-owned auto-arm was reachable and inert: the hook was registered with `asyncRewake` and its 28800-second timeout, `Invoke-FmClaudeStopAutoArm` resolved the name on every Stop, found nothing, and returned silently.
+The emitted supervision block told the truth about that and handed the session the foreground cycle instead.
+`Invoke-FmWatchArm` is now `module/Firstmate/Public/FmWatchArm.ps1`, with `bin/fm-watch-arm.ps1` over it, and the probe answers yes.
+
+### 63.1 What was PROVEN, and with what
+
+Every run below is this machine, PowerShell 7, against disposable homes under `TEMP`.
+Nothing ran against the captain's home; the live firstmate watcher out of `F:/Plotex_projects/firstmate` was running throughout and was checked before and after each session to be the same process, untouched.
+
+`tests/FmWatchArm.Tests.ps1`, ten cases, `P=10 F=0` in 79 seconds.
+Seven of the ten start real `bin/fm-watch.ps1` processes and read the real `state/.watch.lock`, `state/.last-watcher-beat`, `state/.watch-deliveries.log` and `state/.watch-cycle-exits.log`; the three fast ones are a module-import probe and two refusals that must never reach a watcher at all.
+
+```
+resolves from the imported module, not only from a dot-sourced session     2.03s
+makes the supervision probe answer that this build HAS an automatic arm    0.02s
+starts one watcher, confirms it, and reports the wake that cycle delivered 14.80s
+refuses to name a cycle it could only half read                            0.31s
+refuses rather than reporting a watcher it could not start                 0.05s
+attaches to the healthy cycle that exists instead of starting a second     7.76s
+follows that cycle to its close and reports the wake it delivered         19.40s
+leaves another home's running watcher alone, even on a forced restart     17.92s
+never signals a live process that is not this home's watcher               5.58s
+stops this home's own recorded watcher and owns a fresh cycle              9.47s
+```
+
+The entry point, run four ways against one disposable home:
+
+```
+pwsh bin/fm-watch-arm.ps1 --nonsense    exit=2   (usage)
+pwsh bin/fm-watch-arm.ps1               exit=0   15s
+    watcher: started pid=68440 (beacon fresh)
+    signal: C:\...\fm-arm-ev-a944...\state\alpha.status
+pwsh bin/fm-watch-arm.ps1 --restart     exit=0    8s
+    check: rearm-resurface
+pwsh bin/fm-watch-arm.ps1               exit=1   (FM_ROOT_OVERRIDE at a home with no bin/fm-watch.ps1)
+    watcher: FAILED - no live watcher with a fresh beacon
+```
+
+The `--restart` run delivering `check: rearm-resurface` rather than the second seeded signal is the correct answer, not a miss: the previous cycle's close published watcher downtime with a wake still queued, so the replacement owes the fleet a resurface before anything else.
+
+The lifecycle ledger those runs wrote, one row per observed cycle:
+
+```
+arm_pid=59548  watcher_pid=68440  origin=started  exit_code=0        reason=actionable-signal  beacon_age=8
+arm_pid=8368   watcher_pid=86100  origin=started  exit_code=0        reason=actionable-check   beacon_age=1
+arm_pid=19464  watcher_pid=none   origin=started  exit_code=unknown  reason=start-failed       beacon_age=4
+```
+
+The hook's own suite, unchanged in every assertion: `tests/FmHooks.Tests.ps1` `P=78 F=0`, which includes a new case that runs the REAL arm through `Invoke-FmClaudeStopAutoArm` rather than a stub and gets the one-notice failure translation with `watcher: FAILED - no live watcher with a fresh beacon` in the banner.
+`tests/FmSupervision.Tests.ps1` and `tests/FmModuleAssembly.Tests.ps1` together: `P=96 F=0`.
+`Invoke-ScriptAnalyzer` over every new and changed file with the repo settings: 0 findings.
+
+### 63.2 The sibling-home boundary, measured rather than asserted
+
+`AGENTS.md` section 8 forbids killing watchers by process-name match because every firstmate home on a machine runs the same `bin/fm-watch.ps1`.
+Two cases prove the boundary with real processes rather than by reading the code.
+
+- A second disposable home ran its own real watcher while `Invoke-FmWatchArm -Restart` established a fresh cycle in the first home.
+  The sibling's process was still alive afterwards, its `state/.watch.lock` still named the same pid, its beacon had kept advancing, and no `state/.watch-cycle-exits.log` was ever created in that home.
+- A lock naming a LIVE process that belongs to another home: the process was not signalled, and the lock was not cleared either, because `Clear-FmWatchArmStaleLock` requires the lock's own `fm-home` and `watcher-path` to name THIS home before it removes anything.
+  The arm then refused with `watcher: FAILED - cycle ended without an actionable reason` and exit 1 rather than reporting a cycle it never got.
+
+Nothing in this area enumerates processes at all: `Test-FmWatcherHealthy` is the only gate, and it compares the lock's `fm-home`, `watcher-path` and `pid-identity` against the live process before anything is believed.
+
+### 63.3 What is IMPLEMENTED and NOT proven
+
+- **The live Claude Stop hook was never fired.**
+  No Claude Code session ended a turn against this build during this work, so `asyncRewake: true`, the 28800-second timeout, and Claude treating the hook's exit 2 as a rewake of an idle session remain `# WINDOWS-UNVERIFIED:` exactly as they were before this change.
+  What is proven is everything on this side of that boundary: `Invoke-FmClaudeStopAutoArm` resolves the real owner, calls it, and translates its real output.
+  The hook registration was not touched.
+- **The kill-on-close Job Object custody of the watcher child.**
+  `Start-FmWatchArmChild` assigns the watcher to `New-FmBoundedJob`'s job so a killed arm takes its watcher down with it, which is what the bash original's TERM trap provided and PowerShell has no trap for.
+  The job path ran in every case above, but the failure it exists for - the ARM being killed mid-cycle and the watcher dying with it - was never staged.
+- **A long attach across a chain of successors.**
+  The attach follows an identity-matched successor, and the `attached-cycle-ended` and `lock-replaced` branches are implemented.
+  What ran is one attach followed by that cycle's close and its delivery-record resolution; a chain of three or more successors was never run.
+- **`--handling-delivered` and `FM_WATCH_PREDECESSOR_ARM_PID`.**
+  Not ported at all, deliberately: both serve the Pi, omp and OpenCode adapters, and this port dispatches only claude.
+  `Private/FmWatchArm.ps1` records that as a decision rather than an omission.
+- **The lifecycle ledger's rotation.**
+  `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYCLE_LOG_KEEP_LINES` are honoured in code and were never driven past the bound.
+
+### 63.4 The second full-suite run found a torn read, and it was losing wakes
+
+Run 1 of the whole suite was `passed=3071 failed=9`, and all nine were this worktree's own unrepaired committed links - `CLAUDE.md` still the 9-byte placeholder and `.claude/skills` still the 17-byte one, which `tests/FmInstall.Tests.ps1` repairs part way through its own file.
+Re-running `FmContract.Tests.ps1` and `FmInstall.Tests.ps1` against the repaired checkout gave `P=122 F=0`, which is what makes them the worktree rather than this change.
+
+Run 2, with the links repaired, was `passed=3079 failed=1`, and the one failure was this area's:
+
+```
+watcher: attached pid=80856 (beacon 2s)
+watcher: attached pid=73408 (beacon 2s)
+watcher: attached pid= (beacon 12s)
+watcher: FAILED - cycle ended without an actionable reason
+```
+
+`Test-FmWatcherHealthy` and the pid read-back beside it are two separate looks at a lock the watcher may release between them.
+The watcher released it in that window, so the arm read a holder with no pid, adopted `pid=none` as its cycle, and then resolved the delivery record of THAT rather than of the cycle it had been following - and reported a failure for a wake which had really been delivered and was sitting in `state/.watch-deliveries.log` the whole time.
+Reporting a failure is the safe direction of the two, but it is still the arm losing a wake it could have named.
+
+`Get-FmWatchArmWatcherState` now reports an unreadable pid or identity as NOT healthy.
+The caller polls, so a lock mid-change costs one more poll; the alternative costs a wake.
+`refuses to name a cycle it could only half read` stages exactly that reading through the public interface, and with the guard backed out it fails on the empty-pid line - `Expected 0, but got 1` - which is what makes it a test of the fix rather than of the code around it.
+
+Run 3, with the guard in:
+
+```
+run 1: passed=3071 failed=9  skipped=21   (all nine the worktree's own committed links)
+run 2: passed=3079 failed=1  skipped=21   (the torn read above)
+run 3: passed=3081 failed=0  skipped=21   28 minutes, from a keeper that outlives it
+```
+
+Each run was started by a keeper process that runs no tests itself, starts the suite as its child with `-NonInteractive` and stdin closed, and waits - so the process running Pester keeps a live parent for the whole run, which `FmIdentity` and `FmLock` require.
+No watcher process was left behind by any of the three; the only `fm-watch.ps1` alive after each was the captain's own, out of its own checkout.
+
+### 63.5 Three tests the landing invalidated, and how they were kept honest
+
+Three existing cases asserted the INERT state and would have passed for the wrong reason - or, worse, started real watchers - once the owner landed.
+None of the pinned output-contract stubs in `tests/FmHooks.Tests.ps1` was changed.
+
+- `stays inert when the arm owner is not loaded` now stages the absence at the `Resolve-FmSessionCommand` seam instead of relying on nothing defining the name.
+- The `bin/fm-claude-hook.ps1 end to end` fixture deletes `Public/FmWatchArm.ps1` from its throwaway checkout, so a TRANSPORT case can never start a real blocking watcher.
+  It had: one `Stop -Check autoarm` transport case armed a real cycle for 39 seconds, and the beacon it left behind then satisfied the turn-end guard case after it, so that case reported a stop it should have blocked.
+  That is a transport suite silently testing supervision, and it is exactly the shape of accident this file exists to record.
+- `tests/FmSupervision.Tests.ps1` now asserts the LANDED protocol by default and stages the unavailable branch with `Mock Test-FmSupervisionAutoArmAvailable { $false }`, so a partially assembled module is still proven to get a protocol it can follow.

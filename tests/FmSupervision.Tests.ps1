@@ -217,27 +217,29 @@ Describe 'Get-FmSupervisionInstructions' {
             Should -Contain '- Lock: held by this session; this session owns normal supervision unless away mode says otherwise.'
     }
 
-    It 'tells the truth about the automatic arm this build does not have' {
+    It 'tells the truth about the automatic arm this build now has' {
+        # Probed, not constant, and the probe now answers yes: Invoke-FmWatchArm
+        # landed, so the emitted protocol is the Stop-owned one rather than the
+        # session-kept foreground cycle.
+        $block = @(Get-FmSupervisionInstructions -Harness 'claude' -ReadOnly 0 -Afk 0 -XMode 0)
+        $block | Should -Contain '- Automatic re-arm: available; the arm owner establishes and follows the cycle.'
+        ($block -join "`n") | Should -BeLike '*Mode: Claude Stop-hook-owned supervision.*'
+        ($block -join "`n") | Should -BeLike '*do not arm another cycle yourself*'
+    }
+
+    It 'falls back to the session-kept cycle when no arm owner is loaded' {
+        # The degradation is STAGED at the probe seam, because the owner now
+        # exists and a test that merely declined to define it would assert
+        # nothing (CONTRIBUTING.md). A partially assembled module must still get
+        # a protocol it can actually follow rather than a promise of machinery
+        # that would never run.
+        Mock Test-FmSupervisionAutoArmAvailable { $false }
         $block = @(Get-FmSupervisionInstructions -Harness 'claude' -ReadOnly 0 -Afk 0 -XMode 0)
         $block | Should -Contain '- Automatic re-arm: NOT available in this build; this session keeps the cycle itself.'
         # .Contains, not a double-quoted wildcard: these lines are full of
         # backticks, which PowerShell would read as escape sequences.
         ($block -join "`n").Contains('in the FOREGROUND') | Should -BeTrue
         ($block -join "`n") | Should -Not -BeLike '*Stop-hook-owned supervision*'
-    }
-
-    It 'switches to the Stop-owned protocol the moment an arm owner exists' {
-        # Probed, not constant: the day the arm lands, the emitted protocol
-        # changes with it instead of waiting for someone to remember.
-        function Invoke-FmWatchArm { 'watcher: started pid=1 (beacon fresh)' }
-        try {
-            $block = @(Get-FmSupervisionInstructions -Harness 'claude' -ReadOnly 0 -Afk 0 -XMode 0)
-            $block | Should -Contain '- Automatic re-arm: available; the arm owner establishes and follows the cycle.'
-            ($block -join "`n") | Should -BeLike '*Mode: Claude Stop-hook-owned supervision.*'
-            ($block -join "`n") | Should -BeLike '*do not arm another cycle yourself*'
-        } finally {
-            Remove-Item -Path 'function:Invoke-FmWatchArm' -Force -ErrorAction SilentlyContinue
-        }
     }
 
     It 'gives an unverified harness the generic protocol and names it as unverified' {
@@ -255,6 +257,12 @@ Describe 'Get-FmSupervisionInstructions' {
     It 'returns ONE repair sentence in the guards'' positional-hashtable shape' {
         $line = Get-FmSupervisionInstructions @{ RepairLine = $true; Harness = 'claude' }
         $line | Should -BeOfType [string]
+        $line | Should -BeLike '*Stop-owned automatic recovery*'
+    }
+
+    It 'sends the repair back to the foreground cycle when no arm owner is loaded' {
+        Mock Test-FmSupervisionAutoArmAvailable { $false }
+        $line = Get-FmSupervisionInstructions @{ RepairLine = $true; Harness = 'claude' }
         $line | Should -BeLike '*FOREGROUND*'
     }
 

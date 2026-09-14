@@ -71,7 +71,7 @@ the SHAPE each caller expects; that test records what actually exists.
 | `Get-FmMetaValue -Path -Key` (landed), `Write-FmTextFileLf -Path -Text` (landed) | `fm_meta_get`, LF-only writes | digest stage 6, every contract-file write |
 | `Test-FmWatcherHealthy -State -Grace` | `fm_watcher_healthy` | turn-end guard, Stop auto-arm |
 | `Get-FmSupervisionStatus -State -Grace` | `fm_supervision_status` | turn-end guard, Stop auto-arm |
-| `Invoke-FmWatchArm` | `bin/fm-watch-arm.sh` | Stop auto-arm |
+| `Invoke-FmWatchArm` (LANDED - `Public/FmWatchArm.ps1`, `bin/fm-watch-arm.ps1`; callable with no arguments, which is the shape the hook uses) | `bin/fm-watch-arm.sh` | Stop auto-arm |
 | `Test-FmSessionLockOwnedBySelf -State`, `Test-FmHarnessPidAlive -ProcessId` (both LANDED) | `fm-session-lock-lib.sh` | Stop auto-arm, SessionStart routing |
 | `Invoke-FmSessionStartNudge` (LANDED - `Public/Invoke-FmSessionStart.ps1`) | `bin/fm-sessionstart-nudge.sh` | SessionStart resume/reload/fork |
 | `Test-FmGateAgent -Root` | `fm_is_gate_agent` | SessionStart eligibility |
