@@ -10699,3 +10699,28 @@ FmDelivery + FmFleetSync, fixed, seeded home watched:      P=68 F=0, no events, 
 negative control, the FM_HOME pin removed from both files: P=66 F=2 - exactly the two new checks;
                                                            13 events, marker rewritten to stale-beacon
 ```
+
+### 61.6 The full suite, twice, against the seeded home
+
+Run from a keeper that outlives it, with the child `-NonInteractive` and stdin redirected from an empty file, on `227d270` over `main` at `762f845`.
+The worktree home was re-seeded exactly as in 61.5 before the first run, with the file watcher over `data/`, `state/` and `config/` for both runs and a SHA-256 manifest before and after each.
+
+```
+run 1: exit=0 after 39 min :: passed=3058 failed=0 skipped=19
+run 2: exit=0 after 41 min :: passed=3058 failed=0 skipped=19
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 :: 0 findings
+file watcher: no event under data/, state/ or config/ in either run
+manifest after run 1 and after run 2: identical to the one taken before run 1
+```
+
+Earlier gates on the first commit alone, over `2c0f67b` and without a seeded home, went `3008 / 0 / 19` twice; the `data/` directory they would have written was never created.
+
+### 61.7 What this section does NOT claim
+
+- **The suite was never run in the captain's primary checkout.**
+  Everything above is a worktree whose home resolves to itself, which is how the primary checkout resolves its own; the captain's records were read once, to confirm no fixture row had reached them, and never run against.
+- **A shell that already carries `FM_HOME` is a different shape.**
+  If the suite is started from a session whose environment names the captain's home, every file that does not pin `FM_HOME` inherits it, from any checkout.
+  The three files fixed here pin it; the seeded run proves the rest of the suite writes nothing to the home it resolves, which covers that shape only as far as a test resolves its home the same way in both.
+- **The watcher can miss a second writer of a one-shot record.**
+  The guard marker is written once per episode, which is how the first sweep saw one file and not two; after the fix the marker was left at a value the guard would rewrite, so any remaining writer would have shown.
