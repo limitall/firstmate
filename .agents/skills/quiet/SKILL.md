@@ -1,78 +1,38 @@
 ---
 name: quiet
 description: >-
-  Enter quiet supervision mode when the captain invokes /quiet or asks for quiet mode, quiet-while-present, or fewer routine wake turns while they stay in the session.
-  It sets the same durable away/quiet-mode flag as /afk, in `quiet` mode, so the sub-supervisor daemon self-handles routine wakes and escalates captain-relevant events exactly as away mode does, but ordinary captain chat does NOT exit it - only an explicit `/quiet off` does.
+  Quiet supervision mode - NOT AVAILABLE on this Windows port.
+  Load when the captain invokes /quiet or /quiet off, or asks for quiet mode or fewer routine updates while they stay in the session, so you can tell them plainly what this machine already does and what it cannot.
 user-invocable: true
 metadata:
   internal: true
 ---
 
-# quiet
+# quiet - not available on this port
 
-Quiet supervision mode (kunchenguid/firstmate#2356): the same token-saving
-daemon tradeoff as `/afk`, made explicit for a captain who is staying,
-watching the session, and does not want to exit the mode just by chatting.
+**Quiet mode is not ported.**
+On the Linux firstmate it is away mode with a different exit rule: the same sub-supervisor daemon handles routine wakes outside the session and escalates only what matters, but ordinary chat does not end it - only `/quiet off` does.
+This port has no away mode (see `afk`), so there is no daemon to make quiet.
+This skill exists so that typing `/quiet` gets a plain answer rather than silence; `AGENTS.md` section 14 lists the gap.
 
-This skill is a thin wrapper.
-Every mechanism below - the daemon, its injection, its busy/composer guards,
-its classification policy, its reliability properties - is owned once by the
-`afk` skill and is IDENTICAL in quiet mode; nothing here restates it.
-The only things quiet mode changes are which mode the flag declares and what
-exits it.
+Do not simulate it.
+Do not start a background loop, do not skip or defer notifications, and do not write a `state/.afk` flag in any mode.
+Each of those would leave firstmate believing something is handling wakes that nothing is handling.
 
-## What it does
+## What to tell the captain
 
-1. **Enter the lifecycle through `bin/fm-afk-launch.sh`, exactly as `/afk`
-   does, with `FM_AFK_MODE=quiet` set first.**
-   Follow the `afk` skill's "What it does" steps 1-3 verbatim (terminal-
-   backed vs harness-native entry, daemon-already-running refresh, never
-   arming a separate `fm-watch.sh`) with one addition: export
-   `FM_AFK_MODE=quiet` in the shell that invokes `bin/fm-afk-launch.sh start`
-   (or `start-native`), so `state/.afk`'s first line reads `quiet` instead of
-   `away`.
-   Leaving `FM_AFK_MODE` unset on a bare refresh of an already-running quiet
-   daemon is also correct and does nothing wrong: `fm_afk_flag_write`
-   preserves the on-disk mode when no explicit mode is given, so a plain
-   `/afk`-shaped refresh call never resets quiet back to away underneath the
-   captain.
+Most of what they are asking for is already how this machine behaves: `AGENTS.md` section 9 keeps routine progress, retries, and internal mechanics out of chat and batches non-urgent updates.
+What quiet mode adds on Linux is a helper outside this session that absorbs routine notifications without spending the session's turns, and that is the part this port cannot do.
+Say so in section 9 language, something like:
 
-2. **Acknowledge** in `AGENTS.md` section 9 language: "Captain, quiet mode is
-   active; I will batch routine updates and surface only decisions, failures,
-   credentials, or review-ready work - ordinary chat will not exit this, say
-   `/quiet off` when you want normal per-wake responses back."
+> Captain, there is no separate quiet mode on this machine, and most of it is already how I work: routine progress stays out of this chat, and I only bring you finished work, decisions, failures, and anything that needs a login. What I cannot do here is hand routine notifications to a helper outside this session, so they are still handled here as they arrive.
 
-## How to exit quiet mode
+`/quiet off` has nothing to turn off; say that in one line and carry on.
+Nothing about approval authority changes either way.
 
-Unlike `/afk`, ordinary chat is never the exit signal - that is the entire
-point of this mode (AGENTS.md section 8's away-mode stub, quiet branch).
+## What would have to land
 
-- Only an explicit `/quiet off` (or the captain plainly asking to leave quiet
-  mode / resume normal supervision) exits it: run `bin/fm-afk-return.sh`
-  unchanged, exactly the procedure `/afk`'s "How to exit afk" section
-  documents for its own return path (correct-ordered daemon shutdown,
-  durable wake presentation and acknowledgement, escalation/wedge evidence,
-  and the return-catch-up gate).
-  That script does not read or care about the flag's mode, so it needs no
-  quiet-specific variant.
-- A marked daemon escalation, or a message beginning `/quiet` while already
-  in quiet mode (refresh, not exit) -> stay in quiet mode and process it, the
-  same two carve-outs `/afk` documents for away mode.
-- Every other message while in quiet mode is simply answered as ordinary
-  work; the flag and daemon are left untouched.
-
-## Orthogonal to approval authority
-
-Identical to `/afk`: quiet mode changes how aggressively firstmate surfaces
-things, never who approves what.
-A PR ready for merge keeps the merge authority from `AGENTS.md` section 7, and
-a needs-decision finding keeps the `ask-user-authority` policy.
-
-## Must not hide a decision or a failure
-
-Per the issue's own author triage: quiet mode is presentation only.
-Progress, retries, and internal mechanics stay below deck exactly as in away
-mode, but review-ready work, findings, decisions, failures, and credentials
-escalate every time, through the same classification policy `/afk` owns.
-Quiet mode is opt-in and never the unconsented default; only an explicit
-`/quiet` invocation enters it.
+Away mode first, and `afk` names its three missing pieces.
+Once that daemon exists, quiet mode is a mode line on its flag plus a different exit rule, which is a small change on top.
+The Linux design is kunchenguid/firstmate#4337, and the Linux skill exactly as it arrived with the merge is recoverable with `git show b182d0f9:.agents/skills/quiet/SKILL.md`.
+When it lands, `docs/windows-e2e-evidence.md` records the evidence first, then this skill, then `AGENTS.md` section 14.

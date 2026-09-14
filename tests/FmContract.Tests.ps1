@@ -517,9 +517,9 @@ Describe "this checkout's own instruction surface" {
         # matter is not supported here is kept and says so; it is never dropped.
         $expected = @(
             'afk', 'ahoy', 'ask-user-authority', 'bearings', 'bootstrap-diagnostics',
-            'decision-hold-lifecycle', 'diagnostic-reasoning', 'firstmate-codexapp',
+            'captain-hold-lifecycle', 'decision-hold-lifecycle', 'diagnostic-reasoning', 'firstmate-codexapp',
             'firstmate-coding-guidelines', 'firstmate-orca', 'fmx-respond', 'harness-adapters',
-            'process-event-sources', 'project-management', 'quota-array-dispatch',
+            'process-event-sources', 'project-management', 'quiet', 'quota-array-dispatch',
             'secondmate-provisioning', 'stow', 'stuck-crewmate-recovery', 'updatefirstmate'
         )
         $present = @(Get-FmSkillDefinition -RepoRoot $script:RepoRoot | ForEach-Object { $_.Name })
@@ -529,7 +529,8 @@ Describe "this checkout's own instruction surface" {
     It 'says plainly, in every not-ported skill, that the capability is absent' {
         # The stub's whole job. One that merely described the Linux machinery
         # would be worse than no skill at all, because it would promise it.
-        foreach ($name in @('afk', 'fmx-respond', 'process-event-sources', 'firstmate-orca', 'firstmate-codexapp')) {
+        foreach ($name in @('afk', 'quiet', 'fmx-respond', 'process-event-sources', 'firstmate-orca',
+                'firstmate-codexapp', 'captain-hold-lifecycle')) {
             $skill = @(Get-FmSkillDefinition -RepoRoot $script:RepoRoot | Where-Object { $_.Name -eq $name })[0]
             $text = [System.IO.File]::ReadAllText($skill.SkillFile)
             $text | Should -Match '(?i)not (available|ported)' -Because "$name must state the gap outright"

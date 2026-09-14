@@ -77,6 +77,16 @@ section 2 lists the state-file formats).
   `& { }` around the single call that needs it, never bare. `$ErrorActionPreference`
   is the exception and belongs in a file's `BeforeAll`; it surfaces failures
   rather than hiding them.
+- **A test never lets the checkout be its home.** With `FM_HOME` unset the home
+  IS the checkout the suite runs in, and in the primary checkout that is the
+  captain's own `data/` and `state/`. The tracked `.tasks.toml` made it concrete:
+  every backlog verb takes its retention archive from `<home>/.tasks.toml` even
+  when `-Path` names a fixture, and `tasks-axi` takes it from its working
+  directory's, so a fixture prune appended rows to `<checkout>/data/done-archive.md`.
+  Point `FM_HOME` and the working directory at a directory the test owns.
+  `tests/FmBacklog.Tests.ps1` does both for its whole file and ends by checking
+  the checkout received no fixture row; `docs/windows-e2e-evidence.md` section 62
+  has the run.
 - **A test that reads the MACHINE has to stage the machine.** The clean VM's ten
   failures were all this shape: a test asserted a behaviour and silently also
   required something about the seat it was written on. `Get-FmSpeechEngineStatus`

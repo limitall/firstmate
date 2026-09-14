@@ -52,6 +52,28 @@ BeforeAll {
         param($Task)
         (@($Task) | Where-Object { $null -ne $_ } | ForEach-Object { $_.Id }) -join ','
     }
+
+    # THIS FILE OWNS ITS CONFIGURATION ROOT. Every verb resolves its retention
+    # archive from <home>/.tasks.toml even when -Path names the file, and so does
+    # tasks-axi from its working directory's .tasks.toml - that precedence is
+    # tasks-axi's and the port matches it on purpose. With FM_HOME unset the home
+    # is this checkout, whose tracked .tasks.toml pins data/done-archive.md, so a
+    # run from the primary checkout appended fixture rows to the captain's real
+    # archive. Both roots are pinned to an empty directory for the whole file.
+    $script:SavedFmHome = [System.Environment]::GetEnvironmentVariable('FM_HOME')
+    $script:ConfigRoot = Join-Path $TestDrive 'config-root'
+    New-Item -ItemType Directory -Path $script:ConfigRoot -Force | Out-Null
+    $env:FM_HOME = $script:ConfigRoot
+    Push-Location -LiteralPath $script:ConfigRoot
+}
+
+AfterAll {
+    Pop-Location
+    if ($null -eq $script:SavedFmHome) {
+        Remove-Item -LiteralPath 'Env:FM_HOME' -ErrorAction SilentlyContinue
+    } else {
+        $env:FM_HOME = $script:SavedFmHome
+    }
 }
 
 Describe 'the grammar round-trips byte for byte' {
@@ -990,5 +1012,22 @@ Describe 'differential parity with the tasks-axi markdown backend' {
         $task.Hold.Reason | Should -Be 'captain decision pending'
         $task.Hold.Kind | Should -Be 'captain'
         (Get-Ids (Get-FmBacklogReady -Path $path)) | Should -Not -Match 'task-d'
+    }
+}
+
+# Last in the file on purpose: Pester runs Describe blocks in file order, so this
+# reads the checkout after every mutation above has run.
+Describe 'the checkout this file runs in' {
+    It 'receives no fixture row in its own backlog or archive' {
+        # Matched on a fixture link no real record carries, rather than on the
+        # file's size or timestamp, because firstmate may legitimately write the
+        # real archive while the suite runs from the primary checkout.
+        $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+        foreach ($name in @('backlog.md', 'done-archive.md')) {
+            $file = Join-Path $root 'data' $name
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { continue }
+            Get-Text -Path $file | Should -Not -Match ([regex]::Escape('https://github.com/o/r/pull/42')) `
+                -Because "a test must never write into $file, which is the captain's real record in the primary checkout"
+        }
     }
 }

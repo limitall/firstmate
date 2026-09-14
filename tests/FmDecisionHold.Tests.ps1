@@ -311,7 +311,15 @@ Describe 'the gate reads, and only reads' {
         [System.IO.File]::ReadAllBytes($fixture.Backlog) | Should -Be $backlogBefore
         [System.IO.File]::ReadAllBytes($fixture.Status) | Should -Be $statusBefore
 
-        $null = Complete-FmBacklogTask -Id 'api-shape' -Note 'captain chose flat' -Path $fixture.Backlog -Confirm:$false
+        # Closed from inside the fixture home: with FM_HOME unset the verb would
+        # take its retention archive from THIS checkout's .tasks.toml, which in
+        # the primary checkout is the captain's real record.
+        $env:FM_HOME = $fixture.Path
+        try {
+            $null = Complete-FmBacklogTask -Id 'api-shape' -Note 'captain chose flat' -Path $fixture.Backlog -Confirm:$false
+        } finally {
+            Remove-Item -LiteralPath 'Env:FM_HOME' -ErrorAction SilentlyContinue
+        }
         (Test-GateVerdict -Home_ $fixture).Verdict | Should -Be 'pass'
         [System.IO.File]::ReadAllBytes($fixture.Status) | Should -Be $statusBefore
     }

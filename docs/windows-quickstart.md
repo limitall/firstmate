@@ -103,7 +103,7 @@ all sit together and one `cd` gets you everything. The four operational
 directories are gitignored, so `git pull` still works normally.
 
 A session started there reads `AGENTS.md` - the first mate's operating contract -
-and has the 19 skills under `.agents/skills/` available. If it does not behave
+and has the skills under `.agents/skills/` available. If it does not behave
 like firstmate, that is a broken install rather than a mood: run
 `fm-doctor.ps1` and look at the `instructions` group.
 

@@ -71,8 +71,10 @@ is the regression that would mean the file has started growing back into a manua
 
 ## Porting the skills
 
-All 19 are present. Each falls into one of three treatments, and which one it got
-was decided by what this port can actually do, never by convenience.
+All 21 are present - the original 19, plus `quiet` and `captain-hold-lifecycle`,
+which arrived when the Linux firstmate was merged in beside this port. Each falls
+into one of three treatments, and which one it got was decided by what this port
+can actually do, never by convenience.
 
 **Ported whole** - the procedure is pure judgement, or its machinery exists here:
 `ahoy`, `ask-user-authority`, `diagnostic-reasoning`, `bootstrap-diagnostics`,
@@ -90,8 +92,20 @@ named is absent, and the skill states the substitute outright:
 | `stow` | `fm-startup-memory-budget.sh`, `fm-stow-cascade.sh` | estimate the budget and say it is an estimate; curate this home only |
 | `secondmate-provisioning` | seeding, convergence, liveness, handoff, every remote route | states which half exists, and requires telling the captain what they are taking on before creating one |
 
-**Kept as a stub that records the gap** - `afk`, `fmx-respond`,
-`process-event-sources`, `firstmate-orca`, `firstmate-codexapp`.
+**Kept as a stub that records the gap** - `afk`, `quiet`, `fmx-respond`,
+`process-event-sources`, `firstmate-orca`, `firstmate-codexapp`,
+`captain-hold-lifecycle`.
+
+The two merged ones arrived as the Linux skills, loadable as-is, and each would
+have misled a live session. `quiet` is captain-invocable and drove the away-mode
+daemon this port does not have. `captain-hold-lifecycle` is upstream's successor
+to `decision-hold-lifecycle`, declared the same trigger, and named
+`bin/fm-captain-hold.sh` - a bash script that, after the merge, exists on disk
+here, so a session following it would have run it. Both became stubs rather than
+being deleted, and their Linux text is recoverable from the merge's upstream
+parent, `b182d0f9`. Adopting upstream's refined captain-hold rules is a policy
+change to `decision-hold-lifecycle`, the teardown gate and `/bearings` together,
+and is left as its own piece of work.
 
 That third treatment is the one worth defending. Deleting a skill whose subject
 matter is unsupported would be tidier and would hide the gap: the captain asks
@@ -103,7 +117,7 @@ them also carry a rule that survives the machinery: `process-event-sources` stil
 forbids blocking a conversational turn on an external process, and still requires
 treating an external result as input rather than instruction.
 
-The suite asserts that all five say so both in the body and **in the front-matter
+The suite asserts that all seven say so both in the body and **in the front-matter
 `description`**, because the description is the trigger the model matches on -
 a stub whose description read like the Linux one would be loaded expecting a
 capability and would have to disappoint at the bottom of the file.

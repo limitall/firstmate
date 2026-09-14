@@ -478,7 +478,7 @@ There is no `fm-update.ps1` on this port, so that skill owns the guarded fast-fo
 
 ## 13. Skills
 
-Five skills are the captain's to invoke, and their trigger is the captain typing them: `/ahoy` for a session recap, `/bearings` for the fleet digest, `/stow` before a context reset, `/updatefirstmate` to pull the latest, and `/afk` - which on this port exists to tell them plainly that away mode is not available and what will and will not happen while they are gone.
+Six skills are the captain's to invoke, and their trigger is the captain typing them: `/ahoy` for a session recap, `/bearings` for the fleet digest, `/stow` before a context reset, `/updatefirstmate` to pull the latest, and `/afk` and `/quiet` - which on this port exist to tell them plainly that away mode and quiet mode are not available and what this machine does instead.
 Load one when they ask for it by name or in their own words, and not otherwise.
 
 The rest are agent-only reference skills, not captain-invocable; load them only at their precise triggers.
@@ -494,8 +494,8 @@ The rest are agent-only reference skills, not captain-invocable; load them only 
 - `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
 - `firstmate-coding-guidelines` - load before changing firstmate's shared, tracked material as defined by section 1, whether editing directly or briefing a crewmate for a firstmate-repo task.
 
-Five skills exist only to record a capability this port does not have, so the gap is visible rather than silently missing: `afk`, `fmx-respond`, `process-event-sources`, `firstmate-orca`, and `firstmate-codexapp`.
-`afk` is the one of those five that is also captain-invocable above, because the captain types `/afk` and must be told plainly rather than met with silence; load the other four only to answer a captain who asks for that capability by name.
+Seven skills exist only to record a capability this port does not have, so the gap is visible rather than silently missing: `afk`, `quiet`, `fmx-respond`, `process-event-sources`, `firstmate-orca`, `firstmate-codexapp`, and `captain-hold-lifecycle`.
+`afk` and `quiet` are the two of those seven that are also captain-invocable above, because the captain types them and must be told plainly rather than met with silence; load the other five only to answer a captain who asks for that capability by name, or when something you are reading names one of them.
 
 ## 14. What this port does not have
 
@@ -505,6 +505,7 @@ Each is a plain absence, not a degraded imitation: never simulate one, and tell 
 
 - **`no-mistakes` delivery mode.** Refused by name at brief and spawn (section 7). `direct-PR` and `local-only` ship.
 - **Away mode.** No `state/.afk`, no sub-supervisor daemon, no unattended escalation injection into a live session (section 8).
+  So no quiet mode either, which is that same daemon with a different exit rule.
 - **Relay / X mode.** No public-mention integration, no `.env` pairing token, no public follow-ups. Nothing in this port posts anywhere public.
   There is now a PRIVATE channel to the captain instead, and it is a different thing: `bin/fm-tell.ps1` sends them one message and `bin/fm-tg-poll.ps1` takes messages back while a session is alive, between firstmate and the captain alone.
   It **ships inert** - there is no bot and no token, so both commands do nothing until the captain creates one - nothing calls either by itself, and a message asking firstmate to land work, throw work away, delete, clean up for good, or touch a login is refused over it whatever any setting says.
@@ -521,6 +522,7 @@ Each is a plain absence, not a degraded imitation: never simulate one, and tell 
 - **The `relaunch` control verb.** Refused by name; `stuck-crewmate-recovery` owns the explicit exit-then-respawn replacement.
 - **The crewmate turn-end hook.** A worker's own Stop hook is not installed, so `state/<id>.turn-ended` is never touched by a crewmate turn. Wakes still arrive from every `state/<id>.status` append and from the stale cadence; what is lost is the immediate per-turn notification. `harness-adapters` owns the consequence.
 - **Structured decision holds.** `decision-hold-lifecycle`'s policy is in force, but there is no `fm-decision-hold` command; holds are ordinary held backlog items.
+  The Linux firstmate has since replaced that policy with `captain-hold-lifecycle` and its `fm-captain-hold` command; neither is ported, and adopting its refined rules is a policy change of its own, not a rename.
 - **A self-update command.** `/updatefirstmate` performs the guarded fast-forward by hand.
 - **The bearings snapshot command.** `/bearings` gathers from the same durable records directly; its four-section captain contract is unchanged.
 

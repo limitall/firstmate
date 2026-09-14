@@ -10619,3 +10619,60 @@ The stray `data/done-archive.md` those two backlog cases leave in the checkout w
 - **The busy-pane bound shares the deferral and was not reproduced against real processes.**
   `Test-FmBusyTurnOverAge` routes through the same `Invoke-FmWedgeTimerCheck`, so a busy pane past its bound whose own run is alive now defers too.
   "defers a busy pane past its bound the same way while its own run is alive" covers that route with a staged reading; the real-process reproduction above is the idle pane only.
+
+## 62. Running the suite from the primary checkout would have written test rows into the captain's own archive - `PROVEN (Windows 11) FOR THE LEAK IN BOTH IMPLEMENTATIONS, THE FIX, AND THE NEGATIVE CONTROLS THAT PUT EACH HALF BACK`
+
+Merging the Linux firstmate in beside this port brought its tracked `.tasks.toml` to the repository root, pinning `data/backlog.md`, `data/done-archive.md` and `done_keep = 10`.
+For the primary home those are exactly the defaults this port already resolves, so firstmate's own behaviour did not change.
+The suite's did.
+
+### 62.1 The cause
+
+`Get-FmBacklogConfig` reads `<home>/.tasks.toml` and takes the retention archive from it **even when `-Path` names the backlog file**.
+That is deliberate: `tasks-axi` 0.2.5 does the same (`resolveConfig` in its `dist/src/config.js` reads the archive from the project toml whatever `--file` says), and the markdown backend is its format.
+With `FM_HOME` unset, the home is the checkout the suite runs in.
+So a test that pruned a fixture backlog in `TestDrive` appended the pruned rows to `<checkout>/data/done-archive.md` - in the primary checkout, the captain's real record.
+`tasks-axi` reads `.tasks.toml` from its working directory, which was the checkout too, so the differential test leaked through the tool as well as through the port.
+
+### 62.2 Reproduced, in a worktree shaped exactly like the primary checkout
+
+A disposable worktree of `main` at `b27e51e0` carries the same tracked `.tasks.toml` and resolves its home to itself, so it is the primary checkout's situation without the captain's records in it.
+`data/` did not exist in it before the run.
+
+```
+Invoke-Pester -Path ./tests/FmBacklog.Tests.ps1
+P=101 F=2 S=0
+  done, and the configured recent-Done retention.keeps only the configured most recent Done rows and archives the surplus
+  differential parity with the tasks-axi markdown backend.produces a byte-identical backlog and archive for the same mutation sequence
+data/done-archive.md   497 bytes, four "## Archived" blocks of fixture rows (task-z, task-b)
+```
+
+The two failures are the tests looking for the archive beside their fixture and not finding it; a third case, `reports how many rows retention archived`, passed and wrote its rows into the checkout anyway.
+The captain's real `C:\Users\ADMIN\firstmate-win\data\done-archive.md` was read, not run against: it contains no fixture row, so no run there has leaked into it yet.
+
+### 62.3 The fix
+
+`tests/FmBacklog.Tests.ps1` now owns its configuration root for the whole file: `BeforeAll` points `FM_HOME` at an empty `TestDrive` directory and `Push-Location`s into it, and `AfterAll` restores both.
+The product code is unchanged, because its precedence is the one `tasks-axi` has and a home shared with a Linux firstmate depends on it.
+The file now ends with `the checkout this file runs in`, which fails if the checkout's `data/backlog.md` or `data/done-archive.md` carries the fixture's `https://github.com/o/r/pull/42` link - a match on content, not size or time, because firstmate may write the real archive while a suite runs.
+`tests/FmDecisionHold.Tests.ps1` closes a fixture hold with `Complete-FmBacklogTask` and `FM_HOME` removed; it archived nothing only because its fixture has fewer than ten Done rows, so that call now runs with `FM_HOME` set to its fixture home.
+
+```
+FmBacklog + FmDecisionHold, fixed:                      P=131 F=0, data/ not created
+negative control, FM_HOME and working directory unpinned: P=101 F=3 - the two above plus the new check; data/done-archive.md 497 bytes
+negative control, only the working directory unpinned:   P=102 F=2 - the differential test plus the new check;
+                                                         data/done-archive.md 99 bytes, one task-z row, written by tasks-axi alone
+```
+
+The last control is why both pins exist: fixing the port's half alone still leaks through the tool.
+
+### 62.4 The two merged skills
+
+`quiet` and `captain-hold-lifecycle` arrived as the Linux skills, and `AGENTS.md` declared no trigger for either, which is what failed `declares a trigger for every skill`.
+Neither can be honoured here.
+`quiet` is `/afk`'s daemon with a different exit rule, and away mode is not ported.
+`captain-hold-lifecycle` is upstream's successor to `decision-hold-lifecycle` (kunchenguid/firstmate#2728), declared the same trigger, and runs on `bin/fm-captain-hold.sh` - which after the merge is a real file in this tree, so a session following it would have reached for bash.
+Both are now gap-recording stubs with their triggers in `AGENTS.md` sections 13 and 14; `docs/instruction-surface.md` records the reasoning and the Linux text is recoverable from `b182d0f9`.
+Adopting upstream's refined captain-hold rules is left as its own piece of work: this port's `-Until` hold becomes dispatchable on its date rather than coming back as a captain's call, so the rules cannot simply be copied onto `bin/fm-backlog.ps1`.
+
+`FmContract.Tests.ps1` alone, after the instruction surface was built by hand: `P=39 F=0`.
