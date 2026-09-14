@@ -294,6 +294,14 @@ function New-FmWorktreeLease {
     if (-not (Test-Path -LiteralPath $Project -PathType Container)) {
         throw "project '$Project' is not a directory; cannot acquire a worktree from its pool"
     }
+    # A repository with no commit anywhere (what New-FmProject creates) has
+    # nothing to check a copy out at, and treehouse reports that as an invalid
+    # 'refs/remotes/origin/main', which names a remote the project never had.
+    $anyCommit = Invoke-FmGit -Directory $Project -Arguments @('rev-list', '-n', '1', '--all')
+    if ($anyCommit.Ok -and -not $anyCommit.StdOut.Trim()) {
+        throw ("error: project '$Project' has no commits yet, so there is nothing to start a worker copy from; " +
+            'it needs a first commit before any worker can be spawned into it, and that commit is the captain''s to make or approve')
+    }
     if (-not $PSCmdlet.ShouldProcess($Project, 'treehouse get --lease')) { return $null }
 
     $argv = @('get', '--lease', '--json')
@@ -367,35 +375,28 @@ function Remove-FmWorktreeLease {
 
 # --- pooled-base freshening --------------------------------------------------
 
-# Update-FmWorktreeBase: bring a pooled worktree to origin's current default
-# branch before a worker starts in it, refusing rather than discarding.
-# Ported from freshen_spawn_worktree_base; each refusal keeps its meaning:
-# a stale base is never silently launched from, and a dirty pooled worktree is
-# never reset over.
+# Update-FmWorktreeBase: put a pooled worktree on the newest commit of the
+# project's default branch before a worker starts in it, refusing rather than
+# discarding work or guessing between histories.
+#
+# The newest commit is chosen from BOTH tips, local <default> and a freshly
+# fetched origin/<default>: whichever contains the other. The Linux
+# freshen_spawn_worktree_base takes origin/<default> alone, which is right only
+# where origin is where work lands; a local-only merge lands on the local
+# branch and pushes nothing, so there origin is a stale mirror and every worker
+# started behind the landed work. docs/worktree-isolation-windows.md, "The
+# pooled base", owns that reasoning. Each refusal keeps its meaning:
+#   - a dirty worktree is refused before anything is fetched, never reset over;
+#   - no origin remote means nothing remote to be stale against, so the local
+#     branch is the base and no fetch is attempted;
+#   - an origin that cannot be fetched or resolved still refuses;
+#   - diverged tips refuse, because starting on either drops the other's commits.
 function Update-FmWorktreeBase {
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)][string]$Worktree)
 
     if (-not $PSCmdlet.ShouldProcess($Worktree, 'refresh pooled worktree base')) { return $false }
 
-    if (-not (Invoke-FmGit -Directory $Worktree -Arguments @('fetch', '--quiet', 'origin')).Ok) {
-        throw "error: could not fetch origin for pooled worktree '$Worktree'; refusing to launch from a potentially stale base"
-    }
-    if (-not (Invoke-FmGit -Directory $Worktree -Arguments @('remote', 'set-head', 'origin', '--auto')).Ok) {
-        throw "error: could not resolve origin's current default branch for pooled worktree '$Worktree'; refusing to launch from a potentially stale base"
-    }
-    $default = Get-FmGitDefaultBranch -Directory $Worktree
-    if (-not $default) {
-        throw "error: could not determine origin's default branch for pooled worktree '$Worktree'; refusing to launch from a potentially stale base"
-    }
-    $target = "origin/$default"
-    if (-not (Invoke-FmGit -Directory $Worktree -Arguments @('fetch', '--quiet', 'origin', "+refs/heads/$default`:refs/remotes/origin/$default")).Ok) {
-        throw "error: could not fetch '$target' for pooled worktree '$Worktree'; refusing to launch from a potentially stale base"
-    }
-    $expected = Get-FmGitOutput -Directory $Worktree -Arguments @('rev-parse', '--verify', '--quiet', "$target^{commit}")
-    if (-not $expected) {
-        throw "error: '$target' is not a commit for pooled worktree '$Worktree'; refusing to launch from a potentially stale base"
-    }
     $status = Invoke-FmGit -Directory $Worktree -Arguments @('status', '--porcelain')
     if (-not $status.Ok) {
         throw "error: could not inspect pooled worktree '$Worktree' before refreshing its base"
@@ -403,13 +404,72 @@ function Update-FmWorktreeBase {
     if ($status.StdOut.Trim()) {
         throw "error: pooled worktree '$Worktree' is not clean; refusing to discard uncommitted work while refreshing its base"
     }
+
+    $remotes = Invoke-FmGit -Directory $Worktree -Arguments @('remote')
+    if (-not $remotes.Ok) {
+        throw "error: could not list the remotes of pooled worktree '$Worktree' before refreshing its base"
+    }
+    $hasOrigin = @($remotes.StdOut -split "`r?`n" | ForEach-Object { $_.Trim() }) -contains 'origin'
+    if ($hasOrigin) {
+        if (-not (Invoke-FmGit -Directory $Worktree -Arguments @('fetch', '--quiet', 'origin')).Ok) {
+            throw "error: could not fetch origin for pooled worktree '$Worktree'; refusing to launch from a potentially stale base"
+        }
+        if (-not (Invoke-FmGit -Directory $Worktree -Arguments @('remote', 'set-head', 'origin', '--auto')).Ok) {
+            throw "error: could not resolve origin's current default branch for pooled worktree '$Worktree'; refusing to launch from a potentially stale base"
+        }
+    }
+    $default = Get-FmGitDefaultBranch -Directory $Worktree
+    if (-not $default) {
+        throw "error: could not determine the default branch for pooled worktree '$Worktree' (expected origin/HEAD, main, or master); refusing to launch from a potentially stale base"
+    }
+
+    $localTip = Get-FmGitOutput -Directory $Worktree -Arguments @('rev-parse', '--verify', '--quiet', "refs/heads/$default^{commit}")
+    $originTip = ''
+    if ($hasOrigin) {
+        if (-not (Invoke-FmGit -Directory $Worktree -Arguments @('fetch', '--quiet', 'origin', "+refs/heads/$default`:refs/remotes/origin/$default")).Ok) {
+            throw "error: could not fetch 'origin/$default' for pooled worktree '$Worktree'; refusing to launch from a potentially stale base"
+        }
+        $originTip = Get-FmGitOutput -Directory $Worktree -Arguments @('rev-parse', '--verify', '--quiet', "refs/remotes/origin/$default^{commit}")
+        if (-not $originTip) {
+            throw "error: 'origin/$default' is not a commit for pooled worktree '$Worktree'; refusing to launch from a potentially stale base"
+        }
+    } elseif (-not $localTip) {
+        throw "error: '$default' is not a commit for pooled worktree '$Worktree', and there is no origin to take it from; refusing to launch from an unknown base"
+    }
+
+    $target = $default
+    $expected = $localTip
+    if ($originTip -and $originTip -ne $localTip) {
+        # merge-base --is-ancestor answers 1 for "no" and 128 for an error; both
+        # fall through to the next reading, and an error at both ends refuses.
+        if (-not $localTip -or (Invoke-FmGit -Directory $Worktree -Arguments @('merge-base', '--is-ancestor', $localTip, $originTip)).Ok) {
+            $target = "origin/$default"
+            $expected = $originTip
+        } elseif (-not (Invoke-FmGit -Directory $Worktree -Arguments @('merge-base', '--is-ancestor', $originTip, $localTip)).Ok) {
+            # The trailing '--' stops git reading a range as a path: without it,
+            # a long pool path makes git fail to stat the range and count nothing.
+            $localOnly = Get-FmGitOutput -Directory $Worktree -Arguments @('rev-list', '--count', "$originTip..$localTip", '--')
+            $originOnly = Get-FmGitOutput -Directory $Worktree -Arguments @('rev-list', '--count', "$localTip..$originTip", '--')
+            throw ("error: local '$default' and 'origin/$default' have diverged for pooled worktree '$Worktree' " +
+                "(local is $(if ($localOnly) { $localOnly } else { '?' }) ahead and " +
+                "$(if ($originOnly) { $originOnly } else { '?' }) behind); refusing to launch from either, " +
+                "because each would drop the other's commits. This needs a person: decide which history is right, " +
+                "reconcile the project's '$default' with 'origin/$default', then spawn again")
+        }
+    }
+
+    # Detach in place first, which moves no file, so the hard reset can never
+    # drag a branch a slot was handed out on to the new base.
+    if (-not (Invoke-FmGit -Directory $Worktree -Arguments @('checkout', '--quiet', '--detach')).Ok) {
+        throw "error: could not detach pooled worktree '$Worktree' before refreshing its base; refusing to move a checked-out branch"
+    }
     # WINDOWS-UNVERIFIED: on Windows an open handle inside the worktree (an
     # editor, a running test, a virus scanner mid-scan) can make this reset fail
     # where Linux would let it through. The refusal below is the correct
     # Windows behaviour - it stops the task rather than launching from a
     # half-reset base - but the frequency of that failure on a real Windows
     # host is unmeasured.
-    if (-not (Invoke-FmGit -Directory $Worktree -Arguments @('reset', '--hard', $target)).Ok) {
+    if (-not (Invoke-FmGit -Directory $Worktree -Arguments @('reset', '--quiet', '--hard', $expected)).Ok) {
         throw "error: could not reset pooled worktree '$Worktree' to '$target'; refusing to launch from a potentially stale base"
     }
     $actual = Get-FmGitOutput -Directory $Worktree -Arguments @('rev-parse', '--verify', '--quiet', 'HEAD')

@@ -29,6 +29,13 @@ the launch rather than guessed at, and stays recorded in the task's metadata.
 verified. Without it, an unverified adapter refuses rather than being launched
 with a command line that was never tested against its CLI.
 
+Before the worker launches, its leased copy is moved to the newest commit of
+the project's default branch: local or origin, whichever contains the other,
+and local alone when there is no origin. A dirty copy, an origin that cannot be
+fetched, or a local branch that has diverged from origin refuses the spawn.
+-SkipBaseRefresh launches from the copy exactly as treehouse handed it out.
+docs/worktree-isolation-windows.md, "The pooled base", has the reasoning.
+
 .EXAMPLE
 ./bin/fm-spawn.ps1 -TaskId my-task -Project C:\repos\thing -BriefPath C:\fm\data\my-task\brief.md -Mode local-only -Yolo off
 

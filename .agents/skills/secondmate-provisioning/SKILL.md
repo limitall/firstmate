@@ -63,7 +63,7 @@ If the captain says go ahead, that is their decision and you build it.
 4. Write the charter with `bin/fm-brief.ps1 <id> --secondmate <project>...`, filling `{TASK}` with the scope, the standing expectations, and the return channel.
 5. Launch it with `bin/fm-spawn.ps1 <id> <project-dir> -Kind secondmate -LabelHome <that secondmate's home>`.
    Both extra arguments are required and neither is optional on this port.
-   **A project directory is required even for a `--no-projects` charter.** Every spawn here, secondmate included, runs its agent in a leased isolated worktree, so it needs a git repository with a reachable `origin` and a resolvable default branch to lease from. `--no-projects` describes what the secondmate OWNS for routing; it does not mean the launch needs no repository. Give a no-projects secondmate whichever repository its work will mostly concern.
+   **A project directory is required even for a `--no-projects` charter.** Every spawn here, secondmate included, runs its agent in a leased isolated worktree, so it needs a git repository with at least one commit on a resolvable default branch to lease from, and a reachable `origin` if it has one. `--no-projects` describes what the secondmate OWNS for routing; it does not mean the launch needs no repository. Give a no-projects secondmate whichever repository its work will mostly concern.
    **`-LabelHome` must name the secondmate's OWN home**, or its herdr labels land in the launching home and that secondmate's own workers are attributed to the primary.
 6. Add its row to `data/secondmates.md` by hand: its id, its home path, and its one-sentence scope.
    Keep the file readable, because it is the only routing record and no parser will forgive you.

@@ -1903,6 +1903,8 @@ non-elevated Windows run is the outstanding confirmation.
   The spawn refuses loudly and records nothing, which is the right direction,
   but the message names treehouse's failure rather than the missing remote.
   Worth a captain-facing improvement; it is treehouse's rule, not firstmate's.
+  **Corrected by section 58:** the cause is a repository with no commit, not one with no origin.
+  An origin-less project with a single commit leases normally, and the port now refuses the empty case itself, naming the missing commit.
 
 ---
 
@@ -10069,3 +10071,114 @@ The same run also confirms the payoff of this design from the other side: a `fir
   `herdr tab focus` returned ok and the new workspace reported `"focused":true`, but whether the operating system raised a window in front of a captain is not something `pane read` can answer.
 - **The panel row for this screen is proven by its unit tests, not by a browser.**
   `Get-FmBridgeHouseWork -Holder` is exercised in `tests/FmBridge.Tests.ps1`; what a captain SEES in the panel while a start is under way has not been looked at, because looking at it means opening the page.
+
+## 58. Every new worker started behind the work already landed - `PROVEN (Windows 11) FOR THE REPRODUCTION ON REAL TREEHOUSE LEASES, ALL FOUR BASE SHAPES, THE EMPTY PROJECT AND THE NEGATIVE CONTROLS`
+
+Dated 2026-09-14, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\26\firstmate-win`, PowerShell 7.6.6, Pester 6.1.0, git 2.49.0.windows.1, treehouse v2.1.1, Windows 11 Pro 10.0.26200.
+`docs/worktree-isolation-windows.md`, "The pooled base", owns the rule this section measures.
+
+### 58.1 The defect, in the copy this task was handed
+
+The pool handed this copy out at `main`, and the base refresh moved it backwards three seconds later:
+
+```
+$ git reflog --date=iso HEAD
+87b7fc15 HEAD@{2026-09-14 14:16:57 +0530}: reset: moving to origin/main
+b27e51e0 HEAD@{2026-09-14 14:16:54 +0530}:
+
+$ git rev-parse main origin/main
+b27e51e0...   # main
+87b7fc15...   # origin/main, the bare mirror at C:\Users\ADMIN\firstmate-win-origin.git
+$ git rev-list --count --first-parent 87b7fc15..b27e51e0
+19
+```
+
+`origin` here is a bare repository on the same machine, and `Invoke-FmMergeLocal` lands on the local `main` and pushes nothing, so the mirror only ever falls further behind.
+
+### 58.2 Reproduced through the port's own acquisition, on real leases
+
+A scratch script built four projects, pointed each one's `treehouse.toml` `root` into the scratch directory so no pool touched the captain's, and called `New-FmIsolatedWorktree` on each - the same call `Start-FmWorker` makes - then read the leased copy's `HEAD` and returned the lease on its id.
+
+Before the fix:
+
+```
+case 1: local main ahead of stale origin
+  main=8900d36  origin/main=0200d6e
+  worker HEAD=0200d6e  (subject: A pushed)             <- two landed commits missing
+case 2: origin ahead of local main
+  worker HEAD=d721bdf  (subject: D merged on origin)
+case 3: no origin at all
+  REFUSED: error: could not fetch origin for pooled worktree '<scratch>\e2e\pool\.treehouse\solo-f514f3\1\solo'; refusing to launch from a potentially stale base
+case 4: diverged
+  worker HEAD=b7a9118  (subject: R only remote)        <- the local commit silently dropped
+```
+
+After the fix (the script rebuilds every project, so the hashes differ):
+
+```
+case 1: local main ahead of stale origin
+  main=78b2840  origin/main=2e5e41d
+  worker HEAD=78b2840  (subject: C landed locally)
+case 2: origin ahead of local main
+  worker HEAD=dc4b581  (subject: D merged on origin)
+case 3: no origin at all
+  worker HEAD=bb704f0  (subject: S1)
+case 4: diverged
+  REFUSED: error: local 'main' and 'origin/main' have diverged for pooled worktree '<scratch>\e2e\pool\.treehouse\proj3-c5f823\1\proj3' (local is 1 ahead and 1 behind); refusing to launch from either, because each would drop the other's commits. This needs a person: decide which history is right, reconcile the project's 'main' with 'origin/main', then spawn again
+```
+
+### 58.3 The empty project is a different refusal, and it was misattributed
+
+Section 13 recorded that a project with no origin cannot be leased.
+Measured here, the cause is a repository with no commit, which is exactly what `New-FmProject` creates:
+
+```
+New-FmProject shape (no commit, no origin), before the port's own check:
+  REFUSED: error: 'treehouse get --lease' failed ... failed to create worktree: git worktree add --detach ... refs/remotes/origin/main: fatal: invalid reference: refs/remotes/origin/main
+one commit, no origin, base refresh skipped (what treehouse hands out):
+  leased; HEAD=6bc6cbb status=[]
+```
+
+`New-FmWorktreeLease` now refuses the empty repository before asking treehouse:
+
+```
+  REFUSED: error: project '<scratch>\e2e-originless\empty' has no commits yet, so there is nothing to start a worker copy from; it needs a first commit before any worker can be spawned into it, and that commit is the captain's to make or approve
+```
+
+### 58.4 A measurement trap the first fix fell into
+
+The first divergence message printed `? commits` on both sides.
+`git rev-list --count <a>..<b>` with no trailing `--` makes git check whether the range is also a file name, and under a long pool path that check fails outright:
+
+```
+fatal: failed to stat '8b3fdc1d...c705..ba892d1a...9629': Filename too long
+```
+
+The count call now ends in `--`, and the refusal above is the fixed output.
+
+### 58.5 Tests, and the controls that make them mean something
+
+`tests/FmWorktree.Tests.ps1` builds real repositories shaped like a pool slot - a project, an optional bare origin, a detached linked worktree sharing the project's refs - for every case in the table, plus a dirty copy with an unreachable origin, an unreachable origin alone, a copy handed out on a branch, a reset that lies about success, and the empty project.
+
+The new cases were run against `main`'s unmodified `FmWorktree.ps1`:
+
+```
+[-] starts on the local default branch when origin is a stale mirror behind it
+[+] starts on origin when origin is ahead of the local default branch              (unchanged behaviour)
+[-] starts on the local default branch of a project with no origin at all          could not fetch origin
+[-] refuses diverged tips, naming how far apart they are, and leaves the slot ...  no exception was thrown
+[-] refuses uncommitted work before it fetches anything                            the message was 'could not fetch origin'
+[+] refuses when a configured origin cannot be fetched, ...                        (unchanged behaviour)
+[-] never drags a branch the slot was handed out on to the new base                the branch moved
+[-] refuses when the reset did not land the expected commit                        could not fetch origin
+[-] refuses before asking treehouse, naming the missing commit ...                 treehouse was asked
+```
+
+On the fixed tree the file passes 34, skips 1 (the symlink case that needs a privilege this seat's test run does not hold).
+
+### 58.6 What this section does NOT claim
+
+- **No worker was spawned.**
+  The acquisition was driven through `New-FmIsolatedWorktree`, which is every step of a spawn before a pane exists; no herdr pane, harness or brief was involved, as this task's brief requires.
+- **The stale `origin` of firstmate-win itself was left exactly as it was.**
+  Whether that remote should exist at all is the captain's, not this code's.

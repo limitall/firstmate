@@ -146,7 +146,11 @@ Describe 'New-FmWorktreeLease' {
         $script:leased = Join-Path $TestDrive 'leased'
         New-Item -ItemType Directory -Path $script:leased -Force | Out-Null
     }
-    BeforeEach { Mock Assert-FmTreehouseTool { $true } }
+    BeforeEach {
+        Mock Assert-FmTreehouseTool { $true }
+        # The project has a commit; the no-commit refusal has its own block below.
+        Mock Invoke-FmGit { [pscustomobject]@{ Ok = $true; ExitCode = 0; StdOut = "0123abcd`n"; StdErr = ''; Combined = ''; TimedOut = $false } }
+    }
 
     It 'reads the path and lease identity from --json output' {
         $body = @{ path = $script:leased; lease_id = 'L-1'; lease_holder = 'fm-alpha'; name = 'pool-3' } | ConvertTo-Json
@@ -193,6 +197,23 @@ Describe 'New-FmWorktreeLease' {
     }
 }
 
+Describe 'New-FmWorktreeLease on a repository with no commits' {
+    It 'refuses before asking treehouse, naming the missing commit rather than a missing origin' {
+        # Exactly what New-FmProject creates. treehouse's own refusal for it
+        # names 'refs/remotes/origin/main', a remote the project never had.
+        $empty = Join-Path $TestDrive 'empty-project'
+        $null = Invoke-FmChildProcess -FilePath 'git' -ArgumentList @('init', '-q', '-b', 'main', $empty)
+        Mock Assert-FmTreehouseTool { $true }
+        # git runs for real; a real treehouse would build a pool on this machine.
+        Mock Invoke-FmGit {
+            $stdout = & git -C $Directory @Arguments 2>$null
+            [pscustomobject]@{ Ok = ($LASTEXITCODE -eq 0); ExitCode = $LASTEXITCODE; StdOut = ($stdout -join "`n"); StdErr = ''; Combined = ''; TimedOut = $false }
+        }
+        Mock Invoke-FmChildProcess -ParameterFilter { $FilePath -eq 'treehouse' } { throw 'treehouse must not be asked for a copy of an empty repository' }
+        { New-FmWorktreeLease -Project $empty -Confirm:$false } | Should -Throw "*has no commits yet*"
+    }
+}
+
 Describe 'Remove-FmWorktreeLease' {
     BeforeEach { Mock Assert-FmTreehouseTool { $true } }
 
@@ -216,37 +237,132 @@ Describe 'Remove-FmWorktreeLease' {
 }
 
 Describe 'Update-FmWorktreeBase' {
-    It 'refuses to reset over uncommitted work in a pooled worktree' {
-        $repo = New-TestRepo -Path (Join-Path $TestDrive 'dirty')
-        Set-Content -LiteralPath (Join-Path $repo 'scratch.txt') -Value 'unlanded'
-        Mock Invoke-FmGit {
-            param($Directory, $Arguments)
-            switch ($Arguments[0]) {
-                'status' { return [pscustomobject]@{ Ok = $true; ExitCode = 0; StdOut = "?? scratch.txt`n"; StdErr = ''; Combined = ''; TimedOut = $false } }
-                'reset' { throw 'must never reset over unlanded work' }
-                default { return [pscustomobject]@{ Ok = $true; ExitCode = 0; StdOut = 'x'; StdErr = ''; Combined = ''; TimedOut = $false } }
+    # Real repositories, shaped the way a pool slot is: a project checkout, an
+    # optional bare origin, and a detached linked worktree that shares the
+    # project's refs. Which commit a worker starts on is a property of those
+    # refs, so a mocked rev-parse could not show it.
+    BeforeAll {
+        function New-BaseFixture {
+            param([Parameter(Mandatory)][string]$Name, [switch]$NoOrigin)
+            $root = Join-Path $TestDrive $Name
+            $project = New-TestRepo -Path (Join-Path $root 'project')
+            if (-not $NoOrigin) {
+                $bare = Join-Path $root 'origin.git'
+                $null = Invoke-FmChildProcess -FilePath 'git' -ArgumentList @('init', '-q', '--bare', '-b', 'main', $bare)
+                $null = Invoke-FmGit -Directory $project -Arguments @('remote', 'add', 'origin', $bare)
+                $null = Invoke-FmGit -Directory $project -Arguments @('push', '-q', 'origin', 'main')
+                $null = Invoke-FmGit -Directory $project -Arguments @('fetch', '-q', 'origin')
             }
+            $seed = Get-FmGitOutput -Directory $project -Arguments @('rev-parse', 'main')
+            $worktree = Join-Path $root 'slot'
+            $null = Invoke-FmGit -Directory $project -Arguments @('worktree', 'add', '-q', '--detach', $worktree, $seed)
+            [pscustomobject]@{ Project = $project; Worktree = $worktree; Seed = $seed }
         }
-        Mock Get-FmGitDefaultBranch { 'main' }
-        Mock Get-FmGitOutput { 'deadbeef' }
-        { Update-FmWorktreeBase -Worktree $repo -Confirm:$false } | Should -Throw '*refusing to discard uncommitted work*'
+
+        # A commit landed on the project's local default branch only, the way
+        # a local-only merge lands one.
+        function Add-LocalCommit {
+            param([Parameter(Mandatory)]$Fixture, [Parameter(Mandatory)][string]$Message)
+            Set-Content -LiteralPath (Join-Path $Fixture.Project 'README.md') -Value $Message
+            $null = Invoke-FmGit -Directory $Fixture.Project -Arguments @('commit', '-q', '-am', $Message)
+            Get-FmGitOutput -Directory $Fixture.Project -Arguments @('rev-parse', 'main')
+        }
+
+        # A commit that reaches origin's default branch without touching the
+        # local one, the way a merged pull request does.
+        function Add-OriginCommit {
+            param([Parameter(Mandatory)]$Fixture, [Parameter(Mandatory)][string]$Message, [string]$Parent = '')
+            if (-not $Parent) { $Parent = $Fixture.Seed }
+            $sha = Get-FmGitOutput -Directory $Fixture.Project -Arguments @('commit-tree', "$Parent^{tree}", '-p', $Parent, '-m', $Message)
+            $null = Invoke-FmGit -Directory $Fixture.Project -Arguments @('push', '-q', '--force', 'origin', "$sha`:refs/heads/main")
+            $sha
+        }
+
+        function Get-SlotHead {
+            param([Parameter(Mandatory)]$Fixture)
+            Get-FmGitOutput -Directory $Fixture.Worktree -Arguments @('rev-parse', 'HEAD')
+        }
     }
 
-    It 'refuses when origin cannot be fetched, rather than launching from a stale base' {
-        Mock Invoke-FmGit {
-            [pscustomobject]@{ Ok = $false; ExitCode = 1; StdOut = ''; StdErr = 'no origin'; Combined = ''; TimedOut = $false }
-        }
-        { Update-FmWorktreeBase -Worktree (Join-Path $TestDrive 'anything') -Confirm:$false } |
+    It 'starts on the local default branch when origin is a stale mirror behind it' {
+        # The defect this refresh had: origin/main was reset to, and every
+        # worker started behind the work local-only merges had already landed.
+        $fixture = New-BaseFixture -Name 'stale-origin'
+        $null = Add-LocalCommit -Fixture $fixture -Message 'landed one'
+        $landed = Add-LocalCommit -Fixture $fixture -Message 'landed two'
+        Update-FmWorktreeBase -Worktree $fixture.Worktree -Confirm:$false | Should -BeTrue
+        Get-SlotHead -Fixture $fixture | Should -Be $landed
+    }
+
+    It 'starts on origin when origin is ahead of the local default branch' {
+        $fixture = New-BaseFixture -Name 'origin-ahead'
+        $merged = Add-OriginCommit -Fixture $fixture -Message 'merged upstream'
+        Update-FmWorktreeBase -Worktree $fixture.Worktree -Confirm:$false | Should -BeTrue
+        Get-SlotHead -Fixture $fixture | Should -Be $merged
+    }
+
+    It 'starts on the local default branch of a project with no origin at all' {
+        # What New-FmProject creates. There is nothing remote to be stale
+        # against, so the missing remote is not a reason to refuse the spawn.
+        $fixture = New-BaseFixture -Name 'no-origin' -NoOrigin
+        $landed = Add-LocalCommit -Fixture $fixture -Message 'landed'
+        Update-FmWorktreeBase -Worktree $fixture.Worktree -Confirm:$false | Should -BeTrue
+        Get-SlotHead -Fixture $fixture | Should -Be $landed
+    }
+
+    It 'refuses diverged tips, naming how far apart they are, and leaves the slot where it was' {
+        $fixture = New-BaseFixture -Name 'diverged'
+        $null = Add-LocalCommit -Fixture $fixture -Message 'only local'
+        $null = Add-OriginCommit -Fixture $fixture -Message 'only on origin'
+        { Update-FmWorktreeBase -Worktree $fixture.Worktree -Confirm:$false } |
+            Should -Throw "*have diverged*(local is 1 ahead and 1 behind)*refusing to launch from either*"
+        Get-SlotHead -Fixture $fixture | Should -Be $fixture.Seed
+    }
+
+    It 'refuses uncommitted work before it fetches anything' {
+        # The origin is unreachable on purpose: only a clean check that runs
+        # first can answer "not clean" here rather than "could not fetch".
+        $fixture = New-BaseFixture -Name 'dirty' -NoOrigin
+        $null = Invoke-FmGit -Directory $fixture.Project -Arguments @('remote', 'add', 'origin', (Join-Path $TestDrive 'no-such-origin.git'))
+        Set-Content -LiteralPath (Join-Path $fixture.Worktree 'scratch.txt') -Value 'unlanded'
+        { Update-FmWorktreeBase -Worktree $fixture.Worktree -Confirm:$false } |
+            Should -Throw '*is not clean; refusing to discard uncommitted work*'
+        Get-Content -LiteralPath (Join-Path $fixture.Worktree 'scratch.txt') | Should -Be 'unlanded'
+    }
+
+    It 'refuses when a configured origin cannot be fetched, rather than launching from a stale base' {
+        $fixture = New-BaseFixture -Name 'unreachable' -NoOrigin
+        $null = Invoke-FmGit -Directory $fixture.Project -Arguments @('remote', 'add', 'origin', (Join-Path $TestDrive 'no-such-origin.git'))
+        { Update-FmWorktreeBase -Worktree $fixture.Worktree -Confirm:$false } |
             Should -Throw '*could not fetch origin*'
+        Get-SlotHead -Fixture $fixture | Should -Be $fixture.Seed
+    }
+
+    It 'never drags a branch the slot was handed out on to the new base' {
+        # Origin moves rather than local main, so the only thing that can keep
+        # the branch in place is the detach, not a missing remote.
+        $fixture = New-BaseFixture -Name 'on-a-branch'
+        $null = Invoke-FmGit -Directory $fixture.Worktree -Arguments @('switch', '-q', '-c', 'fm/earlier-lane')
+        $merged = Add-OriginCommit -Fixture $fixture -Message 'merged upstream'
+        Update-FmWorktreeBase -Worktree $fixture.Worktree -Confirm:$false | Should -BeTrue
+        Get-SlotHead -Fixture $fixture | Should -Be $merged
+        Get-FmGitOutput -Directory $fixture.Project -Arguments @('rev-parse', 'fm/earlier-lane') | Should -Be $fixture.Seed
+        Get-FmGitOutput -Directory $fixture.Worktree -Arguments @('symbolic-ref', '--quiet', 'HEAD') | Should -Be ''
     }
 
     It 'refuses when the reset did not land the expected commit' {
-        Mock Invoke-FmGit { [pscustomobject]@{ Ok = $true; ExitCode = 0; StdOut = ''; StdErr = ''; Combined = ''; TimedOut = $false } }
-        Mock Get-FmGitDefaultBranch { 'main' }
-        $script:calls = 0
-        Mock Get-FmGitOutput { $script:calls++; if ($script:calls -eq 1) { 'expected-sha' } else { 'other-sha' } }
-        { Update-FmWorktreeBase -Worktree (Join-Path $TestDrive 'anything') -Confirm:$false } |
-            Should -Throw "*is at 'other-sha', not current*"
+        $fixture = New-BaseFixture -Name 'reset-lies' -NoOrigin
+        $landed = Add-LocalCommit -Fixture $fixture -Message 'landed'
+        # Every other git call still runs for real; only the reset reports a
+        # success it did not have.
+        Mock Invoke-FmGit {
+            Invoke-FmChildProcess -FilePath 'git' -ArgumentList (@('-C', $Directory) + $Arguments)
+        }
+        Mock Invoke-FmGit -ParameterFilter { $Arguments[0] -eq 'reset' } {
+            [pscustomobject]@{ Ok = $true; ExitCode = 0; StdOut = ''; StdErr = ''; Combined = ''; TimedOut = $false }
+        }
+        { Update-FmWorktreeBase -Worktree $fixture.Worktree -Confirm:$false } |
+            Should -Throw "*is at '$($fixture.Seed)', not current 'main' ('$landed')*"
     }
 }
 

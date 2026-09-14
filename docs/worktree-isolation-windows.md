@@ -88,30 +88,60 @@ The isolation tests run against **real** git repositories created in
 `TestDrive`, not mocks: the guarantee is a property of real repositories, and a
 mocked `rev-parse` would only prove the mock agrees with itself.
 
+## The pooled base
+
+Before a worker launches, `Update-FmWorktreeBase` moves the leased copy to the newest commit of the project's default branch.
+The newest commit is read from two tips, the project's local `<default>` and a freshly fetched `origin/<default>`, and the base is whichever of them contains the other.
+
+**This is a deliberate departure from the Linux refresh**, which resets to `origin/<default>` alone (upstream #2116).
+That is right only where origin is where work lands.
+A `local-only` merge (`Invoke-FmMergeLocal`) fast-forwards the local default branch and pushes nothing, so on a project that has any origin at all, origin falls one landing further behind every time, and a refresh that trusts origin starts every new worker behind the work already landed.
+That is what happened to firstmate-win itself: its `origin` is a bare repository on the same machine that nothing updates, so every worker copy was handed out at `main` and reset backwards to that mirror three seconds later.
+It is why lanes kept needing hand rebases and workers kept rediscovering bugs that were already fixed.
+Upstream carries the same defect for a `local-only` project with an origin; it simply rarely has one.
+
+| local `<default>` against `origin/<default>` | where the worker starts |
+| --- | --- |
+| the same commit, or local is behind | `origin/<default>` - for example a merged pull request the clone has not synced |
+| local is ahead | local `<default>` - work landed here that origin never received |
+| there is no origin remote | local `<default>`, with nothing fetched (upstream #3885); `New-FmProject` creates exactly these projects, and the refresh used to refuse every spawn into them |
+| they have diverged | **refused**, saying how far apart they are, because starting on either tip silently drops the other's commits |
+
+Three smaller rules sit around that choice.
+The copy's cleanliness is checked before anything is fetched, so a dirty copy is reported as dirty rather than as whatever the fetch ran into first.
+An origin that is configured but cannot be fetched still refuses: only a missing remote means there is nothing to be stale against.
+The copy is detached in place before the hard reset, so a copy ever handed out with a branch checked out keeps that branch where it was.
+
+A repository with no commit at all still cannot host a worker, because there is nothing to check a copy out at.
+`New-FmWorktreeLease` refuses that before asking treehouse, whose own refusal names an invalid `refs/remotes/origin/main` and so points at a remote the project never had.
+A project from `New-FmProject` therefore needs a first commit before its first spawn.
+
+One consequence is worth knowing: a `direct-PR` task on a project whose local default branch holds commits landed locally starts on top of them, so its pull request carries them in its diff.
+That only arises on a project that mixes `local-only` and pull-request delivery, and there the alternative is a pull request that starts behind the project's own history.
+
+**Firstmate does not keep `origin` current when work lands, and should not start.**
+`local-only` is the promise that nothing leaves the machine, and on most projects `origin` is a hosted repository, so pushing on landing would publish work the captain approved only for a local landing.
+With the base read from both tips nothing depends on origin being current, which removes the only reason to add that outward-facing write.
+
+`docs/windows-e2e-evidence.md` section 58 has the reproduction on real treehouse leases and each case above.
+
 ## Windows-unverified
 
-**Treehouse ships official Windows builds, but it has never been measured
-there** - not by this repo, and not upstream as far as this port can establish.
-Everything here was executed against **treehouse v2.1.1 on Linux**. Mark this as
-the first thing to measure on a Windows host.
+This note was first written against **treehouse v2.1.1 on Linux**.
+`treehouse get --lease --json` and the conditional return have since run on Windows 11 with the same v2.1.1: a real worker dispatch in `docs/windows-e2e-evidence.md` section 10.3, and four real leases through `New-FmIsolatedWorktree` in section 58.
 
-Concretely unmeasured:
+Still unmeasured:
 
-1. **Whether `treehouse get --lease` works at all on Windows**, and whether its
-   stdout contract (path only, banners on stderr) holds there. The parser
-   accepts the `--json` body and falls back to the documented plain-`--lease`
-   single-line path, so a difference in banner routing is survivable, but an
-   entirely different output shape is not.
-2. **Whether a pooled worktree can be reset while a handle is open.** Windows
+1. **Whether a pooled worktree can be reset while a handle is open.** Windows
    locks open files where Linux does not, so `Update-FmWorktreeBase`'s
    `git reset --hard` can fail for reasons that never occur on Linux - an
    editor, a running test, an antivirus scan mid-file. The refusal is the
    *correct* Windows behaviour (it stops the task rather than launching from a
    half-reset base), but its frequency on a real Windows host is unknown and may
    need a bounded retry.
-3. **Whether treehouse's pool paths and lease state survive case-insensitive
+2. **Whether treehouse's pool paths and lease state survive case-insensitive
    path comparison.** This port compares paths case-insensitively on Windows; if
    treehouse stores and matches lease paths case-sensitively in its own state,
    a lease could be recorded under one spelling and looked up under another.
-4. **Junctioned pool roots.** `Resolve-FmPhysicalPath` handles junctions through
+3. **Junctioned pool roots.** `Resolve-FmPhysicalPath` handles junctions through
    `ResolveLinkTarget`, exercised on Linux symlinks only.
