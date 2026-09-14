@@ -10307,3 +10307,141 @@ None of the three touches a file this branch changed; they are the merge's, and 
 - **The phone path still closes a decision before the worker has the answer.**
   That is the existing design of that channel (the words are recorded for firstmate's next turn) and was not changed; firstmate then relays the answer without `-ResolveKey`.
 - **Several keys at once** go as `-ResolveKey a,b` from PowerShell; through `pwsh -File` a comma list arrives as one string and is refused as a malformed key rather than split.
+
+## 60. Workers signed the captain's commits, could draft feedback for them, and a first launch on a new project would have ended on a trust dialog - `PROVEN (Windows 11) FOR THE DIALOG, PRE-REGISTRATION, BOTH ENTRY SHAPES, THE ATTRIBUTION SETTING AND BOTH FEEDBACK CONTROLS, IN REAL HERDR PANES; NOT THROUGH A REAL fm-spawn.ps1 DISPATCH`
+
+Dated 2026-09-14, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\27\firstmate-win`, PowerShell 7.6.6, Pester 6.1.0, git 2.49.0.windows.1, Claude Code 2.1.270, herdr 0.7.5-preview protocol 17, Windows 11 Pro 10.0.26200.
+Written on `fm/port-launch-flags` over `main` at `b27e51e`, rebased onto `dee018a`.
+
+Three commits on `main` carried `Co-Authored-By: Claude` against a standing rule, because workers launched with Claude's attribution on.
+The same launch left Claude's model-drafted feedback flow on.
+And `harness-adapters` told firstmate to press Enter on a first-launch trust dialog, which upstream had measured opening on `No, exit`.
+That instruction was fixed first, in its own commit, before anything below was run.
+
+### 60.1 The lab
+
+Three repositories under this session's scratch directory, `proj-a`, `proj-b` and `proj-d`, each with one commit and a linked worktree made with `git worktree add` - the shape treehouse leases, a `.git` file pointing into the checkout's `.git/worktrees/`.
+Before any launch the captain's store held no entry for any lab path, and no ancestor of the lab was trusted: `C:\Users\ADMIN` carries `hasTrustDialogAccepted: false`.
+
+Every launch was the exact string `Get-FmHarnessLaunchCommand -Harness claude -BriefPath <brief> -Model sonnet -Effort low` returned, or that string with a control removed, typed by `herdr pane run` into a tab created in the worktree inside a separate `trustlab` herdr workspace, and read with `herdr pane read`.
+No key was ever sent to a pane.
+Nothing spoke and no browser was opened.
+
+### 60.2 The dialog, on Windows (arm A: never trusted, nothing registered)
+
+```
+ Accessing workspace:
+
+ C:\Users\ADMIN\AppData\Local\Temp\claude\...\scratchpad\trustlab\wt-a
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project,
+ or work from your team). If not, take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+```
+
+Upstream's finding holds here unchanged: the dialog fires despite `--dangerously-skip-permissions`, and the selection opens on `No, exit`, so the Enter the old skill text prescribed would have ended the worker.
+`herdr agent get` read the pane as `"agent":"claude","agent_status":"blocked"` while it sat there.
+The tab was closed with `herdr tab close`; Claude wrote no store entry for either lab path.
+
+### 60.3 Pre-registration (arm B)
+
+`Register-FmClaudeWorkspaceTrust -Worktree <lab>\wt-b` against the captain's real store:
+
+```
+Outcome    : registered
+ProjectKey : C:/Users/ADMIN/AppData/Local/Temp/claude/.../scratchpad/trustlab/proj-b
+Store      : C:\Users\ADMIN\.claude.json
+
+store bytes before=138701 after=138923
+```
+
+The store grew by exactly the one new entry, 65 entries to 66.
+The same launch, in `wt-b`, then reached the composer with no dialog and no keypress:
+
+```
+ ▐▛███▛█   Claude Code v2.1.270
+▝▜██████▀  Sonnet 5 with low effort · Claude Max
+
+❯ FIRSTMATE_OP: v1 launch-brief: This is a launch measurement, not a task. ...
+● ...
+✻ Churned for 5s · done 14:43
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+```
+
+After the session Claude had filed its state - `lastSessionId` among 21 keys - on the `.../trustlab/proj-b` entry, the checkout, under exactly the key registration computed, and created no entry for the worktree.
+That is what the captain's own store already showed at scale: every firstmate-win worker session recorded on `C:/Users/ADMIN/firstmate-win`, and no treehouse path with an entry of its own.
+
+The sonnet session answered that one-paragraph measurement prompt by calling it a prompt injection, and so did every session given the one-line prompt in 60.5.
+That is the model declining a context-free instruction, not the launch failing - the prompt arrived intact and a turn ran - and it is why 60.5 reads each session's own transcript rather than asking the model anything.
+
+### 60.4 Which entry Claude needs (arm D: the worktree's entry only)
+
+With `hasTrustDialogAccepted` written on the `.../trustlab/wt-d` entry alone and nothing on `proj-d`, the same launch in `wt-d` also reached its turn with no dialog, and Claude again filed the session under `proj-d`, creating that entry with the flag `false`.
+So the trust check accepts either entry.
+The port writes only the checkout's: one entry per project, so after the first spawn it is already set and no later spawn writes the live store, where the worktree's would be a new entry and a write for every pool slot.
+
+### 60.5 Attribution and feedback drafts, each control on and off
+
+Four fresh sessions in `wt-b`, launched with identical strings except for the two controls.
+Each session's transcript (`~/.claude/projects/<cwd>/<session>.jsonl`) was read directly: the `remote_session_change` attachment carries the commit attribution Claude instructs the session to append, and the recorded tool list carries `SendFeedback` whenever feedback drafts are on.
+This task's own session, launched by `main`'s unmodified spawn, carries both in its transcript: `Co-Authored-By: Claude Opus 5 (1M context)` and `SendFeedback`.
+
+| Launch | `CLAUDE_CODE_SEND_FEEDBACK=0` | `--settings claude-worker-settings.json` | Commit attribution in the transcript | `SendFeedback` tool |
+|---|---|---|---|---|
+| `old` (main before this change) | no | no | `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` | present |
+| `env-only` | yes | no | `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` | absent |
+| `settings-only` | no | yes | empty | absent |
+| `new` (this change) | yes | yes | empty | absent |
+
+Claude Code 2.1.270 honours `attribution`, and only the settings file carries it.
+Each feedback control alone removes the tool, which is why both are kept: the binary's own gate requires `feedbackDrafts !== "off"` and separately returns false when `CLAUDE_CODE_SEND_FEEDBACK` is false.
+
+The settings file crossed both shells as one argument from a checkout path, which is the point of passing a path: the pane command refuses a double quote, and the JSON is nothing but double quotes.
+
+### 60.6 Editing a store every Claude session rewrites
+
+Read-only, in memory, never written: the live 138701-byte store parsed with System.Text.Json's node model and re-serialised with two-space indentation came back identical byte for byte once line endings were set to LF.
+With the serialiser's Windows default the first byte after `{` already differed (`\r\n`), so LF is not cosmetic.
+`tests/FmClaudeTrust.Tests.ps1` pins that against a staged store in Claude's own format - only the one flag changes - plus the scope refusals, a vendor write landing between the read and the rename (kept, flag recorded on top), a store that keeps moving (refused, never overwritten), and a session writing the flag away straight after the rename (refused).
+
+### 60.7 Negative controls
+
+With the registration call removed from `Start-FmWorker`, two `tests/FmWorker.Tests.ps1` cases failed: trust is registered before the container, and a failed registration leaves nothing behind.
+With `CLAUDE_CODE_SEND_FEEDBACK` and `--settings` removed from `Get-FmHarnessLaunchCommand`, the launch case in `tests/FmDispatch.Tests.ps1` failed.
+Both edits were reverted before anything else ran.
+
+### 60.8 Cleanup
+
+`claude project purge <path> -y` for `wt-b`, `wt-d`, `proj-b` and `proj-d` - the vendor's own purge, which also resolved each worktree to its checkout's entry.
+Afterwards the store held 65 entries with none for the lab, no lab transcript directory remained, and the `trustlab` herdr workspace was closed.
+
+### 60.9 What was NOT proven here
+
+- **A real `bin/fm-spawn.ps1` dispatch into a treehouse lease on a never-trusted project has not been run.**
+  The registration, the exact launch string, a herdr pane and the linked-worktree shape were each measured, and `Start-FmWorker`'s composition of them is proven by unit tests, not by a dispatch.
+- **The bypass-permissions dialog was not measured on Windows.**
+  This machine's user settings carry `skipDangerousModePermissionPrompt: true`, so no launch here could meet it; upstream's measurement of its `No, exit` selection is cited, not repeated.
+- **No worker was watched writing a commit without the trailer.**
+  Attribution was measured at the instruction the session received; a commit-based control would have been confounded by the captain's own `CLAUDE.md`, which forbids the trailer too.
+- **The lost-update window was tested with staged writers, not a live Claude session** writing between the check and the rename; `Private/FmClaudeTrust.ps1` says the window is narrowed, not closed.
+- **No managed settings policy was present**, so upstream's claim that one can turn `feedbackDrafts` back on but not the environment variable is cited, not measured.
+
+### 60.10 The full suite
+
+Each gate ran `Invoke-Pester -Path ./tests` twice in a `-NonInteractive` child of a keeper process that stayed alive for the whole run.
+Over `b27e51e`: run 1 3023 passed / 3 failed / 19 skipped in 53m13s, run 2 3023 / 3 / 19 in 39m57s.
+Rebased onto `2c0f67b`: run 1 3029 / 3 / 19 in 39m08s, run 2 3029 / 3 / 19 in 39m42s.
+A standalone `Invoke-ScriptAnalyzer` sweep over all 203 PowerShell files reported zero findings.
+
+The same three cases failed in every run, and none is this change's: they arrived with the upstream merge in `b27e51e`, and the `merge-fallout` lane owns them.
+
+- `done, and the configured recent-Done retention.keeps only the configured most recent Done rows and archives the surplus` and `differential parity with the tasks-axi markdown backend.produces a byte-identical backlog and archive for the same mutation sequence`: the merged root `.tasks.toml` is read by the backlog tests through the checkout's home, so the archive goes to `<checkout>/data/done-archive.md` instead of the test's own directory.
+- `this checkout's own instruction surface.declares a trigger for every skill, so no skill is dead weight`: the merged `.agents/skills/quiet` and `.agents/skills/captain-hold-lifecycle` have no trigger in `AGENTS.md`.

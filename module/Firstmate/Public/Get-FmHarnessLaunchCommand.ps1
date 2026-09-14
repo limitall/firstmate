@@ -64,7 +64,13 @@ function Get-FmHarnessLaunchCommand {
     # herdr's capture is MEASURED to arrive with SGR stripped, so a dim-aware
     # composer reader cannot tell ghost text from real input there - which makes
     # this env var load-bearing on Windows rather than defence in depth.
-    $prefix = "`$env:CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION='false'; "
+    # CLAUDE_CODE_SEND_FEEDBACK=0 is the second of two feedback-draft controls;
+    # the settings file carries the other. Each alone removes the drafting tool
+    # (docs/windows-e2e-evidence.md section 60), and this one is read straight
+    # from the environment, which upstream notes a managed settings policy that
+    # turns `feedbackDrafts` back on cannot reach.
+    $prefix = "`$env:CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION='false'; `$env:CLAUDE_CODE_SEND_FEEDBACK='0'; "
+    $settingsFlag = '--settings ' + (ConvertTo-FmPowerShellLiteral (Assert-FmClaudeWorkerSettings)) + ' '
     # A pane is created by a long-lived herdr server that does not inherit
     # firstmate's environment, so a bare `claude` would fall back to the default
     # store even when firstmate itself runs under a different one.
@@ -79,5 +85,5 @@ function Get-FmHarnessLaunchCommand {
     # Wrapped for the pane's shell by ConvertTo-FmPaneCommand, which owns why
     # that wrapping is needed and refuses the one value it cannot carry - here,
     # a double quote that an interpolated CLAUDE_CONFIG_DIR path brought in.
-    ConvertTo-FmPaneCommand -Inner "$prefix$($adapter.Executable) --dangerously-skip-permissions $modelFlag$effortFlag$briefExpr"
+    ConvertTo-FmPaneCommand -Inner "$prefix$($adapter.Executable) --dangerously-skip-permissions $settingsFlag$modelFlag$effortFlag$briefExpr"
 }

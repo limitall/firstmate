@@ -319,6 +319,48 @@ Describe 'Harness adapters' {
                 Should -Match ([regex]::Escape("`$env:CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION='false'"))
         }
 
+        It 'launches every worker with attribution and feedback drafts off, through a file the pane can quote' {
+            # The policy has to reach claude as ONE argument through two shells,
+            # and the pane shell refuses a double quote - so the launch names a
+            # settings file rather than carrying JSON. Parsed the way the pane's
+            # pwsh parses it, from a module path with a quote in it, so the test
+            # holds the argument claude receives rather than one layer of escaping.
+            $moduleRoot = Join-Path $TestDrive "it's module"
+            New-Item -ItemType Directory -Path $moduleRoot -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot 'module' 'Firstmate' 'claude-worker-settings.json') `
+                -Destination $moduleRoot
+            Mock Get-FmModuleRoot { $moduleRoot }.GetNewClosure()
+
+            $script = Get-FmTestLaunchScript -Command (Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath 'b.md')
+            $script | Should -Match ([regex]::Escape("`$env:CLAUDE_CODE_SEND_FEEDBACK='0'"))
+            $errors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($script, [ref]$null, [ref]$errors)
+            $errors | Should -BeNullOrEmpty
+            $claude = $ast.FindAll({ param($node)
+                    $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'claude'
+                }, $true) | Select-Object -First 1
+            $elements = @($claude.CommandElements)
+            $at = -1
+            for ($i = 0; $i -lt $elements.Count; $i++) { if ($elements[$i].Extent.Text -eq '--settings') { $at = $i } }
+            $at | Should -BeGreaterThan 0
+            $settingsPath = $elements[$at + 1].Value
+            $settingsPath | Should -Be (Join-Path $moduleRoot 'claude-worker-settings.json')
+
+            $settings = Get-Content -Raw -LiteralPath $settingsPath | ConvertFrom-Json
+            $settings.attribution.commit | Should -BeExactly ''
+            $settings.attribution.pr | Should -BeExactly ''
+            $settings.attribution.sessionUrl | Should -BeFalse
+            $settings.feedbackDrafts | Should -Be 'off'
+        }
+
+        It 'refuses before an endpoint exists when the worker settings file is missing' {
+            $empty = Join-Path $TestDrive 'module-without-settings'
+            New-Item -ItemType Directory -Path $empty -Force | Out-Null
+            Mock Get-FmModuleRoot { $empty }.GetNewClosure()
+            { Get-FmHarnessLaunchCommand -Harness 'claude' -BriefPath 'b.md' } |
+                Should -Throw '*claude worker settings file*is missing*'
+        }
+
         It "forwards firstmate's own claude store, which a herdr-created pane does not inherit" {
             $env:CLAUDE_CONFIG_DIR = 'C:\work\claude'
             try {

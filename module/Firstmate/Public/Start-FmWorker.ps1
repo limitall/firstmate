@@ -29,11 +29,14 @@ WHAT IS PRESERVED (the guarantee, not the mechanism)
     Mode and yolo are never guessed, an unverified adapter never silently
     becomes another one, and a missing executable refuses before an endpoint
     exists.
+  - A claude worker never meets Claude's workspace-trust dialog, which it
+    cannot pass and firstmate must not answer: the project's trust is
+    pre-registered (Private/FmClaudeTrust.ps1) before any endpoint exists, and
+    a registration that fails refuses the spawn.
 
 WHAT IS NOT PORTED HERE (each belongs to another area of the port, and each
 would be a guess if invented here; see docs/task-dispatch-windows.md):
-  - the per-harness turn-end hook and busy-state wiring, and trust-dialog
-    handling.
+  - the per-harness turn-end hook and busy-state wiring.
   - relaunch, secondmate home provisioning, remote placement, trace-context
     propagation, and the herdr presentation projection.
 
@@ -140,6 +143,14 @@ function Start-FmWorker {
             -SkipBaseRefresh:$SkipBaseRefresh -Confirm:$false
         if ($null -eq $lease) { throw 'error: worktree acquisition returned nothing' }
         $worktree = $lease.Path
+
+        # 1b. Claude's workspace trust, before any endpoint exists. The dialog
+        #     would hold the worker before it reads its brief, and it opens on
+        #     "No, exit", so a refusal here is the only outcome that leaves
+        #     nothing wedged: the lease is released below and no pane is made.
+        if ($Harness -eq 'claude') {
+            $null = Register-FmClaudeWorkspaceTrust -Worktree $worktree -Confirm:$false
+        }
 
         # 2. The container. A fresh per-home workspace is created in the
         #    PROJECT directory, exactly as the bash spawn does, so an

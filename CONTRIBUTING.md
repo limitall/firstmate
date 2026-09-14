@@ -291,7 +291,8 @@ module any other way.
   rules for returning a worktree to the pool.
 - `docs/task-dispatch-windows.md` - the dispatch half of the spawn: the refusals
   that make it stop instead of guess (delivery contract, brief agreement,
-  unverified adapter, missing dependency), and the `state/<id>.meta` field order.
+  unverified adapter, missing dependency, unregistrable Claude trust), the
+  per-launch attribution and feedback policy, and the `state/<id>.meta` field order.
 - `docs/delivery-and-projects.md` - the guarded local merge, scout promotion,
   fleet sync, project add/create/remove, and the agent-memory file convention.
   It also states the v1 delivery-mode gate: `direct-PR` and `local-only` ship,

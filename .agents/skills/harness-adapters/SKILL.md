@@ -74,11 +74,16 @@ The consequence to remember is that composer-based proofs are weaker here than o
 | Skill invocation | `/<skill>` |
 | Autonomy | `--dangerously-skip-permissions`, passed by `bin/fm-spawn.ps1` for every crewmate and scout |
 
-First launch in a fresh worktree, or first ever on a machine, may show a workspace-trust ("Is this a project you created or one you trust?") or bypass-permissions confirmation.
-After every spawn, read the pane with `Get-FmPane fm-<id>` within about 20 seconds.
+Claude gates a project it has never seen behind a workspace-trust dialog ("Is this a project you created or one you trust?") that `--dangerously-skip-permissions` does not cover.
+`bin/fm-spawn.ps1` pre-registers the project's trust before it creates the pane, so a worker does not meet that dialog, and a registration that fails refuses the spawn rather than launching a worker into it.
+A separate, once-per-machine bypass-permissions confirmation is not something the spawn addresses; this machine's `skipDangerousModePermissionPrompt` user setting already answers it, but a worker under a `CLAUDE_CONFIG_DIR` that lacks the setting would meet it.
+After every spawn, read the pane with `Get-FmPane fm-<id>` within about 20 seconds; herdr's native state reads `blocked` while a dialog holds the worker.
 **Never press Enter on a trust or bypass dialog, and never try to answer one with any other key.**
-Both were measured opening with the selection on `No, exit`, so Enter ends the worker instead of accepting it, and firstmate's key plane has no arrow keys to move the selection.
+The trust dialog was measured on this machine opening with the selection on `No, exit`, upstream measured the bypass one the same way, and firstmate's key plane has no arrow keys, so Enter ends the worker instead of accepting.
 If such a dialog is showing, report it to the captain, naming which dialog it is and the worker it holds, and leave the pane untouched.
+
+`bin/fm-spawn.ps1` also launches every claude worker with commit and pull-request attribution off, so no worker adds an agent co-author trailer or generated-with line, and with feedback drafts off, so no worker drafts a bug report on the captain's behalf.
+Both are scoped to the launch and never touch the captain's own Claude settings; `Get-FmHarnessLaunchCommand` owns the mechanics.
 
 Claude renders a predicted-next-prompt suggestion as dim text inside an otherwise-empty composer after a turn completes.
 `bin/fm-spawn.ps1` launches every claude worker with `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`, scoped to firstmate-launched agents so it never touches the captain's global config.

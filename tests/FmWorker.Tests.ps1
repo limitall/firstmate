@@ -77,6 +77,42 @@ Describe 'Start-FmWorker' {
         Mock Send-FmHerdrTextLine { $true }
         Mock Remove-FmHerdrPane { $true }
         Mock Remove-FmWorktreeLease { $true }
+        # The real registration writes the captain's own Claude store; its
+        # behaviour is tests/FmClaudeTrust.Tests.ps1's, against a staged one.
+        Mock Register-FmClaudeWorkspaceTrust {
+            [pscustomobject]@{ Outcome = 'registered'; ProjectKey = 'C:/proj'; Store = 'staged' }
+        }
+    }
+
+    It 'pre-registers Claude workspace trust for the leased copy before any endpoint exists' {
+        $script:order = [System.Collections.Generic.List[string]]::new()
+        Mock Register-FmClaudeWorkspaceTrust { $script:order.Add("trust:$Worktree"); $null }
+        Mock New-FmHerdrContainer {
+            $script:order.Add('container')
+            [pscustomobject]@{ Session = 'default'; WorkspaceId = 'w1'; SeededTabId = ''; Container = 'default:w1' }
+        }
+        $null = Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
+            -Harness 'claude' -LaunchCommand 'claude' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false
+        @($script:order) | Should -Be @("trust:$script:worktree", 'container')
+    }
+
+    It 'refuses the spawn when trust cannot be registered, leaving nothing behind' {
+        # A worker launched anyway would sit on a dialog that opens on "No, exit".
+        Mock Register-FmClaudeWorkspaceTrust { throw 'error: could not pre-register Claude workspace trust' }
+        { Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
+                -Harness 'claude' -LaunchCommand 'claude' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*could not pre-register Claude workspace trust*'
+        Should -Invoke New-FmHerdrContainer -Times 0
+        Should -Invoke New-FmHerdrTask -Times 0
+        Should -Invoke Send-FmHerdrTextLine -Times 0
+        Should -Invoke Remove-FmWorktreeLease -Times 1 -ParameterFilter { $IfLeaseId -eq 'L-7' }
+        Test-Path -LiteralPath (Join-Path $script:stateDir 'alpha.meta') | Should -BeFalse
+    }
+
+    It 'leaves Claude trust alone for a launch that is not claude' {
+        $null = Start-FmWorker -TaskId 'alpha' -Project $script:project -BriefPath $script:brief `
+            -Harness 'codex' -LaunchCommand 'codex' -Mode 'local-only' -Yolo 'off' -FirstmateHome $script:fmHome -Confirm:$false
+        Should -Invoke Register-FmClaudeWorkspaceTrust -Times 0
     }
 
     It 'emits EXACTLY ONE object - the task record - and leaks nothing else' {

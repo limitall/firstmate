@@ -91,6 +91,37 @@ that is defence in depth behind a dim-aware composer reader; on Windows herdr's
 capture is MEASURED to arrive with SGR stripped, so nothing downstream can tell
 ghost text from real input and this env var is load-bearing.
 
+### Attribution and feedback drafts off
+
+Every claude launch also carries `--settings <module>/claude-worker-settings.json`, which turns attribution off (`commit` and `pr` empty, `sessionUrl` false) and sets `feedbackDrafts` to `off`.
+`CLAUDE_CODE_SEND_FEEDBACK=0` rides beside it as a second feedback control; each alone removes the drafting tool, and upstream notes a managed settings policy can turn the setting back on but cannot reach the variable.
+Without them a worker added `Co-Authored-By: Claude ...` to the captain's commits against a standing rule, and could draft a bug report on their behalf.
+Flag settings sit above the user, project and local scopes, so the policy holds whichever of those a worker loads, and the captain's own settings are never written.
+
+**Why a file, when upstream passes the JSON inline (#3945, #3661).**
+The pane command cannot carry a double quote: the pane shell is Windows PowerShell 5.1, `ConvertTo-FmPaneCommand` refuses the character rather than type a command that arrives mangled, and the JSON is all quotes.
+Composing the JSON inside the pane instead would dodge that refusal and still leave the string to pwsh's native argument quoting on its way to `claude.exe`.
+A path contains no double quote (Windows forbids one), so it crosses both shells as the same single-quoted literal every other launch value already uses, and the policy is a tracked file anyone can read.
+A missing file refuses the launch before an endpoint exists.
+
+`docs/windows-e2e-evidence.md` section 60 measures each control on and off in a real herdr pane on Claude Code 2.1.270.
+
+## Claude workspace trust
+
+Claude holds a project it has never seen behind a trust dialog that `--dangerously-skip-permissions` does not cover, and the dialog opens on `No, exit` - measured on this machine, section 60.
+Firstmate cannot answer it, so the first worker on a new project would sit there before reading its brief.
+`Start-FmWorker` therefore calls `Register-FmClaudeWorkspaceTrust` (`Private/FmClaudeTrust.ps1`) after the lease and before any endpoint exists, and a registration that fails refuses the spawn with the lease released.
+
+What this port does differently from upstream's `bin/fm-claude-trust.sh` (#3663), and why - the file header owns the full reasoning:
+
+- **One entry, the checkout's.**
+  Claude keys a worktree session under the primary checkout, and a flag on either the checkout or the worktree lets a worker through.
+  The checkout's is one entry per project, so once it is set no later spawn writes the live store at all; upstream writes both.
+- **Trust only.**
+  Upstream's external-imports consent handling (#3944) is not copied: every entry on this machine carries that flag at its default `false`, which upstream reads as a decline, so it would refuse every spawn.
+- **No node.**
+  The store is edited through System.Text.Json's node model, which reproduced this machine's live store byte for byte, and it is replaced only if the bytes read are still the bytes on disk.
+
 ## The task record
 
 `ConvertTo-FmTaskRecordField` owns the field set and ORDER, byte for byte from
@@ -180,11 +211,9 @@ one's.
 
 ## WINDOWS-UNVERIFIED
 
-- The claude launch line itself: that `claude --dangerously-skip-permissions`
-  plus a PowerShell sub-expression argument reaches the agent intact through
-  `herdr pane run` on Windows. The quoting is native PowerShell and the brief is
-  read by the pane rather than typed, which is the design that minimises this
-  risk, but it has not been observed on Windows.
+- No longer unverified: the claude launch line.
+  Section 60 typed it through `herdr pane run` seven times, with and without the settings flag; six started Claude Code 2.1.270 with the brief as its first prompt, and the seventh was the never-trusted control held at the trust dialog.
+  The multi-kilobyte, quote-heavy brief of the task that measured it reached its own worker through the same line.
 - That a Windows crew registers with herdr and fires its turn-end hook, which is
   what makes an adapter "verified"; this is why only claude is listed and why the
   list is data (`Get-FmHarnessAdapter`) rather than prose.

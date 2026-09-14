@@ -323,6 +323,34 @@ function Assert-FmHarnessExecutable {
     $found.Source
 }
 
+# The per-launch settings file every claude worker is started with: attribution
+# off, so no worker signs the captain's commits or pull requests, and feedback
+# drafts off, so no worker drafts a bug report on the captain's behalf. It is
+# passed as `--settings <path>`, which Claude layers above the user, project and
+# local scopes, so the policy holds whichever scopes a worker ends up loading
+# and never touches the captain's own settings.
+#
+# A FILE, NOT INLINE JSON. Upstream passes the same object inline. That cannot
+# cross this port's pane: ConvertTo-FmPaneCommand refuses a double quote, because
+# the pane shell is Windows PowerShell 5.1, and building the JSON inside the pane
+# instead would still hand pwsh-to-claude.exe native argument quoting a string
+# full of quotes. A path carries none (Windows forbids `"` in one), so the only
+# quoting left is the single-quoted literal every other launch value already uses.
+#
+# Assert-, not Get-: a launch naming a settings file that is not there opens a
+# pane onto claude's own error, which supervision reads as a wedged worker.
+function Assert-FmClaudeWorkerSettings {
+    [OutputType([string])]
+    [CmdletBinding()]
+    param()
+    $path = Join-Path (Get-FmModuleRoot) 'claude-worker-settings.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw ("error: the claude worker settings file '$path' is missing; refusing to launch a worker that would " +
+            'sign commits and draft feedback on the captain''s behalf')
+    }
+    $path
+}
+
 # --- harness resolution from config ------------------------------------------
 
 function Get-FmConfigFirstLine {
