@@ -292,8 +292,60 @@ Describe 'Invoke-FmToolInstallerFile' {
 }
 
 Describe 'Install-FmSpeechModel' {
-    BeforeEach { $script:Store = New-SpeechStore }
-    AfterEach { if (Test-Path -LiteralPath $script:Store) { Remove-Item -LiteralPath $script:Store -Recurse -Force -ErrorAction SilentlyContinue } }
+    BeforeEach {
+        $script:Store = New-SpeechStore
+        # STATED, NOT INHERITED. This function refuses to reach the VENDOR while
+        # FM_TEST_MODE names a live run, and this suite is run both by the
+        # per-file runner (which sets it) and by hand (which does not). Every
+        # case here but the pair below is about the placement, the hashing and
+        # the re-run behaviour, all of which go through -SourcePath and are not
+        # the refusal's business - so the marker is cleared and the one case that
+        # wants it sets it.
+        $script:AmbientTestMode = $env:FM_TEST_MODE
+        Remove-Item -LiteralPath 'Env:\FM_TEST_MODE' -ErrorAction SilentlyContinue
+    }
+    AfterEach {
+        if (Test-Path -LiteralPath $script:Store) { Remove-Item -LiteralPath $script:Store -Recurse -Force -ErrorAction SilentlyContinue }
+        if ($null -eq $script:AmbientTestMode) {
+            Remove-Item -LiteralPath 'Env:\FM_TEST_MODE' -ErrorAction SilentlyContinue
+        } else {
+            $env:FM_TEST_MODE = $script:AmbientTestMode
+        }
+    }
+
+    It 'will not go to the vendor for 1.4 GB while a test run names itself' {
+        # THE THIRTY-NINE MINUTES. A fixture's `pwsh` stub was not resolved, the
+        # shipped installer carried on, and because a suite has nobody at the
+        # keyboard the speech-model question took its documented default - which
+        # is YES, deliberately, because an unattended run is a script somebody
+        # wrote. The download then ran inside a test until an assertion about
+        # something else failed. -WhatIf below means this case could not download
+        # anything even if the guard were gone; what it pins is that the guard
+        # answers BEFORE the -WhatIf gate, which is what makes the two outcomes
+        # distinguishable at all.
+        $env:FM_TEST_MODE = "$PID"
+        $result = Install-FmSpeechModel -StoreRoot $script:Store -WhatIf
+
+        $result.Ok | Should -BeFalse
+        $result.Action | Should -Be 'refused'
+        $result.Detail | Should -Match 'REFUSED'
+        $result.Detail | Should -Match ([regex]::Escape("process $PID"))
+    }
+
+    It 'leaves the seam its own tests need open, which is what keeps this area measurable' {
+        # THE OTHER HALF, and the reason the guard asks about -SourcePath rather
+        # than about test mode alone. Refusing every call here would trade one
+        # measured download for a whole unmeasured code path: the placement, the
+        # hashing and the atomic move all run for real in the cases below, from a
+        # local file. Only the vendor is out of bounds.
+        $env:FM_TEST_MODE = "$PID"
+        $payload = Join-Path $script:Store 'seam.bin'
+        $null = New-ModelPayload -Path $payload -Content 'not the model'
+        $result = Install-FmSpeechModel -StoreRoot $script:Store -SourcePath $payload -Confirm:$false
+
+        $result.Action | Should -Not -Be 'refused' -Because 'a local payload reaches nothing this suite cannot afford'
+        $result.Detail | Should -Match 'do not match the SHA256' -Because 'it got as far as hashing, which is the code this area is about'
+    }
 
     It 'refuses bytes that do not match the hash the engine''s own catalog publishes' {
         # A download that does not match is NOT the model, whichever host served

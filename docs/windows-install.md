@@ -371,6 +371,8 @@ It exists because `bin/fm-setup.ps1` deliberately installs nothing: setup answer
 `Get-FmMachineInstallPrerequisite` owns both - WHERE this checkout is and WHO this run belongs to - and `install.ps1` halts on either before it writes anything.
 They are asked ahead of the plan rather than inside it because the plan spends around half a minute detecting tools, and a captain whose install could never work should not pay for that to be told.
 `-DetectOnly` is exempt from the halt, because a run that changes nothing has nothing to protect them from.
+There is one refusal AHEAD of those two, and it is not about the machine at all: a run that finds itself inside firstmate's own test suite stops before the plan.
+`docs/test-isolation.md` owns it, along with the two runs that made it necessary and the reason it sits after the shell switch rather than before it.
 Both faults are named when both hold, and the ACCOUNT is named first: a window belonging to somebody else makes the location answer wrong too, so fixing the window can clear both, while moving a checkout can never change whose window it is.
 
 **An install belongs to the account that runs it.**

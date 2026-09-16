@@ -2575,6 +2575,39 @@ Describe 'the runtime is found before a tool fails to start, and installed from 
                 Machine = ''; Source = 'the file'; Detail = 'VCRUNTIME140.dll is not on this machine'
                 Command = (Get-FmBootstrapWingetCommand -PackageId 'Microsoft.VCRedist.2015+.x64')
             }
+            # STATED, NOT INHERITED. This step refuses outright while FM_TEST_MODE
+            # names a live run, and this suite is run both by the per-file runner
+            # (which sets it) and by hand (which does not). Every case here but one
+            # is about what the step does on a CAPTAIN'S machine, so they say so -
+            # otherwise the same correct code gives two different answers
+            # depending on how the suite happened to be started.
+            $script:AmbientTestMode = $env:FM_TEST_MODE
+            Remove-Item -LiteralPath 'Env:\FM_TEST_MODE' -ErrorAction SilentlyContinue
+        }
+
+        AfterEach {
+            if ($null -eq $script:AmbientTestMode) {
+                Remove-Item -LiteralPath 'Env:\FM_TEST_MODE' -ErrorAction SilentlyContinue
+            } else {
+                $env:FM_TEST_MODE = $script:AmbientTestMode
+            }
+        }
+
+        It 'refuses the step outright while a test run names itself' {
+            # THE ONE STEP IN THIS REPOSITORY THAT ASKS FOR ADMINISTRATOR, and a
+            # suite has nobody to answer it. The dialog is raised by Windows, so
+            # -NonInteractive does not reach it; it does not fail the run; and an
+            # agent harness's error mode hides it from the agent while the
+            # captain collects it on their desktop for the rest of the run. Every
+            # one of those is why the 16-bit dialog survived a long green run.
+            $env:FM_TEST_MODE = "$PID"
+            $result = Install-FmToolRuntime -Status $script:RuntimeMissing -WingetPath 'C:\fixture\winget.exe' -Confirm:$false
+
+            Should -Invoke Start-FmToolElevated -Times 0 -Exactly -Because 'nothing may reach the dialog from inside a suite'
+            $result.Action | Should -Be 'blocked'
+            $result.Detail | Should -Match 'REFUSED'
+            $result.Detail | Should -Match ([regex]::Escape("process $PID")) -Because 'the run doing the refusing is nameable'
+            $result.Detail | Should -Match 'Microsoft\.VCRedist\.2015\+\.x64' -Because 'a blocked step still hands over the command'
         }
 
         It 'asks for nothing when the runtime is already here' {

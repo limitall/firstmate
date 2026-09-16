@@ -397,6 +397,14 @@ function Confirm-SpeechModel {
     param([Parameter(Mandatory)]$Speech)
 
     if ($SkipSpeechModel) { return $false }
+    # THE DEFAULT HERE IS YES, AND THAT IS WHY THIS LINE EXISTS. Section 0 above
+    # already stops a test's child before this function can be called, so under
+    # today's control flow this is unreachable - deliberately so. It is here
+    # because the cost of the two guards disagreeing is 1.4 GB and thirty-nine
+    # minutes, and because the one question in this file whose silence means
+    # "go ahead" is the one that must not depend on a guard somewhere else
+    # staying where it is.
+    if (Test-FmTestMode) { return $false }
     Say ''
     Say '  The speech engine needs a model, and it is a LARGE download:'
     Say ''
@@ -421,6 +429,35 @@ function Confirm-SpeechModel {
 Say ''
 Say '  FIRSTMATE - install'
 Say ''
+
+# ---- 0. A RUN THAT IS A TEST'S CHILD STOPS HERE ------------------------------
+#
+# THIS HAS HAPPENED, TWICE, AND IT IS WHAT THIS GUARD IS FOR. Two suites here
+# start this very file with a stubbed `pwsh` on PATH so the relaunch above goes
+# nowhere. When the stub was not resolved - once because a leaked PSModulePath
+# let a fixture autoload the real module, once for a reason never reproduced -
+# this script simply carried on, on the machine the suite was measuring. One run
+# hung for 11.6 hours on a question nobody was there to answer; another spent
+# thirty-nine minutes downloading 1.4 GB inside a test. The fixtures were
+# repaired both times, and a fixture that has to be right every time is not a
+# guarantee.
+#
+# SO THE ANSWER IS ASKED FROM THIS END TOO. A test run tells its children who it
+# is, and an installer that finds itself inside one stops. Not a warning: every
+# step below this line either installs something, changes a machine-wide
+# setting, or raises a dialog.
+#
+# AFTER THE SHELL SWITCH, NOT BEFORE IT. The block above is the one part of this
+# file that has to survive the wrong shell, it installs nothing, and two of the
+# cases that run this script exist precisely to measure it - refusing before it
+# would break a measurement to protect nothing.
+if (Test-FmTestMode) {
+    Warn "  $(Get-FmTestModeRefusal -Action 'install onto this machine')"
+    Warn ''
+    Warn '  Nothing was installed and nothing was changed.'
+    Warn ''
+    exit 1
+}
 
 # ---- 1. an install that could never work STOPS HERE, BEFORE ANYTHING ELSE ---
 #

@@ -21,6 +21,15 @@ A **non-positive bound is refused**, because `timeout 0` and `alarm 0` both
 DISABLE the deadline in the original. A caller that passes 0 would otherwise get
 an unbounded run under a name that promises the opposite.
 
+`-ExcludeEnvironment` is the one addition this port made to that surface. A
+child's environment starts as a copy of the parent's and `-Environment` can only
+add to it, so there was no way to say "and not that one" - which is a gap for the
+thing this function is for, because a bound on code firstmate does not trust is
+not much of a bound if the code is handed this process's overrides on the way in.
+Patterns are removed BEFORE `-Environment` is applied, so a caller can drop a
+family and set one member of it back. `Invoke-FmTestRun` is the caller that needs
+it, for the whole `FM_*` family at once; `docs/test-isolation.md` states why.
+
 ## The whole tree dies with the bound
 
 The bash versions put the child in its own process GROUP (perl `setpgrp`, or

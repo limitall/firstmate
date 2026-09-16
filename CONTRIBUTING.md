@@ -47,8 +47,9 @@ section 2 lists the state-file formats).
   either `throw` deliberately or use `Write-Error -ErrorAction Continue`; name
   hard-requirement checks `Assert-*`, not `Test-*`.
 - Every public function gets Pester tests. Run them: `pwsh -NoProfile
-  -NonInteractive -Command 'Invoke-Pester -Path ./tests/'`. Do not hand back
-  unexecuted PowerShell.
+  -NonInteractive -File .\bin\fm-test-run.ps1`, which gives every file its own
+  bounded child - `docs/test-isolation.md` owns what that child is given and
+  what it is refused. Do not hand back unexecuted PowerShell.
   **The `-NonInteractive` in that line is load-bearing** - it is the same rule
   the bullet below states for every child this repo starts, and it applies to
   the suite you run BY HAND for the same reason. Several tests prove a refusal
@@ -67,10 +68,16 @@ section 2 lists the state-file formats).
   `tests/FmModuleAssembly.Tests.ps1` fails any test that writes one by hand.
   `tests/FmUnstartable.TestHelpers.ps1` owns the reasoning and
   `docs/windows-e2e-evidence.md` section 41 has the run.
-  **Run the whole directory, never one file.** Pester containers share one
-  process, so an `$env:FM_*` override left set by one file decides another
-  file's behaviour; that has already produced two failures that passed in
-  isolation. Save and restore every environment key your tests touch. A
+  **Run every file, and let the runner give each one its own process.** Pester
+  containers share one process, so an `$env:FM_*` override left set by one file
+  decides another file's behaviour; that has already produced two failures that
+  passed in isolation and two runs that never finished at all.
+  `bin/fm-test-run.ps1` removes the class rather than the instance, for about
+  six minutes on a three-quarter-hour suite - MEASURED, and mostly Pester's own
+  per-process start rather than the shell's; `docs/test-isolation.md` has the
+  breakdown and what the runner refuses. `Invoke-Pester -Path ./tests` is still correct to type and is
+  still one process for fifty-four files, so the hygiene inside a file still
+  matters: save and restore every environment key your tests touch. A
   SILENCING preference - `$WhatIfPreference`, `$ConfirmPreference`,
   `$ProgressPreference` and friends - is the same hazard with a worse failure
   mode, because a suppressed write leaves the test passing: set one only inside
@@ -345,6 +352,12 @@ module any other way.
   a captured child launch is on .NET's `CreateProcess` path while an uncaptured one is not,
   PowerShell raises the refusal as a terminating `ApplicationFailedException` whatever the preference says,
   and the raw text must never reach the captain - "access is denied" plus a trace is what made one diagnosis of it wrong.
+- `docs/test-isolation.md` - one process per test file: what the per-file runner
+  scrubs and what it deliberately sets instead, why a file that reports no
+  counts and a file that contains no tests are both failures, the marker that
+  tells a child a suite is running it, and the three real actions that refuse
+  while it is set. Read it before writing a fixture that stubs a tool or the
+  module load - that is the shape both of this repo's runaway runs had.
 - `docs/instruction-surface.md` - the operating contract and the skills: what
   `AGENTS.md` is for, how each Linux skill was ported or recorded as absent, how
   the two committed links survive a Windows clone, and what the doctor checks.
@@ -677,11 +690,14 @@ built for and states what it still cannot prove.
   A detached runner whose launching shell exits is therefore orphaned by the time those files run, and five cases fail for a reason that is nothing to do with the code.
   Measured: 99 passed / 0 failed with a live parent, 95 / 4 orphaned, on the same tree.
   A long detached run needs an anchor process that WAITS on it, so the process running Pester keeps a live parent for the whole run.
+  `bin/fm-test-run.ps1` is that anchor by construction - it runs no tests itself and waits on every child - so what a detached run still needs is a parent for the RUNNER, not for each file.
 - **A test that changes a process-global puts it back, and `$env:PSModulePath` is one.**
   A file that prepends this checkout's `module` to it and does not restore it lets every later file, and every child process any of them starts, autoload `Firstmate` by name.
   That is how a fixture which had deliberately stubbed the module out ended up running the real `install.ps1` and hanging the whole suite for 11.6 hours, twice, on `main` as well as on a branch.
   A fixture that stubs the module load must ALSO neutralise `PSModulePath` in the child it starts, the same way it already neutralises `PATH` - restoring the leak is hygiene, but the fixture may not depend on it.
   `docs/windows-e2e-evidence.md` section 56 has the measurements; `tests/FmModuleAssembly.Tests.ps1` guards both halves.
+  Both of those stay, and neither is what closes the class: `bin/fm-test-run.ps1` gives each file a process whose `PSModulePath` never carried the checkout in the first place, and a bound so a fixture that does get through costs fifteen minutes rather than eleven hours.
+  A fixture that stubs a TOOL has the same shape one level out - the stub arranges which binary wins, not that the real one is unreachable - and `Get-FmTestPathSans` in `tests/FmToolAbsence.TestHelpers.ps1` is how that is made true and proved.
 - **One top-level `AfterAll` per test file, placed before the first `Describe`.**
   A second one replaces the first instead of joining it, and the file then reports zero tests rather than failing; one written after the `Describe` blocks never registers at all.
 - **Do not decide from grammar whether a phrase is the NAME of work.** Three
@@ -752,10 +768,18 @@ before touching a state file or a lock.
 
 ```powershell
 # -NonInteractive so a prompt is a named failure rather than a silent hang;
-# see the rules section above for what it cost twice without it.
-pwsh -NoProfile -NonInteractive -Command 'Invoke-Pester -Path ./tests'
+# see the rules section above for what it cost twice without it. The runner
+# passes it to every child as well, because it is NOT inherited.
+pwsh -NoProfile -NonInteractive -File .\bin\fm-test-run.ps1
 Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
 ```
+
+The runner gives each test file its own process, its own temp directory, its
+own home and a 30-minute bound, and tells it a suite is running it so the
+installer, the speech-model download and the administrator prompt refuse.
+`docs/test-isolation.md` states the whole contract.
+`Invoke-Pester -Path ./tests` remains a correct thing to type; it is the same
+tests in one process, which is what two incidents there were.
 
 The analyzer bar is **zero findings at every severity**, not just Error and
 Warning, and `tests/FmAnalyzer.Tests.ps1` runs that same repo-wide sweep inside

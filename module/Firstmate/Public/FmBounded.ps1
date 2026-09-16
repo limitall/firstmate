@@ -45,6 +45,18 @@ function Invoke-FmBoundedCommand {
         Process.Kill($true). The record's Mechanism says which one ran, so a test
         (and a bug report) can tell them apart.
 
+        .PARAMETER ExcludeEnvironment
+        Name patterns to DELETE from what the child would otherwise inherit,
+        applied before -Environment so a caller can drop a family and then set
+        one member of it back.
+
+        A child's environment starts as a copy of this process's, and -Environment
+        can only add to it - so before this there was no way to say "and not
+        that one". That is a gap for the thing this function is for: a bound on
+        code firstmate does not trust is not much of a bound if the code is
+        handed this process's overrides on the way in. Invoke-FmTestRun is the
+        caller that needs it, and needs it for the whole FM_* family at once.
+
         .OUTPUTS
         [pscustomobject] ExitCode, StdOut, StdErr, TimedOut, Mechanism
     #>
@@ -55,7 +67,8 @@ function Invoke-FmBoundedCommand {
         [Parameter(Position = 1)][string[]]$ArgumentList = @(),
         [Parameter(Mandatory)][double]$TimeoutSeconds,
         [string]$WorkingDirectory = '',
-        [hashtable]$Environment = @{}
+        [hashtable]$Environment = @{},
+        [string[]]$ExcludeEnvironment = @()
     )
 
     if ($TimeoutSeconds -le 0) {
@@ -79,6 +92,17 @@ function Invoke-FmBoundedCommand {
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     if ($WorkingDirectory) { $psi.WorkingDirectory = $WorkingDirectory }
+    # Removals first, additions second: dropping a family and then setting one
+    # member of it back is the ordinary case, and the reverse order would delete
+    # what the caller had just asked for. The key list is materialised before
+    # anything is removed, because removing from a live key collection while
+    # enumerating it throws.
+    foreach ($pattern in $ExcludeEnvironment) {
+        if ([string]::IsNullOrWhiteSpace($pattern)) { continue }
+        foreach ($key in @($psi.Environment.Keys | Where-Object { $_ -like $pattern })) {
+            $null = $psi.Environment.Remove($key)
+        }
+    }
     foreach ($key in $Environment.Keys) { $psi.Environment[[string]$key] = [string]$Environment[$key] }
 
     $useJob = Test-FmJobObjectSupport

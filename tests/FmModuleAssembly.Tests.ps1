@@ -35,6 +35,49 @@ BeforeAll {
     $script:BinRoot = Join-Path $script:RepoRoot 'bin'
     $script:Manifest = Join-Path $script:ModuleRoot 'Firstmate.psd1'
 
+    . (Join-Path $PSScriptRoot 'FmToolAbsence.TestHelpers.ps1')
+
+    # THE RELAUNCH FIXTURE, AND WHY IT IS MORE THAN A STUB ON PATH.
+    #
+    # Both entry points relaunch themselves under PowerShell 7, and the cases
+    # below measure that relaunch by putting a `pwsh` that goes nowhere at the
+    # front of PATH. Putting it first arranges which one WINS; it does not
+    # arrange that the real one is unreachable, and when the resolution went the
+    # other way on 2026-09-11 the shipped installer simply carried on against
+    # this machine - thirty-nine minutes of a test run on a 1.4 GB download
+    # before an assertion about something else failed.
+    #
+    # So the fixture closes BOTH doors this repo's own code opens to `pwsh`:
+    #
+    #   PATH, through Get-FmTestPathSans, which hands back a PATH the real
+    #   shell does not resolve on and proves it before returning.
+    #
+    #   %LOCALAPPDATA%\Programs\PowerShell7, which install.ps1 looks in BY
+    #   NAME when PATH has no answer - and which is exactly where its own
+    #   documented install route puts PowerShell 7, so on the captain's clean
+    #   VM this door is the one that is open. An empty directory closes it.
+    #
+    # Stated at the seam that creates the child, which is CONTRIBUTING.md's rule
+    # for every variable a child branches on: a fixture that only clears what it
+    # happens to have inherited passes for the wrong reason on a seat where
+    # nothing set it.
+    function New-RelaunchFixture {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'A Pester fixture builder that writes only into TestDrive; -WhatIf would leave the case running against the real shell, which is the failure it exists to prevent.')]
+        param([Parameter(Mandatory)][string]$Directory)
+        $stub = Join-Path $Directory 'stub'
+        $null = New-Item -ItemType Directory -Path $stub -Force
+        [System.IO.File]::WriteAllText((Join-Path $stub 'pwsh.cmd'), "@echo off`r`necho FM-RELAUNCH %*`r`n")
+        $local = Join-Path $Directory 'localappdata'
+        $null = New-Item -ItemType Directory -Path $local -Force
+        [pscustomobject]@{
+            Stub         = $stub
+            Path         = $stub + [System.IO.Path]::PathSeparator +
+            (Get-FmTestPathSans -Tool 'pwsh' -Directory (Join-Path $Directory 'sans'))
+            LocalAppData = $local
+        }
+    }
+
     function Get-FmModuleScriptFile {
         param([string]$Subdir)
         $dir = Join-Path $script:ModuleRoot $Subdir
@@ -516,6 +559,13 @@ Describe 'install.ps1 stops before it writes, or does not stop at all' {
                 -Destination (Join-Path $Directory 'install.ps1') -Force
             $prelude = @'
 param([string]$RequiredCommand)
+# STATED, NOT INHERITED. install.ps1 asks this before anything else it does, and
+# refuses while a test run names itself - which is what stops a fixture whose
+# stub was missed from installing onto the machine the suite is measuring. These
+# cases are about the halt AFTER it, so the fixture answers no; a run that
+# depended on whether the suite itself was started by the runner would give two
+# different answers on two correct machines.
+function Test-FmTestMode { $false }
 function Get-FmMachineInstallPrerequisite {
     param([string]$Path = '')
     $lines = @()
@@ -710,12 +760,12 @@ Describe 'start.ps1 in the shell a clean machine actually opens' {
         }
         # A stub named pwsh.cmd, which Get-Command -Name 'pwsh' resolves exactly
         # as it resolves the real executable. It prints its arguments and exits,
-        # so the relaunch is measured without anything starting.
-        $stubDir = Join-Path $TestDrive 'stub-shell'
-        $null = New-Item -ItemType Directory -Path $stubDir -Force
-        [System.IO.File]::WriteAllText((Join-Path $stubDir 'pwsh.cmd'), "@echo off`r`necho FM-RELAUNCH %*`r`n")
+        # so the relaunch is measured without anything starting - and the real
+        # shell is not merely behind it, it is not reachable at all.
+        $fixture = New-RelaunchFixture -Directory (Join-Path $TestDrive 'stub-shell')
 
-        $result = Invoke-FiveOne -Command "`$env:PATH = '$stubDir;' + `$env:PATH; & '$($script:StartScript)' -Port 9111"
+        $result = Invoke-FiveOne -Command ("`$env:PATH = '$($fixture.Path)'; " +
+            "`$env:LOCALAPPDATA = '$($fixture.LocalAppData)'; & '$($script:StartScript)' -Port 9111")
 
         $result.Text | Should -Not -Match '#requires' -Because 'the raw version mismatch is what this replaced'
         $result.Text | Should -Match 'FIRSTMATE' -Because "the captain must hear firstmate's own voice, not PowerShell's"
@@ -745,11 +795,10 @@ Describe 'start.ps1 in the shell a clean machine actually opens' {
         # running, which the suite's own process is. `the marker that bounds the
         # shell switch` takes this same fork through a genuine second hop, with
         # no staging at all, for both entry points.
-        $stubDir = Join-Path $TestDrive 'stub-loop'
-        $null = New-Item -ItemType Directory -Path $stubDir -Force
-        [System.IO.File]::WriteAllText((Join-Path $stubDir 'pwsh.cmd'), "@echo off`r`necho FM-RELAUNCH %*`r`n")
+        $fixture = New-RelaunchFixture -Directory (Join-Path $TestDrive 'stub-loop')
 
-        $result = Invoke-FiveOne -Command ("`$env:PATH = '$stubDir;' + `$env:PATH; " +
+        $result = Invoke-FiveOne -Command ("`$env:PATH = '$($fixture.Path)'; " +
+            "`$env:LOCALAPPDATA = '$($fixture.LocalAppData)'; " +
             "`$env:FM_SHELL_RELAUNCHED = '$PID'; & '$($script:StartScript)'")
 
         $result.Text | Should -Not -Match 'FM-RELAUNCH' -Because 'a second arrival must not spawn a third'
@@ -831,15 +880,10 @@ Describe 'the marker that bounds the shell switch' {
             $IsWindows -and (Test-Path -LiteralPath $script:WindowsPowerShell -PathType Leaf)
         }
 
-        # A `pwsh` that resolves exactly as the real one does and goes nowhere.
-        function New-StubShell {
-            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
-                Justification = 'A Pester fixture builder that writes only into TestDrive; -WhatIf would leave the case asserting against a stub that was never written.')]
-            param([Parameter(Mandatory)][string]$Directory)
-            $null = New-Item -ItemType Directory -Path $Directory -Force
-            [System.IO.File]::WriteAllText((Join-Path $Directory 'pwsh.cmd'), "@echo off`r`necho FM-RELAUNCH %*`r`n")
-            $Directory
-        }
+        # A `pwsh` that resolves exactly as the real one does and goes nowhere is
+        # New-RelaunchFixture, in this file's own top-level BeforeAll: the stub
+        # alone was not enough, and the fixture that replaced it also makes the
+        # real shell unreachable through both doors this repo opens to it.
 
         # A `pwsh` that is a REAL shell still below 7 - which is what a PowerShell
         # 6 amounts to for this guard, and is reached by a genuine relaunch rather
@@ -970,9 +1014,10 @@ param([int]$Port, [switch]$NoLaunch)
         }
         # THE CAPTAIN'S CONSOLE. install.ps1 ran in this window, so the marker it
         # set names this window - and this window is nobody's relaunched child.
-        $stub = New-StubShell -Directory (Join-Path $TestDrive 'stub-own-marker')
+        $fixture = New-RelaunchFixture -Directory (Join-Path $TestDrive 'stub-own-marker')
         $result = Invoke-FiveOne -Command ("`$env:FM_SHELL_RELAUNCHED = `"`$PID`"; " +
-            "`$env:PATH = '$stub;' + `$env:PATH; & '$(Join-Path $script:RepoRoot 'start.ps1')' -Port 9111")
+            "`$env:LOCALAPPDATA = '$($fixture.LocalAppData)'; " +
+            "`$env:PATH = '$($fixture.Path)'; & '$(Join-Path $script:RepoRoot 'start.ps1')' -Port 9111")
 
         $result.Text | Should -Match 'FM-RELAUNCH' -Because 'the window an install ends in must still be able to switch'
         $result.Text | Should -Match '-Port 9111' -Because 'the captain arguments still have to survive it'
@@ -1018,19 +1063,25 @@ param([int]$Port, [switch]$NoLaunch)
         #
         # -SkipSpeechModel, AND IT IS NOT COSMETIC. This case runs the SHIPPED
         # entry point rather than a stubbed copy, which is the point of it - so
-        # the hermetic PSModulePath above does not apply here and the stub SHELL
-        # is the only thing standing between it and a real install. MEASURED
+        # the hermetic PSModulePath above does not apply here. MEASURED
         # 2026-09-11, once and never reproduced since: the stub was not resolved,
         # the real installer carried on, and because a suite has no captain at
         # the keyboard Confirm-SpeechModel took its documented default, which is
         # YES. That is a 1.4 GB download inside a test, and the run spent thirty-
-        # nine minutes on it before failing the assertion below. The flag costs
-        # nothing when the stub works and removes the only large irreversible
-        # action this file can take when it does not.
+        # nine minutes on it before failing the assertion below.
+        #
+        # THE STUB IS NO LONGER THE ONLY THING STANDING BETWEEN THIS AND A REAL
+        # INSTALL, which is why that measurement is now history rather than a
+        # standing risk. New-RelaunchFixture makes the real `pwsh` unresolvable
+        # rather than merely second, and install.ps1 refuses outright while
+        # FM_TEST_MODE names a live run. This flag is the third of the three and
+        # stays: it costs nothing when the others hold, and the one question in
+        # that file whose silence means "go ahead" is this one.
         $safely = @{ 'start.ps1' = ''; 'install.ps1' = ' -SkipSpeechModel' }
         foreach ($entry in @('start.ps1', 'install.ps1')) {
-            $stub = New-StubShell -Directory (Join-Path $TestDrive "stub-restore-$entry")
-            $result = Invoke-FiveOne -Command ("`$env:PATH = '$stub;' + `$env:PATH; " +
+            $fixture = New-RelaunchFixture -Directory (Join-Path $TestDrive "stub-restore-$entry")
+            $result = Invoke-FiveOne -Command ("`$env:PATH = '$($fixture.Path)'; " +
+                "`$env:LOCALAPPDATA = '$($fixture.LocalAppData)'; " +
                 "& '$(Join-Path $script:RepoRoot $entry)'$($safely[$entry]); " +
                 "[Console]::Out.WriteLine('FM-LEFTOVER=[' + `$env:FM_SHELL_RELAUNCHED + ']')")
 
@@ -1056,9 +1107,10 @@ param([int]$Port, [switch]$NoLaunch)
         # start from a window with no marker, where restoring and deleting look
         # identical; only a window that already had one can tell them apart.
         foreach ($leftover in @('1', 'set-by-something-else')) {
-            $stub = New-StubShell -Directory (Join-Path $TestDrive "stub-leftover-$($leftover.Length)")
+            $fixture = New-RelaunchFixture -Directory (Join-Path $TestDrive "stub-leftover-$($leftover.Length)")
             $result = Invoke-FiveOne -Command ("`$env:FM_SHELL_RELAUNCHED = '$leftover'; " +
-                "`$env:PATH = '$stub;' + `$env:PATH; & '$(Join-Path $script:RepoRoot 'start.ps1')'; " +
+                "`$env:LOCALAPPDATA = '$($fixture.LocalAppData)'; " +
+                "`$env:PATH = '$($fixture.Path)'; & '$(Join-Path $script:RepoRoot 'start.ps1')'; " +
                 "[Console]::Out.WriteLine('FM-LEFTOVER=[' + `$env:FM_SHELL_RELAUNCHED + ']')")
 
             $result.Text | Should -Match 'FM-RELAUNCH' -Because "a marker of '$leftover' names no process, so it must not block the switch"
@@ -1160,8 +1212,18 @@ Describe 'the first command README gives a newcomer' {
             # footprint here and refused a switch it had already made. A newcomer
             # typing README's first command has no such marker, which is the
             # machine this case is named for.
+            #
+            # FM_TEST_MODE IS CLEARED FOR THE SAME REASON, and this is the ONE
+            # place in the suite that deliberately lets the shipped installer
+            # reach its own work. That is what the case is: a newcomer's machine,
+            # where no test run is under way and the installer must therefore not
+            # refuse. What makes it safe is not the marker, it is -DetectOnly
+            # -Offline below - the run changes nothing and asks nobody anything.
+            # Anything else that clears this marker is opening the same door
+            # without that guarantee.
             $output = & $script:WindowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Restricted `
                 -Command ("Remove-Item -LiteralPath 'Env:\FM_SHELL_RELAUNCHED' -ErrorAction SilentlyContinue; " +
+                    "Remove-Item -LiteralPath 'Env:\FM_TEST_MODE' -ErrorAction SilentlyContinue; " +
                     "Set-Location -LiteralPath '$($script:RepoRoot)'; $Command") 2>&1
             [pscustomobject]@{ ExitCode = $LASTEXITCODE; Text = (@($output | ForEach-Object { [string]$_ }) -join "`n") }
         }

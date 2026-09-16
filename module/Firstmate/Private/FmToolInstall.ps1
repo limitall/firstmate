@@ -1178,6 +1178,31 @@ function Install-FmToolRuntime {
         return $result
     }
 
+    # A SUITE MAY NOT PUT A CONSENT DIALOG ON THE CAPTAIN'S DESKTOP. This is the
+    # one step in the repository that asks Windows for administrator, and the
+    # dialog is the operating system's: the suite's -NonInteractive switch sails
+    # straight past it, exactly as it does past the 16-bit refusal dialog
+    # tests/FmUnstartable.TestHelpers.ps1 owns. It would then sit there, under
+    # PowerShell, for the rest of the run - and an agent running the suite would
+    # never see it, because a harness sets an error mode that suppresses hard
+    # errors and the captain's own shell does not. That asymmetry is how the
+    # other dialog survived a long run of green suites.
+    #
+    # REFUSED HERE RATHER THAN IN Start-FmToolElevated, which is the function
+    # that actually raises it. That one is unreachable from a test by design - a
+    # lint in tests/FmModuleAssembly.Tests.ps1 fails any test file that calls it -
+    # so a guard placed there could never be proved to work. This is the step
+    # install.ps1 section 4a calls "the ONE step that needs administrator", it is
+    # Start-FmToolElevated's only caller, and it is reachable, so the refusal and
+    # its test both live here.
+    if (Test-FmTestMode) {
+        $result.Action = 'blocked'
+        $result.Detail = ((Get-FmTestModeRefusal -Action 'ask Windows for administrator') +
+            [System.Environment]::NewLine +
+            "Nothing was elevated and nothing was installed. When you want it: $command")
+        return $result
+    }
+
     $winget = if ($WingetPath) { $WingetPath } else { Get-FmToolWingetPath }
     if (-not $winget) {
         $result.Action = 'blocked'

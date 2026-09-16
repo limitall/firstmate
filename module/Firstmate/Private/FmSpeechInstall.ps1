@@ -128,6 +128,23 @@ function Install-FmSpeechModel {
         }
     }
 
+    # A SUITE MAY NOT REACH THE NETWORK FOR 1.4 GB, and this is the function
+    # that would. It happened: a fixture's `pwsh` stub was not resolved, the real
+    # installer carried on, Confirm-SpeechModel took its documented default -
+    # which is YES, because nobody at the keyboard means an unattended run - and
+    # thirty-nine minutes of a test run went on a download.
+    #
+    # -SourcePath IS THE SEAM AND IT IS DELIBERATELY STILL OPEN. This area's own
+    # cases place a local file and then exercise the hashing, the atomic move and
+    # the re-run behaviour for real; refusing those would trade a measured
+    # download for an unmeasured code path. What is refused is the one thing a
+    # test can neither afford nor undo: going to the vendor for the real thing.
+    if (-not $SourcePath -and (Test-FmTestMode)) {
+        return [pscustomobject]@{ Ok = $false; Action = 'refused'; Path = ''
+            Detail = (Get-FmTestModeRefusal -Action 'download the speech model')
+        }
+    }
+
     if (-not $PSCmdlet.ShouldProcess($target, "download $($model.Name) ($([math]::Round($model.SizeBytes / 1GB, 2)) GB)")) {
         return [pscustomobject]@{ Ok = $true; Action = 'skipped'; Path = $target; Detail = 'WhatIf' }
     }
