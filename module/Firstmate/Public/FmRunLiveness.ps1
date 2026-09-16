@@ -36,6 +36,15 @@ record, an unreadable process table, no launcher process found - is `unknown`.
 Callers must treat `unknown` as no information: reporting a run finished while
 it is still running is worse than the stall this exists to catch.
 
+A `processes` reading also carries `Activity`, a SEPARATE and positive-only
+answer to the different question of whether that process set is getting
+anywhere: `advancing` when movement was measured since the last look,
+`unobserved` when a comparable earlier sample existed and nothing moved, and
+`unknown` when nothing was comparable. `unobserved` is NOT a stall verdict and
+nothing may escalate on it - a run awaiting a network reply measures exactly
+like a hung one, which is why no negative is available here at all.
+Private/FmRunLiveness.ps1 carries the measurement that settles it.
+
 .PARAMETER TaskId
 The task id, as in `state/<id>.meta`.
 
@@ -50,7 +59,8 @@ A process table already read by the caller, so one watcher cycle can classify
 every window from a single read. Omit to read one.
 
 .OUTPUTS
-[pscustomobject] TaskId, State, ProcessId, AgentProcessId, Detail.
+[pscustomobject] TaskId, State, ProcessId, AgentProcessId, Detail, Activity,
+ActivityDetail.
 
 .EXAMPLE
 (Get-FmTaskRunLiveness -TaskId 'tg-route').State
@@ -135,9 +145,17 @@ function Get-FmTaskRunLiveness {
     $agent = @($spine | Where-Object { -not ($launchers -contains $_) } | Sort-Object)
 
     if ($work.Count -eq 0) {
+        # The activity sample belongs to a run that no longer exists; leaving it
+        # would let the NEXT run of a reused task id compare against a stranger.
+        Clear-FmRunActivitySample -TaskId $TaskId -StatePath $StatePath
         return (New-FmRunLivenessRecord -TaskId $TaskId -State 'none' -Detail "no live process for $TaskId beyond its agent" -AgentProcessId $agent)
     }
-    return (New-FmRunLivenessRecord -TaskId $TaskId -State 'processes' -Detail "$($work.Count) live process(es) for $TaskId" -ProcessId $work -AgentProcessId $agent)
+
+    # Only here is "is it advancing?" a meaningful question, and only here is a
+    # sample worth keeping: with no work set there is nothing to compare.
+    $activity = Get-FmRunActivity -TaskId $TaskId -StatePath $StatePath -ProcessId $work -Table $Table
+    return (New-FmRunLivenessRecord -TaskId $TaskId -State 'processes' -Detail "$($work.Count) live process(es) for $TaskId" `
+            -ProcessId $work -AgentProcessId $agent -Activity $activity.State -ActivityDetail $activity.Detail)
 }
 
 <#
@@ -153,6 +171,12 @@ current-state line:
 A `pids:` field is appended only when there are process ids to name, so an
 inspection can go straight to the process rather than re-deriving it.
 
+An `activity:` field follows on a reading that measured movement either way, and
+carries its own detail, because the two answers are genuinely different
+questions and a reader who takes "processes" for "working" is making exactly the
+mistake this area exists to prevent. It is omitted on `unknown`, where there is
+nothing to report and a clause would only add noise.
+
 .PARAMETER Liveness
 A record from Get-FmTaskRunLiveness.
 #>
@@ -162,5 +186,13 @@ function Format-FmTaskRunLiveness {
     param([Parameter(Mandatory, Position = 0)][pscustomobject]$Liveness)
     $line = "liveness: $($Liveness.State) · task: $($Liveness.TaskId) · $($Liveness.Detail)"
     if (@($Liveness.ProcessId).Count -gt 0) { $line = "$line · pids: $(@($Liveness.ProcessId) -join ', ')" }
+    # Both properties are tested before either is read: StrictMode throws on a
+    # missing one, and a record may come from any caller, not only from
+    # New-FmRunLivenessRecord.
+    $names = $Liveness.PSObject.Properties.Name
+    if (($names -contains 'Activity') -and ($names -contains 'ActivityDetail') -and
+        (@('advancing', 'unobserved') -contains [string]$Liveness.Activity)) {
+        $line = "$line · activity: $($Liveness.Activity) · $($Liveness.ActivityDetail)"
+    }
     return $line
 }

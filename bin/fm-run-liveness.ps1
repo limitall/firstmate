@@ -12,13 +12,25 @@ only thing that tells the two apart. docs/finished-run-stall.md owns the why.
 
 Prints one line:
   liveness: <processes|none|unknown> · task: <id> · <detail> [· pids: <n, n>]
+            [· activity: <advancing|unobserved> · <detail>]
 
 `none` means a process table WAS read and the task has nothing of its own alive.
 `unknown` means the question could not be answered and must never be read as
 "nothing is running".
 
-Read-only and side-effect free. Exits 0 on any answered reading, including
-`unknown`; exit 2 only on a usage error.
+The `activity` field answers the DIFFERENT question of whether that process set
+is getting anywhere, and it has no negative: `advancing` is measured movement,
+and `unobserved` means only that this look saw none - a run awaiting a network
+reply measures exactly like a hung one, so it is never grounds for a steer.
+docs/run-progress-evidence.md owns that measurement.
+
+Reads the process table and, to measure movement between looks, records one
+sample per task at `state/.run-activity-<id>`. That marker is the only thing it
+writes; it touches no task state, so running this twice in quick succession
+costs nothing but a reading that says the gap was too short to read.
+
+Exits 0 on any answered reading, including `unknown`; exit 2 only on a usage
+error.
 #>
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'

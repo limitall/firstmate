@@ -715,6 +715,12 @@ function Get-FmWatchRunLiveness {
         which is this repo's rule for a step with no answer - never silence,
         which would read as "nothing is running". For the same reason only a
         `processes` State may defer anything; every other State escalates.
+
+        The clause also carries the reading's Activity when it has one, and that
+        is REPORTING ONLY: `unobserved` changes no timer and defers exactly as
+        `advancing` does, because a run awaiting a network reply and a hung one
+        measure identically (Private/FmRunLiveness.ps1 has the measurement). A
+        supervisor gets the extra evidence; nothing escalates on its absence.
     #>
     [OutputType([pscustomobject])]
     param(
@@ -738,9 +744,24 @@ function Get-FmWatchRunLiveness {
         }
         'processes' {
             $ids = @($reading.ProcessId)
+            # What was measured is that processes EXIST. Whether they are getting
+            # anywhere is the separate Activity reading, and the clause states
+            # whichever of the two it actually has - it used to say "work IS in
+            # flight" off the process set alone, which is a claim about progress
+            # that no process count can support.
+            $note = " [run-liveness: $($ids.Count) live process(es) for this task - pids $($ids -join ', ')"
+            $activity = 'unknown'
+            if ($reading.PSObject.Properties.Name -contains 'Activity') { $activity = [string]$reading.Activity }
+            $detail = ''
+            if ($reading.PSObject.Properties.Name -contains 'ActivityDetail') { $detail = [string]$reading.ActivityDetail }
+            switch ($activity) {
+                'advancing' { $note = "$note - and $detail" }
+                'unobserved' { $note = "$note - but $detail" }
+                default { $note = "$note - whether it is ADVANCING was not measured" }
+            }
             return [pscustomobject]@{
                 State = 'processes'
-                Note  = " [run-liveness: $($ids.Count) live process(es) for this task - pids $($ids -join ', ') - work IS in flight; do not tell this worker its run has finished]"
+                Note  = "$note; do not tell this worker its run has finished]"
             }
         }
         default {

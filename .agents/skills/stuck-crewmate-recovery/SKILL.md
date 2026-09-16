@@ -29,7 +29,9 @@ Read the current state first, every time, before escalating: `bin/fm-crew-state.
 ## A quiet worker waiting on a background run
 
 A worker that started a long run and went quiet looks identical to one that finished and said nothing, and the difference decides whether you steer it at all.
-`bin/fm-run-liveness.ps1 <id>` answers it: `processes` means work IS in flight, `none` means nothing of that task's is running, and `unknown` means the question was not answered.
+`bin/fm-run-liveness.ps1 <id>` answers it: `processes` means the task still has processes of its own, `none` means nothing of that task's is running, and `unknown` means the question was not answered.
+A `processes` reading may carry a second `activity:` field, which answers the different question of whether that process set is getting anywhere: `advancing` is measured movement, and `unobserved` means this look saw none.
+**`unobserved` is not a stall verdict and never licenses a steer**, because a run awaiting a network reply measures exactly like a hung one - `docs/run-progress-evidence.md` has the measurement and what it rules out.
 Every non-terminal stale wake and every wedge escalation already carries that reading as a `[run-liveness: ...]` clause, so read the wake before re-deriving it, and never re-derive it with an ad-hoc process count.
 A quiet worker whose run is still going is not wedge-escalated; it comes back about hourly as a stale wake "rechecked on a long cadence not a wedge", which asks you to confirm the run's output is still advancing - it is neither proof the run has finished nor proof it has hung.
 **Never tell a worker its run has finished on anything weaker than `none`.**

@@ -306,6 +306,12 @@ module any other way.
   count got wrong nine times in one evening, and the tri-state reading that
   replaced it. Read the asymmetry section before touching that area: answering
   `none` while a run is going is the failure it exists to refuse.
+- `docs/run-progress-evidence.md` - the companion question: telling a run that is
+  advancing from one that is merely alive. What each candidate signal costs and
+  how each one lies, the measurement showing a run awaiting a network reply is
+  indistinguishable from an idle one, and why the activity reading has a positive
+  answer and no negative one. Read it before building anything that treats an
+  absence of movement as a stall.
 - `docs/teardown-windows.md` - teardown: the landed-work test (the one thing
   that must never be relaxed), process custody via Win32 job objects instead of
   `lsof` and process groups, the exclusive-open stale-lock probe, and the lease

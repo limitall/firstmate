@@ -409,7 +409,11 @@ Describe 'Wedge deferral while work is in flight' {
         function Get-FmTaskRunLiveness {
             param($TaskId, $StatePath, $DataPath, $Table)
             $ids = if ($script:StubLiveness -eq 'processes') { @(4242, 4243) } else { @() }
-            return [pscustomobject]@{ TaskId = $TaskId; State = $script:StubLiveness; ProcessId = $ids; AgentProcessId = @(9); Detail = 'staged' }
+            return [pscustomobject]@{
+                TaskId         = $TaskId; State = $script:StubLiveness; ProcessId = $ids
+                AgentProcessId = @(9); Detail = 'staged'
+                Activity       = $script:StubActivity; ActivityDetail = 'staged movement detail'
+            }
         }
 
         function Invoke-TimerCheck {
@@ -438,6 +442,7 @@ Describe 'Wedge deferral while work is in flight' {
         $script:Chain = Join-Path $script:Ctx.State '.inflight-since-s_1'
         $script:Throttle = Join-Path $script:Ctx.State '.inflight-resurfaced-s_1'
         $script:StubLiveness = 'processes'
+        $script:StubActivity = 'unknown'
     }
     AfterEach { Remove-TestHome -Path $script:TestHome }
 
@@ -493,7 +498,7 @@ Describe 'Wedge deferral while work is in flight' {
         $row = @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0]
         $row | Should -Match "\tstale\ts:1\tstale: s:1 \(quiet 9\d\ds with work in flight, rechecked on a long cadence not a wedge"
         $row | Should -BeLike '*live processes do not prove progress*'
-        $row | Should -BeLike '*pids 4242, 4243 - work IS in flight*'
+        $row | Should -BeLike '*pids 4242, 4243 - whether it is ADVANCING was not measured*'
         $row | Should -Not -BeLike '*possible wedge*'
         [System.IO.File]::Exists($script:Esc) | Should -BeFalse
 
@@ -526,6 +531,53 @@ Describe 'Wedge deferral while work is in flight' {
         Set-IdleFor -Seconds 300
         { Invoke-TimerCheck } | Should -Not -Throw
         Test-FmNonEmptyFile -Path $script:Ctx.Queue | Should -BeFalse
+    }
+
+    # THE SAFETY PROPERTY OF THE ACTIVITY DIMENSION. `unobserved` is the reading
+    # saying it measured no movement, and a run awaiting a network reply produces
+    # it just as a hung run does (docs/run-progress-evidence.md). So it must be
+    # REPORTED and must change nothing: if it ever escalated, this port would
+    # have rebuilt the false "your run has finished" steer with a new name.
+    It 'defers on unobserved activity exactly as it does on advancing, and escalates on neither' {
+        foreach ($activity in @('advancing', 'unobserved')) {
+            $script:TestHome = New-TestHome
+            $script:Ctx = Get-FmWakeContext
+            $script:Since = Join-Path $script:Ctx.State '.stale-since-s_1'
+            $script:Esc = Join-Path $script:Ctx.State '.wedge-escalations-s_1'
+            $script:StubActivity = $activity
+            Set-IdleFor -Seconds 300
+
+            { Invoke-TimerCheck } | Should -Not -Throw
+            [System.IO.File]::Exists($script:Esc) | Should -BeFalse -Because "$activity must not advance the escalation counter"
+            $lines = @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)
+            @($lines | Where-Object { $_ -like '*possible wedge*' }).Count |
+                Should -Be 0 -Because "$activity must never produce a wedge alarm"
+        }
+    }
+
+    It 'states which of the two questions it answered, and never implies the other' {
+        $script:StubActivity = 'unobserved'
+        $env:FM_PAUSE_RESURFACE_SECS = '600'
+        $script:Settings = Get-FmWatchSettings
+        Set-FmFileTextLf -Path $script:Chain -Text (((Get-FmUnixTime) - 900).ToString() + "`n")
+        Set-IdleFor -Seconds 300
+        { Invoke-TimerCheck } | Should -Throw
+        $row = @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0]
+        # "but" - the process set is live AND nothing was seen moving. The clause
+        # may not shorten that into a claim the run has stopped.
+        $row | Should -BeLike '*live process(es) for this task - pids 4242, 4243 - but staged movement detail*'
+        $row | Should -BeLike '*do not tell this worker its run has finished*'
+
+        $script:TestHome = New-TestHome
+        $script:Ctx = Get-FmWakeContext
+        $script:Since = Join-Path $script:Ctx.State '.stale-since-s_1'
+        $script:Chain = Join-Path $script:Ctx.State '.inflight-since-s_1'
+        $script:StubActivity = 'advancing'
+        Set-FmFileTextLf -Path $script:Chain -Text (((Get-FmUnixTime) - 900).ToString() + "`n")
+        Set-IdleFor -Seconds 300
+        { Invoke-TimerCheck } | Should -Throw
+        @(Get-FmWakeQueueLines -Path $script:Ctx.Queue)[0] |
+            Should -BeLike '*pids 4242, 4243 - and staged movement detail*'
     }
 }
 

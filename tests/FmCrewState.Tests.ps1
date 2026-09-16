@@ -137,12 +137,55 @@ Describe 'the run-liveness clause on the status-log fallback' {
         $line | Should -Match 'run-liveness: none'
     }
 
-    It 'says work IS in flight when the reading finds processes' {
+    It 'counts the processes without claiming they are getting anywhere' {
+        # The line used to read "work IS in flight" off the count alone, which is
+        # a claim about PROGRESS that a process count cannot support.
         function Get-FmTaskRunLiveness {
             param($TaskId, $StatePath, $DataPath, $Table)
             return [pscustomobject]@{ TaskId = $TaskId; State = 'processes'; ProcessId = @(11, 12); AgentProcessId = @(7); Detail = 'd' }
         }
-        Get-FmCrewState -Id 't1' | Should -Match 'run-liveness: 2 live process\(es\) - work IS in flight'
+        $line = Get-FmCrewState -Id 't1'
+        $line | Should -Match 'run-liveness: 2 live process\(es\)'
+        $line | Should -Not -Match 'in flight'
+    }
+
+    It 'carries the activity reading when there is one, in the reading''s own words' {
+        foreach ($activity in @('advancing', 'unobserved')) {
+            function Get-FmTaskRunLiveness {
+                param($TaskId, $StatePath, $DataPath, $Table)
+                return [pscustomobject]@{
+                    TaskId   = $TaskId; State = 'processes'; ProcessId = @(11, 12); AgentProcessId = @(7); Detail = 'd'
+                    Activity = $script:WantActivity; ActivityDetail = 'staged movement detail'
+                }
+            }
+            $script:WantActivity = $activity
+            Get-FmCrewState -Id 't1' |
+                Should -Match "run-liveness: 2 live process\(es\) - $activity`: staged movement detail"
+        }
+    }
+
+    It 'survives a reading that predates the activity fields' {
+        # StrictMode throws on a missing property, and this line reads whatever
+        # the resolved reader returns.
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            return [pscustomobject]@{ TaskId = $TaskId; State = 'processes'; ProcessId = @(11); AgentProcessId = @(7); Detail = 'd'; Activity = 'advancing' }
+        }
+        { Get-FmCrewState -Id 't1' } | Should -Not -Throw
+        Get-FmCrewState -Id 't1' | Should -Match 'run-liveness: 1 live process\(es\)'
+    }
+
+    It 'adds no activity clause when movement was not measured' {
+        function Get-FmTaskRunLiveness {
+            param($TaskId, $StatePath, $DataPath, $Table)
+            return [pscustomobject]@{
+                TaskId   = $TaskId; State = 'processes'; ProcessId = @(11); AgentProcessId = @(7); Detail = 'd'
+                Activity = 'unknown'; ActivityDetail = 'first look'
+            }
+        }
+        $line = Get-FmCrewState -Id 't1'
+        $line | Should -Match 'run-liveness: 1 live process\(es\)'
+        $line | Should -Not -Match 'first look'
     }
 
     It 'adds nothing when the reading is inconclusive' {

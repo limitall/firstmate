@@ -98,6 +98,12 @@ Taken on the captain's Windows 11 laptop, recorded in `docs/windows-e2e-evidence
 The Bash and PowerShell tool shells are created per call and exit with it; they are not long-lived session shells.
 Without that, "has descendants" would not mean "is running something" and this rule would need an ignore-list.
 
+### What this reading is not
+
+It counts processes, so it answers "has this run exited?" and not "is this run getting anywhere".
+The second question has its own note, `docs/run-progress-evidence.md`, which measures what can distinguish the two and concludes that progress is available in the positive only: a run awaiting a network reply is indistinguishable from an idle one on every counter this machine exposes.
+That is why the `processes` verdict below licenses no claim about progress, and why the clause it produces stopped saying "work IS in flight".
+
 ### The asymmetry, which is the whole safety property
 
 `none` is returned **only** after a process table was read successfully and the remaining set was empty.

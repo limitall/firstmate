@@ -118,7 +118,22 @@ function Get-FmCrewLivenessDetail {
     }
     switch ([string]$reading.State) {
         'none' { return 'run-liveness: none - nothing of this task''s is running' }
-        'processes' { return "run-liveness: $(@($reading.ProcessId).Count) live process(es) - work IS in flight" }
+        'processes' {
+            # Processes EXIST. Whether they are advancing is the separate reading
+            # below, appended only when it measured something either way - the
+            # line used to assert "work IS in flight" off the count alone.
+            $line = "run-liveness: $(@($reading.ProcessId).Count) live process(es)"
+            $names = $reading.PSObject.Properties.Name
+            $activity = 'unknown'
+            if ($names -contains 'Activity') { $activity = [string]$reading.Activity }
+            # Both properties are read only after both are known to exist:
+            # StrictMode THROWS on a missing one, and this reading may come from
+            # any caller's object, not only from New-FmRunLivenessRecord.
+            if ((@('advancing', 'unobserved') -contains $activity) -and ($names -contains 'ActivityDetail')) {
+                return "$line - $activity`: $([string]$reading.ActivityDetail)"
+            }
+            return $line
+        }
         default { return '' }
     }
 }

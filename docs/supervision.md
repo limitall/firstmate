@@ -164,6 +164,9 @@ So `Invoke-FmWedgeTimerCheck` takes that one reading at the threshold, and only 
 The idle window restarts, the escalation count is neither advanced nor reset, and the deferral chain re-surfaces once per `FM_PAUSE_RESURFACE_SECS` through the same `Invoke-FmAbsorbedResurface` a declared pause uses, worded as a recheck: "rechecked on a long cadence not a wedge; live processes do not prove progress".
 `none`, `unknown` and a build with no reading escalate exactly as before, and a chain ends the moment one reading stops saying `processes`.
 It is a deferral rather than a cancellation because a live process is not progress: a run can hang on a prompt nobody will answer, and `docs/finished-run-stall.md` is why the reading is trusted for "something is running" and for nothing more.
+The clause now carries a second `activity:` reading where it has one - `advancing` when the run's processes were measured burning CPU or changing shape, `unobserved` when this look saw neither.
+That is REPORTING ONLY and changes no timer: `unobserved` defers exactly as `advancing` does, because a run awaiting a network reply is indistinguishable from a hung one on every counter this machine exposes.
+`docs/run-progress-evidence.md` owns that measurement, the candidates it rules out, and why no escalation may ever key off an absence of movement.
 Upstream reached the same shape through worktree writes (#2524); this port already had the stronger signal for its commonest case.
 `docs/windows-e2e-evidence.md` section 61 has the reproduction and the controls.
 

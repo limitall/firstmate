@@ -11321,3 +11321,121 @@ That is why the gate runs above are fourteen foreground invocations rather than 
   The one case that runs the shipped `install.ps1` runs it `-DetectOnly -Offline`, and every child the runner starts carries `FM_VOICE_OFF=1`.
 - **The suite was not run through the runner as ONE invocation on the merging tree.**
   Per-file isolation makes fourteen invocations and one equivalent by construction - that is the property being shipped - but the equivalence is an argument, not a measurement, and the background-job finding in 66.7 is why it was not measured.
+
+## 66. A run that is advancing, and one that is merely alive - `PROVEN (Windows 11) FOR SIX PROCESS SHAPES AT STEADY STATE, THE STARTUP ARTIFACT THAT HID THEM, AND THE READING END TO END AGAINST REAL LAUNCHER PROCESSES; NO CLAIM THAT ANY OF THIS DETECTS A STALL`
+
+`Get-FmTaskRunLiveness` counts processes, which answers whether a run has exited and not whether it is getting anywhere.
+This section measures what could close that gap.
+`docs/run-progress-evidence.md` owns the analysis; this is what was run, on 2026-09-16, on the captain's Windows 11 laptop with PowerShell 7.6.6.
+
+### 66.1 The startup artifact, which makes a short sample lie about every shape at once
+
+The first pass sampled each shape 3 seconds after launch and read 11,276 to 12,745 write operations and 55-61 KB written **for every shape including `Start-Sleep`**, while the shape actually appending to a file showed the fewest.
+That inversion is pwsh's own startup - assembly loading and JIT - not the workload.
+
+```
+shape    cpu_ms   cpu_pct  readOps  writeOps  otherOps  writeBytes   (3s after launch: WRONG)
+spin       4,969    39.5%        0     11276         7       55792
+poll       5,703    45.4%        0     12680     65259       61588
+sleep        109     0.9%        0     11370       358       55684
+```
+
+Any progress check that samples a freshly launched process reads that startup as activity.
+Every number below is therefore taken at steady state, from raw cumulative counters sampled four times six seconds apart, at least 12 seconds after launch.
+
+### 66.2 The six shapes, at steady state
+
+```
+=== sleep - merely alive ===                  === netwait - advancing, blocked on a socket ===
+   t     cpu_ms    rdOps  wrOps  otOps           t     cpu_ms    rdOps  wrOps  otOps
+   0s     2,047       94      2   1865           0s     2,609       96  13481   2299
+   6s     2,312       94  11535   2222           6s     2,609       96  13481   2299
+  12s     2,312       94  11535   2223          12s     2,609       96  13481   2299
+  18s     2,312       94  11535   2223          18s     2,609       96  13481   2299
+  24s     2,312       94  11535   2223          24s     2,609       96  13481   2299
+
+=== spin - advancing, pure compute ===        === poll - ALIVE AND NOT ADVANCING (retry loop) ===
+   t     cpu_ms    rdOps  wrOps  otOps           t     cpu_ms    rdOps  wrOps  otOps
+   0s    12,578       11  11567   1567           0s    10,656       96      2  40819
+   6s    13,703       11  11567   1567           6s    12,047       96      2  54992
+  12s    14,594       11  11567   1567          12s    13,125       96      2  65913
+  18s    15,469       11  11567   1567          18s    14,328       96      2  77765
+  24s    16,328       11  11567   1567
+
+=== fileio - advancing, appending ===         === netactive - advancing, socket traffic ===
+   t     cpu_ms    wrOps   wrBytes               t     cpu_ms  wrOps  otOps   otBytes
+   0s     3,234    14254     75744               0s    13,875      2   2299     18594
+   6s     3,984    14404     79494               6s    14,906      2   2299     18594
+  12s     4,891    14543     82969              12s    15,797      2   2299     18594
+  18s     5,031    14698     86844              18s    16,594      2   2299     18594
+```
+
+Read in deltas per 6 s: `spin` +859 to +1,125 ms CPU, `poll` +1,078 to +1,391 ms CPU and +10,921 to +14,173 other operations, `fileio` +139 to +155 write operations and about +3.5 KB, `netactive` +797 to +1,031 ms CPU and nothing else, `sleep` and `netwait` nothing at all.
+
+Three results, and the first is the one that decides the design.
+
+- **`netwait` and `sleep` are identical on every counter `Win32_Process` exposes.**
+  A subprocess waiting on a reply that never comes and a process doing nothing are the same measurement, so no threshold and no longer window separates a hung run from a healthy waiting one.
+- **`poll` burns MORE CPU than `spin`.**
+  The shape most likely to be a genuinely stuck run is the shape that looks busiest, so CPU movement is not progress.
+- **`netactive` moves no IO counter at all**, including `OtherTransferCount`, so socket traffic is invisible here and absence of IO is not absence of work.
+
+The scripts are in the session scratchpad, not tracked: five `pwsh -NoProfile -NonInteractive -File` shapes plus one `Get-CimInstance Win32_Process` sampler.
+
+### 66.3 What an idle process burns, which is what sets the floor
+
+The floor the reading uses has to clear the CPU a process burns while doing nothing.
+Three idle `pwsh` processes, each `Start-Sleep`, sampled over a 60-second window opened at three different settling delays.
+
+```
+  settle   window   cpu_ms burned by an IDLE process (3 samples)
+      5s      60s   296.9, 312.5, 296.9
+     10s      60s   0, 0, 0
+     20s      60s   0, 15.6, 15.6
+```
+
+Two numbers come out of this.
+
+A process takes about **10 seconds to settle**: a window opened 5 seconds after launch still carries roughly 300 ms of startup tail, which is the same artifact as 66.1 in a slower form.
+Once settled it burns **0 to 15.6 ms per minute**, and 15.6 ms is exactly one scheduler tick (15.625 ms) - quantisation, not work.
+
+So steady-state housekeeping is about 16 ms per minute, which over the watcher's 240-second window is roughly 62 ms.
+A fixed 50 ms floor would therefore have called a completely idle process `advancing` on that window, and a first draft of this work used one.
+It was caught by the real-process case in `tests/FmRunLiveness.Tests.ps1`, which read 62.5 ms of drift from an idle process and failed.
+The floor is now 1 ms per second of window with a 200 ms minimum: about four times the measured noise, while `fileio` - the least busy advancing shape in 66.2 - burned 23 ms per second and clears it more than twentyfold.
+
+### 66.4 The reading, end to end against real processes
+
+Two disposable homes, each with a real launcher process whose command line names the task's brief - the shape `Start-FmWorker` produces - and a real child that either spins or sleeps.
+Two looks, 35 seconds apart, through the public `Get-FmTaskRunLiveness`.
+
+```
+--- FIRST look (no prior sample) ---
+spinrun  state=processes  activity=unknown    :: first look at this task, so there is nothing to compare against yet
+idlerun  state=processes  activity=unknown    :: first look at this task, so there is nothing to compare against yet
+
+--- SECOND look ---
+spinrun  state=processes  activity=advancing  :: it burned 15.9s of CPU in the last 39s, so something IS executing
+idlerun  state=processes  activity=unobserved :: no CPU burned and no process started or ended in the last 37s,
+                                                 which does NOT mean it is stalled - a run awaiting a network reply
+                                                 measures identically
+
+liveness: processes · task: spinrun · 3 live process(es) for spinrun · pids: 22856, 26652, 36300
+          · activity: advancing · it burned 15.9s of CPU in the last 39s, so something IS executing
+```
+
+Both tasks read `processes`, so both defer a wedge escalation and neither licenses any steer.
+That is the intended outcome: the activity reading changed what the supervisor is told and changed no timer.
+
+### 66.6 What this section does NOT claim
+
+- **Nothing here detects a stall.**
+  63.2 is the proof that it cannot: `unobserved` is produced by a healthy run awaiting a reply and by a hung one alike, and no escalation keys off it.
+  The twelve-hour idle shell that prompted this work would still read `processes · activity: unobserved`, and would still be surfaced only by the existing re-surface cadence.
+- **The shapes are simulations, not a real crewmate run.**
+  `netwait` is a blocked loopback socket rather than a real API call, and `poll` is a synthetic retry loop.
+  They are the process states those things produce, measured directly; no live crewmate was stalled to order.
+- **The 100 Hz assumption on the Linux path is untested here.**
+  `Get-FmRunLivenessProcessTable` reads `utime`/`stime` from `/proc` for development only; every number above is from `Win32_Process` on Windows.
+- **Pid reuse was not staged.**
+  It is argued to be safe because it can only add an unrelated process and push the reading towards `advancing`, which licenses nothing; that is reasoning, not a measurement.
