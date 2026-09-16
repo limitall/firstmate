@@ -108,7 +108,7 @@ rather than against the stored one, so a captain on push who asked for continuou
 and was refused had `push` written back to them as a choice they never made.
 Neither can open a microphone - both still need `config/voice` - but a per-home
 file the captain did not write is the same fault in a cheaper place.
-`docs/windows-e2e-evidence.md` section 63.5 has it, driven in the Node page
+`docs/windows-e2e-evidence.md` section 68.5 has it, driven in the Node page
 harness.
 
 The suite is held to the same rule by construction rather than by care.
@@ -117,7 +117,7 @@ directory they own for the whole file, and `Invoke-VoiceScript` takes the home a
 a MANDATORY parameter - it used to default to empty, which SCRUBBED `FM_HOME`
 from the child instead of setting it, so one forgotten argument gave a
 `bin/fm-say.ps1` that read the checkout's own switch.
-`docs/windows-e2e-evidence.md` section 65 has that measured, and the negative
+`docs/windows-e2e-evidence.md` section 68 has that measured, and the negative
 control for each guard.
 
 ## Prepared for speaking, not for reading

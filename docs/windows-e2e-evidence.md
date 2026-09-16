@@ -11440,13 +11440,13 @@ That is the intended outcome: the activity reading changed what the supervisor i
 - **Pid reuse was not staged.**
   It is argued to be safe because it can only add an unrelated process and push the reading towards `advancing`, which licenses nothing; that is reasoning, not a measurement.
 
-## 65. The captain's voice switch was one forgotten argument from a test run, and the screen wrote a listening mode nobody chose - `PROVEN (Windows 11) FOR THE REACH INTO THE CHECKOUT'S OWN SWITCH, THE WRITER THAT COULD CREATE IT, THE PAGE THAT WROTE ON LOAD, EVERY FIX AND A NEGATIVE CONTROL FOR EACH THAT HAS ONE; NOTHING SPOKE AND NO MICROPHONE WAS OPENED, AND NO BROWSER WAS DRIVEN`
+## 68. The captain's voice switch was one forgotten argument from a test run, and the screen wrote a listening mode nobody chose - `PROVEN (Windows 11) FOR THE REACH INTO THE CHECKOUT'S OWN SWITCH, THE WRITER THAT COULD CREATE IT, THE PAGE THAT WROTE ON LOAD, EVERY FIX AND A NEGATIVE CONTROL FOR EACH THAT HAS ONE; NOTHING SPOKE AND NO MICROPHONE WAS OPENED, AND NO BROWSER WAS DRIVEN`
 
 `AGENTS.md` section 9 has the voice channel off until the captain creates `config/voice`, and `docs/voice-windows.md` makes that one file the switch for BOTH halves - the speaking and the listening.
 Off by default is a promise about who may turn it ON, so the question this section answers is not "is it off" but "who can turn it on".
 Two answers were wrong, and checking the two related switches alongside them found two more.
 
-### 65.1 A voice entry point run by the suite read the checkout's own switch
+### 68.1 A voice entry point run by the suite read the checkout's own switch
 
 `Get-FmConfigPath` resolves its home from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then `Get-FmRoot` - the checkout.
 `tests/FmVoice.Tests.ps1` runs `bin/fm-say.ps1` and `bin/fm-ask.ps1` as real child processes through one fixture, `Invoke-VoiceScript`, whose `-FmHome` was `[string]$FmHome = ''`.
@@ -11477,7 +11477,7 @@ And a stray write into the checkout is INVISIBLE: `.gitignore` line 3 is `config
 The same command started with this worker's inherited `FM_VOICE_OFF=1` refused earlier, at `Test-FmVoiceSuppressed`, with `fm-say: not spoken - the browser screen owns speaking here`.
 That is the second gate working, and it is not a substitute: it is a property of one process tree, and a suite started from a shell without it has only the switch.
 
-### 65.2 The one writer that could have created the switch
+### 68.2 The one writer that could have created the switch
 
 `Set-FmBridgeChoice` is the only function in the module that writes a file under `config/` whose NAME is an argument.
 It creates `<home>/config/` if it is missing and writes the word it was given.
@@ -11494,7 +11494,7 @@ Set-FmBridgeChoice -Name 'voice' -Value 'on' -Allowed @('on','off') -HomePath <h
 `Get-FmVoiceConfig` treats a present file as ENABLED unless its first meaningful line is exactly `off`, so `on` is a line it reports as a problem and the voice is on anyway.
 One argument, and the machine's microphone switch exists.
 
-### 65.3 Both fixes
+### 68.3 Both fixes
 
 `Set-FmBridgeChoice` now refuses any name that is not one of the screen's own two, before it resolves a path or creates a directory.
 `config/voice` is named in the refusal and in the comment above the list, so the next person to add a bridge setting is told what the list is for.
@@ -11519,15 +11519,15 @@ negative control, the FM_HOME pin removed from both files:
                                                 <checkout>\config\voice and <checkout>\config\bridge-voice
 ```
 
-### 65.4 The related switches, including the two not acted on
+### 68.4 The related switches, including the two not acted on
 
 - **The screen's spoken replies (`config/bridge-voice`).** Off by default, absent means off, and `Test-FmBridgeVoiceAllowed` is the one gate in front of the browser's `speechSynthesis`. It is written only by `Set-FmBridgeVoice`, from the page. Covered by the same pin and the same name list; no product change was needed.
 - **The listening mode (`config/listen-mode`).** `push` by default, and `push` is the safe word: it holds the microphone shut until a hand is on it. Written only by `Set-FmListenMode`, from the page. Neither this nor `bridge-voice` can open a microphone on its own - both need `config/voice` - which is why the machine switch is the only one that gained a refusal.
-- **The captain's home already carries a `config/listen-mode` holding the default.** `C:\Users\ADMIN\firstmate-win\config\listen-mode` is five bytes, `push`, dated 2026-08-19. Recording the value that is already the default is what a write nobody asked for looks like, and 65.5 is a page path that produces exactly that file. It was read, not run against, so the file is an observation; the path that writes one is reproduced.
+- **The captain's home already carries a `config/listen-mode` holding the default.** `C:\Users\ADMIN\firstmate-win\config\listen-mode` is five bytes, `push`, dated 2026-08-19. Recording the value that is already the default is what a write nobody asked for looks like, and 68.5 is a page path that produces exactly that file. It was read, not run against, so the file is an observation; the path that writes one is reproduced.
 - **NOT ACTED ON: a bash caller could copy a primary's `config/voice` into a secondmate home.** `bin/fm-config-inherit-lib.sh:69` reads its inheritable list as `${FM_INHERITABLE_CONFIG:-...}` and `voice` is not in the default - but the variable is overridable from the environment, so a caller exporting it with `voice` in it would have `:467` and `:727` copy the switch into every secondmate home. Nothing in this repo does that. Left alone because that file is the merged Linux firstmate's, not this port's, and narrowing its list is that project's call.
 - **NOT ACTED ON: `tests/FmToolInstall.Tests.ps1` and `tests/FmSpeechInstall.Tests.ps1` write a file named `voice`, and cannot reach a real home.** Both build the path with `Join-Path` from a fixture root they own and pass it explicitly, so no environment variable redirects them. They are left unpinned because a pin would add nothing a literal path does not already give.
 
-### 65.5 The screen's own two switches: a write on load, and a write to the wrong home
+### 68.5 The screen's own two switches: a write on load, and a write to the wrong home
 
 `ui/bridge.html` falls back to push to talk when continuous listening is asked for and the browser refuses the microphone, which is right - the page cannot listen continuously without it.
 Recording that fallback in the home as the captain's choice is not, and it did, twice over.
@@ -11581,7 +11581,7 @@ All three now take `-HomePath $home_`. An empty `$home_` is an unconfigured mach
 NO AUTOMATED COVERAGE, and this file says why in its own header: the bridge's HTTP surface needs a running listener and a live engine, and is proven by hand rather than in Pester.
 Nothing was run against a live bridge here - the brief forbids opening the screen - so what is proven is the divergence by reading, not the fix by exercise.
 
-### 65.6 A stale security claim in `bin/fm-bridge.ps1`, found on the way
+### 68.6 A stale security claim in `bin/fm-bridge.ps1`, found on the way
 
 Its SECURITY paragraph said the per-run token is "never written to disk", and the comment beside the launch URL said it "never touches disk".
 Both are contradicted 190 lines below, where the token IS written to `Get-FmBridgeTokenPath` for the dictation hook - a separate process that cannot be handed it - and removed on exit.
@@ -11589,7 +11589,7 @@ The behaviour is right and deliberate; the two sentences describing it were not.
 Both now say what the code does.
 No behaviour changed, so there is nothing to measure here.
 
-### 65.7 The full suite, twice
+### 68.7 The full suite, twice
 
 Run from a keeper that outlives the run - one process that runs no tests itself, starts the suite as its child and waits for it - with the child `-NonInteractive` and its stdin closed, on `ee79d54` over `main` at `82a831f`.
 Every run cleared `FM_HOME`, `FM_ROOT_OVERRIDE`, `FM_STATE_OVERRIDE`, `FM_CONFIG_OVERRIDE` and `STATE` first, so the suite resolved its home the way a run started from a bare shell does - the checkout - and the checkout's `config/` was listed before and after each run.
@@ -11612,9 +11612,9 @@ It waits again between run 1 and run 2, because the machine can fill up during a
 Measured: run 1 started after a 123-second wait at 12.7 GB free with two other suites up, run 2 after another at 11.9 GB.
 Nothing was stopped to make that room - contention is waited out here, never cleared.
 
-### 65.8 What this section does NOT claim
+### 68.8 What this section does NOT claim
 
 - **Nothing spoke, no microphone was opened, and no browser was driven at any point.** The reproduction used a switch seeded to `off`, so the reach was proven by a warning naming the file rather than by a sound, and the fixed suite mocks all four speech seams. The page was exercised only in the Node harness, whose `speechSynthesis` and `getUserMedia` are stubs. `config/voice` was absent in this worktree before and after, and the captain's home was read once, not run against.
 - **The reach was reproduced through the FIXTURE's own path, not through a forgotten call site.** No call site in the suite omits `-FmHome` today. What was measured is what a child started the way that fixture starts one resolves, which is the same thing the fixture would have done for a call that omitted it.
-- **65.5 explains a path, not the file dated 2026-08-19.** The captain's `config/listen-mode` was read, and what it holds is consistent with the second half of that defect. Nothing recovers what actually wrote it, and no run was made against that home to find out.
+- **68.5 explains a path, not the file dated 2026-08-19.** The captain's `config/listen-mode` was read, and what it holds is consistent with the second half of that defect. Nothing recovers what actually wrote it, and no run was made against that home to find out.
 - **The name list guards the module, not the file system.** Anything that writes `<home>/config/voice` directly - a captain, an editor, a script outside this port - still creates the switch, which is the point. What is closed is this port's own ability to create it.

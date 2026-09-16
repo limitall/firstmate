@@ -101,7 +101,7 @@ section 2 lists the state-file formats).
   `tests/FmFleetSync.Tests.ps1`, `tests/FmVoice.Tests.ps1` and
   `tests/FmBridge.Tests.ps1` do it for the whole file and each carries a check
   that fails when the pin is removed; `docs/windows-e2e-evidence.md` sections 62
-  and 65 have the runs, including a full suite against a seeded home under a file
+  and 68 have the runs, including a full suite against a seeded home under a file
   watcher. A fixture that starts a CHILD needs the home as a MANDATORY parameter
   on top, because the pin does not reach a child whose environment it scrubs -
   `Invoke-VoiceScript` is the shape to copy.
