@@ -11591,13 +11591,13 @@ No behaviour changed, so there is nothing to measure here.
 
 ### 65.7 The full suite, twice
 
-Run from a keeper that outlives the run - one process that runs no tests itself, starts the suite as its child and waits for it - with the child `-NonInteractive` and its stdin closed, on `d831d6a` over `main` at `a7b3c76`.
+Run from a keeper that outlives the run - one process that runs no tests itself, starts the suite as its child and waits for it - with the child `-NonInteractive` and its stdin closed, on `ee79d54` over `main` at `82a831f`.
 Every run cleared `FM_HOME`, `FM_ROOT_OVERRIDE`, `FM_STATE_OVERRIDE`, `FM_CONFIG_OVERRIDE` and `STATE` first, so the suite resolved its home the way a run started from a bare shell does - the checkout - and the checkout's `config/` was listed before and after each run.
 That listing is the leak check for this section: `config/voice`, `config/bridge-voice` and `config/listen-mode` all live there, and `.gitignore` keeps the whole directory out of `git status`, so a directory listing is the only thing that would have shown a stray write.
 
 ```
-run 1: exit=0 after 74.5 min :: passed=3080 failed=0 skipped=19
-run 2: exit=0, ~48 min from the log timestamps :: passed=3080 failed=0 skipped=19
+run 1: exit=0 after 43.9 min :: passed=3163 failed=0 skipped=19
+run 2: exit=0 after 42.6 min :: passed=3163 failed=0 skipped=19
 Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 :: 0 findings, both runs
 checkout config/ : <absent> before and after both runs
 checkout state/  : <absent> after both runs
@@ -11605,8 +11605,12 @@ checkout state/  : <absent> after both runs
 
 The page checks run inside that total through `tests/FmBridgeScreen.Tests.ps1`, which turns each line of `tests/ui/push-to-talk.checks.js` into its own Pester result - so the five added there are five of the cases above, not a separate run.
 
-Run 1 took 74.5 minutes against the forty section 62.6 records, and run 2 about 48, because several lanes were running their own suites on this machine at the same time; run 2's figure is the gap between the two logs' write times rather than the keeper's own measurement, which was lost to the pipe the launch was read through.
-An earlier attempt at this gate, before the page fixes landed, was killed at about two hours by the harness for system memory pressure and produced no result; it is not reported as a failure because it never reached one.
+BOTH RUNS WAITED FOR THE MACHINE BEFORE STARTING, and that is why they are the length section 62.6 records rather than the length contention makes them.
+Five lanes gate on one machine on a batch day, and a run started into that is killed for low memory partway through: an earlier attempt at this gate ran two hours and was killed with no result, which is not reported as a failure because it never reached one.
+The gate now holds until either nine gigabytes are free or at most two other suites are running, AND that has been true for two unbroken minutes, so a momentary dip between two lanes' runs cannot start a forty-minute run that then dies.
+It waits again between run 1 and run 2, because the machine can fill up during a run.
+Measured: run 1 started after a 123-second wait at 12.7 GB free with two other suites up, run 2 after another at 11.9 GB.
+Nothing was stopped to make that room - contention is waited out here, never cleared.
 
 ### 65.8 What this section does NOT claim
 
