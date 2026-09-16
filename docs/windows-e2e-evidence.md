@@ -10989,6 +10989,7 @@ Nothing was killed to make room: those processes are other lanes' runs.
   That is the bash's boundary too: the forge owns branch protection, and a second opinion here would be this port inventing policy.
 - **The durable notification has never been drained by a real watcher.**
   `state/<id>.pr-merge-notified` and the `merged-<id>-<url>` wake record are asserted against a fixture home; no live supervision turn has read one.
+
 ## 65. A copy of the contract that fell behind the contract, which only the doctor could see - and it called it unfixable - `PROVEN (Windows 11) FOR THE DRIFT, THE REFUSAL THAT HID IT, THE INDEX-DECLARED FIX AND FOUR NEGATIVE CONTROLS`
 
 `CLAUDE.md` is committed as a symlink to `AGENTS.md`, and a stock Windows checkout cannot materialize one, so `bin/fm-setup.ps1` falls through to a hardlink or a copy.
@@ -11170,3 +11171,140 @@ FmAnalyzer.Tests.ps1 green in both, which is the repo-wide Invoke-ScriptAnalyzer
 The count is 83 higher than the 3088 this branch gated at before the rebase; that is the guarded-merge work `82a831f1` brought in, not this section's.
 The instruction surface was repaired before the first run - 65.7 is that repair - so neither run pays the 9 failures a fresh worktree's first full run normally does.
 This subsection is the one thing added after the gate, because a run cannot record its own result inside the tree it ran on.
+
+## 65. One process per test file, and three real actions that refuse inside one - `PROVEN (Windows 11) FOR THE ISOLATION FROM INSIDE A CHILD, THE BOUND ON A FILE THAT REALLY HANGS, ALL THREE REFUSALS, THE TOOL-ABSENCE PROOF AND TWO IDENTICAL FULL-SUITE RUNS; THE 11.6-HOUR HANG ITSELF IS NOT RE-CREATED`
+
+Two of this repository's worst runs came through one door, and the patches that closed them were both correct and both specific.
+Section 56 is the first: a leaked `$env:PSModulePath` let a fixture autoload the module it had deliberately stubbed out, the shipped `install.ps1` then ran for real inside that fixture, and the suite sat for **11.6 hours**, twice, on `main` as well as on a branch.
+The second never got a section of its own: the same fixture's `pwsh` stub was not resolved on 2026-09-11, the installer carried on, and because a suite has nobody at the keyboard `Confirm-SpeechModel` took its documented default - which is YES - so **thirty-nine minutes** of a test run went on a 1.4 GB download.
+Section 62 is the third shape, an operator pane's `FM_*` overrides reaching the suite and being read as the machine's answer.
+
+This section is the class rather than the instances.
+`docs/test-isolation.md` owns the contract and the reasoning; what follows is what was executed.
+
+### 65.1 What a child is given, asserted from inside a child
+
+`tests/FmTestRun.Tests.ps1` stages the leak HOSTILE in the suite's own process - `FM_STATE_OVERRIDE` set, and this checkout's `module` prepended to `PSModulePath` - and then runs a fixture test file through the runner whose cases interrogate their own process.
+That direction matters: a runner that only clears what it happens to have inherited passes for the wrong reason on a seat where nothing set it.
+
+```
+[+] was not handed the operator pane's override
+[+] cannot autoload the checkout's module by name
+[+] knows a test run is conducting it
+[+] was told nothing may speak
+[+] has a home of its own that is not the checkout
+[+] has a temp of its own, and Pester's TestDrive is inside it
+    6 tests, all passed
+```
+
+**The negative control is in the same file and is what makes that mean anything.**
+The same child, started through `Invoke-FmBoundedCommand` with nothing excluded, comes back with `OVERRIDE=[C:\an-operator-pane-set-this]` and a NON-zero count of `Firstmate` modules resolvable by name - which is the door section 56 came through, still open when nobody shuts it.
+
+### 65.2 The bound, on a file that really does hang
+
+A fixture test file whose only case is `Start-Sleep -Seconds 300`, run with `-TimeoutSeconds 5`:
+
+```
+outcome  : timeout
+detail   : did not finish within 5 s and its whole process tree was killed;
+           nothing in this file was proved
+duration : under 120 s, against a 300 s sleep
+```
+
+`timeout` is not a pass and is not reported as one.
+Two neighbouring shapes are named rather than counted as clean: a file that exits without printing its counts is `unreported` (proved with a fixture that calls `[Environment]::Exit(3)`, and the record carries `ExitCode 3`), and a file that runs and contains no tests is `empty` - which is exactly what a second top-level `AfterAll` does to a Pester file, silently, and what `Invoke-Pester -Path ./tests` counts as nothing wrong.
+
+### 65.3 The three refusals
+
+| What | How it was proved | Result |
+| --- | --- | --- |
+| the installer | the SHIPPED `install.ps1`, run as a real child with `FM_TEST_MODE` naming this process, `-DetectOnly -Offline` | refuses, names the process, exits 1, and never reaches the plan |
+| the speech model | `Install-FmSpeechModel -WhatIf` with the marker staged | `Action = refused`, and the refusal answers BEFORE the `-WhatIf` gate |
+| the administrator prompt | `Install-FmToolRuntime` with the marker staged | `Action = blocked`, `Start-FmToolElevated` invoked 0 times, and the winget line still handed over |
+
+Each has its negative control beside it.
+With the marker cleared, `Install-FmSpeechModel -SourcePath <local file>` reaches the hashing code and reports `do not match the SHA256`; `Install-FmToolRuntime` reaches its mocked elevation exactly once; and the README case in `tests/FmModuleAssembly.Tests.ps1` runs the shipped installer to its own work and is told what a newcomer is told.
+
+`-DetectOnly -Offline` is the safety on the installer case, deliberately as well as the assertion: if that guard were ever removed, the worst that case could do is print a plan and delete its own probe directory.
+
+### 65.4 An absent tool that is actually absent
+
+`Get-FmTestPathSans` is proved in both directions, against a machine the test builds itself so the answer does not depend on this seat, and then against the real one:
+
+```
+control : fmfixturetool resolves twice on the PATH it was given
+sans    : 0 hits for fmfixturetool; fmfixturekeep and fmfixtureother still resolve
+pathext : a name present as .cmd AND .bat resolves twice, and 0 times after
+pwsh    : 0 hits on the returned PATH, and more than 0 on this machine's own
+```
+
+The last line is the one that matters: `pwsh` is the tool this repo actually stubs, in the two cases that run the shipped entry points, and it is the stub that was missed.
+`New-RelaunchFixture` now closes the second door as well - `%LOCALAPPDATA%\Programs\PowerShell7`, which `install.ps1` looks in BY NAME when PATH has no answer, and which is exactly where its own documented route puts PowerShell 7.
+
+### 65.5 The two gate runs
+
+Both on the rebased tree, both through `bin/fm-test-run.ps1`, run as fourteen consecutive foreground invocations of four files each because a background job on this seat only advances while the launching session is awake (65.7).
+
+```
+run 1 : 54 files, 3112 tests, 3093 passed, 0 failed, 19 skipped   4776.4 s
+run 2 : 54 files, 3112 tests, 3093 passed, 0 failed, 19 skipped   2756.0 s
+```
+
+Identical counts; 14 of 14 chunks exited 0 in each; no file was `failed`, `timeout`, `unreported` or `empty` in either.
+The difference in wall time is the machine: nine lanes were live for the first and fewer for the second.
+`tests/FmAnalyzer.Tests.ps1` is the repo-wide `Invoke-ScriptAnalyzer` sweep at zero tolerated findings, and it is one of the 54 - so **analyzer clean repo-wide** is part of both runs rather than a separate claim.
+
+**And the suite is green the OTHER way too.**
+The four files that read the marker were run in ONE process with `FM_TEST_MODE` cleared, under a keeper, which is the shape `Invoke-Pester -Path ./tests` gives them:
+
+```
+FM_TEST_MODE at start: []
+FmModuleAssembly + FmSpeechInstall + FmToolInstall + FmTestRun
+336 tests, 336 passed, 0 failed, 248.1 s
+```
+
+That is the property a marker-reading test has to have: the same correct code must not give two different answers depending on how the suite was started.
+
+### 65.6 The shakedown run, and the nine failures that were the worktree
+
+Before the rebase, one full run in this fresh worktree reported **3112 tests, 3084 passed, 9 failed** in exactly two files: `FmContract` (3) and `FmInstall` (6).
+All nine are the known fresh-worktree shape - `CLAUDE.md` is the 9-byte placeholder a `core.symlinks=false` clone leaves, and only a full run repairs it, because `tests/FmInstall.Tests.ps1` is what runs `bin/fm-setup.ps1` against this checkout.
+Re-run immediately afterwards with the surface repaired, both files were green: 39/39 and 83/83.
+Nothing in this change is involved, and the gate runs above confirm it: the same two files passed in both.
+
+### 65.7 The cost, measured rather than estimated
+
+The brief's estimate was half a second per file. On Windows it is not:
+
+```
+bare pwsh -NoProfile -NonInteractive -Command 'exit 0'      0.67 s
++ Import-Module Pester -MinimumVersion 5.0.0                1.5 - 1.9 s
++ New-PesterConfiguration                                   0.01 s
++ the FIRST Invoke-Pester in that process, one trivial test 5.5 - 6.8 s
+```
+
+So a child is about seven seconds old before it runs a test of its own, and fifty-four of those is roughly six minutes on a suite that already takes three quarters of an hour.
+That 5.5 s is Pester building its engine - it is the fresh engine the runner exists to buy, so there is nothing to optimise away.
+
+**The per-file bound was raised from the original's 900 s to 1800 s on measured grounds.**
+`FmEntryPoint.Tests.ps1` took 523 s in gate run 1 and 287 s in gate run 2; `FmInstall.Tests.ps1` took 461 s in the targeted re-run and 302 s in the gate.
+The spread is the machine, not the tree, and 900 s is close enough to the top of it that a busy afternoon would start reporting hangs that are not hangs.
+
+**A background job on this seat advances only while the session that launched it is awake.**
+Measured during the shakedown: the runner process sat at 34.8 s of CPU across a 100-minute wall-clock gap, and the per-file directory for the file it was on had been created 67 minutes before the child for that file started.
+The bound did not fire during any of it, which is correct - `WaitForExit(ms)` is not running either when the process holding it is not scheduled - but it means a multi-hour suite cannot be handed to a background job and left.
+That is why the gate runs above are fourteen foreground invocations rather than one.
+
+### 65.8 What this section does NOT claim
+
+- **The 11.6-hour hang is not re-created here.**
+  What is executed is that the door it came through is shut in a child, that a file which hangs costs its bound rather than the night, and that the installer refuses outright from inside a suite.
+  Section 56's own fix and its fixture repair both stay.
+- **The thirty-nine minute download is not re-created either.**
+  No case in this repository may reach the vendor, which is the point; what is proved is that the guard answers before the `-WhatIf` gate and that `-SourcePath` still reaches the hashing the area is about.
+- **No consent dialog was raised.**
+  `Start-FmToolElevated` is unreachable from a test by design and stays unreachable; the refusal and its test sit at `Install-FmToolRuntime`, one level out, and the case asserts the elevation mock was invoked zero times.
+- **Nothing was installed and nothing spoke.**
+  The one case that runs the shipped `install.ps1` runs it `-DetectOnly -Offline`, and every child the runner starts carries `FM_VOICE_OFF=1`.
+- **The suite was not run through the runner as ONE invocation on the merging tree.**
+  Per-file isolation makes fourteen invocations and one equivalent by construction - that is the property being shipped - but the equivalence is an argument, not a measurement, and the background-job finding in 65.7 is why it was not measured.
