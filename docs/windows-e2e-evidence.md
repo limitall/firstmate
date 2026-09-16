@@ -11782,3 +11782,82 @@ Putting the call in a file keeps the string off the command line, and the run co
   `Setting work going is done from the firstmate window, not from here.` gains a second reason to be held on the fresh board, on top of the pre-existing one it already had on both.
   No reply in the corpus is newly held, but the shape is real: a gerund-subject sentence whose predicate is a status word.
   That cost is taken deliberately, on the rule this file has stated since its first line - a false rejection costs a plainer answer that is still true, a false acceptance costs the captain stopping real work for fiction, and those are not the same size.
+
+## 66. The contract asked for a PR's full URL and named no source for it - `PROVEN (Windows 11) FOR THE MISSING BINDING, THE EXTRACTOR, SEVEN NEGATIVE CONTROLS AND BOTH ENDS OF THE TEARDOWN SEAM; NOT AGAINST A REAL GITHUB PR OR A REAL WORKER PANE`
+
+`AGENTS.md` told firstmate to give the captain a PR's complete `https://...` link and never said where that link comes from.
+Upstream found (kunchenguid/firstmate#3648) that this is the prompt shape that makes a model assemble a plausible URL from an owner, a repository and a number it half-remembers.
+
+### 66.1 Nothing in the port bound a URL to a record
+
+`Invoke-FmTeardown` read `pr=` from the task meta and handed it to both the landed-work test and the backlog reminder.
+Nothing in this port ever writes `pr=`; the key is read in `Invoke-FmTeardown.ps1` and written nowhere.
+So the value was always empty, and both consumers degraded silently:
+
+- `Test-FmTeardownPrMerged` fell through to `Get-FmTeardownPrNumberFromBranch`, a `gh-axi pr list --head <branch>` lookup - whatever PR points at the branch, not the one the worker said it delivered;
+- `Get-FmTeardownBacklogReminder` printed its literal `PR_URL` placeholder.
+
+The placeholder is honest and the branch lookup is the gap.
+Neither is where a dead link came from: no code here composed one, so the composing happened in prose, above the code.
+That is why the contract change is the fix and the extractor is what stops prose being the only available source.
+
+### 66.2 The extractor, and what it refuses
+
+`Get-FmTaskDeliveredPrUrl` (`Private/FmTeardown.ps1`) is now the only answer to "what did this task deliver".
+It takes the recorded `pr=` field, failing that the LAST line of `state/<id>.status` matching `^done: PR (https?://[^\s)"']+/pull/[0-9]+)( checks green)?$`, failing both `''`.
+That is upstream #4148's pattern, which the port had never needed because nothing here scraped status logs at all.
+`Private/FmBrief.ps1` emits that exact wording for both `direct-PR` and `no-mistakes` modes, which is what makes anchoring safe rather than merely strict.
+
+Measured on Windows 11 / PowerShell 7 against real status files:
+
+```
+last-wins (two done: PR lines plus a prose mention)   https://github.test/o/r/pull/2
+kind=scout, perfect ready line present                ''
+recorded pr= present, status file also has a line     the recorded value, trimmed
+prose only (five lines, each naming a real PR)        ''
+leading and trailing whitespace on the ready line     https://github.test/o/r/pull/5
+done: PR <url> where <url> is /issues/7               ''
+no status file at all                                 ''
+```
+
+The prose corpus is the point of the anchors.
+All five of its lines name a genuine PR URL and not one of them is the task's delivery:
+
+```
+working: rebased onto the branch from https://github.test/o/r/pull/12
+working: see https://github.test/o/r/pull/13 for the upstream fix
+done: PR https://github.test/o/r/pull/14 was reviewed by someone else
+done: ready in branch fm/a (supersedes https://github.test/o/r/pull/15)
+failed: https://github.test/o/r/pull/16 could not be opened
+```
+
+### 66.3 Both ends of the teardown seam
+
+Through the real `Invoke-FmTeardown`, against a real git worktree with a real bare origin, `gh` mocked:
+
+```
+unpushed commits, ready line names pull/77, no pr= recorded
+  -> teardown completes; gh pr view was called with https://github.test/o/r/pull/77
+the same commits, the SAME URL only MENTIONED in a working: line
+  -> REFUSED "not on any remote and not landed"; gh pr view never called with that URL,
+     although a MERGED answer was staged for it
+ready line names pull/77, tasks-axi backlog
+  -> reminder reads `tasks-axi done alpha --pr https://github.test/o/r/pull/77`
+prose mention only
+  -> reminder keeps its visible `--pr PR_URL` placeholder and carries no pull/77
+```
+
+Negative control, the one wiring line in `Invoke-FmTeardown.ps1` reverted to `Get-FmMetaValue` alone: the two positive cases fail, the two refusal cases still pass.
+That split is expected - the refusals assert that nothing is scraped, which is also true when nothing scrapes at all - and it is the reason both halves are kept.
+
+### 66.4 What the contract says now
+
+`AGENTS.md` section 9 is the one owner: copy the URL verbatim from the worker's `done: PR <url>` line or the task's `pr=` field, never assemble one, and when no record holds it say only the identifier actually held.
+Section 7's landing paragraph points at that rule instead of restating "full URL, never a bare `#number`".
+The `bearings` skill carried that sentence three times; it now carries it once, in the chat-response contract, extended with the source and the abstain path, and its gather step names the ready line as where a URL on this port actually lives.
+
+### 66.5 Not proven here
+
+No real GitHub PR was read and no real worker pane was typed into; `gh` is mocked in every case above.
+Nothing yet WRITES `pr=`, so the recorded-field branch is exercised only by tests.
+Whether a model actually stops composing links is a prompt-behaviour claim this section does not make.
