@@ -30,7 +30,7 @@ That asymmetry is what decides the design, not a preference for caution.
 
 Six process shapes, each a `pwsh` process, sampled through `Win32_Process` at **steady state** - which matters, because a first sample taken within a few seconds of launch catches pwsh's own startup burning about 11,500 write operations and 56 KB, and that startup noise is large enough to look like activity in every shape at once.
 Raw cumulative counters, four samples six seconds apart.
-`docs/windows-e2e-evidence.md` section 66 has the runs.
+`docs/windows-e2e-evidence.md` section 67 has the runs.
 
 | shape | what it really is | CPU | file read/write ops | other ops | transfer bytes |
 | --- | --- | --- | --- | --- | --- |

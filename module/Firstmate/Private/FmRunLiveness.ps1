@@ -340,7 +340,7 @@ function Get-FmRunLivenessSpineId {
 $script:FmRunActivityMinSecs = 30
 
 # THE CPU FLOOR IS PER-WINDOW, NOT ABSOLUTE, because the noise it clears grows
-# with the window. MEASURED (docs/windows-e2e-evidence.md section 66): a settled
+# with the window. MEASURED (docs/windows-e2e-evidence.md section 67): a settled
 # idle process burns 0 to 15.6 ms per minute - one scheduler tick, quantisation
 # rather than work - so a 240 s window can carry about 62 ms of pure housekeeping
 # and a fixed 50 ms floor would have called an idle process `advancing`.
