@@ -11120,23 +11120,29 @@ That is a correct, healthy pointer-file checkout being reported as broken and un
 The leaf of `@AGENTS.md` is not `AGENTS.md`, so the placeholder test does not catch it, and the index mode is `100644`, so the declaration test does not either - by design, since `100644` is exactly how a genuinely independent second memory file is committed too.
 `docs/instruction-surface.md` carries what this means for sequencing; the short version is that T1.8 has to teach `Get-FmAgentsMirrorState` a `pointer` state, and after this change that is the only place it has to be taught.
 
-### 64.7 The gate
+### 65.7 The same defect, on this branch's own rebase, repaired in one command
 
-Two full runs on the tree that merges, `4344d678`, rebased onto `a7b3c76d`.
-The instruction surface was repaired by hand before the first run, so neither run carries the 9 failures a fresh worktree's first full run normally pays.
+The fixture in 65.2 builds the index entry by hand.
+This is the unfaked case: rebasing this branch onto `82a831f1` replayed its own `AGENTS.md` change, git replaced the file, and the hardlinked mirror stayed where it was - the shape 63.1 measured, on a real worktree, unplanned.
 
 ```
-run 1: exit=0 after 48 min :: passed=3088 failed=0 skipped=19
-run 2: exit=0 after 32 min :: passed=3088 failed=0 skipped=19
-FmAnalyzer.Tests.ps1 green in both, which is the repo-wide Invoke-ScriptAnalyzer
-  sweep at every severity :: 0 findings
-FmAgentsMemory.Tests.ps1 50 tests, FmContract.Tests.ps1 42 - the two files this
-  section's mechanism lives in
+AGENTS.md=59252  CLAUDE.md=58425  delta=827
+hash match: False
+MirrorState = stale
+
+bin/fm-ensure-agents-md.ps1 .
+  updated: hardlinked CLAUDE.md -> AGENTS.md in <worktree>
+           (the mirror had drifted: 58425 bytes against AGENTS.md's 59252)
+  exit=0
+hash match now: True
+MirrorState = mirror
 ```
 
-This subsection is the one thing added after the gate, because a run cannot record its own result inside the tree it ran on.
+827 bytes behind, on the **hardlink** rung - the one 63.2 shows is the only rung this account can reach, and the one 63.6 named as the case that would survive a narrower fix.
+Before this branch that state read `conflict`, `bin/fm-ensure-agents-md.ps1` exited 1 with "reconcile them manually", and the repair was to delete `CLAUDE.md` by hand and re-run.
+It is now one command that the doctor already names, which is the whole of what 63.5 said a fix here should amount to.
 
-### 64.8 Two harness faults found on the way, one of them fixed here
+### 65.8 Two harness faults found on the way, one of them fixed here
 
 Neither is this section's subject; both cost gate runs, and the second is a defect in the tree.
 

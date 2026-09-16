@@ -268,7 +268,7 @@ rather than leave it queued.
   either. MEASURED: a correct, healthy pointer-file checkout is reported
   `MirrorState = conflict`, the doctor says `[missing] ... reconcile the two by
   hand` and exits 1, and `fm-ensure-agents-md.ps1` refuses with exit 1
-  (`docs/windows-e2e-evidence.md` section 64.6).
+  (`docs/windows-e2e-evidence.md` section 65.6).
 
 So T1.8 is not blocked on this work and this work is not wasted by it, and the
 sequencing runs the other way from what "the better shape subsumes it" suggests:
@@ -379,7 +379,7 @@ section 63 has it.
 - A `git rebase` that touched `AGENTS.md` left the hardlinked `CLAUDE.md` 88
   bytes behind, and the repair path then refused it as a conflict. That defect is
   CLOSED: "The mirror that falls behind, and how it is told from a conflict"
-  above is the mechanism, and section 64 is its evidence. It repairs the rung
+  above is the mechanism, and section 65 is its evidence. It repairs the rung
   that measurement landed on, because it classifies by what the repo DECLARES
   rather than by which rung produced the file.
 
