@@ -203,6 +203,37 @@ Describe 'bin/fm-merge-local.ps1' {
     }
 }
 
+Describe 'bin/fm-pr-merge.ps1' {
+    # Only the cases that need no GitHub and no gh. The gate itself, the head
+    # binding and the read-back are exercised against a mocked forge in
+    # tests/FmPrMerge.Tests.ps1; what belongs HERE is that the entry point runs
+    # at all and maps its outcomes to the codes a supervisor branches on.
+    BeforeEach { $script:TestHome = New-FmTestHome }
+    AfterEach { Remove-FmTestHome -TestHome $script:TestHome }
+
+    It 'exits 2 when either argument is missing' {
+        # This command takes two, and a half-typed one is a usage error rather
+        # than something to start reading GitHub about.
+        (Invoke-FmCli -Script 'fm-pr-merge.ps1').ExitCode | Should -Be 2
+        (Invoke-FmCli -Script 'fm-pr-merge.ps1' -CliArgs @('t1')).ExitCode | Should -Be 2
+    }
+
+    It 'exits 1 and says why, on stderr, for a URL that is not a pull request URL' {
+        $result = Invoke-FmCli -Script 'fm-pr-merge.ps1' -CliArgs @('t1', 'github.com/o/r/pull/1')
+        $result.ExitCode | Should -Be 1
+        $result.StdErr | Should -Match 'not a canonical pull request URL'
+        # A refusal is a message, not a PowerShell error record, so stdout stays
+        # clean for the one line a caller reads as the outcome.
+        $result.StdOut | Should -BeNullOrEmpty
+    }
+
+    It 'exits 1 for a task it has no record of' {
+        $result = Invoke-FmCli -Script 'fm-pr-merge.ps1' -CliArgs @('ghost', 'https://github.com/o/r/pull/1')
+        $result.ExitCode | Should -Be 1
+        $result.StdErr | Should -Match 'no meta for task ghost'
+    }
+}
+
 Describe 'bin/fm-crew-state.ps1' {
     BeforeEach { $script:TestHome = New-FmTestHome }
     AfterEach { Remove-FmTestHome -TestHome $script:TestHome }

@@ -816,7 +816,12 @@ function Invoke-FmWithLock {
     try {
         return & $ScriptBlock
     } finally {
-        $null = Unlock-FmLock -Lock $lock
+        # -WhatIf:$false, and it is not cosmetic. Wait-FmLock does NOT honour
+        # WhatIf - it really takes the lock - while Unlock-FmLock does, so under
+        # a caller's -WhatIf the release was previewed and skipped and the lock
+        # was still held when this returned. A preview that wedges every later
+        # lifecycle action against that task is worse than no preview.
+        $null = Unlock-FmLock -Lock $lock -Confirm:$false -WhatIf:$false
     }
 }
 

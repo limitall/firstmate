@@ -923,6 +923,18 @@ Describe 'Invoke-FmPrMerge' {
             }
         }
 
+        It 'releases the lock after a -WhatIf that merged nothing' {
+            # Request-FmLock does NOT honour WhatIf - it really takes the lock -
+            # while Unlock-FmLock does, so a previewed release left the task
+            # locked and every later lifecycle action against it refused. A
+            # preview that wedges the task is worse than no preview.
+            $fx = New-TestFixture
+            $null = & { $WhatIfPreference = $true; Invoke-FmPrMerge -TaskId $fx.TaskId -PrUrl $script:Url -StateDir $fx.State }
+            $lock = Request-FmLock -Path (Get-FmDeliveryControlLockPath -StateDir $fx.State -TaskId $fx.TaskId) -Role 'probe'
+            $lock | Should -Not -BeNullOrEmpty
+            $null = Unlock-FmLock -Lock $lock -Confirm:$false
+        }
+
         It 'releases the lock even when the merge is refused' {
             # A refused merge that left the task locked would wedge every later
             # lifecycle action against it.

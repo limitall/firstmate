@@ -267,8 +267,10 @@ function Invoke-FmPrMerge {
                 $(if ($verdict.Waived.Count -gt 0) { " (waived: $($verdict.Waived -join ', '))" } else { '' }))
         }
     } finally {
-        # Released whatever happened, including a throw from the checks above: a
-        # refused merge must never leave the task locked.
-        $null = Unlock-FmLock -Lock $control -Confirm:$false
+        # Released whatever happened, including a throw from the checks above
+        # and a -WhatIf that never merged: a refused or previewed merge must
+        # never leave the task locked. Request-FmLock does not honour WhatIf and
+        # really takes the lock, so the release may not honour it either.
+        $null = Unlock-FmLock -Lock $control -Confirm:$false -WhatIf:$false
     }
 }

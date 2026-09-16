@@ -472,10 +472,20 @@ Describe 'Invoke-FmPromote' {
         }
     }
 
-    It 'changes nothing under -WhatIf' {
+    It 'changes nothing under -WhatIf, and leaves neither lock held' {
+        # Request-FmLock does NOT honour WhatIf - it really takes the lock -
+        # while Unlock-FmLock does, so the previewed releases were skipped and
+        # both locks were still held when this returned. A preview that wedges
+        # every later lifecycle action against the task is worse than none.
         Invoke-FmPromote -TaskId 'scout1' -Mode 'local-only' -Yolo 'off' -StateDir $script:state -WhatIf |
             Should -BeNullOrEmpty
         @(Get-FmSessionFileLines -Path (Join-Path $script:state 'scout1.meta')) | Should -Contain 'kind=scout'
+        foreach ($path in @((Get-FmDeliveryControlLockPath -StateDir $script:state -TaskId 'scout1'),
+                (Get-FmMetaLockPath -MetaPath (Join-Path $script:state 'scout1.meta')))) {
+            $taken = Request-FmLock -Path $path
+            $taken | Should -Not -BeNullOrEmpty -Because "$path must be free after a previewed promotion"
+            $null = Unlock-FmLock -Lock $taken -Confirm:$false
+        }
     }
 
     It 'refuses an invalid task id' {

@@ -121,8 +121,11 @@ function Invoke-FmPromote {
     } finally {
         # Released whatever happened, including a throw from the checks above:
         # a refused promotion must never leave the task locked.
-        if ($metaLock) { $null = Unlock-FmLock -Lock $metaLock -Confirm:$false }
-        $null = Unlock-FmLock -Lock $control -Confirm:$false
+        # -WhatIf:$false: Request-FmLock does not honour WhatIf and really
+        # takes the lock, so a previewed release leaves it held. See
+        # Invoke-FmWithLock for the same asymmetry at the owner.
+        if ($metaLock) { $null = Unlock-FmLock -Lock $metaLock -Confirm:$false -WhatIf:$false }
+        $null = Unlock-FmLock -Lock $control -Confirm:$false -WhatIf:$false
     }
 
     [pscustomobject]@{
