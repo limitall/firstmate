@@ -246,6 +246,21 @@ Describe 'Test-FmPrMergeForgeArgument' {
         $attended[0] | Should -BeLike '*--repo*'
     }
 
+    It 'reads a shorthand with its value attached, which gh accepts' {
+        # `-Rcli/cli` is `--repo cli/cli` to gh's flag parser. A cluster check
+        # that required the whole token to be letters let it straight through,
+        # which is a repository override reaching the merge.
+        foreach ($token in @('-Rcli/cli', '-dRcli/cli')) {
+            (@(Test-FmPrMergeForgeArgument -Argument @($token) -AttendedOverride) -join ' ') |
+                Should -BeLike '*--repo*' -Because "gh reads $token as a repository override"
+        }
+        # Conservative by design: -bR is a body of "R" to gh and is refused too,
+        # because the alternative is letting a repository override through.
+        @(Test-FmPrMergeForgeArgument -Argument @('-bR')).Count | Should -Be 1
+        # An ordinary shorthand with a value is still fine.
+        @(Test-FmPrMergeForgeArgument -Argument @('-bship it')).Count | Should -Be 0
+    }
+
     It 'refuses a second merge method rather than letting two compete' {
         foreach ($flag in @('--squash', '-s', '--merge', '-m', '--rebase', '-r')) {
             @(Test-FmPrMergeForgeArgument -Argument @($flag))[0] |
@@ -398,6 +413,31 @@ Describe 'Get-FmPrMergeCheckVerdict' {
             Should -Be @('ci/legacy')
     }
 
+    It 'never lets a check clear one whose name differs only in case' {
+        # `[ordered]@{}` matches keys case-insensitively, so a green "Build"
+        # cleared a red "build". They are two different workflows to GitHub, and
+        # a check name is user-controlled text rather than an enum.
+        $checks = @(
+            (New-CheckRun -Name 'build' -Conclusion 'FAILURE' -StartedAt '2026-09-16T10:00:00Z'),
+            (New-CheckRun -Name 'Build' -Conclusion 'SUCCESS' -StartedAt '2026-09-16T11:00:00Z'))
+        (Get-FmPrMergeCheckVerdict -View (ConvertTo-PrView -Json (New-PrViewJson -Checks $checks))).NotGreen |
+            Should -Be @('build')
+    }
+
+    It 'refuses rather than merges when an enum arrives in an unexpected case' {
+        # Every comparison that GRANTS green is ordinal, so a casing this port
+        # has never seen produces a refusal instead of a merge. Refusing is the
+        # direction to be wrong in.
+        foreach ($odd in @(
+                (New-CheckRun -Name 'build' -Conclusion 'Success'),
+                (New-CheckRun -Name 'build' -Status 'Completed' -Conclusion 'SUCCESS'))) {
+            (Get-FmPrMergeCheckVerdict -View (ConvertTo-PrView -Json (New-PrViewJson -Checks @($odd)))).NotGreen |
+                Should -Be @('build')
+        }
+        (Get-FmPrMergeCheckVerdict -View (ConvertTo-PrView -Json (New-PrViewJson -Checks @(
+                        (New-StatusContext -Context 'ci' -State 'Success'))))).NotGreen | Should -Be @('ci')
+    }
+
     It 'never groups two UNNAMED check runs together' {
         # An empty name is not evidence that two runs are the same check, so a
         # green unnamed run must not clear a red one.
@@ -505,6 +545,15 @@ Describe 'Test-FmPrMergeReady' {
     It 'never waives by prefix, which is how one waiver becomes a standing one' {
         $script:GhView = New-PrViewJson -Checks @((New-CheckRun -Name 'build-windows' -Conclusion 'FAILURE'))
         (Test-FmPrMergeReady -Url $script:Url -AllowRed @('build')).Ready | Should -BeFalse
+    }
+
+    It 'refuses a mergeable value whose case it has never seen' {
+        # -cne, because this comparison grants the merge. DIRTY stays
+        # case-insensitive below, because that one only ever adds a refusal.
+        $script:GhView = New-PrViewJson -Mergeable 'Mergeable'
+        (Test-FmPrMergeReady -Url $script:Url).Ready | Should -BeFalse
+        $script:GhView = New-PrViewJson -MergeState 'dirty'
+        ((Test-FmPrMergeReady -Url $script:Url).Refusals -join ' ') | Should -BeLike '*DIRTY*'
     }
 }
 

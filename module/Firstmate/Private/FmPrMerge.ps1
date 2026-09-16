@@ -143,11 +143,21 @@ function Test-FmPrMergeForgeArgument {
             $refusals.Add("error: $flag is a merge method; pass it as -Method so only one method is ever selected")
             continue
         }
-        # A short cluster: -sd is squash AND delete-branch. Only a single dash
-        # followed by letters reaches here, so a negative number or a long flag
-        # never does.
-        if ($token -notmatch '^-[A-Za-z]{2,}$') { continue }
+        # A short token that is not itself a guarded flag. gh's flag parser
+        # accepts three shapes here and all three have to be read: a cluster
+        # (-sd is squash AND delete-branch), a shorthand with its value attached
+        # (-Rcli/cli is --repo cli/cli), and the two combined (-dRcli/cli). So
+        # the LEADING RUN of letters is scanned rather than the whole token, and
+        # any guarded letter in it refuses.
+        #
+        # Deliberately conservative. `-bR` is a body of "R" to gh, and this
+        # reads the R and refuses it. A false refusal that names the flag and
+        # has `--body R` as its answer is the cheap side of this trade; the
+        # other side is a repository override reaching the merge, which is the
+        # one thing the URL binding exists to make impossible.
+        if ($token -notmatch '^-[A-Za-z]') { continue }
         foreach ($char in $token.Substring(1).ToCharArray()) {
+            if ($char -notmatch '[A-Za-z]') { break }
             $letter = [string]$char
             $bundled = @($script:FmPrMergeGuardedArgs | Where-Object { $_.Short -ceq $letter })
             if ($bundled.Count -eq 0) { continue }
@@ -237,21 +247,30 @@ function Get-FmPrMergeCheckVerdict {
     }
 
     $notGreen = [System.Collections.Generic.List[string]]::new()
-    $groups = [ordered]@{}
+    # ORDINAL, like the guarded-argument table and for the same reason. A check
+    # NAME is user-controlled text, not an enum, and `[ordered]@{}` matches keys
+    # case-insensitively - so a green "Build" would have cleared a red "build",
+    # which are two different workflows to GitHub.
+    $groups = [System.Collections.Specialized.OrderedDictionary]::new([System.StringComparer]::Ordinal)
     $index = -1
     foreach ($entry in $rollup) {
         $index++
-        if (([string](Get-FmJsonValue -InputObject $entry -Path '__typename')) -ne 'CheckRun') {
+        # Every comparison that GRANTS green below is ordinal (-cne, -ceq,
+        # -cin). These are GraphQL enums and always upper case, so the strict
+        # form changes nothing today - but if one ever arrives in another
+        # casing, strict refuses and lenient would merge. Refusing is the
+        # direction to be wrong in.
+        if (([string](Get-FmJsonValue -InputObject $entry -Path '__typename')) -cne 'CheckRun') {
             # A status context, and anything the rollup grows later: one state,
             # no runs, so a state that is not SUCCESS is simply not green.
-            if (([string](Get-FmJsonValue -InputObject $entry -Path 'state')) -eq 'SUCCESS') { continue }
+            if (([string](Get-FmJsonValue -InputObject $entry -Path 'state')) -ceq 'SUCCESS') { continue }
             $context = [string](Get-FmJsonValue -InputObject $entry -Path 'context')
             $notGreen.Add($(if ($context) { $context } else { '(unnamed check)' }))
             continue
         }
 
         $name = [string](Get-FmJsonValue -InputObject $entry -Path 'name')
-        $completed = ([string](Get-FmJsonValue -InputObject $entry -Path 'status')) -eq 'COMPLETED'
+        $completed = ([string](Get-FmJsonValue -InputObject $entry -Path 'status')) -ceq 'COMPLETED'
         $conclusion = [string](Get-FmJsonValue -InputObject $entry -Path 'conclusion')
         $key = if ($name) { "name`u{001c}$name" } else { "index`u{001c}$index" }
         if (-not $groups.Contains($key)) {
@@ -260,7 +279,7 @@ function Get-FmPrMergeCheckVerdict {
         $groups[$key].Runs.Add([pscustomobject]@{
                 # NEUTRAL and SKIPPED are green: a check that deliberately did
                 # not apply to this change has not failed it.
-                Ok        = ($completed -and $conclusion -in @('SUCCESS', 'NEUTRAL', 'SKIPPED'))
+                Ok        = ($completed -and $conclusion -cin @('SUCCESS', 'NEUTRAL', 'SKIPPED'))
                 Completed = $completed
                 At        = (Get-FmPrMergeSettledAt -Value (Get-FmJsonValue -InputObject $entry -Path 'startedAt'))
             })
@@ -376,8 +395,11 @@ function Test-FmPrMergeReady {
     } elseif ($draft) {
         $refusals.Add('  - the pull request is a draft')
     }
+    # -cne, for the reason Get-FmPrMergeCheckVerdict gives: this comparison
+    # grants the merge. The DIRTY check below stays case-insensitive because
+    # that one only ever adds a refusal.
     $mergeable = [string](Get-FmJsonValue -InputObject $view -Path 'mergeable')
-    if ($mergeable -ne 'MERGEABLE') {
+    if ($mergeable -cne 'MERGEABLE') {
         $refusals.Add("  - mergeable is `"$(if ($mergeable) { $mergeable } else { 'unreadable' })`", not MERGEABLE")
     }
     if (([string](Get-FmJsonValue -InputObject $view -Path 'mergeStateStatus')) -eq 'DIRTY') {
