@@ -11154,3 +11154,19 @@ Neither is this section's subject; both cost gate runs, and the second is a defe
   Sequential `ReadToEnd` on two redirected pipes deadlocks once the child fills the one nobody is draining, and `ReadToEnd` does not return while ANY process holds the write handle - the Stop auto-arm SPAWNS a watcher that inherits it, so the hook exits and the read blocks forever with no child left to point at.
   MEASURED: a 99-minute wedge with the hook already gone, 236s of CPU across 131 minutes, no descendants, nothing on stdout, and a full two-run gate lost.
   Fixed in its own commit: both pipes drain through `ReadToEndAsync` and every wait is bounded, so a hook that does not return fails in 120s naming the budget.
+
+### 65.9 The gate
+
+Two full runs on the tree that merges, `701214f6`, rebased onto `82a831f1`.
+Started only once free memory held at or above 9 GB with no more than two other suites live across two consecutive checks, because five lanes gate at once on a batch day and a run started into that contention is killed for low memory partway through.
+
+```
+run 1: exit=0 after 43 min :: passed=3171 failed=0 skipped=19
+run 2: exit=0 after 43 min :: passed=3171 failed=0 skipped=19
+FmAnalyzer.Tests.ps1 green in both, which is the repo-wide Invoke-ScriptAnalyzer
+  sweep at every severity :: 0 findings
+```
+
+The count is 83 higher than the 3088 this branch gated at before the rebase; that is the guarded-merge work `82a831f1` brought in, not this section's.
+The instruction surface was repaired before the first run - 65.7 is that repair - so neither run pays the 9 failures a fresh worktree's first full run normally does.
+This subsection is the one thing added after the gate, because a run cannot record its own result inside the tree it ran on.
