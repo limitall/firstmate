@@ -8469,6 +8469,7 @@ The replacement still clears the gate it came from, which is asserted for both a
 - **One fabrication was already getting through, and still is.**
   `The billing job is green.` is not held back, before this change or after it, because `billing` ends in `-ing` and `Test-FmBridgeDescribingWord` reads it as description.
   That is the documented and deliberate failure direction of that heuristic rather than anything this task introduced, and it is recorded here because it was found while measuring, not fixed.
+  CLOSED by section 65, which extends this section's own rewrite one level down: the ending list is closed, exactly one ending in it also builds a noun, and a word wearing that one is undecidable rather than discarded.
 
 ---
 
@@ -8998,6 +8999,7 @@ On an empty board it offers a next move rather than ending on what it could not 
   `The billing job is green.` is still delivered, because `billing` ends in `-ing` and `Test-FmBridgeDescribingWord` reads it as description before any of this is consulted.
   That is section 48.8's finding unchanged, recorded again here because the state rule was measured against it and does not reach it: the phrase never becomes a mention, so there is nothing for the state rule to attach to.
   The same sentence about a name that DOES reach the mention stage is held, which is asserted.
+  CLOSED by section 65: the phrase now becomes a mention, so this section's state rule reaches it, and so do the figure and action rules that were letting six more shapes through on both boards.
 - **One ordinary reply in 19 is still held on both boards.**
   "I am an Adit firstmate ... to help with the Adit product work" is held because the identity says `products` and the reply says `product`, and `Test-FmBridgeWordsRecorded` compares words exactly.
   Chasing it means adding a stemmer, which is the guess-from-English shape this area has twice been burnt by, so it is recorded rather than fixed.
@@ -11618,3 +11620,165 @@ Nothing was stopped to make that room - contention is waited out here, never cle
 - **The reach was reproduced through the FIXTURE's own path, not through a forgotten call site.** No call site in the suite omits `-FmHome` today. What was measured is what a child started the way that fixture starts one resolves, which is the same thing the fixture would have done for a call that omitted it.
 - **68.5 explains a path, not the file dated 2026-08-19.** The captain's `config/listen-mode` was read, and what it holds is consistent with the second half of that defect. Nothing recovers what actually wrote it, and no run was made against that home to find out.
 - **The name list guards the module, not the file system.** Anything that writes `<home>/config/voice` directly - a captain, an editor, a script outside this port - still creates the switch, which is the point. What is closed is this port's own ability to create it.
+
+---
+
+## 65. A job name ending in -ing was read as a description, so the screen could report on work that does not exist - `PROVEN (Windows 11) FOR THE REPRODUCTION, THE CAUSE, THE FIX, BOTH DIRECTIONS OF A CORPUS ON TWO BOARDS AND FOUR NEGATIVE CONTROLS; THE CAPTAIN'S FRESH VM IS STILL THEIRS`
+
+Dated 2026-09-16, on `C:\Users\ADMIN\.treehouse\firstmate-win-e0ed2e\7\firstmate-win`, PowerShell 7.6.6, Pester 6.1.0, git 2.49.0.windows.1, Windows 11 Pro 10.0.26200.
+Written on `fm/bridge-billing-ing` over `main` at `826be670`, rebased onto `a7b3c76` (section 63, the contract-mirror lane) and again onto `82a831f1` (section 64, the guarded-merge lane), and re-measured on each.
+
+This section closes a finding this repository had already recorded twice and fixed neither time.
+Section 48.8 wrote it down as "one finding left open" while measuring something else; section 51.8 wrote it down again when the state rule landed and did not reach it.
+Both times the sentence was the same:
+
+```
+The billing job is green.
+```
+
+There is no billing job.
+There never has been.
+
+Nothing was spoken and no session was started: `config/voice` and `config/bridge-voice` were both absent before and after, which is the off state.
+Every measurement below drives `Test-FmBridgeGrounded` directly, which `CONTRIBUTING.md` records is all the reply path needs to be verified.
+
+### 65.1 The reproduction, and it is bigger than the sentence that was reported
+
+The reported sentence is no longer the whole of the class, because the state rule from section 51 reaches the copula shape.
+What it does not reach is everything else, and that is what was measured first.
+
+A corpus of 18 deliberate fabrications - each naming work with an `-ing` word and then reporting a state, a figure or a course of action on it - was put through the gate on two boards: a fresh VM with no records at all, and the board the screen invented work on.
+The module at `main` was extracted into a temporary tree and the identical harness run against it, which is how section 51.3 measured its own "before" column.
+
+Twelve of the thirty-six were delivered:
+
+| delivered fabrication | what it does |
+| --- | --- |
+| `The billing job finished overnight.` | a state, written as an adverb rather than a copula |
+| `The onboarding task landed already.` | an outcome, written the same way |
+| `You should look at the billing job first.` | a recommendation |
+| `Stop the indexing run and put the docs back.` | an imperative |
+| `I recommend pausing the staging lane.` | a recommendation |
+| `Halt the billing job and start something else in its place.` | halting real work for invented work |
+
+Each of the six was delivered on both boards, which is the twelve.
+The last four are the founding defect of this whole area: a course of action recommended on work that does not exist.
+
+### 65.2 The cause, read out of the walk rather than guessed at
+
+`Test-FmBridgeGrounded`'s spaced-name walk collects the words in front of a work noun, stopping at the first word that is a common modifier or a describing word.
+`Test-FmBridgeDescribingWord` reads a word ending in `-ing` as description.
+Walking `The billing job is green.` through it, one step at a time:
+
+| step | value |
+| --- | --- |
+| matched span | `The billing job` |
+| head noun | `job` |
+| walk reaches | `billing` |
+| a common modifier? | no |
+| a describing word? | **yes**, by the `-ing` ending |
+| walk stops, word discarded | nothing is left |
+| phrase collected | none, so the match is abandoned |
+| **verdict** | the phrase is neither a name nor a mention |
+
+That last row is the defect.
+The contract's three rules - a state, a percentage, a recommended action - all fire on a **mention**, and the phrase never became one.
+So the gate was not weighing the claim and letting it through; it was never shown the claim at all.
+
+**The `-ing` ending is the one in that list English also builds a noun with.**
+`-ed`, `-ly`, `-able`, `-ible`, `-ive`, `-ous`, `-ful`, `-less`, `-wise`, `-like`, `-al` and `-ic` build a word that can only describe: there is no noun `auditedly` and no job named `careless`.
+`-ing` builds the gerund, which is a noun, and it is the ending this trade reaches for when it names a subsystem - `billing`, `staging`, `logging`, `indexing`, `onboarding`, `caching`, `monitoring`, `shipping`.
+The suffix rule was written as though only the participle reading existed, which is the same mistake the head-noun matcher made about verbs and section 48 fixed.
+
+### 65.3 The fix, and the line it does not cross
+
+The narrowing is the same shape as section 48.5's and for the same reason: a list of the `-ing` words that turn out to be names stays permanently one defect behind, which `Test-FmBridgeDescribingWord` learnt across four live turns and `Get-FmBridgeWorkNoun` was written to stop repeating.
+
+`Get-FmBridgeDescribingSuffix` now owns the ending list - which `Test-FmBridgeDescribingWord` builds its own matcher from, so the two cannot drift - and says of each ending whether English also builds a name with it.
+The list of endings was already fixed and already in the file; saying which of them is noun-building is a bounded, complete judgement about thirteen endings, made once.
+Exactly one of them is.
+
+**And the answer to "is `billing` a name" is "cannot tell", which is a category this gate already has.**
+Nothing in the fix decides that `billing` names work, because `the billing job` and `the running tests` are the same construction and no rule short of a dictionary separates them.
+`Test-FmBridgeNamingSuffix` marks such a word undecidable, the walk collects it instead of discarding it, and the phrase around it is denied the one verdict it has not earned - being called a name outright.
+It becomes a mention, which the contract has described since the day it was written: a name the records do not carry "may be mentioned but never given a state, a percentage, or a recommended action".
+
+Three things are deliberately left alone:
+
+- a word wearing any other describing ending is discarded by the walk exactly as before, so the four live false positives that taught this file to stop enumerating - `mis-pairings`, `Active work`, `furthest-along`, `mid-build` - stay delivered;
+- a hyphenated compound ending in a participle - `long-running`, `non-blocking`, `slow-moving` - is settled description, because English's gerund is one word and every name this system carries is written bare;
+- the records remain the escape hatch, so an `-ing` word a worker wrote into its own record passes untouched.
+
+### 65.4 The size of the class, measured before and after
+
+The same corpus, the same two boards, the same harness.
+The ordinary side is 15 replies that each put an `-ing` word in front of a work noun and claim nothing about the fleet - the gerund heading a clause, the gerund as a modifier, the compound adjective, a refusal, a route.
+
+| | before | after |
+| --- | --- | --- |
+| ordinary replies held back | 2 of 30 | **2 of 30** |
+| fabrications delivered | 12 of 36 | **0 of 36** |
+
+The ordinary column does not move, and the two it holds are the same reply on both boards before and after: `Setting work going is done from the firstmate window, not from here.`
+It is held by section 51's state-subject rule reading `Setting work going` as the thing `is done` is reported of, which is a pre-existing finding this change neither causes nor repairs.
+The failure direction there is the documented one - a duller reply, never a false one.
+
+The records doing their job is worth stating separately, because it is what makes the tightening safe.
+`The running tests are green.` is **delivered** on the busy board and **held** on the fresh one: a worker wrote "full suite running" into its own record, so on that board the reply is quoting the record it was handed, and on a board where nothing has ever run it is a claim about work that does not exist.
+Both directions are asserted.
+
+### 65.5 The negative control
+
+Four loosenings were applied to the shipped source in turn, the whole of `tests/FmBridgeGround.Tests.ps1` re-run against each, and the source restored:
+
+| loosening | result |
+| --- | --- |
+| every ending treated as name-building, so a describing word stops being one | 2 tests red |
+| the gerund treated as describing only, which is the shipped defect | **18 tests red** |
+| an undecidable phrase called a name outright rather than a mention | 2 tests red |
+| a hyphenated compound allowed to be undecidable | 3 tests red |
+
+The source was restored after each and the file confirmed green again at 352 passed, 0 failed.
+The second row is the one that matters: reverting the judgement about the gerund alone turns eighteen tests red, so the fix cannot be quietly undone by a later edit that looks like tidying.
+The first and fourth are the other direction - they are what stops this narrowing being taken further and swallowing ordinary adjectives, which is the mistake this file has already paid for four times.
+
+### 65.6 Upstream
+
+`data/upstream-review/report.md` records that upstream's spoken interface (#2767) gates nothing at all: it tells the model it is not the first mate, hands it two tools, and grounds in counts.
+There is no equivalent of this guard there to port, and section 7's standing decision is `bridge-thin-front`: stay with the grammar-based guard and revisit if it swallows another family of ordinary replies.
+It did not swallow one here - the ordinary column is unchanged - so this is the recorded course.
+
+### 65.7 The gate this branch was measured through
+
+Two full runs of `tests/` and a repo-wide analyzer sweep, on the tree that merges - `fm/bridge-billing-ing` rebased onto `main` at `a7b3c76`:
+
+| run | passed | failed | skipped | total |
+| --- | --- | --- | --- | --- |
+| 1 | 3143 | **0** | 19 | 3162 |
+| 2 | 3143 | **0** | 19 | 3162 |
+
+`Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error,Warning,Information` reported **0 findings**.
+
+Run 1 was green rather than carrying the usual nine instruction-surface failures, because the surface was repaired by hand before the gate rather than left for the run to repair: `CLAUDE.md` and `.claude/skills` both arrive as the placeholders `core.symlinks=false` leaves, and both were materialised and marked `skip-worktree` so the tree stays clean and neither is committed.
+
+**Both runs had to be launched from a script FILE rather than `pwsh -Command`.**
+Four earlier attempts died mid-suite with `exit=-1` and empty stderr, at a different test file each time and with nothing in the Windows event log.
+That is the signature `firstmate-win`'s own suite lore already records: with several lanes gating at once, a lane's cleanup that matches `*Invoke-Pester*` in a command line kills every other lane's run.
+Putting the call in a file keeps the string off the command line, and the run completed.
+
+### 65.8 What was NOT proven
+
+- **The captain's fresh VM has not run this.**
+  Every measurement is from this seat, through `Test-FmBridgeGrounded` directly, with no session and nothing speaking.
+  Whether their next install answers them properly is still their measurement.
+- **Nothing here asserts that a live session will not invent an `-ing` name.**
+  That is a property of a model on a given day.
+  What is asserted is that such an invention can no longer be DELIVERED with a state, a figure or a course of action attached.
+- **A hyphenated compound ending in a participle is still settled description, by choice.**
+  `Stop the data-processing run.` is not held, because `data-processing` is read as a describing compound and the hyphenated-name rule has already had its own look at it.
+  Reading those as undecidable would put ordinary adjectives such as `long-running` into the mention set and cost replies that were true, which is the trade this area has been burnt by four times.
+  It is recorded rather than fixed.
+- **A gerund heading a clause in front of a work noun is now a mention, and one reply in the corpus pays for it.**
+  `Setting work going is done from the firstmate window, not from here.` gains a second reason to be held on the fresh board, on top of the pre-existing one it already had on both.
+  No reply in the corpus is newly held, but the shape is real: a gerund-subject sentence whose predicate is a status word.
+  That cost is taken deliberately, on the rule this file has stated since its first line - a false rejection costs a plainer answer that is still true, a false acceptance costs the captain stopping real work for fiction, and those are not the same size.

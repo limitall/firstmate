@@ -649,6 +649,94 @@ Describe 'Test-FmBridgeDescribingWord' {
     }
 }
 
+Describe 'Get-FmBridgeDescribingSuffix' {
+
+    # Test-FmBridgeDescribingWord builds its own matcher out of this, so an
+    # ending it matches and an ending it can reason about are the same list by
+    # construction rather than by anyone remembering to edit both. Same
+    # arrangement Get-FmBridgeWorkNoun has with the head nouns, for the same
+    # reason: the two answers drifted apart the first time only one was edited.
+    It 'classifies every ending exactly once' {
+        $endings = @(Get-FmBridgeDescribingSuffix)
+        @($endings.Suffix | Select-Object -Unique).Count | Should -Be $endings.Count
+        foreach ($e in $endings) {
+            $e.Suffix | Should -Be $e.Suffix.ToLowerInvariant()
+            $e.Stem | Should -BeGreaterThan 0
+        }
+    }
+
+    # Both halves have to be populated or the classification is decorative: if
+    # no ending built a noun the reported defect returns, and if every one did
+    # then `audited` and `hourly` start reading as names.
+    It 'holds both a name-building and a describing-only class' {
+        $endings = @(Get-FmBridgeDescribingSuffix)
+        @($endings | Where-Object { $_.Noun }).Count | Should -BeGreaterThan 0
+        @($endings | Where-Object { -not $_.Noun }).Count | Should -BeGreaterThan 0
+    }
+
+    # The gerund is a noun, which is the whole finding. Everything else in the
+    # list can only describe.
+    It 'reads -ing as the one ending English also builds a name with' {
+        (@(Get-FmBridgeDescribingSuffix) | Where-Object { $_.Suffix -eq 'ing' }).Noun |
+            Should -BeTrue
+    }
+
+    It 'reads the rest as describing and nothing else' -ForEach @(
+        @{ Suffix = 'ed' }, @{ Suffix = 'ly' }, @{ Suffix = 'able' }, @{ Suffix = 'ive' }
+        @{ Suffix = 'ous' }, @{ Suffix = 'ful' }, @{ Suffix = 'less' }, @{ Suffix = 'al' }
+        @{ Suffix = 'ic' }
+    ) {
+        (@(Get-FmBridgeDescribingSuffix) | Where-Object { $_.Suffix -eq $Suffix }).Noun |
+            Should -BeFalse
+    }
+}
+
+Describe 'Test-FmBridgeNamingSuffix' {
+
+    # THE WORDS THIS TRADE NAMES SUBSYSTEMS WITH, every one of which reads as
+    # description to a suffix rule. `The billing job is green.` reached the
+    # captain on the strength of exactly this spelling.
+    It 'reads a gerund as a word that could be naming' -ForEach @(
+        @{ Word = 'billing' }, @{ Word = 'staging' }, @{ Word = 'logging' }
+        @{ Word = 'indexing' }, @{ Word = 'onboarding' }, @{ Word = 'caching' }
+        @{ Word = 'monitoring' }, @{ Word = 'shipping' }, @{ Word = 'Billing' }
+    ) {
+        Test-FmBridgeNamingSuffix -Text $Word | Should -BeTrue
+    }
+
+    # SETTLED DESCRIPTION, and it stays settled. English has no noun `auditedly`
+    # and names no job `careless`, so nothing about these is relaxed and the
+    # walk discards them exactly as it did before.
+    It 'reads every other describing ending as description and nothing else' -ForEach @(
+        @{ Word = 'audited' }, @{ Word = 'hourly' }, @{ Word = 'careless' }
+        @{ Word = 'active' }, @{ Word = 'critical' }, @{ Word = 'various' }
+        @{ Word = 'useful' }, @{ Word = 'readable' }, @{ Word = 'atomic' }
+    ) {
+        Test-FmBridgeNamingSuffix -Text $Word | Should -BeFalse
+    }
+
+    # A COMPOUND IS SETTLED TOO. English's gerund is one word and every name
+    # this system carries is written bare, so a hyphenated compound ending in a
+    # participle is describing - and reading it as undecidable would put an
+    # ordinary adjective into the mention set and cost a reply that was true.
+    It 'does not read a hyphenated compound as one' -ForEach @(
+        @{ Word = 'long-running' }, @{ Word = 'non-blocking' }, @{ Word = 'slow-moving' }
+    ) {
+        Test-FmBridgeNamingSuffix -Text $Word | Should -BeFalse
+    }
+
+    # A stem has to stand in front of the ending, or `ring` and `king` are
+    # inflections. And a word with no describing mark at all was never this
+    # function's to judge - the walk only asks after Test-FmBridgeDescribingWord
+    # has already said "description".
+    It 'has nothing to say about a word wearing no ending' -ForEach @(
+        @{ Word = '' }, @{ Word = '   ' }, @{ Word = 'ing' }, @{ Word = 'payment' }
+        @{ Word = 'lock-identity' }
+    ) {
+        Test-FmBridgeNamingSuffix -Text $Word | Should -BeFalse
+    }
+}
+
 Describe 'an ordinary question gets an ordinary answer' {
 
     # THE DEFECT, from the captain's own fresh VM on 2026-09-07. They said
@@ -1351,6 +1439,173 @@ Describe 'the gate stops parsing English' {
         $name = Test-FmBridgeGrounded -Text 'Payment tests are green.' `
             -Ground $script:Board -Asked 'what is happening?'
         $name.Grounded | Should -BeFalse -Because 'a bare noun phrase is how this system writes an id'
+    }
+}
+
+Describe 'a name ending in -ing is not a describing word' {
+
+    # THE DEFECT, recorded twice before it was fixed. Section 48.8 found `The
+    # billing job is green.` while measuring something else and wrote it down
+    # rather than fixing it; section 51.8 recorded it again when the state rule
+    # landed and did not reach it. There is no billing job. `billing` ends in
+    # `-ing`, Test-FmBridgeDescribingWord read that as the mark of description,
+    # and the walk that collects a name DISCARDED the word - so the phrase
+    # became neither a name nor a mention, and the three rules that decide what
+    # may be said about unrecorded work had nothing to attach to.
+    #
+    # WHY A PHRASE LIST WAS NOT THE ANSWER, for the fourth time in this file.
+    # `billing`, then `staging`, then whatever the next turn writes, is the
+    # shape that stays permanently one defect behind. The list of describing
+    # ENDINGS, on the other hand, is closed and already in the source; saying
+    # which of them English also builds a noun with is a bounded judgement about
+    # thirteen endings, made once. Exactly one of them - the gerund - builds a
+    # name, and that is Get-FmBridgeDescribingSuffix.
+    #
+    # AND THE ANSWER IS "CANNOT TELL". Nothing decides that `billing` names
+    # work; `the billing job` and `the running tests` are the same construction
+    # and no rule short of a dictionary separates them. The word is marked
+    # undecidable instead, which puts the phrase in the category the contract
+    # has had since the day it was written: mentionable, and never given a
+    # state, a percentage or an action.
+    BeforeAll {
+        $script:Fresh = script:New-Ground -Empty -NoCapacity
+        $script:Board = script:New-Ground
+    }
+
+    # DIRECTION ONE: ordinary replies, which must still be delivered. Every one
+    # of these puts an `-ing` word in front of a work noun and claims nothing
+    # about the fleet - the gerund heading a clause, the gerund as a modifier,
+    # the compound adjective - and all of them go through on both boards.
+    It 'delivers an ordinary reply that uses an -ing word' -ForEach @(
+        @{ Why = 'a gerund as the subject of the sentence'
+            Said = 'Running tests takes a while on this machine.'
+        }
+        @{ Why = 'a gerund after a copula'; Said = 'Nothing is blocking work at the moment.' }
+        @{ Why = 'a gerund subject with an ordinary predicate'
+            Said = 'Getting work moving is what I am here for.'
+        }
+        @{ Why = 'a compound adjective, which is settled description'
+            Said = 'I can see a long-running job in the list.'
+        }
+        @{ Why = 'an indefinite phrase, which points at no particular thing'
+            Said = 'I would need the firstmate window for a starting task.'
+        }
+        @{ Why = 'a repeating job named as a kind rather than a thing'
+            Said = 'A repeating job would need a schedule, which is not something I set.'
+        }
+        @{ Why = 'a gerund the reply is describing its own work with'
+            Said = 'Reading the records is all I do before answering.'
+        }
+        @{ Why = 'a refusal that names no work at all'
+            Said = 'I have no way of starting a run from this screen.'
+        }
+        @{ Why = 'a route, which tells the captain where to go'
+            Said = 'Asking firstmate is the way to get a task moving.'
+        }
+        @{ Why = 'a determined phrase that claims nothing about it'
+            Said = 'There is a following task in the same window.'
+        }
+    ) {
+        foreach ($ground in @($script:Fresh, $script:Board)) {
+            (Test-FmBridgeGrounded -Text $Said -Ground $ground -Asked 'how is it going?').Grounded |
+                Should -BeTrue -Because "$Why claims nothing about the fleet"
+        }
+    }
+
+    # DIRECTION TWO: genuine inventions, which must be held. Every one names
+    # work no record carries with an `-ing` word and then reports a state, a
+    # figure or a course of action on it. The first is section 48.8's sentence,
+    # character for character; six of these eighteen were delivered before this
+    # change, on both boards, which is the twelve of thirty-six that section
+    # 65.1 measured.
+    It 'holds back an invented name ending in -ing' -ForEach @(
+        @{ Why = 'the sentence section 48.8 recorded and 51.8 recorded again'
+            Said = 'The billing job is green.'
+        }
+        @{ Why = 'a run the records do not carry'; Said = 'The billing run came back clean.' }
+        @{ Why = 'a job the records do not carry'; Said = 'The staging job has landed.' }
+        @{ Why = 'a task the records do not carry'; Said = 'The onboarding task is blocked.' }
+        @{ Why = 'a lane reported on in the perceived register'
+            Said = 'The indexing lane looks fine.'
+        }
+        @{ Why = 'a bare plural name'; Said = 'The caching fixes are done.' }
+        # These two carry their state in an adverb rather than a copula, so no
+        # rule but the mention rules can reach them. Both were delivered.
+        @{ Why = 'a state written as an adverb'; Said = 'The billing job finished overnight.' }
+        @{ Why = 'an outcome written as an adverb'; Said = 'The onboarding task landed already.' }
+        @{ Why = 'a branch the records do not carry'; Said = 'The logging branch is merged.' }
+        @{ Why = 'a figure on an invented name'; Said = 'The billing job is at 40 percent.' }
+        @{ Why = 'a figure with no percent sign'; Said = 'The caching work is 82 percent through.' }
+        # A course of action on work that does not exist is the founding defect
+        # of this whole area, and all four of these were delivered.
+        @{ Why = 'a recommendation'; Said = 'You should look at the billing job first.' }
+        @{ Why = 'an imperative'; Said = 'Stop the indexing run and put the docs back.' }
+        @{ Why = 'a recommendation in the perceived register'
+            Said = 'I recommend pausing the staging lane.'
+        }
+        @{ Why = 'halting real work for invented work'
+            Said = 'Halt the billing job and start something else in its place.'
+        }
+        # A denial about something that does not exist is still a claim that it
+        # does.
+        @{ Why = 'a denied state'; Said = 'The logging fix has not started.' }
+        @{ Why = 'a soft report with no status word in it'
+            Said = 'The shipping task seems healthy.'
+        }
+        @{ Why = 'a state held since a time the records do not carry'
+            Said = 'The monitoring run has been stalled since this morning.'
+        }
+    ) {
+        foreach ($ground in @($script:Fresh, $script:Board)) {
+            (Test-FmBridgeGrounded -Text $Said -Ground $ground -Asked 'how is it going?').Grounded |
+                Should -BeFalse -Because "it attaches $Why to work that does not exist"
+        }
+    }
+
+    # WHAT THE RULE IS, asserted rather than described. Same head noun, same
+    # determiner, same board; only the modifier's ending differs, and it decides
+    # nothing on its own - which is the point. An `-ing` modifier is neither
+    # discarded as description nor called a name; it is a mention, and what the
+    # reply goes on to SAY is what makes it a finding.
+    It 'reads an -ing phrase as a mention, not as description and not as a name' {
+        $mention = Test-FmBridgeGrounded -Text 'The billing job is one you would start yourself.' `
+            -Ground $script:Board -Asked 'what is happening?'
+        $mention.Grounded | Should -BeTrue -Because 'a mention on its own is allowed'
+
+        $claim = Test-FmBridgeGrounded -Text 'The billing job is green.' `
+            -Ground $script:Board -Asked 'what is happening?'
+        $claim.Grounded | Should -BeFalse -Because 'a state on a mention is a claim'
+        $claim.Unsubstantiated -join ' ' | Should -Match '(?i)gives a state'
+    }
+
+    # THE RECORDS ARE THE ESCAPE HATCH, and they are what makes this safe to
+    # tighten. `running` is a word a worker wrote into its own record - "full
+    # suite running" - so a reply built out of it is quoting the record it was
+    # handed, and Test-FmBridgeWordsRecorded lets it straight through. The same
+    # sentence on a board that never said the word is a claim about work that
+    # does not exist, and is held.
+    It 'lets an -ing word the records themselves use through, and holds the same words elsewhere' {
+        (Test-FmBridgeGrounded -Text 'The running tests are green.' `
+                -Ground $script:Board -Asked 'what is happening?').Grounded |
+            Should -BeTrue -Because 'a worker wrote the word into its own record'
+
+        (Test-FmBridgeGrounded -Text 'The running tests are green.' `
+                -Ground $script:Fresh -Asked 'what is happening?').Grounded |
+            Should -BeFalse -Because 'nothing has ever run on this board'
+    }
+
+    # THE LINE THIS NARROWING MUST NOT CROSS, in the direction this change could
+    # break. A word wearing any other describing ending is still discarded by
+    # the walk, so the four live false positives that taught this file to stop
+    # enumerating stay delivered.
+    It 'still delivers a reply carrying a describing word that only describes' -ForEach @(
+        @{ Said = 'Active work is what the panel beside me is showing.' }
+        @{ Said = 'That was a mis-paired count, now corrected.' }
+        @{ Said = 'The furthest-along task is the one at the top.' }
+        @{ Said = 'It is a mid-build state and nothing is wrong with it.' }
+    ) {
+        (Test-FmBridgeGrounded -Text $Said -Ground $script:Board -Asked 'what is happening?').Grounded |
+            Should -BeTrue -Because 'its ending builds no noun, so the walk discards it as before'
     }
 }
 

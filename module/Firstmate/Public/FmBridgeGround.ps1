@@ -163,6 +163,82 @@ function Get-FmBridgeNumberWord {
     )
 }
 
+function Get-FmBridgeDescribingSuffix {
+    <#
+        .SYNOPSIS
+        The endings English marks a describing word with, and whether each one
+        also builds a name.
+
+        .DESCRIPTION
+        THE DEFECT THIS ENDS. `The billing job is green.` reached the captain,
+        and this repository recorded it getting through twice - in section 48.8
+        when it was found, and again in section 51.8 when the state rule landed
+        and did not reach it. There is no billing job. `billing` ends in `-ing`,
+        `Test-FmBridgeDescribingWord` read that as the mark of a describing
+        word, and the walk that collects a name discarded the word before any
+        rule could ask the records about it. The phrase became neither a name
+        nor a mention, so the three rules that decide what may be SAID about
+        unrecorded work had nothing to attach to.
+
+        ONE OF THESE ENDINGS IS NOT LIKE THE OTHERS, and that is the whole of
+        it. `-ed`, `-ly`, `-able`, `-ive`, `-ous`, `-ful`, `-less`, `-al` and
+        `-ic` build a word that can only describe: English has no noun
+        `auditedly` and names no job `careless`. `-ing` builds the gerund, which
+        IS a noun - and it is the ending this trade reaches for when it names a
+        subsystem, which is why `billing`, `staging`, `logging`, `indexing`,
+        `onboarding` and `caching` read as description to a suffix rule and as
+        names to the captain.
+
+        WHY THE JUDGEMENT LIVES HERE RATHER THAN IN A LIST OF WORDS. The list of
+        endings is already fixed and already in this file; saying which of them
+        English also builds a NOUN with is a bounded, complete judgement about
+        thirteen endings, made once. A list of the `-ing` words that turned out
+        to be names - `billing`, then `staging`, then whatever the next turn
+        writes - is the shape that stays permanently one defect behind, which
+        `Test-FmBridgeDescribingWord` learnt across four live turns and
+        `Get-FmBridgeWorkNoun` was written to stop repeating. This is that same
+        rewrite one level down: a question about a closed set, with a finite
+        answer, in place of a guess about English.
+
+        AND THE ANSWER IS "CANNOT TELL", WHICH IS A CATEGORY THIS GATE ALREADY
+        HAS. Nothing here decides that `billing` names work; nothing could,
+        because `the billing job` and `the running tests` are the same
+        construction and no rule short of a dictionary separates them. What it
+        decides is that such a word may not be thrown away unexamined, and the
+        contract's middle category is the right home for a phrase that may or
+        may not be a name: it "may be mentioned but never given a state, a
+        percentage, or a recommended action".
+
+        WHAT EACH FIELD IS FOR. `Stem` is how much word has to stand in front of
+        the ending before it is an ending at all - `led`, `ring` and `den` are
+        whole words, and reading those as inflections would let `card-led` pass
+        as description. `Noun` says English also builds a name with this ending,
+        which is what stops the word being discarded.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject[]])]
+    param()
+    return [pscustomobject[]]@(
+        # The gerund is a noun, and it is how this trade names things.
+        [pscustomobject]@{ Suffix = 'ing'; Stem = 2; Noun = $true }
+
+        # Describing only. There is no name to make room for, so a word wearing
+        # one of these is discarded exactly as it was before.
+        [pscustomobject]@{ Suffix = 'ed'; Stem = 2; Noun = $false }
+        [pscustomobject]@{ Suffix = 'ly'; Stem = 2; Noun = $false }
+        [pscustomobject]@{ Suffix = 'able'; Stem = 2; Noun = $false }
+        [pscustomobject]@{ Suffix = 'ible'; Stem = 2; Noun = $false }
+        [pscustomobject]@{ Suffix = 'ive'; Stem = 2; Noun = $false }
+        [pscustomobject]@{ Suffix = 'ous'; Stem = 2; Noun = $false }
+        [pscustomobject]@{ Suffix = 'ful'; Stem = 2; Noun = $false }
+        [pscustomobject]@{ Suffix = 'less'; Stem = 2; Noun = $false }
+        [pscustomobject]@{ Suffix = 'wise'; Stem = 2; Noun = $false }
+        [pscustomobject]@{ Suffix = 'like'; Stem = 2; Noun = $false }
+        [pscustomobject]@{ Suffix = 'al'; Stem = 3; Noun = $false }
+        [pscustomobject]@{ Suffix = 'ic'; Stem = 3; Noun = $false }
+    )
+}
+
 function Test-FmBridgeDescribingWord {
     <#
         .SYNOPSIS
@@ -243,8 +319,66 @@ function Test-FmBridgeDescribingWord {
     # words, and taking them for inflections would let `card-led` pass as
     # description. Two characters is the line - "us-ed" is an inflection, "l-ed"
     # is not.
-    $parts[-1] -match '^.{2,}(?:ed|ing|ly|able|ible|ive|ous|ful|less|wise|like)$' -or
-    $parts[-1] -match '^.{3,}(?:al|ic)$'
+    #
+    # THE ENDINGS COME FROM Get-FmBridgeDescribingSuffix rather than being spelt
+    # out here, because which of them English also builds a NOUN with is what
+    # Test-FmBridgeNamingSuffix below has to know, and two copies of the list
+    # would answer that differently the first time one of them moved.
+    foreach ($ending in (Get-FmBridgeDescribingSuffix)) {
+        if ($parts[-1] -match "^.{$($ending.Stem),}$([regex]::Escape($ending.Suffix))$") { return $true }
+    }
+    $false
+}
+
+function Test-FmBridgeNamingSuffix {
+    <#
+        .SYNOPSIS
+        Is this word's describing reading the only one English has for it?
+
+        .DESCRIPTION
+        ASKED OF A WORD Test-FmBridgeDescribingWord HAS ALREADY CALLED
+        DESCRIPTION, and it answers whether that verdict is settled or merely
+        the likelier of two readings. `audited`, `hourly` and `careless` are
+        settled: English has no name with those shapes. `billing`, `staging` and
+        `logging` are not, because the gerund is a noun - so the same spelling
+        describes work in "the running tests" and names it in "the billing job",
+        and no rule this side of a dictionary tells those two apart.
+
+        SO THIS DOES NOT DECIDE A NAME, AND MUST NOT. It marks the word as
+        undecidable, which sends the phrase around it to the contract's middle
+        category: mentionable, and never given a state, a percentage or an
+        action. The caller is `Test-FmBridgeGrounded`'s spaced-name walk, where
+        a settled describing word ENDS the walk and discards the phrase - which
+        is how `The billing job is green.` reached the captain past four
+        rewrites of this gate.
+
+        ONLY A BARE WORD. English's gerund is one word, and every name this
+        system carries is written bare; a hyphenated compound ending in a
+        participle - `long-running`, `slow-moving`, `non-blocking` - is a
+        describing compound, and the hyphenated-name rule has already had its
+        own look at it. Reading those as undecidable would put an ordinary
+        adjective into the mention set and cost a reply that was true.
+
+        THE FAILURE DIRECTION, deliberately. What this now holds back that it
+        did not is a reply that puts a state, a figure or a recommended action
+        on an `-ing` phrase the records have never written - "the running tests
+        are green" on a board with no tests. That is a claim about work, and on
+        such a board it is false; where the records DO use the word, they say so
+        and `Test-FmBridgeWordsRecorded` lets it straight through. What it can
+        no longer do is let `billing` name a job by spelling alone.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    $lower = $Text.ToLowerInvariant()
+    if ($lower.Contains('-')) { return $false }
+    foreach ($ending in (Get-FmBridgeDescribingSuffix)) {
+        if (-not $ending.Noun) { continue }
+        if ($lower -match "^.{$($ending.Stem),}$([regex]::Escape($ending.Suffix))$") { return $true }
+    }
+    $false
 }
 
 function Test-FmBridgeWordsRecorded {
@@ -1118,10 +1252,21 @@ function Test-FmBridgeGrounded {
             # is a determiner is what says a bare singular noun is being named
             # rather than done.
             $stopper = ''
+            # AND ONE ENDING CANNOT STOP IT, because the gerund is a noun. A
+            # word ending in `-ing` wears the mark of a describing word and may
+            # still be a name - `billing`, `staging`, `logging` - so discarding
+            # it on the strength of the suffix is what let `The billing job is
+            # green.` through section 48's rewrite and section 51's. Such a word
+            # is collected like any other and the phrase is marked undecidable,
+            # which below denies it the one verdict it has not earned: being
+            # called a name outright.
+            $undecidable = $false
             for ($w = $words.Count - 1; $w -ge 0; $w--) {
                 $word = $words[$w]
-                if ($common.Contains($word) -or (Test-FmBridgeDescribingWord -Text $word)) {
-                    $stopper = $word; break
+                if ($common.Contains($word)) { $stopper = $word; break }
+                if (Test-FmBridgeDescribingWord -Text $word) {
+                    if (-not (Test-FmBridgeNamingSuffix -Text $word)) { $stopper = $word; break }
+                    $undecidable = $true
                 }
                 $meaningful.Insert(0, $word)
             }
@@ -1212,6 +1357,16 @@ function Test-FmBridgeGrounded {
             foreach ($word in @($introducer)) { if ($word) { $leading = $word.ToLowerInvariant(); break } }
             if (@('a', 'an') -contains $leading) { $indefiniteHere.Add($phrase); continue }
             if ($determiners.Contains($leading)) { $ungroundedHere.Add($phrase); continue }
+
+            # UNDECIDABLE, SO IT IS A MENTION. The phrase carries a word whose
+            # describing reading and naming reading are the same spelling, and
+            # this gate has no dictionary to choose between them. Calling it a
+            # name would hold back "running tests take a while"; discarding it
+            # is what delivered `The billing job is green.` to the captain
+            # twice. The contract already has the category for a phrase that is
+            # one or the other and cannot be told which - it may be mentioned,
+            # and the state, figure and action rules below decide the rest.
+            if ($undecidable) { $ungroundedHere.Add($phrase); continue }
 
             # BARE, SO IT IS A NAME. Nothing introduced it, which is how this
             # system writes an id and how "Payment tests are green" claims one.
