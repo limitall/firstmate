@@ -1517,7 +1517,7 @@ Describe 'a name ending in -ing is not a describing word' {
     # figure or a course of action on it. The first is section 48.8's sentence,
     # character for character; six of these eighteen were delivered before this
     # change, on both boards, which is the twelve of thirty-six that section
-    # 65.1 measured.
+    # 69.1 measured.
     It 'holds back an invented name ending in -ing' -ForEach @(
         @{ Why = 'the sentence section 48.8 recorded and 51.8 recorded again'
             Said = 'The billing job is green.'
