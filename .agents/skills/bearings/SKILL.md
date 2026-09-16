@@ -33,8 +33,10 @@ Gather from the same durable records it reads, in this bounded order, and nothin
 
 1. `bin/fm-backlog.ps1 list` for the queue, dependencies, gates, and the recent Done baseline; its header owns the grammar.
 2. `state/<id>.meta` for every task, for its project, kind, mode, yolo, worktree, and recorded PR.
+   Nothing on this port writes `pr=` yet, so a task's delivered PR usually lives only in its own ready line; take it from source 3 rather than treating the empty field as "no PR".
 3. `bin/fm-crew-state.ps1 <id>` for each live task's CURRENT state.
    The `state/<id>.status` tail is an event log, not current state, so use it only for the last event's wording and never as the state itself.
+   The one other thing it is read for is the delivered PR URL: the LAST line of the exact shape `done: PR <url>`, optionally followed by ` checks green`, and nothing else in the file - a URL a worker mentioned in passing is not a delivery, and a scout never delivers a PR at all.
 4. `bin/fm-wake-drain.ps1` output already presented this turn, if any, for records still awaiting handling.
    Do not drain the queue from inside this skill; presenting a queue is a mutation of supervision state and belongs to the wake-handling turn.
 5. `data/projects.md` for the delivery posture of each project you name.
@@ -65,7 +67,7 @@ A missing source is never reported as an empty section.
    This is the only write allowed by the skill.
    The detailed report includes:
    - **Title** - `# Bearings - <day> <YYYY-MM-DD>` (use "Morning status" only when the captain specifically asks for a morning brief), followed by two or three sentences framing where things stand.
-   - **Captain's Call** - every open decision summarized with its options, plus each PR ready to merge and each needed credential or login, every PR with the full `https://...` URL, never a bare `#number`.
+   - **Captain's Call** - every open decision summarized with its options, plus each PR ready to merge and each needed credential or login.
    - **Recently Landed** - the bounded current recent-completions baseline from the backlog's Done history, rendered in full on every run.
    - **Underway** - each live direct report making progress, with its current state, and the pickup pointers worth reopening (`data/<id>/report.md` files).
    - **Charted Next** - queued or gated work with each item's blocker or date.
@@ -94,7 +96,9 @@ Rules that keep the contract unambiguous:
 - The four buckets are mutually exclusive, so every item is forced into exactly one: needs-your-action is Captain's Call, done is Recently Landed, self-progressing is Underway, and not-yet-started work or an action-free integrity warning is Charted Next.
 - The strict boundary keeps action-free items OUT of Captain's Call: a working task, a queued item blocked on another task or a date, landed work, a completed scout's report pointer, a declared `paused:` external wait, and a bare recorded PR with no merge-ready signal each belong to one of the other three sections, never Captain's Call.
 - Include the required direct address to the captain inside one item or empty-state sentence.
-- Every PR appears as the full `https://...` URL; a shorthand `#number` is fine only as a back-reference after the full URL has already appeared in the same digest.
+- Every PR appears as the full `https://...` URL, in the chat digest and in the file-mode report alike; a shorthand `#number` is fine only as a back-reference after the full URL has already appeared in the same digest.
+  That URL is COPIED from the task's recorded `pr=` field or its `done: PR <url>` ready line under `AGENTS.md` section 9, never assembled from a repo name and a number - a digest is exactly where a composed, dead link reaches the captain unchallenged.
+  A task whose URL is in neither record is reported with the identifier you do have and no link at all; an unlinked PR is never a reason to omit the item.
 - The chat follows `AGENTS.md` section 9 and carries one scannable line per item.
 - Detailed decisions, plans, full gate reasons, and evidence belong in the file only when file mode is explicit, so plain chat stays concise and file-mode chat stays materially shorter than that file.
 - In file mode, include the report path inside the four-section digest without adding another heading.
@@ -103,7 +107,6 @@ Rules that keep the contract unambiguous:
 
 - The optional file-mode report is a private, captain-facing internal artifact that lives in gitignored `data/`, so unlike normal captain chat it MAY reference task ids, PR URLs, and repo names.
 - The captain works with those directly and needs them to resume; keep the report organized and scannable, not a raw dump.
-- Every PR reference is a full `https://...` URL, never a bare `#number`.
 - Never include PHI or secret values; the report is an operational artifact, but it is still subject to the same security and compliance rules that govern everything else in this fleet.
 
 ## Supervision discipline

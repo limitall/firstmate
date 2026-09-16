@@ -224,6 +224,54 @@ function Test-FmTeardownGitLockStale {
     $age -ge $MinimumAgeSeconds
 }
 
+# --- the delivered PR --------------------------------------------------------
+
+# Get-FmTaskDeliveredPrUrl: THE task's delivered PR URL, COPIED and never
+# composed.
+#
+# A URL assembled from an owner, a repository and a bare number is the one
+# failure this function exists to prevent: it looks right, it reaches the
+# captain, and it is dead. So the only two sources are a recorded `pr=` field
+# and the worker's own ready line, and when neither holds one the answer is ''
+# - the caller then says only the number it actually has. AGENTS.md section 9
+# owns that rule for prose; this is its mechanical half.
+#
+# The status fallback matches ONLY the exact ready-signal shape a delivery mode
+# asks a worker to append - `done: PR <url>`, optionally ` checks green` -
+# anchored at both ends. A PR the worker merely MENTIONED in a status line
+# ("rebased onto the branch from https://github.com/o/r/pull/12") therefore
+# never gets claimed as the delivery. Leading and trailing whitespace is
+# trimmed first because it carries no meaning; the anchors still do their whole
+# job, which is to reject a URL sitting inside prose.
+#
+# LAST match wins: a worker that re-pushed and reported a second PR delivered
+# the second one, and the status file is append-only.
+#
+# A scout INVESTIGATES and never delivers, so it never carries a PR at all -
+# any URL in a scout's status line is something it found, not something it
+# shipped.
+function Get-FmTaskDeliveredPrUrl {
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter()][AllowNull()][AllowEmptyString()][string]$RecordedPrUrl = '',
+        [Parameter()][AllowNull()][AllowEmptyString()][string]$StatusPath = '',
+        [Parameter()][AllowNull()][AllowEmptyString()][string]$Kind = 'ship'
+    )
+
+    if ($Kind -eq 'scout') { return '' }
+    if ($RecordedPrUrl -and $RecordedPrUrl.Trim()) { return $RecordedPrUrl.Trim() }
+    if (-not $StatusPath -or -not (Test-Path -LiteralPath $StatusPath -PathType Leaf)) { return '' }
+
+    $found = ''
+    foreach ($line in [System.IO.File]::ReadAllLines($StatusPath)) {
+        if (([string]$line).Trim() -match '^done: PR (https?://[^\s)"'']+/pull/[0-9]+)( checks green)?$') {
+            $found = $Matches[1]
+        }
+    }
+    $found
+}
+
 # --- the landed-work test ----------------------------------------------------
 
 function Get-FmTeardownPrNumberFromTarget {

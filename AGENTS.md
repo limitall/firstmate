@@ -317,7 +317,7 @@ After an autonomous merge, give the captain a one-line full-URL or local-main ou
 ### PR ready, landing, and teardown
 
 For a `direct-PR` ship task the ready signal is `done: PR <url>` after the PR is open.
-Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, and a concise outcome summary.
+That line is where the URL comes from: copy it, never compose one, under section 9's copy-or-abstain rule, and give the captain a concise outcome summary with it.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine authority.
 For any custom `state/<id>.check.ps1` you write yourself, keep it a single file that prints one line only when firstmate should wake, prints nothing otherwise, finishes inside its timeout, and has its current bytes bound before the watcher may execute it.
 
@@ -436,7 +436,9 @@ Use plain chat for a yes-or-no decision and `lavish-axi` only when several optio
 The voice channel exists but is off until the captain creates `config/voice`, and nothing calls it by itself: `bin/fm-say.ps1 "<message>"` says one short line aloud and `bin/fm-ask.ps1 "<question>" -Options a,b` asks and listens for which option was said, each script's `-h` output stating the rest.
 Speaking is never delivery - every escalation still reaches the captain in chat whether or not it was also heard, and a spoken answer never closes a decision that `decision-hold-lifecycle` owns.
 A spoken message obeys this section's translation rule more strictly than a written one, because the captain cannot re-read it.
-Whenever a PR is mentioned, include its full `https://...` URL before any shorthand reference.
+Whenever a PR is mentioned, include its full `https://...` URL before any shorthand reference, and COPY that URL verbatim from the worker's `done: PR <url>` status line or the task's recorded `pr=` field.
+Never assemble one from an owner, a repository, a host, another PR, or a bare number the worker printed; a URL built that way looks right, reaches the captain, and is dead.
+When no record holds the URL yet, say only the identifier you actually have ("PR 108 is open") and leave it at that - the worker's ready line brings the URL on its own.
 Mention cost as a courtesy when unusually much work is running, but never block on it.
 
 ## 10. Backlog contract

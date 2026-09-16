@@ -250,6 +250,79 @@ Describe 'Test-FmTeardownIndexLockError' {
 }
 
 # =============================================================================
+# The delivered PR URL - copied, never composed
+# =============================================================================
+
+Describe 'Get-FmTaskDeliveredPrUrl' {
+    BeforeEach {
+        $script:pRoot = Join-Path $TestDrive ([Guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $script:pRoot -Force | Out-Null
+        $script:pStatus = Join-Path $script:pRoot 'alpha.status'
+        $script:WriteStatus = {
+            param([string[]]$Lines)
+            Write-FmTextFileLf -Path $script:pStatus -Text (($Lines -join "`n") + "`n")
+        }
+    }
+
+    It 'prefers the recorded pr= field over anything in the status file' {
+        & $script:WriteStatus @('done: PR https://github.test/o/r/pull/9')
+        Get-FmTaskDeliveredPrUrl -RecordedPrUrl ' https://github.test/o/r/pull/1 ' -StatusPath $script:pStatus |
+            Should -Be 'https://github.test/o/r/pull/1'
+    }
+
+    It 'falls back to the ready line, with and without the checks-green suffix' {
+        & $script:WriteStatus @('working: building', 'done: PR https://github.test/o/r/pull/12')
+        Get-FmTaskDeliveredPrUrl -StatusPath $script:pStatus | Should -Be 'https://github.test/o/r/pull/12'
+
+        & $script:WriteStatus @('done: PR https://github.test/o/r/pull/12 checks green')
+        Get-FmTaskDeliveredPrUrl -StatusPath $script:pStatus | Should -Be 'https://github.test/o/r/pull/12'
+    }
+
+    It 'takes the LAST ready line, because the log is append-only' {
+        & $script:WriteStatus @(
+            'done: PR https://github.test/o/r/pull/1',
+            'working: force-pushed, reopening',
+            'done: PR https://github.test/o/r/pull/2 checks green')
+        Get-FmTaskDeliveredPrUrl -StatusPath $script:pStatus | Should -Be 'https://github.test/o/r/pull/2'
+    }
+
+    It 'tolerates whitespace around an otherwise exact ready line' {
+        & $script:WriteStatus @('  done: PR https://github.test/o/r/pull/5   ')
+        Get-FmTaskDeliveredPrUrl -StatusPath $script:pStatus | Should -Be 'https://github.test/o/r/pull/5'
+    }
+
+    It 'NEVER claims a PR the worker only mentioned in prose' {
+        # The whole point of the anchors. Every line here names a real PR URL,
+        # and not one of them is this task's delivery.
+        & $script:WriteStatus @(
+            'working: rebased onto the branch from https://github.test/o/r/pull/12',
+            'working: see https://github.test/o/r/pull/13 for the upstream fix',
+            'done: PR https://github.test/o/r/pull/14 was reviewed by someone else',
+            'done: ready in branch fm/alpha (supersedes https://github.test/o/r/pull/15)',
+            'failed: https://github.test/o/r/pull/16 could not be opened')
+        Get-FmTaskDeliveredPrUrl -StatusPath $script:pStatus | Should -Be ''
+    }
+
+    It 'rejects a ready line whose URL is not a pull request' {
+        & $script:WriteStatus @('done: PR https://github.test/o/r/issues/7')
+        Get-FmTaskDeliveredPrUrl -StatusPath $script:pStatus | Should -Be ''
+    }
+
+    It 'returns nothing for a scout, which investigates and never delivers' {
+        & $script:WriteStatus @('done: PR https://github.test/o/r/pull/3 checks green')
+        Get-FmTaskDeliveredPrUrl -StatusPath $script:pStatus -Kind 'scout' | Should -Be ''
+        Get-FmTaskDeliveredPrUrl -RecordedPrUrl 'https://github.test/o/r/pull/3' -Kind 'scout' | Should -Be ''
+    }
+
+    It 'returns nothing rather than erroring when there is no status file at all' {
+        Get-FmTaskDeliveredPrUrl | Should -Be ''
+        Get-FmTaskDeliveredPrUrl -StatusPath (Join-Path $script:pRoot 'absent.status') | Should -Be ''
+        & $script:WriteStatus @('working: still going')
+        Get-FmTaskDeliveredPrUrl -StatusPath $script:pStatus | Should -Be ''
+    }
+}
+
+# =============================================================================
 # The complete landed-work test
 # =============================================================================
 
@@ -774,6 +847,59 @@ Describe 'Invoke-FmTeardown' {
         { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
             Should -Throw '*not on any remote and not landed*'
         Should -Invoke Remove-FmHerdrPane -Times 0
+    }
+
+    It 'lands unpushed commits against the PR the worker REPORTED, with no pr= recorded' {
+        # Nothing on this port writes pr=, so the ready line is the only record
+        # of what was delivered. Without it this task refuses as unlanded.
+        $null = Add-TestCommit -Directory $script:ifx.Worktree -File 'pr.txt' -Content 'in the pr'
+        $head = Get-FmGitOutput -Directory $script:ifx.Worktree -Arguments @('rev-parse', 'HEAD')
+        Set-Content -LiteralPath (Join-Path $script:stateDir 'alpha.status') `
+            -Value "working: x`ndone: PR https://github.test/o/r/pull/77 checks green`n"
+        Mock Invoke-FmChildProcess {
+            New-ChildProcessResult -StdOut ("{""state"":""MERGED"",""headRefOid"":""$head""}")
+        } -ParameterFilter { $FilePath -eq 'gh' }
+
+        $result = Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false
+        $result.Outcome | Should -Be 'complete'
+        Should -Invoke Invoke-FmChildProcess -ParameterFilter {
+            $FilePath -eq 'gh' -and $ArgumentList -contains 'https://github.test/o/r/pull/77'
+        }
+    }
+
+    It 'REFUSES the same task when the PR was only MENTIONED, never reported as done' {
+        $null = Add-TestCommit -Directory $script:ifx.Worktree -File 'pr.txt' -Content 'in the pr'
+        Set-Content -LiteralPath (Join-Path $script:stateDir 'alpha.status') `
+            -Value "working: rebased onto https://github.test/o/r/pull/77`n"
+        # A merged-looking answer is staged deliberately: the only way to reach
+        # it is to scrape that mention, which is exactly what must not happen.
+        Mock Invoke-FmChildProcess {
+            New-ChildProcessResult -StdOut '{"state":"MERGED","headRefOid":"0000000000000000000000000000000000000000"}'
+        } -ParameterFilter { $FilePath -eq 'gh' }
+
+        { Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false } |
+            Should -Throw '*not on any remote and not landed*'
+        Test-Path -LiteralPath $script:metaPath | Should -BeTrue
+        Should -Invoke Invoke-FmChildProcess -Times 0 -ParameterFilter {
+            $FilePath -eq 'gh' -and $ArgumentList -contains 'https://github.test/o/r/pull/77'
+        }
+    }
+
+    It 'gives the backlog reminder the reported URL' {
+        Mock Test-FmTeardownTasksAxiBacklog { $true }
+        Set-Content -LiteralPath (Join-Path $script:stateDir 'alpha.status') `
+            -Value "done: PR https://github.test/o/r/pull/77`n"
+        $result = Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false
+        $result.Reminder | Should -Match 'tasks-axi done alpha --pr https://github\.test/o/r/pull/77'
+    }
+
+    It 'leaves the reminder''s visible PR_URL placeholder when no record holds a URL' {
+        Mock Test-FmTeardownTasksAxiBacklog { $true }
+        Set-Content -LiteralPath (Join-Path $script:stateDir 'alpha.status') `
+            -Value "working: see https://github.test/o/r/pull/77`ndone: ready`n"
+        $result = Invoke-FmTeardown -TaskId 'alpha' -FirstmateHome $script:fmHome -Confirm:$false
+        $result.Reminder | Should -Match '--pr PR_URL'
+        $result.Reminder | Should -Not -Match 'pull/77'
     }
 
     It 'REFUSES a live process still in the worktree' {

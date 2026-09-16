@@ -95,6 +95,39 @@ only if it is provably stale, and then the whole test runs again. The same
 re-run happens inside the pool return, so a lock discovered late cannot skip
 the test either.
 
+### Where the PR URL comes from: `Get-FmTaskDeliveredPrUrl`
+
+Two rows of that table turn on a PR, and the backlog reminder prints one, so
+teardown needs a task's delivered PR URL. `Get-FmTaskDeliveredPrUrl` is the one
+place that answers, and it only ever COPIES:
+
+1. the recorded `pr=` field, which is authoritative;
+2. failing that, the LAST line of `state/<id>.status` matching exactly
+   `^done: PR (https?://.../pull/<n>)( checks green)?$`;
+3. failing both, `''`.
+
+Nothing on this port writes `pr=` yet, so in practice source 2 is the one that
+fires. The pattern is anchored at both ends deliberately. A worker's status log
+is prose, and it routinely names PRs it did not deliver - a branch it rebased
+onto, an upstream fix it read. Matching a bare `/pull/<n>` anywhere in the file
+would let one of those be reported to the captain as the delivery; the
+ready-signal shape is the only line the delivery contract actually promises, so
+it is the only line trusted. `Private/FmBrief.ps1` emits that exact wording for
+both `direct-PR` and `no-mistakes` modes, which is what makes the anchoring
+safe rather than merely strict.
+
+LAST match wins because the file is append-only: a worker that force-pushed and
+reported a second PR delivered the second one. A `scout` returns `''`
+unconditionally - it investigates and never delivers, so every URL in its log is
+something it found.
+
+Returning `''` is a real answer, not a failure. Downstream, `''` makes the
+landed-work test fall back to the branch lookup and then to the content check,
+and makes the backlog reminder print its visible `PR_URL` placeholder. What it
+never does is let anything compose a plausible URL from a repo name and a
+number, which is the failure `AGENTS.md` section 9 forbids in prose and this
+function forbids in code.
+
 ## The unresolved-decision completion gate
 
 `Test-FmDecisionHoldComplete` (`Private/FmDecisionHold.ps1`) is the read side of

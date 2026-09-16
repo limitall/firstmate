@@ -19,7 +19,7 @@ Write-FmKeyValueFile publishes atomically, LF-only and BOM-free. This surface
 adds only the named properties every consumer of a TASK record expects.
 
 .EXAMPLE
-$record = Get-FmTaskRecord -Path (Get-FmTaskStatePath -Id 'my-task' -Extension 'meta')
+$record = Get-FmTaskRecord -Path (Get-FmTaskStatePath -TaskId 'my-task' -Suffix 'meta')
 $record.Worktree
 #>
 function Get-FmTaskRecord {

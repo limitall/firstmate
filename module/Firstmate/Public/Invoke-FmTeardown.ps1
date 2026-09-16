@@ -119,7 +119,12 @@ function Invoke-FmTeardown {
         $kind = Get-FmMetaValue -Path $metaPath -Key 'kind'
         if (-not $kind) { $kind = 'ship' }
         $mode = Get-FmMetaValue -Path $metaPath -Key 'mode'
-        $prUrl = Get-FmMetaValue -Path $metaPath -Key 'pr'
+        # Nothing on this port writes `pr=` yet, so the recorded field is
+        # usually empty and the worker's own ready line is the only record of
+        # what it delivered. Both the landed-work test and the backlog reminder
+        # below read this one value, so both get a COPIED URL or none.
+        $prUrl = Get-FmTaskDeliveredPrUrl -RecordedPrUrl (Get-FmMetaValue -Path $metaPath -Key 'pr') `
+            -StatusPath (Join-Path $stateDir "$TaskId.status") -Kind $kind
         $taskTmp = Get-FmMetaValue -Path $metaPath -Key 'tasktmp'
         $leaseId = Get-FmMetaValue -Path $metaPath -Key 'treehouse_lease_id'
         $backend = Get-FmMetaBackend -Path $metaPath
