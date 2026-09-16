@@ -10845,3 +10845,147 @@ The same note's neighbouring claim, that "on a machine without Developer Mode ..
 
 This also fixes the shape of the defect in 63.1 for this fleet.
 The ladder's top rung is the only one that survives a rebase, and it is the one rung a crewmate's account cannot have.
+
+## 64. "Never merge a red PR" was prose, and a faithful port of the rule that makes it true would never have fired once - `PROVEN (Windows 11) FOR ALL FOUR DEFECTS, TWO OF THEM AGAINST A REAL GITHUB PULL REQUEST, EVERY REFUSAL PATH AGAINST A MOCKED FORGE, AND NINE NEGATIVE CONTROLS; NO PULL REQUEST HAS EVER BEEN MERGED BY THIS COMMAND`
+
+This port had no PR-merge command at all.
+`AGENTS.md` section 7 said "Never merge a red PR", `Invoke-FmMergeLocal` told a `direct-PR` task to reach for gh-axi by hand, `pr=` was never written to a task record so cleanup's reminder printed a literal `PR_URL`, and "merged" was something firstmate asserted rather than something GitHub confirmed.
+Section 14, which exists to admit exactly this kind of gap, did not mention it.
+
+`bin/fm-pr-merge.ps1` and `Invoke-FmPrMerge` close it for GitHub.
+`docs/delivery-and-projects.md` owns the design; what is recorded here is what was RUN.
+
+### 64.1 The trap that would have shipped a gate that never fires
+
+The rule that makes a green check usable is that a failed check run which a later run of the same name passed is not red any more.
+Without it the gate refuses correct work for ever after one failure, which is how an operator learns to go round a gate.
+`bin/fm-pr-merge.sh` implements it in jq, and its first move is to keep `startedAt` only when it is a string of exactly `YYYY-MM-DDTHH:MM:SSZ`.
+
+That test is correct in jq and **wrong in PowerShell**, because `ConvertFrom-Json` recognises an ISO-8601 timestamp and hands back a `[datetime]` instead of the string.
+Measured against a real, live pull request - `https://github.com/cli/cli/pull/14456`, read-only, through this port's own `Get-FmPrMergeLiveView`:
+
+```
+first CheckRun: __typename=CheckRun name=label-external status=COMPLETED conclusion=SKIPPED
+startedAt .NET type = System.DateTime
+startedAt Kind      = Utc
+[string] of it      = [09/15/2026 01:30:44]
+matches the bash shape ^[0-9]{4}-...Z$ ?  False
+```
+
+So the faithful port answers "this run has no usable timestamp" for **every** run GitHub actually returns, every group falls to the fail-safe branch, and the supersession rule never fires once.
+The gate looks correct, passes a fixture suite written the same way, and silently refuses green work.
+`Get-FmPrMergeSettledAt` takes the `[datetime]`, a `[DateTimeOffset]`, or a raw UTC string and returns one orderable instant; `Kind` is already `Utc` on the real value, so `ToUniversalTime()` is a no-op rather than a timezone shift.
+
+The multi-run shape is not exotic either.
+That same ordinary open pull request carries 20 check runs under 15 names, **five of which have two runs each**:
+
+```
+check-requirements / check-requirements          x2  COMPLETED/SKIPPED@01:28:59  COMPLETED/SKIPPED@01:30:53
+check-requirements / close-unmet-requirements    x2  COMPLETED/SKIPPED@01:28:59  COMPLETED/SKIPPED@01:30:52
+close-no-help-wanted                             x2  COMPLETED/SKIPPED@01:29:05  COMPLETED/SKIPPED@01:30:44
+close-unmet-requirements                         x2  COMPLETED/SKIPPED@01:29:08  COMPLETED/SKIPPED@01:30:44
+ready-for-review                                 x2  COMPLETED/SKIPPED@01:29:05  COMPLETED/SKIPPED@01:30:53
+verdict: readable=True notGreen=[]
+```
+
+Every run in it is green, so no live RED superseded by a green was observed; that case is covered against fixtures only.
+Every entry was a `CheckRun`, so the legacy `StatusContext` branch is fixture-only too.
+
+### 64.2 Four holes of one shape: PowerShell compares text case-insensitively and gh does not
+
+The cd guard's old hazard turned up three more times in one area, each time letting through something that had to be refused, plus one missed token shape.
+
+**`-r` is not `-R`.**
+The guarded-argument table refuses `--repo`/`-R` outright, because the repository comes from the URL and an override defeats the binding.
+Held as a hashtable it also refused `-r`, which is `--rebase`:
+
+```
+Test-FmPrMergeForgeArgument -Argument @('-r')
+error: -r is not allowed here: the repository comes from the pull request URL
+```
+
+**A green `Build` cleared a red `build`.**
+Check runs were grouped in an `[ordered]@{}`, whose keys match case-insensitively:
+
+```
+[ordered]@{}                              contains 'name|Build' after setting 'name|build'? True
+OrderedDictionary(StringComparer.Ordinal)                                                   False
+```
+
+Those are two different workflows to GitHub, and a check name is user-controlled text rather than an enum.
+
+**Every comparison that GRANTS green was lenient.**
+`__typename`, `status`, `conclusion`, a status context's `state` and `mergeable` are GraphQL enums and always upper case, so ordinal comparison changes nothing today - but if one ever arrives in another casing, strict refuses where lenient merges.
+The `DIRTY` check stays case-insensitive on purpose, because that one only ever adds a refusal.
+
+**`-Rcli/cli` is `--repo cli/cli`.**
+Not a casing problem but the same missed shape: gh's flag parser takes a shorthand with its value attached, and the cluster check required the whole token to be letters, so it walked straight past the guard.
+The leading run of letters is scanned now.
+That also refuses `-bR` - a body of "R" to gh - which is the cheap side of the trade against a repository override reaching the merge.
+
+### 64.3 A `-WhatIf` preview really took the lifecycle lock and never gave it back
+
+`Request-FmLock` and `Wait-FmLock` do not honour `WhatIf` - they take the lock for real - while `Unlock-FmLock` does.
+So under a caller's `-WhatIf` the release was previewed and skipped. Probed directly:
+
+```
+took: True
+What if: Performing the operation "Release lock" on target "...\probe.lock".
+release under WhatIf returned: False
+re-acquire: firstmate: this process already holds the lock '...\probe.lock'
+release with -WhatIf:$false returned: True
+```
+
+A preview of a promotion or a merge therefore wedged every later lifecycle action against that task, and left the pid file behind for other processes to find.
+Fixed at the owner (`Invoke-FmWithLock`) and at both explicit call sites, `Invoke-FmPromote`'s two locks and `Invoke-FmPrMerge`'s control lock.
+`Invoke-FmPromote` had it already; this change did not introduce it.
+
+### 64.4 Negative controls
+
+Each guard broken on its own against `tests/FmPrMerge.Tests.ps1`, with the source restored byte for byte afterwards and the control re-run to prove the restore:
+
+| break | red |
+| --- | --- |
+| NC1 - the supersession rule removed, every run judged alone | 2 |
+| NC2 - the `[datetime]` branch removed, leaving the faithful bash string test | 3 |
+| NC3a - the guarded-flag match relaxed to `-eq` | 2 |
+| NC3b - the bundled-letter match relaxed to `-eq` | 1 |
+| NC4 - `--match-head-commit` dropped from the merge call | 2 |
+| NC5 - the read-back verdict ignored, so gh's exit code decides "merged" | 2 |
+| NC6 - `-AllowRed` accepted without `-AttendedOverride` | 1 |
+| NC7 - check-run grouping back to `[ordered]@{}` | 1 |
+| NC8 - the short-token scan back to whole-clusters-only | 1 |
+
+Control before and after: `PASSED=80 FAILED=0`, and both files byte-identical to their originals afterwards.
+
+### 64.5 Suite and analyzer
+
+`tests/FmPrMerge.Tests.ps1` carries 80 cases and `tests/FmLifecycleCli.Tests.ps1` three more for the entry point itself.
+Whole `tests/` directory, each run a `-NonInteractive` child with stdin redirected, of a live parent:
+
+| tree | run | passed | failed | skipped | seconds |
+| --- | --- | --- | --- | --- | --- |
+| `aacfe14a`, rebased onto `a7b3c76d` (the commit that lands) | 1 | 3154 | 0 | 19 | 3896 |
+| `aacfe14a`, rebased onto `a7b3c76d` (the commit that lands) | 2 | 3154 | 0 | 19 | 2834 |
+
+`Invoke-ScriptAnalyzer -Path . -Recurse` reported 0 findings after the pair.
+Section 61.6's three known-red cases are gone: section 62 fixed the two `FmBacklog` ones and section 62.4 the `FmContract` one, so this gate is the first in this ledger with a genuinely empty failure column.
+
+**A first attempt at this gate was killed by the machine, and it is worth recording why.**
+Eight other lanes were running their own suites: 31 to 39 `pwsh` processes and 4.7-6.9 GB free of 31.7 GB, and the runner was stopped for low memory part-way through run 1.
+Waiting for an 8 GB window never cleared it over 30 minutes of sampling.
+What worked was running each pass as its own task rather than both in one, so a kill costs one pass instead of the pair - the completed run's line is already in the output file when the next one starts.
+Nothing was killed to make room: those processes are other lanes' runs.
+
+### 64.6 What was NOT proven, and it is the important part
+
+- **No pull request has ever been merged by this command.**
+  This lane may not push or open a pull request, so `gh pr merge` has never been run against a real one from this port; every merge in the suite is a mocked `Invoke-FmChildProcess`.
+  What that leaves unverified is everything on the far side of gh: that `--match-head-commit` really fails a merge whose head has moved, that a merge-queue base really returns success with `merged=false, isInMergeQueue=true`, and that `gh api graphql --hostname` behaves against a GitHub Enterprise host.
+  The argument spellings were checked against `gh pr merge --help` on gh 2.97.0, and the pre-merge read and the rollup shape against live GitHub above; the merge call and the read-back were not.
+  One real merge on a throwaway repository is what would close this, and it needs a captain who can authorize a push.
+- **`mergeStateStatus = BLOCKED` is not refused, deliberately.**
+  The live pull request above reads `mergeable=MERGEABLE`, `mergeState=BLOCKED`, every check green - branch protection unsatisfied for some other reason - and this gate calls it ready and hands it to gh, which refuses it and whose words are quoted back.
+  That is the bash's boundary too: the forge owns branch protection, and a second opinion here would be this port inventing policy.
+- **The durable notification has never been drained by a real watcher.**
+  `state/<id>.pr-merge-notified` and the `merged-<id>-<url>` wake record are asserted against a fixture home; no live supervision turn has read one.

@@ -164,14 +164,21 @@ the gate looks correct and refuses green work for ever. `Get-FmPrMergeSettledAt`
 takes a `[datetime]`, a `[DateTimeOffset]` or a raw UTC string and returns one
 orderable instant, so sub-second precision orders correctly instead of having to
 be excluded to keep a fixed-width string comparison honest.
-`docs/windows-e2e-evidence.md` has the run that caught it.
+`docs/windows-e2e-evidence.md` section 64.1 has the run that caught it, against
+a real pull request.
 
 **Guarded flags are matched case-sensitively, and are rows rather than hash
-keys.** A PowerShell hashtable matches keys case-INSENSITIVELY, so `-r` (rebase)
-looked up `-R` (repo) and the guard refused an ordinary rebase merge with a
-message about the repository. gh's short flags are case-sensitive, so the
-comparison is `-ceq` against one table of rows. Same hazard as the cd guard's
-(`CONTRIBUTING.md`).
+keys** - as is the check-run grouping, and every comparison that grants green.
+A PowerShell hashtable matches keys case-INSENSITIVELY, so `-r` (rebase) looked
+up `-R` (repo) and the guard refused an ordinary rebase merge with a message
+about the repository; an `[ordered]@{}` does the same, so a green `Build` cleared
+a red `build`. gh's short flags are case-sensitive and a check name is
+user-controlled text, so the comparison is `-ceq` against one table of rows and
+the grouping dictionary is ordinal. Same hazard as the cd guard's
+(`CONTRIBUTING.md`); `docs/windows-e2e-evidence.md` section 64.2 has all four,
+including the one that is not a casing problem - gh reads `-Rcli/cli` as
+`--repo cli/cli`, so the short-token scan reads the leading run of letters rather
+than requiring the whole token to be one.
 
 **`-AllowRed` requires `-AttendedOverride`.** The bash gates an attended red
 waiver on the away-posture record; this port has no away mode, so the only
