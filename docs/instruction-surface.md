@@ -153,11 +153,22 @@ and a junction is the Windows mechanism that can, needing no Developer Mode and
 no elevation on NTFS. The kind actually created is always returned, so no caller
 can describe a copy as a link.
 
-A copy is the only rung that can drift, so `Get-FmClaudeSkillsLinkState` checks
-its *contents* against the real tree rather than its existence, and setup
-re-syncs it. `tests/FmContract.Tests.ps1` forces the copy rung explicitly, since
-the host running the suite may allow a stronger one and would otherwise never
-exercise the rung a stock Windows machine most likely lands on.
+For `.claude/skills` a copy is the only rung that can drift, so
+`Get-FmClaudeSkillsLinkState` checks its *contents* against the real tree rather
+than its existence, and setup re-syncs it. `tests/FmContract.Tests.ps1` forces
+the copy rung explicitly, since the host running the suite may allow a stronger
+one and would otherwise never exercise the rung a stock Windows machine most
+likely lands on.
+
+For `CLAUDE.md` the **hardlink** rung drifts too, and the two halves do not agree
+about what that means. Git replaces a path rather than writing through it, so a
+rebase that touches `AGENTS.md` leaves a hardlinked mirror behind exactly as it
+leaves a copied one behind - MEASURED in `docs/windows-e2e-evidence.md` section
+63.1, 88 bytes behind on both rungs. A stale skills copy is `drifted` and setup
+re-syncs it; a stale `CLAUDE.md` fails the byte-identity test, is reported as a
+`conflict`, and `Set-FmAgentsMemory` refuses it. Making the contract half agree
+with the skills half is the open fix, and it belongs to one function; section
+63.5 records why it is not made here.
 
 ## The doctor's `instructions` group
 
@@ -236,19 +247,30 @@ PowerShell 7.6.4, git 2.49.0.windows.1, Pester 6.1.0. Full transcript in
   doctor back to `[missing] skills for Claude ... loads ZERO skills` and exit 1;
   a second setup run fixed it and reported `already` for every other step.
 
+A second measurement, on a **crewmate's unelevated account** rather than the
+captain's, reached the rungs that laptop never did. `docs/windows-e2e-evidence.md`
+section 63 has it.
+
+- Symlink creation is refused outright there (`Administrator privilege required
+  for this operation.`), the account is not elevated, and
+  `AllowDevelopmentWithoutDevLicense` is unset, so Developer Mode is off.
+- The Auto ladders therefore land one rung down on **both** halves, in a real
+  worktree: `CLAUDE.md` repaired to a `HardLink`, `.claude/skills` to a
+  `Junction`. The copy rung was not reached on either.
+- A `git rebase` that touched `AGENTS.md` left the hardlinked `CLAUDE.md` 88
+  bytes behind, and the repair path then refused it as a conflict. That defect is
+  open, and section 63.5 records which lane owns it.
+
 ## WINDOWS-UNVERIFIED
 
-- **The junction rung.** The captain's laptop allows symlink creation, so the
-  Auto ladder took the symlink rung there and the junction was never reached.
-  It is exercised only by `-Strategy Junction`, which is Windows-only, so it has
-  not run anywhere. Its failure mode is safe: the ladder falls through to the
-  copy, which the suite proves end to end on both platforms.
 - **That a real Claude session loads a skill through a copied `.claude/skills`.**
   Skill discovery scans the filesystem, so a copy should be indistinguishable
-  from a link, but that has been reasoned rather than observed - and it matters
-  on a machine without Developer Mode, where the copy is the rung that lands.
-  `stow` carries the one operational consequence: a skill written after the copy
-  was made is invisible until setup re-syncs it.
+  from a link, but that has been reasoned rather than observed. It is the rung
+  furthest from anything measured: a machine without Developer Mode lands on the
+  junction, not the copy, so the copy needs both a stronger rung to fail and a
+  host that allows no junction either. `stow` carries the one operational
+  consequence: a skill written after the copy was made is invisible until setup
+  re-syncs it.
 - **That the captain's session behaves differently** with the contract in place.
   That is the acceptance test, and it is the captain's observation, not a check
   this suite can make.

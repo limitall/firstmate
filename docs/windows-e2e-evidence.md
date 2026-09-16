@@ -1241,6 +1241,11 @@ than the Linux total, not the same.
   Skill discovery scans the filesystem, so a copy should be indistinguishable
   from a link - reasoned, not observed. It matters on a machine without Developer
   Mode, where the copy is the rung that lands.
+
+SUPERSEDED for the first two bullets, by section 63.7. The junction rung has
+since run on `Auto` in a real checkout, and a machine without Developer Mode
+lands on the junction rather than the copy, so the copy is further from the
+default path than this section assumed, not closer to it.
 - **The captain's own observation** that a session there behaves as firstmate.
   That is the acceptance test and it belongs to the captain, not to a check. What
   8.1 to 8.5 prove is that the instructions and the skills are *present and
@@ -10724,3 +10729,119 @@ Earlier gates on the first commit alone, over `2c0f67b` and without a seeded hom
   The three files fixed here pin it; the seeded run proves the rest of the suite writes nothing to the home it resolves, which covers that shape only as far as a test resolves its home the same way in both.
 - **The watcher can miss a second writer of a one-shot record.**
   The guard marker is written once per episode, which is how the first sweep saw one file and not two; after the fix the marker was left at a value the guard would rewrite, so any remaining writer would have shown.
+
+## 63. A rebase left the contract mirror behind, and the one thing that repairs it called that a conflict - `PROVEN (Windows 11) FOR BOTH NON-SYMLINK RUNGS ACROSS A REAL REBASE, THIS ACCOUNT'S LADDER, THE REFUSAL AND THE WRONG REMEDY IT PRINTS; NO FIX SHIPS HERE, THE MECHANISM IS THE stale-contract-link LANE'S`
+
+Section 62.5 recorded the symptom in passing: a seeded, watched full suite had "nine failures ... the worktree's own `CLAUDE.md` gone stale after a rebase rewrote `AGENTS.md`".
+This section measures why that happens, why it happens on every rebase rather than occasionally, and why nothing repaired it.
+It ships no code, because the repair belongs to one function that another lane in this batch already owns; 63.5 says so plainly.
+
+### 63.1 Both non-symlink rungs of the `CLAUDE.md` ladder go stale across a real rebase
+
+`New-FmAgentsClaudeLink` asks for a symlink, then a hardlink, then a copy.
+Each rung was repaired on a lane branch of a throwaway git repository with `core.symlinks=false`, then `main` was advanced by a commit that appended to `AGENTS.md`, then the lane was rebased onto it.
+
+```
+HardLink rung
+  repaired       updated: added ## Maintaining this file to AGENTS.md and hardlinked CLAUDE.md -> AGENTS.md in <dir>
+  before rebase  AGENTS.md 414  CLAUDE.md 414  identical=True
+  after  rebase  AGENTS.md 502  CLAUDE.md 414  identical=False  behind=88 bytes
+Copy rung
+  repaired       updated: added ## Maintaining this file to AGENTS.md and copied CLAUDE.md -> AGENTS.md in <dir>
+  before rebase  AGENTS.md 414  CLAUDE.md 414  identical=True
+  after  rebase  AGENTS.md 502  CLAUDE.md 414  identical=False  behind=88 bytes
+```
+
+The hardlink result is the one worth stating, because the tree said otherwise.
+A hardlink is a second name for one file, so writing *through* it keeps both names current, and `Set-FmAgentsMemory.ps1` carried a `WINDOWS-UNVERIFIED` note reading "only the copy fallback can drift" and wondering how often a Windows editor breaks a hardlink by replace-on-save.
+Git is not an editor and does not write through anything: it replaces the path.
+So the hardlink rung does not drift occasionally, it breaks on **every** rebase that touches the contract, exactly as the copy does.
+That note and the matching sentence in `docs/instruction-surface.md` are corrected in the same commit as this section.
+
+### 63.2 This account cannot reach the rung that survives
+
+Section 7 recorded `bin/fm-setup.ps1` reporting `symlinked` on the captain's laptop, so the ladder took its top rung there and the failure below never appeared.
+The account a crewmate runs under is not that account.
+
+```
+symlink: REFUSED -> Administrator privilege required for this operation.
+elevated: False
+devmode :
+```
+
+Not elevated, and `AllowDevelopmentWithoutDevLicense` is unset, so Developer Mode is off.
+The `Auto` ladder therefore lands on **hardlink** here, which 63.1 measures as breaking on every rebase.
+That is the whole of "measured this week on a real lane", and it is why both runs of a pair failed identically rather than the first run repairing itself: nothing in a run touches the mirror, and the state is not self-healing.
+
+### 63.3 The repair path refuses, and the remedy it prints is the wrong one
+
+With the mirror stale, the doctor and `Set-FmAgentsMemory` were asked about the same directory.
+
+```
+doctor         [missing] <dir>\CLAUDE.md is a different file from AGENTS.md, so a session reads instructions nothing else agrees with
+doctor fix     reconcile the two by hand; setup will not overwrite either
+repair         THREW -> conflict: both AGENTS.md and CLAUDE.md are real files in <dir>; reconcile them manually
+```
+
+Detection is not the gap: the doctor is loud, exits non-zero, and the suite fails nine checks.
+The gap is that both of them classify a materialized link that fell behind as **two independent memory files**, which is a state the captain must reconcile and setup must never clobber.
+`Test-FmAgentsMirror` is a byte-identity test, so the moment the contract changes, the only evidence that `CLAUDE.md` was ever a link is gone and the conflict branch is all that is left.
+The printed remedy then sends a worker to reconcile by hand a file that has no independent content to preserve.
+
+### 63.4 The skills half of the same surface already does the right thing
+
+`.claude/skills` has the same shape, the same placeholder problem and the same last-resort copy rung, and it does not have this defect.
+`Get-FmClaudeSkillsLinkState` returns `drifted` for a copy that has fallen behind the real tree, and setup re-syncs it on the next run.
+Nothing about that is a conflict, because a copy that has fallen behind is a stale link, not a second skills tree.
+The two halves of one surface disagree about the same state, and making the contract half agree with the skills half is the fix.
+That is the whole change, and it is one function.
+
+### 63.5 Why no fix ships in this section
+
+The `stale-contract-link` lane is live in this batch on exactly this defect.
+Its brief names the same refusal ("Nothing repairs it, because the code treats that state as a conflict it must not resolve"), the same incident, and a measurement of the same shape, a copy 228 bytes behind its contract.
+It is also asked to rule on upstream item T1.8, which would make `CLAUDE.md` a tracked plain file containing a pointer and delete the mirror, the ladder and this entire class along with it.
+Either answer it reaches lands in `Set-FmAgentsMemory` and `Get-FmContractCheck`, the two places a second repair path would have to live.
+
+So this lane ships the measurements and the corrections to the false claims they disprove, and no mechanism.
+A rebase-triggered repair, a hook or a wrapper would be a second answer to one defect, and would not pay for itself: once the refusal becomes a re-sync, the loop already closes, because the doctor names `bin/fm-setup.ps1` and the suite fails until it is run.
+
+The other candidate was to stop repairing it and instead tell every worker to, by generating the instruction into each brief rather than firstmate typing it by hand into each one.
+That is rejected on the same grounds and one more.
+It is the answer this area's own design note argues against, because a rule a person has to remember is the detector that failed here already: the mirror going stale is silent to the worker until a gate run has already been paid for.
+It is also the one answer that a fix in the other lane can make actively wrong rather than merely redundant, since upstream T1.8 deletes the mirror entirely, and a brief that tells a worker to refresh a file that no longer exists is worse than a brief that says nothing.
+The instruction is still correct as a stopgap while the refusal stands, which is why firstmate is adding it to briefs in this batch by hand; it should not be made permanent by a lane that expects the refusal to be gone.
+
+### 63.6 What this section does NOT claim
+
+- **The symlink rung was not run as a control.**
+  It cannot be reached on this account (63.2), so "a symlink survives a rebase" stays a property of what a symlink is, not a measurement made here.
+- **Nothing was measured on the primary checkout.**
+  Both reproductions are throwaway repositories under the temp directory, and the account facts in 63.2 were read, not changed.
+- **The 228-byte figure is not this lane's.**
+  It is the `stale-contract-link` brief's measurement, quoted to show the two lanes are on one defect; the figures in 63.1 are this section's own.
+- **No claim is made about which fix that lane will land.**
+  If it lands narrower than the refusal, for instance repairing the copy rung and not the hardlink, this defect survives on this account and 63.1 is the case that shows it.
+
+### 63.7 The same ladders, on a real worktree, and one standing unverified claim closed
+
+The reproductions above are throwaway repositories, so the repair was also run once on this lane's own worktree, which arrived with both mirrors as the placeholders git leaves.
+
+```
+bin/fm-ensure-agents-md.ps1 .
+  hardlinked: CLAUDE.md -> AGENTS.md in <worktree> (it was a symlink git checked out as text)
+Set-FmClaudeSkillsLink -RepoRoot <worktree> -Confirm:$false
+  updated junction  <worktree>\.claude\skills junctioned to <worktree>\.agents\skills
+(Get-Item CLAUDE.md -Force).LinkType      HardLink
+(Get-Item .claude/skills -Force).LinkType  Junction
+Get-FmInstructionSurface  MirrorState = mirror, ContractPresent = True
+```
+
+Both Auto ladders landed one rung below the top, on the two different second rungs, and neither reached a copy.
+
+That closes a WINDOWS-UNVERIFIED item `docs/instruction-surface.md` had carried since the area was built: "The junction rung ... is exercised only by `-Strategy Junction`, which is Windows-only, so it has not run anywhere."
+It has now run on `Auto`, in a real checkout, because on an account that cannot make a symlink the junction is not a fallback but the rung the ladder lands on.
+The same note's neighbouring claim, that "on a machine without Developer Mode ... the copy is the rung that lands", is wrong for the same reason and is corrected with it.
+
+This also fixes the shape of the defect in 63.1 for this fleet.
+The ladder's top rung is the only one that survives a rebase, and it is the one rung a crewmate's account cannot have.

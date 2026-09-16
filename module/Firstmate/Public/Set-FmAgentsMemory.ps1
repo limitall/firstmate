@@ -116,9 +116,15 @@ function Set-FmAgentsMemory {
             # where symlinks are unavailable - not a second, independent memory
             # file. Re-syncing it loses nothing; refusing over it would make the
             # command permanently unusable on such a host.
-            # WINDOWS-UNVERIFIED: only the copy fallback can drift, and how
-            # often a Windows editor breaks a hardlink by replace-on-save is
-            # unmeasured. Drift is detected here on the next run either way.
+            # MEASURED: BOTH fallbacks drift, and not occasionally. Git does not
+            # write through a path, it replaces it, so a rebase that touches
+            # AGENTS.md leaves a hardlinked CLAUDE.md behind exactly as it leaves
+            # a copied one behind - docs/windows-e2e-evidence.md section 63.1.
+            # The byte-identity test below is therefore false from that moment,
+            # and a stale mirror falls through to the conflict throw with no
+            # evidence left that it was ever a link. Repairing that state is the
+            # stale-contract-link lane's; section 63.5 says why it is not fixed
+            # here.
             if ($IsWindows -and (Test-FmAgentsMirror -AgentsPath $agents -ClaudePath $claude)) {
                 if (-not $PSCmdlet.ShouldProcess($dir, 'ensure the AGENTS.md maintenance section')) { return $null }
                 if (Add-FmAgentsMaintenanceSection -Path $agents) {
