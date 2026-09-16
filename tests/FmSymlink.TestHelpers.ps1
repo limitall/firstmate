@@ -77,3 +77,51 @@ function Set-FmTestSymlinkSkip {
         'so the FIXTURE cannot be built - not a defect in the code under test. ' +
         'Run pwsh elevated, or turn on Windows Developer Mode, to exercise it.')
 }
+
+function New-FmTestCommittedClaudeLink {
+    <#
+        .SYNOPSIS
+        Make a directory a git repo whose INDEX records CLAUDE.md as a symlink to
+        AGENTS.md, without creating one on disk. True when the fixture was built.
+
+        .DESCRIPTION
+        The shape a Windows clone of a Linux repo actually has: the index says
+        `120000 CLAUDE.md`, and the working tree has whatever git could manage
+        there instead. It is what tells a mirror that has fallen behind from two
+        genuinely different memory files, so Get-FmAgentsMirrorState reads it.
+
+        Built with `update-index --cacheinfo` rather than by committing a real
+        symlink, for the same reason this file exists at all: the privilege is
+        not held on a stock Windows shell, and the fixture would be unbuildable
+        on precisely the machine the bug happens on.
+
+        The blob is written with NO trailing newline, which is what git stores
+        for a symlink. A fixture that added one would let an implementation that
+        forgets to trim pass for the wrong reason.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'A Pester fixture builder: it writes only into the test directory it is given.')]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$Directory,
+        [string]$Target = 'AGENTS.md'
+    )
+
+    Set-StrictMode -Version Latest
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $false }
+
+    $blob = Join-Path ([System.IO.Path]::GetTempPath()) ('fm-link-blob-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        $null = & git -C $Directory init -q 2>$null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        [System.IO.File]::WriteAllText($blob, $Target)
+        $sha = (@(& git -C $Directory hash-object -w -- $blob 2>$null) -join '').Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $sha) { return $false }
+        $null = & git -C $Directory update-index --add --cacheinfo "120000,$sha,CLAUDE.md" 2>$null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    } finally {
+        Remove-Item -LiteralPath $blob -Force -ErrorAction SilentlyContinue
+    }
+}

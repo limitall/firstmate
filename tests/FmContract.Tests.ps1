@@ -46,6 +46,8 @@ $script:SurfaceAtStart = $(
 )
 
 BeforeAll {
+    . (Join-Path $PSScriptRoot 'FmSymlink.TestHelpers.ps1')
+
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
 
@@ -329,6 +331,37 @@ Describe 'the doctor reports a broken identity rather than leaving it to be noti
         $check.Fix | Should -Match 'by hand'
     }
 
+    It 'still REPORTS, rather than throwing, when AGENTS.md is gone from a repo that declares the link' {
+        # The whole group is composed into one report, so a check that throws
+        # takes every other check with it - including the one naming the real
+        # fault. The missing contract is the 'operating contract' check's to
+        # report; this one must not go looking for a file that is not there.
+        $root = New-TestSurface
+        if (-not (New-FmTestCommittedClaudeLink -Directory $root)) {
+            Set-ItResult -Skipped -Because 'git is not available to build the fixture'
+        }
+        Remove-Item -LiteralPath (Join-Path $root 'AGENTS.md') -Force
+        $checks = @(Get-FmContractCheck -RepoRoot $root)
+        @($checks | ForEach-Object { $_.Name }) | Should -Contain 'operating contract'
+        (@($checks | Where-Object { $_.Name -eq 'contract for Claude' })[0]).Status | Should -Be 'missing'
+    }
+
+    It 'reports a mirror that has fallen behind the contract, and names setup as the fix' {
+        # The one the group was blind to. A stale mirror is [missing] and not
+        # [warn] for the reason every check here is required: the session does not
+        # fail to read it, it reads the OLD contract and behaves to it. Naming
+        # 'by hand' here - which is what a conflict got - is what left it unfixed.
+        $root = New-TestSurface
+        if (-not (New-FmTestCommittedClaudeLink -Directory $root)) {
+            Set-ItResult -Skipped -Because 'git is not available to build the fixture'
+        }
+        Add-Content -LiteralPath (Join-Path $root 'AGENTS.md') -Value 'A rule added by the rebase.'
+        $check = @(Get-FmContractCheck -RepoRoot $root | Where-Object { $_.Name -eq 'contract for Claude' })[0]
+        $check.Status | Should -Be 'missing'
+        $check.Detail | Should -Match 'fallen behind'
+        $check.Fix | Should -Match 'fm-setup'
+    }
+
     It 'reports a skills tree that will not load, naming the skill and the reason' {
         $root = New-TestSurface
         Write-FmTextFileLf -Path (Join-Path $root '.agents' 'skills' 'sample-skill' 'SKILL.md') `
@@ -373,6 +406,17 @@ Describe 'the composed surface report' {
         $surface = Get-FmInstructionSurface -RepoRoot $root
         $surface.Healthy | Should -BeFalse
         $surface.MirrorState | Should -Be 'placeholder'
+    }
+
+    It 'is NOT healthy while the mirror carries an older contract than AGENTS.md' {
+        $root = New-TestSurface
+        if (-not (New-FmTestCommittedClaudeLink -Directory $root)) {
+            Set-ItResult -Skipped -Because 'git is not available to build the fixture'
+        }
+        Add-Content -LiteralPath (Join-Path $root 'AGENTS.md') -Value 'A rule added by the rebase.'
+        $surface = Get-FmInstructionSurface -RepoRoot $root
+        $surface.MirrorState | Should -Be 'stale'
+        $surface.Healthy | Should -BeFalse
     }
 
     It 'lists every skill with its trigger, and marks one that will not load' {

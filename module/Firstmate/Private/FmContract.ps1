@@ -425,27 +425,51 @@ function Get-FmContractCheck {
     }
 
     # The mirror is what a Claude session actually opens, so a broken one means
-    # the contract above is correct and unread. FmAgentsMemory owns both tests.
-    if (-not (Test-Path -LiteralPath $mirror -PathType Leaf)) {
-        $checks += New-FmInstallCheck -Name 'contract for Claude' -Status 'missing' -Required `
-            -Detail "no $mirror, which is the name a Claude session looks for" -Fix 'bin/fm-setup.ps1'
-    } elseif (Test-FmAgentsLinkPlaceholder -ClaudePath $mirror) {
-        $checks += New-FmInstallCheck -Name 'contract for Claude' -Status 'missing' -Required `
-            -Detail ("$mirror is the text git leaves for a symlink it could not create, not the instructions; " +
-                'a session here comes up with one filename and no contract') `
-            -Fix 'bin/fm-setup.ps1'
-    } elseif (Test-FmAgentsClaudeLink -ClaudePath $mirror -AgentsPath $contract) {
-        $checks += New-FmInstallCheck -Name 'contract for Claude' -Status 'ok' -Required `
-            -Detail "$mirror is a link to $($script:FmContractFileName)"
-    } elseif (Test-FmAgentsMirror -AgentsPath $contract -ClaudePath $mirror) {
-        $checks += New-FmInstallCheck -Name 'contract for Claude' -Status 'ok' -Required `
-            -Detail "$mirror carries the same bytes as $($script:FmContractFileName)"
-    } else {
-        # Two real, DIFFERENT files. Not a link this host failed to make - a
-        # conflict, and the captain's to reconcile, so setup must not clobber it.
-        $checks += New-FmInstallCheck -Name 'contract for Claude' -Status 'missing' -Required `
-            -Detail "$mirror is a different file from $($script:FmContractFileName), so a session reads instructions nothing else agrees with" `
-            -Fix "reconcile the two by hand; setup will not overwrite either"
+    # the contract above is correct and unread. FmAgentsMemory owns the states,
+    # and setup switches on the SAME function - so this check can never report a
+    # mirror as the captain's to reconcile while setup would have repaired it,
+    # nor name setup as the fix for something setup refuses.
+    switch (Get-FmAgentsMirrorState -AgentsPath $contract -ClaudePath $mirror) {
+        'missing' {
+            $checks += New-FmInstallCheck -Name 'contract for Claude' -Status 'missing' -Required `
+                -Detail "no $mirror, which is the name a Claude session looks for" -Fix 'bin/fm-setup.ps1'
+        }
+        'placeholder' {
+            $checks += New-FmInstallCheck -Name 'contract for Claude' -Status 'missing' -Required `
+                -Detail ("$mirror is the text git leaves for a symlink it could not create, not the instructions; " +
+                    'a session here comes up with one filename and no contract') `
+                -Fix 'bin/fm-setup.ps1'
+        }
+        'link' {
+            $checks += New-FmInstallCheck -Name 'contract for Claude' -Status 'ok' -Required `
+                -Detail "$mirror is a link to $($script:FmContractFileName)"
+        }
+        'mirror' {
+            $checks += New-FmInstallCheck -Name 'contract for Claude' -Status 'ok' -Required `
+                -Detail "$mirror carries the same bytes as $($script:FmContractFileName)"
+        }
+        'stale' {
+            # A materialized link that fell behind the contract it mirrors. It is
+            # [missing] and not [warn] for the reason the whole group is required:
+            # the session does not read a broken file and stop, it reads an OLD
+            # operating contract under the name it looks for and behaves to it.
+            # Nothing else shows this - the mirror is --skip-worktree, so it is
+            # absent from `git status` too.
+            $mirrorBytes = (Get-Item -LiteralPath $mirror -Force).Length
+            $contractBytes = (Get-Item -LiteralPath $contract -Force).Length
+            $checks += New-FmInstallCheck -Name 'contract for Claude' -Status 'missing' -Required `
+                -Detail ("$mirror has fallen behind $($script:FmContractFileName) " +
+                    "($mirrorBytes bytes against $contractBytes), so a session here reads an out-of-date contract") `
+                -Fix 'bin/fm-setup.ps1'
+        }
+        default {
+            # Two real, DIFFERENT files, and nothing declaring one a mirror of the
+            # other - so which is authoritative is genuinely unknown. The captain's
+            # to reconcile, and setup must not clobber either.
+            $checks += New-FmInstallCheck -Name 'contract for Claude' -Status 'missing' -Required `
+                -Detail "$mirror is a different file from $($script:FmContractFileName), so a session reads instructions nothing else agrees with" `
+                -Fix "reconcile the two by hand; setup will not overwrite either"
+        }
     }
 
     $skillRoot = Get-FmSkillRootPath -RepoRoot $RepoRoot

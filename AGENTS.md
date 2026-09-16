@@ -121,6 +121,8 @@ state/               volatile runtime signals; gitignored
 `CLAUDE.md` and `.claude/skills` are committed as symlinks so a Linux clone works unchanged.
 Git with `core.symlinks=false`, the Windows default, materializes each as a small text file containing its target path, which silently means no instructions and no skills.
 `bin/fm-setup.ps1` repairs both, asking the host for the strongest link it allows (symlink, then hardlink or directory junction, then a synced copy), and `bin/fm-doctor.ps1` reports a broken one as `[missing]`.
+A synced copy can also fall BEHIND once `AGENTS.md` changes under it, which is what a rebase does, so run setup again after one.
+`git status` will not show that drift, because the mirror is `--skip-worktree`, but the doctor reports a mirror carrying an older contract as `[missing]` and setup refreshes it.
 Anything that reads `CLAUDE.md` or `.claude/skills` on Windows must assume the unrepaired shape until setup has run.
 
 ## 3. Session start (run once at every session start)

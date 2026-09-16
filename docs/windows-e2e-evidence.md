@@ -10989,3 +10989,133 @@ Nothing was killed to make room: those processes are other lanes' runs.
   That is the bash's boundary too: the forge owns branch protection, and a second opinion here would be this port inventing policy.
 - **The durable notification has never been drained by a real watcher.**
   `state/<id>.pr-merge-notified` and the `merged-<id>-<url>` wake record are asserted against a fixture home; no live supervision turn has read one.
+## 65. A copy of the contract that fell behind the contract, which only the doctor could see - and it called it unfixable - `PROVEN (Windows 11) FOR THE DRIFT, THE REFUSAL THAT HID IT, THE INDEX-DECLARED FIX AND FOUR NEGATIVE CONTROLS`
+
+`CLAUDE.md` is committed as a symlink to `AGENTS.md`, and a stock Windows checkout cannot materialize one, so `bin/fm-setup.ps1` falls through to a hardlink or a copy.
+A copy can fall BEHIND once `AGENTS.md` changes under it, which is what a rebase does.
+Measured in the field at 228 bytes behind on a worker's copy; the worker went on reading the old operating contract under the name a Claude session looks for, and invalidated a whole validation run before catching it itself.
+
+### 65.1 Why nothing repaired it
+
+Three things hid the same state at once.
+
+`Protect-FmInstructionLink` marks `CLAUDE.md` `--skip-worktree`, which is what stops `git checkout -- .` restoring the placeholder over the materialized link.
+It also keeps the drifted mirror out of `git status`, so the checkout reads clean.
+
+`Test-FmAgentsMirror` answers "are these two real files byte-identical", which is a freshness question, and it was the only thing standing in for a provenance question.
+So "the mirror fell behind" and "these are two different memory files" produced one answer, and that answer was `conflict` - whose entire contract is *do not repair this*.
+
+The doctor therefore reported the drift as `[missing] ... reconcile the two by hand; setup will not overwrite either`, and `Set-FmAgentsMemory` threw `conflict: both AGENTS.md and CLAUDE.md are real files`.
+Both were correct handling of the state they had mistaken it for.
+
+The skills tree never had this problem: `Get-FmClaudeSkillsLinkState` has always had a `drifted` state that setup re-syncs.
+The file-level twin of that state was the one missing.
+
+### 65.2 Reproduced end to end, through the entry point a crewmate runs
+
+Windows 11 Pro (10.0.26200), PowerShell 7, git 2.49.0.windows.1, in a disposable worktree of `main` at `826be670`.
+The fixture is a repo whose index records `120000 CLAUDE.md` with a real file in the working tree - the exact shape of a Windows clone of a Linux repo - built with `git update-index --cacheinfo`, because this session cannot create a symlink to commit one.
+
+```
+index records CLAUDE.md as: 120000 3f72a72387f27a4e1d23ea3e19d9dbbde7817419 0  CLAUDE.md
+
+step 1  bin/fm-ensure-agents-md.ps1 <dir> -LinkStrategy Copy
+        updated: ... copied CLAUDE.md -> AGENTS.md          exit=0
+        AGENTS.md=423b CLAUDE.md=423b
+
+step 2  append a rule to AGENTS.md (what a rebase does)
+        AGENTS.md=489b CLAUDE.md=423b  -> 66 bytes behind
+
+step 3  bin/fm-ensure-agents-md.ps1 <dir>            BEFORE THE FIX
+        conflict: both AGENTS.md and CLAUDE.md are real files in <dir>; reconcile them manually
+        exit=1
+        AFTER: AGENTS.md=489b CLAUDE.md=423b  -> still 66 bytes behind
+
+step 4  Get-FmInstructionSurface -RepoRoot <dir>     BEFORE THE FIX
+        MirrorState = conflict
+```
+
+The first run of the same script is what created the state the second run refused to touch.
+
+### 65.3 The fix, and the same run on it
+
+The provenance is taken from the one place that survives both the drift and `--skip-worktree`: the **git index**.
+A repo that commits `CLAUDE.md` as `120000 -> AGENTS.md` has already said that path carries no knowledge of its own, so a working-tree file there is a materialized link and re-syncing it can lose nothing.
+`Test-FmAgentsLinkCommitted` reads that and nothing else - mode `120000`, target `AGENTS.md` or `./AGENTS.md`.
+
+`Get-FmAgentsMirrorState` is now the single owner of the six states, and the repair, the doctor's check and `Get-FmInstructionSurface` all switch on it instead of re-deriving it.
+That matters because a classifier that disagrees with the repairer is this same bug in a new place.
+
+```
+step 2  AGENTS.md=489b CLAUDE.md=423b  -> 66 bytes behind
+        MirrorState = stale
+        doctor: [missing] ...\CLAUDE.md has fallen behind AGENTS.md (423 bytes against 489),
+                so a session here reads an out-of-date contract
+        doctor fix: bin/fm-setup.ps1
+
+step 3  bin/fm-ensure-agents-md.ps1 <dir> -LinkStrategy Copy
+        updated: copied CLAUDE.md -> AGENTS.md in <dir>
+                 (the mirror had drifted: 423 bytes against AGENTS.md's 489)
+        exit=0
+        AFTER: AGENTS.md=489b CLAUDE.md=489b  -> 0 bytes behind
+        MirrorState = mirror
+        CLAUDE.md now carries the new rule: True
+```
+
+### 65.4 Negative controls
+
+Four, because the repair is a licence to overwrite a file and each one is a way that licence could be granted wrongly.
+
+- **Two real, different files with nothing declaring one a mirror** stay a refusal: `conflict: both AGENTS.md and CLAUDE.md are real files ...`, exit 1, `MirrorState = conflict`.
+  Run against a plain directory, and again against the port's own suite fixtures, which are not repos.
+- **A repo that tracks `CLAUDE.md` as an ordinary file** (`100644`) is not a declaration: `Test-FmAgentsLinkCommitted` is false, so the state stays `conflict`.
+- **A committed symlink naming something other than `AGENTS.md`** is not this mirror: false, and the state stays `conflict`.
+- **No repo at all**, or no `git` on `PATH`: false, and the state stays `conflict`.
+  The declaration can only ever widen what is repaired, never narrow it, so every degraded case lands on the old, refusing behaviour.
+
+`-WhatIf` writes nothing on the stale path, asserted by reading the mirror's bytes back.
+
+### 65.5 What this section does NOT claim
+
+- **The 228-byte field measurement was not re-observed here.**
+  It is quoted from the report that opened this work; what was re-measured is the mechanism, at 66 bytes, in a fixture built to the same shape.
+- **The hardlink rung was not shown to drift.**
+  Only the copy rung is proven to fall behind. A hardlink is one file under two names and cannot, unless an editor breaks it by replace-on-save, which remains unmeasured on Windows.
+  It costs nothing: a broken hardlink lands in `stale` and is repaired on the next run like any copy.
+- **Nothing here detects a stale mirror in a repo that does not commit `CLAUDE.md` as a symlink.**
+  That is the deliberate limit of the fix. Without the declaration there is no fact saying which of the two files is authoritative, and guessing is how a project loses a real memory file.
+
+### 65.6 T1.8, the adjacent item: the pointer file this port would refuse today
+
+The upstream review's T1.8 replaces the mirror with a plain `100644` `CLAUDE.md` containing `@AGENTS.md`.
+That removes this whole class rather than detecting it, and it is the better shape.
+It was measured against the code as it now stands, because "the better shape lands cleanly" is an assumption worth checking rather than believing.
+
+```
+index records CLAUDE.md as: 100644 43c994c2d3617f947bcb5adf1933e21dabe46bb5 0  CLAUDE.md
+Test-FmAgentsLinkPlaceholder = False
+MirrorState = conflict   Healthy = False
+doctor: [missing] ...\CLAUDE.md is a different file from AGENTS.md,
+        so a session reads instructions nothing else agrees with
+doctor fix: reconcile the two by hand; setup will not overwrite either
+bin/fm-ensure-agents-md.ps1 <dir>
+  conflict: both AGENTS.md and CLAUDE.md are real files in <dir>; reconcile them manually
+  exit=1
+```
+
+Repeated against the EXACT bytes `bin/fm-ensure-agents-md.sh` writes - its `claude_pointer_content`, the HTML comment line plus `@AGENTS.md` - committed as `100644`:
+
+```
+index: 100644 a9d4d2694af261cf23ed331d4b446bdec194c47b 0  CLAUDE.md
+MirrorState = conflict  Healthy = False
+doctor: [missing] reconcile the two by hand; setup will not overwrite either
+fm-ensure-agents-md.ps1 exit=1
+```
+
+That matters more than the hand-written form above, because that script is tracked in **this** repo: the Linux firstmate merged in beside the port already writes the pointer, already owns its canonical bytes, and its header says it converts a correct `CLAUDE.md -> AGENTS.md` symlink into one.
+So the two halves of this repository implement two different conventions for the same two files today, and the PowerShell half reports the bash half's output as broken and unfixable.
+Not measured, because it would rewrite this repo's committed symlink: what the `.sh` does to *this* checkout is read from its source, not run.
+
+That is a correct, healthy pointer-file checkout being reported as broken and unfixable.
+The leaf of `@AGENTS.md` is not `AGENTS.md`, so the placeholder test does not catch it, and the index mode is `100644`, so the declaration test does not either - by design, since `100644` is exactly how a genuinely independent second memory file is committed too.
+`docs/instruction-surface.md` carries what this means for sequencing; the short version is that T1.8 has to teach `Get-FmAgentsMirrorState` a `pointer` state, and after this change that is the only place it has to be taught.

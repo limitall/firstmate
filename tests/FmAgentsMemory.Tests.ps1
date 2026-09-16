@@ -348,6 +348,146 @@ Describe 'the symlink git checked out as text' {
     }
 }
 
+Describe 'the mirror that fell behind its own contract' {
+    # MEASURED, and it cost a whole validation run: a worker rebased, AGENTS.md
+    # moved, the materialized CLAUDE.md beside it did not, and the session went on
+    # reading the OLD contract under the name it looks for. 228 bytes behind, and
+    # nothing said so - `git status` least of all, because the mirror carries
+    # --skip-worktree precisely so git will not restore over it.
+    #
+    # The refusal that protects two genuinely different memory files was hiding
+    # it: byte-identity is not a provenance test, so a mirror that had merely
+    # fallen behind was indistinguishable from a second, independent file and was
+    # reported as the captain's to reconcile. Nothing reconciles what nobody sees.
+
+    BeforeEach {
+        $script:dir = New-TestDir
+        $script:agents = Join-Path $script:dir 'AGENTS.md'
+        $script:claude = Join-Path $script:dir 'CLAUDE.md'
+    }
+
+    It 'reads the committed symlink out of the INDEX, where a Windows checkout still has it' {
+        if (-not (New-FmTestCommittedClaudeLink -Directory $script:dir)) {
+            Set-ItResult -Skipped -Because 'git is not available to build the fixture'
+        }
+        Test-FmAgentsLinkCommitted -ClaudePath $script:claude | Should -BeTrue
+    }
+
+    It 'is not committed when there is no repo at all' {
+        Test-FmAgentsLinkCommitted -ClaudePath $script:claude | Should -BeFalse
+    }
+
+    It 'is not committed when the repo tracks CLAUDE.md as an ordinary file' {
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'git is not available to build the fixture'
+        }
+        & git -C $script:dir init -q 2>$null
+        [System.IO.File]::WriteAllText($script:claude, "# a real committed memory file`n")
+        & git -C $script:dir add -- CLAUDE.md 2>$null
+        Test-FmAgentsLinkCommitted -ClaudePath $script:claude | Should -BeFalse
+    }
+
+    It 'is not committed when the symlink names something OTHER than AGENTS.md' {
+        # The declaration licenses an overwrite, so it is read strictly: a
+        # CLAUDE.md committed as a link to some other file is not this mirror.
+        if (-not (New-FmTestCommittedClaudeLink -Directory $script:dir -Target 'NOTES.md')) {
+            Set-ItResult -Skipped -Because 'git is not available to build the fixture'
+        }
+        Test-FmAgentsLinkCommitted -ClaudePath $script:claude | Should -BeFalse
+    }
+
+    It 'is not committed when git cannot be reached at all' {
+        # The declaration can only ever WIDEN what is repaired, so every degraded
+        # case has to land on the old, refusing behaviour rather than on a guess.
+        if (-not (New-FmTestCommittedClaudeLink -Directory $script:dir)) {
+            Set-ItResult -Skipped -Because 'git is not available to build the fixture'
+        }
+        $savedPath = $env:PATH
+        try {
+            $env:PATH = ''
+            Test-FmAgentsLinkCommitted -ClaudePath $script:claude | Should -BeFalse
+            [System.IO.File]::WriteAllText($script:agents, "# v2`n")
+            [System.IO.File]::WriteAllText($script:claude, "# v1`n")
+            Get-FmAgentsMirrorState -AgentsPath $script:agents -ClaudePath $script:claude |
+                Should -Be 'conflict'
+        } finally {
+            # PATH is process-global, so an unrestored one would break every test
+            # file that runs after this one in the same process.
+            $env:PATH = $savedPath
+        }
+    }
+
+    It 'is never stale when there is no AGENTS.md to be behind' {
+        # A caller reading 'stale' goes on to read AGENTS.md - the doctor prints
+        # both sizes - so answering it with no contract there turned a reported
+        # problem into a thrown one that took the whole doctor with it.
+        if (-not (New-FmTestCommittedClaudeLink -Directory $script:dir)) {
+            Set-ItResult -Skipped -Because 'git is not available to build the fixture'
+        }
+        [System.IO.File]::WriteAllText($script:claude, "# real content, not the link text`n")
+        Get-FmAgentsMirrorState -AgentsPath $script:agents -ClaudePath $script:claude |
+            Should -Be 'conflict'
+    }
+
+    It 'classifies a mirror that has fallen behind as stale, not as a conflict' {
+        if (-not (New-FmTestCommittedClaudeLink -Directory $script:dir)) {
+            Set-ItResult -Skipped -Because 'git is not available to build the fixture'
+        }
+        [System.IO.File]::WriteAllText($script:agents, "# v2 of the contract`n")
+        [System.IO.File]::WriteAllText($script:claude, "# v1 of the contract`n")
+        Get-FmAgentsMirrorState -AgentsPath $script:agents -ClaudePath $script:claude | Should -Be 'stale'
+    }
+
+    It 'still classifies two undeclared, different files as a conflict' {
+        [System.IO.File]::WriteAllText($script:agents, "# one`n")
+        [System.IO.File]::WriteAllText($script:claude, "# a genuinely different file`n")
+        Get-FmAgentsMirrorState -AgentsPath $script:agents -ClaudePath $script:claude | Should -Be 'conflict'
+    }
+
+    It 'classifies the other states the repair and the doctor both switch on' -ForEach @(
+        @{ State = 'missing'; Agents = "# c`n"; Claude = $null }
+        @{ State = 'placeholder'; Agents = "# c`n"; Claude = 'AGENTS.md' }
+        @{ State = 'mirror'; Agents = "# c`n"; Claude = "# c`n" }
+    ) {
+        [System.IO.File]::WriteAllText($script:agents, $Agents)
+        if ($null -ne $Claude) { [System.IO.File]::WriteAllText($script:claude, $Claude) }
+        Get-FmAgentsMirrorState -AgentsPath $script:agents -ClaudePath $script:claude | Should -Be $State
+    }
+
+    It 'REPAIRS it: the mirror carries the new contract again' {
+        if (-not (New-FmTestCommittedClaudeLink -Directory $script:dir)) {
+            Set-ItResult -Skipped -Because 'git is not available to build the fixture'
+        }
+        [System.IO.File]::WriteAllText($script:agents, "# the contract`n`n## Maintaining this file`n`nkeep it short`n")
+        $null = New-FmAgentsClaudeLink -Directory $script:dir -Strategy Copy
+        [System.IO.File]::AppendAllText($script:agents, "`nA rule added by the rebase.`n")
+
+        $result = Set-FmAgentsMemory -Path $script:dir -LinkStrategy Copy -Confirm:$false
+        $result.Action | Should -Be 'updated'
+        $result.Message | Should -BeLike '*drifted*'
+        [System.IO.File]::ReadAllText($script:claude) | Should -BeLike '*A rule added by the rebase.*'
+        Get-FmAgentsMirrorState -AgentsPath $script:agents -ClaudePath $script:claude | Should -Be 'mirror'
+    }
+
+    It 'still REFUSES two real, different files when nothing declares one a mirror' {
+        # The repair must not become a licence to clobber: without the committed
+        # declaration, which of the two is authoritative is genuinely unknown.
+        [System.IO.File]::WriteAllText($script:agents, "# one`n")
+        [System.IO.File]::WriteAllText($script:claude, "# a genuinely different file`n")
+        { Set-FmAgentsMemory -Path $script:dir -Confirm:$false } | Should -Throw '*reconcile them manually*'
+    }
+
+    It 'writes nothing under -WhatIf' {
+        if (-not (New-FmTestCommittedClaudeLink -Directory $script:dir)) {
+            Set-ItResult -Skipped -Because 'git is not available to build the fixture'
+        }
+        [System.IO.File]::WriteAllText($script:agents, "# v2`n`n## Maintaining this file`n`nkeep it short`n")
+        [System.IO.File]::WriteAllText($script:claude, "# v1`n")
+        $null = Set-FmAgentsMemory -Path $script:dir -WhatIf
+        [System.IO.File]::ReadAllText($script:claude) | Should -Be "# v1`n"
+    }
+}
+
 Describe 'Test-FmAgentsMirror' {
     It 'recognizes a materialized link: two real names with identical bytes' {
         $dir = New-TestDir

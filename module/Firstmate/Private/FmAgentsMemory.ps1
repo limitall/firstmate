@@ -23,8 +23,9 @@
 #   symlink  - the Linux shape; one file, no drift, portable back to Linux.
 #   hardlink - two names for ONE file on NTFS, no privilege needed. Content
 #              cannot drift, because there is only one file.
-#   copy     - last resort. Content CAN drift, so it is re-synced on every run
-#              and the drift is what the mirror check below looks for.
+#   copy     - last resort. Content CAN drift, so it is re-synced on every run;
+#              Get-FmAgentsMirrorState below is what tells drift from a genuine
+#              second memory file, and only it may license an overwrite.
 # The kind that was actually created is always reported, because "symlinked" is
 # a claim about the filesystem and a copy must never be described as one.
 
@@ -134,6 +135,53 @@ function Test-FmAgentsMirror {
     $ha -eq $hc
 }
 
+# Test-FmAgentsLinkCommitted: does the REPOSITORY holding this directory record
+# CLAUDE.md as a symlink to AGENTS.md?
+#
+# THIS IS THE PROVENANCE ANSWER, and byte-identity is not one. Two real files
+# that differ are ambiguous on disk: a mirror that has fallen behind and a second,
+# independent memory file look exactly alike, which is why the ambiguous case is
+# refused. But a repo that COMMITS CLAUDE.md as a symlink to AGENTS.md has already
+# said which one it is - the content it tracks for that path is the string
+# 'AGENTS.md', so no working-tree file there can be carrying knowledge of its own.
+# Re-syncing it can lose nothing.
+#
+# The index, not the working tree, is what is read: on a core.symlinks=false
+# Windows checkout the working tree is precisely where the declaration has been
+# lost, and the index is where it survives. The declaration also survives
+# --skip-worktree, which is what Protect-FmInstructionLink sets on this path and
+# which is why a stale mirror never shows up in `git status`.
+#
+# Deliberately narrow: mode 120000, and a target of exactly 'AGENTS.md' or
+# './AGENTS.md' - the two spellings this port and the Linux original write. A
+# symlink committed to anything else is not this mirror and is left alone.
+function Test-FmAgentsLinkCommitted {
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ClaudePath)
+
+    $dir = Split-Path -Parent $ClaudePath
+    if (-not $dir) { return $false }
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return $false }
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $false }
+
+    try {
+        # A relative pathspec resolves against -C, so this names THIS directory's
+        # CLAUDE.md even when the directory is deep inside the repo.
+        $entry = @(& git -C $dir ls-files -s -- $script:FmClaudeFileName 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $entry.Count -eq 0) { return $false }
+        # "<mode> <sha> <stage>\t<path>"
+        $fields = ([string]$entry[0]) -split '\s+'
+        if ($fields.Count -lt 2) { return $false }
+        if ($fields[0] -ne '120000') { return $false }
+        $target = (@(& git -C $dir cat-file -p $fields[1] 2>$null) -join "`n").Trim()
+        if ($LASTEXITCODE -ne 0) { return $false }
+    } catch {
+        return $false
+    }
+    $target -eq $script:FmAgentsFileName -or $target -eq "./$($script:FmAgentsFileName)"
+}
+
 # Test-FmAgentsLinkPlaceholder: is this CLAUDE.md a symlink that git checked out
 # as ORDINARY TEXT?
 #
@@ -171,6 +219,51 @@ function Test-FmAgentsLinkPlaceholder {
     # applies, asked of a filename.
     if ($IsWindows) { return $leaf -ieq $script:FmAgentsFileName }
     return $leaf -ceq $script:FmAgentsFileName
+}
+
+# Get-FmAgentsMirrorState: the ONE place that decides what a CLAUDE.md beside an
+# AGENTS.md actually is. The repair, the doctor's check and the surface report all
+# read it, because a classifier that disagrees with the repairer is the exact
+# failure this function was added for: the doctor saying "run setup" while setup
+# refuses, or the doctor saying "reconcile by hand" over something setup would
+# gladly fix.
+#
+#   missing      no CLAUDE.md at all.
+#   link         a real symlink resolving to AGENTS.md. Cannot drift.
+#   placeholder  the text git leaves for a symlink it could not create.
+#   mirror       a real file carrying the same bytes. A materialized link, current.
+#   stale        a real file with DIFFERENT bytes, at a path the repo commits as a
+#                symlink to AGENTS.md. A materialized link that has fallen behind.
+#   conflict     a real file with different bytes and nothing declaring it a link.
+#                Genuinely ambiguous, so it is the captain's to reconcile.
+#
+# 'stale' is the state this port was missing, and its absence was not neutral. A
+# mirror that falls behind its contract is not merely untidy: a session reads the
+# OLD operating contract under the name it looks for, behaves to it, and nothing
+# says so - while --skip-worktree, which is what keeps git from restoring over the
+# materialized link in the first place, also keeps the drift out of `git status`.
+# Classified as 'conflict' it was reported as a thing that must not be repaired,
+# so nothing repaired it. It is the file-level twin of the skills tree's
+# 'drifted', which setup has always re-synced (Get-FmClaudeSkillsLinkState).
+function Get-FmAgentsMirrorState {
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$AgentsPath,
+        [Parameter(Mandatory)][string]$ClaudePath
+    )
+
+    if (-not (Test-Path -LiteralPath $ClaudePath -PathType Leaf)) { return 'missing' }
+    if (Test-FmAgentsLinkPlaceholder -ClaudePath $ClaudePath) { return 'placeholder' }
+    if (Test-FmAgentsClaudeLink -ClaudePath $ClaudePath -AgentsPath $AgentsPath) { return 'link' }
+    if (Test-FmAgentsMirror -AgentsPath $AgentsPath -ClaudePath $ClaudePath) { return 'mirror' }
+    # 'stale' means BEHIND the contract, so it presupposes one. With no AGENTS.md
+    # there is nothing to be behind and nothing to re-sync from; that is the
+    # contract check's finding, not this one's, and answering 'stale' here would
+    # send a caller to read a file that is not there.
+    if ((Test-Path -LiteralPath $AgentsPath -PathType Leaf) -and
+        (Test-FmAgentsLinkCommitted -ClaudePath $ClaudePath)) { return 'stale' }
+    'conflict'
 }
 
 # New-FmAgentsClaudeLink: create CLAUDE.md as the strongest link to AGENTS.md

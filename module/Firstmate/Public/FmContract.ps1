@@ -18,7 +18,11 @@ Set-StrictMode -Version Latest
       ContractPath / MirrorPath   AGENTS.md and CLAUDE.md
       ContractPresent             the file exists AND carries the operating
                                   contract, not merely some markdown
-      MirrorState                 link | mirror | placeholder | conflict | missing
+      MirrorState                 link | mirror | stale | placeholder |
+                                  conflict | missing. 'stale' and 'conflict' are
+                                  deliberately distinct: a mirror that fell behind
+                                  is repaired, two genuinely different files are
+                                  the captain's to reconcile.
       SkillRoot / ClaudeSkillRoot .agents/skills and .claude/skills
       Skills                      one record per skill: name, description,
                                   whether the captain can invoke it, and the
@@ -58,16 +62,10 @@ function Get-FmInstructionSurface {
             ($text.Length -ge $script:FmContractMinimumBytes)
     }
 
-    # The mirror's states, in the same vocabulary the doctor prints. 'conflict'
-    # is deliberately distinct from 'placeholder': one is a link the host failed
-    # to make and is repaired, the other is two real files and is the captain's.
-    $mirrorState = 'missing'
-    if (Test-Path -LiteralPath $mirror -PathType Leaf) {
-        if (Test-FmAgentsLinkPlaceholder -ClaudePath $mirror) { $mirrorState = 'placeholder' }
-        elseif (Test-FmAgentsClaudeLink -ClaudePath $mirror -AgentsPath $contract) { $mirrorState = 'link' }
-        elseif (Test-FmAgentsMirror -AgentsPath $contract -ClaudePath $mirror) { $mirrorState = 'mirror' }
-        else { $mirrorState = 'conflict' }
-    }
+    # The mirror's state, from the one function that decides it. Reading it here
+    # rather than re-deriving it is what keeps this report, the doctor's check and
+    # setup's repair in agreement about what a given CLAUDE.md is.
+    $mirrorState = Get-FmAgentsMirrorState -AgentsPath $contract -ClaudePath $mirror
 
     $skills = @(Get-FmSkillDefinition -RepoRoot $RepoRoot)
     $claudeSkillsState = Get-FmClaudeSkillsLinkState -RepoRoot $RepoRoot

@@ -15,6 +15,9 @@ same content under the name a Claude session looks for. This command:
   - promotes a real CLAUDE.md to AGENTS.md when it is the only file present,
   - injects the canonical "## Maintaining this file" section idempotently into
     created skeletons, promoted files, and any existing AGENTS.md that lacks it,
+  - refreshes a CLAUDE.md mirror that has fallen behind AGENTS.md, where the
+    repository commits that path as a symlink to AGENTS.md and therefore says
+    the mirror carries no knowledge of its own,
   - and REFUSES rather than clobbering: two distinct real files, a CLAUDE.md
     link that points elsewhere, an AGENTS.md that is itself a link or not a
     regular file, or a case-variant memory file whose link target would dangle
@@ -95,44 +98,79 @@ function Set-FmAgentsMemory {
             return & $report $verb "$verb`: CLAUDE.md -> AGENTS.md in $dir"
         }
 
-        if ($claudeIsFile -and (Test-FmAgentsLinkPlaceholder -ClaudePath $claude)) {
-            # A symlink git checked out as ordinary text because
-            # core.symlinks=false - the default on Windows. It is a link this
-            # host failed to materialize, not a second memory file, and leaving
-            # it means a Claude session reads a one-line file naming AGENTS.md
-            # and gets no instructions at all. Replace it with a real link.
-            if (-not $PSCmdlet.ShouldProcess($dir, 'materialize the CLAUDE.md link git left as text')) { return $null }
-            $null = Add-FmAgentsMaintenanceSection -Path $agents
-            Remove-Item -LiteralPath $claude -Force
-            $kind = New-FmAgentsClaudeLink -Directory $dir -Strategy $LinkStrategy
-            $verb = Get-FmAgentsLinkVerb -Kind $kind
-            return & $report $verb ("$verb`: CLAUDE.md -> AGENTS.md in $dir " +
-                '(it was a symlink git checked out as text)')
-        }
-
         if ($claudeIsFile) {
-            # A real CLAUDE.md that is byte-identical to AGENTS.md is a
-            # MATERIALIZED link - the hardlink or copy this port falls back to
-            # where symlinks are unavailable - not a second, independent memory
-            # file. Re-syncing it loses nothing; refusing over it would make the
-            # command permanently unusable on such a host.
-            # MEASURED: BOTH fallbacks drift, and not occasionally. Git does not
-            # write through a path, it replaces it, so a rebase that touches
-            # AGENTS.md leaves a hardlinked CLAUDE.md behind exactly as it leaves
-            # a copied one behind - docs/windows-e2e-evidence.md section 63.1.
-            # The byte-identity test below is therefore false from that moment,
-            # and a stale mirror falls through to the conflict throw with no
-            # evidence left that it was ever a link. Repairing that state is the
-            # stale-contract-link lane's; section 63.5 says why it is not fixed
-            # here.
-            if ($IsWindows -and (Test-FmAgentsMirror -AgentsPath $agents -ClaudePath $claude)) {
-                if (-not $PSCmdlet.ShouldProcess($dir, 'ensure the AGENTS.md maintenance section')) { return $null }
-                if (Add-FmAgentsMaintenanceSection -Path $agents) {
-                    Copy-Item -LiteralPath $agents -Destination $claude -Force
-                    return & $report 'updated' ("updated: added ## Maintaining this file to AGENTS.md and " +
-                        "re-synced the CLAUDE.md mirror in $dir")
+            # Get-FmAgentsMirrorState owns what a real CLAUDE.md beside AGENTS.md
+            # IS, and the doctor reads the same function - so what setup repairs
+            # and what the doctor reports as repairable can never disagree.
+            switch (Get-FmAgentsMirrorState -AgentsPath $agents -ClaudePath $claude) {
+                'placeholder' {
+                    # A symlink git checked out as ordinary text because
+                    # core.symlinks=false - the default on Windows. It is a link
+                    # this host failed to materialize, not a second memory file,
+                    # and leaving it means a Claude session reads a one-line file
+                    # naming AGENTS.md and gets no instructions at all.
+                    if (-not $PSCmdlet.ShouldProcess($dir, 'materialize the CLAUDE.md link git left as text')) { return $null }
+                    $null = Add-FmAgentsMaintenanceSection -Path $agents
+                    Remove-Item -LiteralPath $claude -Force
+                    $kind = New-FmAgentsClaudeLink -Directory $dir -Strategy $LinkStrategy
+                    $verb = Get-FmAgentsLinkVerb -Kind $kind
+                    return & $report $verb ("$verb`: CLAUDE.md -> AGENTS.md in $dir " +
+                        '(it was a symlink git checked out as text)')
                 }
-                return & $report 'unchanged' "unchanged: AGENTS.md with a CLAUDE.md mirror of it in $dir"
+                'stale' {
+                    # A materialized link that has fallen behind its own AGENTS.md,
+                    # which is EITHER fallback rung after a rebase replaced the
+                    # contract under it - section 63.1 measured both. The repo
+                    # commits this path as a symlink to AGENTS.md, so the file here
+                    # carries no knowledge of its own and re-syncing loses nothing.
+                    # Left alone it is worse than a missing mirror: the session
+                    # reads an OLD contract under the name it looks for and says
+                    # nothing. The whole ladder is re-run rather than the bytes
+                    # copied, so a host that can now manage a stronger rung gets
+                    # one and stops drifting.
+                    if (-not $PSCmdlet.ShouldProcess($dir, 'refresh the CLAUDE.md mirror that has fallen behind AGENTS.md')) { return $null }
+                    # Both sizes, not a signed difference: the drift is usually a
+                    # shorter mirror but a deletion makes it longer, and "N bytes
+                    # behind" would then be a negative number or a wrong word.
+                    $was = (Get-Item -LiteralPath $claude -Force).Length
+                    $now = (Get-Item -LiteralPath $agents -Force).Length
+                    $null = Add-FmAgentsMaintenanceSection -Path $agents
+                    Remove-Item -LiteralPath $claude -Force
+                    $kind = New-FmAgentsClaudeLink -Directory $dir -Strategy $LinkStrategy
+                    $verb = Get-FmAgentsLinkVerb -Kind $kind
+                    return & $report 'updated' ("updated: $verb CLAUDE.md -> AGENTS.md in $dir " +
+                        "(the mirror had drifted: $was bytes against AGENTS.md's $now)")
+                }
+                'mirror' {
+                    # Byte-identical, so a MATERIALIZED link - the hardlink or copy
+                    # this port falls back to where symlinks are unavailable - and
+                    # current. Re-syncing it loses nothing; refusing over it would
+                    # make the command permanently unusable on such a host.
+                    # MEASURED, and it is why this branch is the NARROW one: BOTH
+                    # fallback rungs drift, and not occasionally. Git does not write
+                    # through a path, it replaces it, so a rebase that touches
+                    # AGENTS.md leaves a hardlinked CLAUDE.md behind exactly as it
+                    # leaves a copied one - docs/windows-e2e-evidence.md section 63.1.
+                    # A mirror that has drifted therefore never arrives here; it is
+                    # 'stale' above, and that is the state this command repairs.
+                    if (-not $IsWindows -and -not (Test-FmAgentsLinkCommitted -ClaudePath $claude)) {
+                        # On a host that can always symlink, two byte-identical real
+                        # files are not a rung this port would have produced, so the
+                        # SHAPE alone does not license an overwrite there. A commit
+                        # declaring the path a link does, on either platform - and it
+                        # has to, or this state would be refused on Linux while the
+                        # drifted one right below it is repaired, which is the worse
+                        # state getting the better treatment.
+                        throw "conflict: both AGENTS.md and CLAUDE.md are real files in $dir; reconcile them manually"
+                    }
+                    if (-not $PSCmdlet.ShouldProcess($dir, 'ensure the AGENTS.md maintenance section')) { return $null }
+                    if (Add-FmAgentsMaintenanceSection -Path $agents) {
+                        Copy-Item -LiteralPath $agents -Destination $claude -Force
+                        return & $report 'updated' ("updated: added ## Maintaining this file to AGENTS.md and " +
+                            "re-synced the CLAUDE.md mirror in $dir")
+                    }
+                    return & $report 'unchanged' "unchanged: AGENTS.md with a CLAUDE.md mirror of it in $dir"
+                }
             }
             throw "conflict: both AGENTS.md and CLAUDE.md are real files in $dir; reconcile them manually"
         }
