@@ -11241,9 +11241,11 @@ pwsh    : 0 hits on the returned PATH, and more than 0 on this machine's own
 The last line is the one that matters: `pwsh` is the tool this repo actually stubs, in the two cases that run the shipped entry points, and it is the stub that was missed.
 `New-RelaunchFixture` now closes the second door as well - `%LOCALAPPDATA%\Programs\PowerShell7`, which `install.ps1` looks in BY NAME when PATH has no answer, and which is exactly where its own documented route puts PowerShell 7.
 
-### 65.5 The two gate runs
+### 65.5 The gate runs, and exactly which tree each one measured
 
-Both on the rebased tree, both through `bin/fm-test-run.ps1`, run as fourteen consecutive foreground invocations of four files each because a background job on this seat only advances while the launching session is awake (65.7).
+All of them through `bin/fm-test-run.ps1`, run as consecutive foreground invocations of four files each because a background job on this seat only advances while the launching session is awake (65.7).
+
+**On this lane's own tree, rebased onto `a7b3c76d`** - 54 test files, which is this change in isolation:
 
 ```
 run 1 : 54 files, 3112 tests, 3093 passed, 0 failed, 19 skipped   4776.4 s
@@ -11252,7 +11254,18 @@ run 2 : 54 files, 3112 tests, 3093 passed, 0 failed, 19 skipped   2756.0 s
 
 Identical counts; 14 of 14 chunks exited 0 in each; no file was `failed`, `timeout`, `unreported` or `empty` in either.
 The difference in wall time is the machine: nine lanes were live for the first and fewer for the second.
-`tests/FmAnalyzer.Tests.ps1` is the repo-wide `Invoke-ScriptAnalyzer` sweep at zero tolerated findings, and it is one of the 54 - so **analyzer clean repo-wide** is part of both runs rather than a separate claim.
+
+**Then `main` advanced to `82a831f1`, this branch was rebased onto it, and the suite gained `tests/FmPrMerge.Tests.ps1`** - 55 files.
+One full pass was run on that tree and was green:
+
+```
+run 1 : 55 files, 3195 tests, 3176 passed, 0 failed, 19 skipped   3189.0 s
+```
+
+**The second pass on the 55-file tree was NOT completed**, and this section will not imply it was: 8 of its 14 chunks had run, all green, when the lane was told to stop re-gating and hand the combined tree to one integration worker.
+That is the honest state of this evidence - two identical passes prove this change in isolation, one pass proves it against `82a831f1`, and the combined tree is somebody else's measurement to take.
+
+`tests/FmAnalyzer.Tests.ps1` is the repo-wide `Invoke-ScriptAnalyzer` sweep at zero tolerated findings, and it is one of the files in every count above - so **analyzer clean repo-wide** is part of each of those runs rather than a separate claim.
 
 **And the suite is green the OTHER way too.**
 The four files that read the marker were run in ONE process with `FM_TEST_MODE` cleared, under a keeper, which is the shape `Invoke-Pester -Path ./tests` gives them:
