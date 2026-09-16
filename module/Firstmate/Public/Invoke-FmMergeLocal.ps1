@@ -63,11 +63,8 @@ function Invoke-FmMergeLocal {
     $project = Get-FmMetaValue -Path $metaPath -Key 'project'
     $mode = Get-FmMetaValue -Path $metaPath -Key 'mode'
     if ($mode -ne 'local-only') {
-        # The bash names bin/fm-pr-merge.sh here. This port has no PR-merge
-        # command, so it names what a Windows captain can actually do instead of
-        # pointing at a script that is not on this platform.
         throw ("error: task $TaskId is mode=$mode, not local-only; a PR task lands through its PR after " +
-            'approval (this port has no PR-merge command - merge it with gh-axi, or from a Linux firstmate home)')
+            'approval, with bin/fm-pr-merge.ps1')
     }
     # The recorded project must exist as a checkout before anything else is
     # asked of it. Named with the task AND the path, because the two failures

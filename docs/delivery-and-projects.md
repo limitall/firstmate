@@ -1,8 +1,9 @@
 # Delivery and project management
 
-Windows/PowerShell port of `bin/fm-merge-local.sh`, `bin/fm-promote.sh`,
-`bin/fm-fleet-sync.sh`, `bin/fm-ensure-agents-md.sh`, and the mechanical half of
-the `project-management` skill's add / create / remove procedure. The bash
+Windows/PowerShell port of `bin/fm-merge-local.sh`, the GitHub half of
+`bin/fm-pr-merge.sh`, `bin/fm-promote.sh`, `bin/fm-fleet-sync.sh`,
+`bin/fm-ensure-agents-md.sh`, and the mechanical half of the
+`project-management` skill's add / create / remove procedure. The bash
 headers and that skill remain the authoritative statement of *why* each rule
 exists; this file records what the port keeps, what it changes, and what it
 refuses.
@@ -12,6 +13,7 @@ refuses.
 | Command | Bash original |
 | --- | --- |
 | `bin/fm-merge-local.ps1 <task-id>` | `bin/fm-merge-local.sh` |
+| `bin/fm-pr-merge.ps1 <task-id> <pr-url>` | `bin/fm-pr-merge.sh`, GitHub half only |
 | `bin/fm-promote.ps1 <task-id> -Mode <mode> -Yolo <on\|off>` | `bin/fm-promote.sh` |
 | `bin/fm-fleet-sync.ps1 [<project-dir-or-name>]` | `bin/fm-fleet-sync.sh` |
 | `bin/fm-ensure-agents-md.ps1 [<dir>]` | `bin/fm-ensure-agents-md.sh` |
@@ -20,7 +22,7 @@ refuses.
 | `bin/fm-project-create.ps1 <name> -Description …` | its create step (local half) |
 | `bin/fm-project-remove.ps1 <name> -Approved` | its remove step |
 
-Public functions: `Invoke-FmMergeLocal`, `Invoke-FmPromote`,
+Public functions: `Invoke-FmMergeLocal`, `Invoke-FmPrMerge`, `Invoke-FmPromote`,
 `Invoke-FmFleetSync`, `Set-FmAgentsMemory`, `Add-FmProject`, `New-FmProject`,
 `Remove-FmProject`, `Get-FmProjectMode`.
 
@@ -78,9 +80,8 @@ order - the first failing guard is the one whose message the operator acts on:
 Then `git merge --ff-only`. Nothing is forced, stashed, or discarded, and a
 diverged branch is sent back to the crewmate to rebase.
 
-One message changed: the bash points a non-`local-only` task at
-`bin/fm-pr-merge.sh`, which this port does not have. The refusal names what a
-Windows captain can actually do instead of a script that is not on the platform.
+The refusal for a non-`local-only` task points at `bin/fm-pr-merge.ps1`, the
+GitHub landing path below.
 
 `Invoke-FmMergeLocal` is `ConfirmImpact = 'High'`: a captain calling the cmdlet
 directly is asked before firstmate writes into a project checkout. The entry
@@ -116,6 +117,109 @@ entry point map exit codes; and its `-h`/`--help` flag, because PowerShell's own
 `-?` already prints this script's help and a bash-style long flag is the Linux
 idiom this port exists to leave behind. Its usage exit code was `1`; this port's
 documented convention is `2` for usage.
+
+## The GitHub landing path
+
+`Invoke-FmPrMerge` is the other half of the merge gate-action, and the reason it
+exists is narrower than "merge a PR": before it, **"never merge a red PR" was
+prose with nothing behind it.** There was no merge command at all, nothing
+recorded which pull request a task produced, and "merged" was something
+firstmate asserted rather than something GitHub confirmed. Under standing `yolo`
+authority, all three are unwitnessed.
+
+Four properties carry the whole design, and every one of them is a LIVE read.
+This area holds no opinion it did not just ask GitHub for.
+
+1. **The gate.** One `gh pr view --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup`,
+   and the merge is refused unless the pull request is open, not a draft,
+   `MERGEABLE`, not `DIRTY`, and green. One read, not six, so every condition is
+   judged against the same instant. Every failing condition is reported, not
+   just the first.
+2. **The head binding.** The head that was verified is passed to `gh pr merge`
+   as `--match-head-commit`, so a push landing between the read and the merge
+   fails the merge instead of landing commits nothing checked.
+3. **Superseded checks.** A re-run publishes a new check run under the same name
+   beside the old one and GitHub's rollup keeps both, so judging each run alone
+   reports a check red for ever after one failure. Runs are grouped by name and
+   a group with red runs is forgiven only when a green run of that name started
+   strictly later than every red one. Four things refuse rather than forgive: no
+   green run with a usable timestamp, a red run still in flight, a red run with
+   no usable timestamp, and a newest red that is not older than the newest
+   green. Status contexts have no runs to supersede one another and are judged
+   alone; unnamed check runs are never grouped together.
+4. **The read-back.** `gh` returning success is also how an accepted merge-queue
+   entry returns, so GitHub is read again afterwards. `Invoke-FmPrMerge` returns
+   an object only when that read says merged, which makes `Merged = $true` true
+   by construction; queued, refused and unreadable each throw with GitHub's own
+   words quoted apart from this port's verdict.
+
+### Three places the port differs from the bash, and why
+
+**The timestamp is an instant, not a string.** `bin/fm-pr-merge.sh` tests
+`startedAt` for an exact `YYYY-MM-DDTHH:MM:SSZ`, which is right when jq hands
+you the raw JSON string. `ConvertFrom-Json` does not: it recognises an ISO-8601
+timestamp and returns a `[datetime]`. A straight port of the string test
+therefore rejects **every real timestamp**, and rule 3 silently never fires -
+the gate looks correct and refuses green work for ever. `Get-FmPrMergeSettledAt`
+takes a `[datetime]`, a `[DateTimeOffset]` or a raw UTC string and returns one
+orderable instant, so sub-second precision orders correctly instead of having to
+be excluded to keep a fixed-width string comparison honest.
+`docs/windows-e2e-evidence.md` has the run that caught it.
+
+**Guarded flags are matched case-sensitively, and are rows rather than hash
+keys.** A PowerShell hashtable matches keys case-INSENSITIVELY, so `-r` (rebase)
+looked up `-R` (repo) and the guard refused an ordinary rebase merge with a
+message about the repository. gh's short flags are case-sensitive, so the
+comparison is `-ceq` against one table of rows. Same hazard as the cd guard's
+(`CONTRIBUTING.md`).
+
+**`-AllowRed` requires `-AttendedOverride`.** The bash gates an attended red
+waiver on the away-posture record; this port has no away mode, so the only
+machine-readable signal that a captain is attending one concrete action is that
+switch. Coupling them makes "standing `yolo` cannot authorize a red merge"
+(`AGENTS.md` section 7) a check rather than a sentence, which is the whole point
+of this command.
+
+### What is recorded, and what is deliberately not
+
+`pr=` is written to `state/<id>.meta` under the meta lock as soon as the pull
+request has been **read** - even when the gate then refuses. A readable pull
+request is one that exists, so binding the task to it is safe and makes the
+record useful to teardown either way; an unreadable one could be a typo, and a
+typo must not bind a task for good. An existing `pr=` that disagrees refuses
+rather than re-pointing the task.
+
+`pr_head=` is **not** written, though the bash writes it. Nothing here reads it:
+`Test-FmTeardownPrMerged` reads the head live from `gh` at the moment it needs
+it, which cannot go stale the way a recorded head does after a rebase.
+
+One durable notification per verified merge goes to the wake queue, keyed
+`merged-<id>-<url>`, and is de-duplicated by `state/<id>.pr-merge-notified`. The
+wake queue's own de-duplication is by `(kind, key)` among records still QUEUED,
+so once a handling turn acknowledges the record the key is free again; the
+marker is what makes once mean once for good. The wake is published BEFORE the
+marker is written, so a crash between the two costs a duplicate line rather than
+leaving a landed merge silent.
+
+### The two reads, and why there is no third
+
+`gh pr view --json` publishes no `isInMergeQueue` field (checked against gh
+2.97), so only `gh api graphql` can tell a landed pull request from a queued
+one. When that call fails, `gh pr view --json state` reaches a different
+endpoint and can still answer - but it cannot see the queue, so a "not merged"
+from it is an INCOMPLETE answer rather than a negative one. It is accepted only
+when it proves a merge; everything else refuses.
+
+The bash's third read is `gh-axi`. It is not here: it is the same question asked
+of a wrapper around the same binary, in a text format this port would have to
+parse by shape, and it covers no failure the two reads above do not.
+
+### What is not ported
+
+GitLab, away-mode merge grants, merge-queue retry coaching and the captain-hold
+interlock (`AGENTS.md` section 14). A merge queue is still OBSERVED - that is
+rule 4's whole job - it is simply not coached through: a queued pull request is
+reported as queued and what to do next is the captain's call.
 
 ## Promotion
 

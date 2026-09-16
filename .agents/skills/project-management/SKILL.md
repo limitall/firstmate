@@ -50,7 +50,7 @@ Do not overwrite or repurpose an existing path.
 
 The registry records the project's standing posture, which is the captain's default for the work rather than any task's answer; `AGENTS.md` section 7 owns how each task's concrete mode and yolo are resolved at intake and passed explicitly to the brief, the spawn, and any promotion.
 
-- `direct-PR` pushes and opens a PR. **This is the strongest posture this port can actually run.**
+- `direct-PR` pushes and opens a PR, and that PR lands through `bin/fm-pr-merge.ps1`. **This is the strongest posture this port can actually run.**
 - `local-only` has no required remote or PR and lands only through `bin/fm-merge-local.ps1`.
 - `no-mistakes` and `no-mistakes-prod-only` remain valid registry values, because a home may be shared with a Linux firstmate that can run them, but **this port refuses to dispatch a task in `no-mistakes` mode** (`AGENTS.md` section 7).
 

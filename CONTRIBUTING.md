@@ -307,10 +307,14 @@ module any other way.
   that make it stop instead of guess (delivery contract, brief agreement,
   unverified adapter, missing dependency, unregistrable Claude trust), the
   per-launch attribution and feedback policy, and the `state/<id>.meta` field order.
-- `docs/delivery-and-projects.md` - the guarded local merge, scout promotion,
-  fleet sync, project add/create/remove, and the agent-memory file convention.
+- `docs/delivery-and-projects.md` - the guarded local merge, the guarded GitHub
+  merge, scout promotion, fleet sync, project add/create/remove, and the
+  agent-memory file convention.
   It also states the v1 delivery-mode gate: `direct-PR` and `local-only` ship,
   and `no-mistakes` is **refused by name** rather than recorded and not run.
+  Read its "Three places the port differs from the bash" before touching the
+  GitHub merge: one of the three is a trap that leaves the green gate looking
+  correct while silently never firing.
 - `docs/backlog-manual-windows.md` - the manual backlog backend: tasks-axi's
   markdown grammar as the format contract, byte-exact round trip, and every
   refusal.

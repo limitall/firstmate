@@ -241,12 +241,15 @@ Describe 'Invoke-FmMergeLocal' {
             ForEach-Object { $_.ConfirmImpact } | Should -Be 'High'
     }
 
-    It 'refuses a task that is not mode=local-only' {
+    It 'refuses a task that is not mode=local-only, and names the command that lands one' {
+        # The refusal used to say this port had no PR-merge command and to reach
+        # for gh-axi by hand. It has one now, so it names it: a refusal whose
+        # advice is out of date sends the operator somewhere that no longer is.
         $fx = New-TestFixture
         $null = New-TestTaskMeta -StateDir $fx.State -TaskId 'task1' -Lines @(
             'id=task1', "project=$($fx.Project)", 'kind=ship', 'mode=direct-PR')
         { Invoke-FmMergeLocal -TaskId 'task1' -StateDir $fx.State } |
-            Should -Throw '*is mode=direct-PR, not local-only*'
+            Should -Throw '*is mode=direct-PR, not local-only*bin/fm-pr-merge.ps1*'
     }
 
     It 'refuses a task with no meta at all' {

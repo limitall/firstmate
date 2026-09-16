@@ -299,8 +299,9 @@ Describe 'entry points' {
     }
 
     It 'has an entry point for every delivery and project-management command' {
-        foreach ($name in @('fm-merge-local.ps1', 'fm-promote.ps1', 'fm-project-mode.ps1', 'fm-project-add.ps1',
-                'fm-project-create.ps1', 'fm-project-remove.ps1', 'fm-fleet-sync.ps1', 'fm-ensure-agents-md.ps1')) {
+        foreach ($name in @('fm-merge-local.ps1', 'fm-pr-merge.ps1', 'fm-promote.ps1', 'fm-project-mode.ps1',
+                'fm-project-add.ps1', 'fm-project-create.ps1', 'fm-project-remove.ps1', 'fm-fleet-sync.ps1',
+                'fm-ensure-agents-md.ps1')) {
             Test-Path -LiteralPath (Join-Path $script:BinRoot $name) -PathType Leaf |
                 Should -BeTrue -Because "bin/$name is part of this port's command surface"
         }

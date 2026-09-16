@@ -308,7 +308,8 @@ Complexity alone is not expansion: a difficult correction genuinely required by 
 Before deciding any ask-user-shaped finding, load `ask-user-authority`; the implementation worker never answers its own finding.
 Never merge a red PR.
 Without a current explicit captain instruction that states the concrete merge, that default stands, and standing `yolo` cannot authorize a red merge.
-Use `bin/fm-merge-local.ps1 <task-id>` for approved local-only landing; never call a lower-level merge command around its guards.
+Land an approved merge with `bin/fm-pr-merge.ps1 <task-id> <pr-url>` for a PR task and `bin/fm-merge-local.ps1 <task-id>` for a local-only one; never call a lower-level merge command around their guards.
+The PR command enforces the two rules above rather than restating them: it reads the pull request live, refuses one that is closed, a draft, unmergeable or red, binds the merge to that verified head, and says merged only once GitHub confirms it.
 After an autonomous merge, give the captain a one-line full-URL or local-main outcome.
 
 ### PR ready, landing, and teardown
@@ -521,6 +522,8 @@ Each is a plain absence, not a degraded imitation: never simulate one, and tell 
 - **The session-start trace context, the PR-check area, and the quota-axi compatibility probe.** Each is bound by name somewhere and defined nowhere, deliberately; `tests/FmModuleAssembly.Tests.ps1` carries the full registry with a written reason for every one, and refuses any new undefined by-name call.
 - **The `relaunch` control verb.** Refused by name; `stuck-crewmate-recovery` owns the explicit exit-then-respawn replacement.
 - **The crewmate turn-end hook.** A worker's own Stop hook is not installed, so `state/<id>.turn-ended` is never touched by a crewmate turn. Wakes still arrive from every `state/<id>.status` append and from the stale cadence; what is lost is the immediate per-turn notification. `harness-adapters` owns the consequence.
+- **The rest of the guarded PR merge.** `bin/fm-pr-merge.ps1` has the part that makes a merge safe and its report true, for GitHub only: the live open/draft/mergeable/green gate, the head binding, the superseded-check rule, and the read-back (section 7).
+  Absent are GitLab merging, away-mode merge grants, and merge-queue retry coaching - a queued pull request is reported as queued and never as merged, and what to do next about the queue is the captain's call rather than something this command offers.
 - **Structured decision holds.** `decision-hold-lifecycle`'s policy is in force, but there is no `fm-decision-hold` command; holds are ordinary held backlog items.
   The Linux firstmate has since replaced that policy with `captain-hold-lifecycle` and its `fm-captain-hold` command; neither is ported, and adopting its refined rules is a policy change of its own, not a rename.
 - **A self-update command.** `/updatefirstmate` performs the guarded fast-forward by hand.
