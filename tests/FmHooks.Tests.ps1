@@ -716,11 +716,37 @@ Describe 'bin/fm-claude-hook.ps1 end to end' {
             $psi.EnvironmentVariables['FM_TASKS_AXI_COMPATIBLE'] = '0'
 
             $proc = [System.Diagnostics.Process]::Start($psi)
+            $null = $proc.Handle   # cache it, or ExitCode is unavailable after exit
             $proc.StandardInput.Write($Payload)
             $proc.StandardInput.Close()
-            $out = $proc.StandardOutput.ReadToEnd()
-            $err = $proc.StandardError.ReadToEnd()
-            $proc.WaitForExit()
+
+            # BOTH pipes are drained CONCURRENTLY, and every wait is BOUNDED.
+            #
+            # Reading one to the end before touching the other deadlocks as soon
+            # as the child fills the pipe nobody is draining - and this hook's
+            # stderr is a multi-line banner. Worse, ReadToEnd does not return
+            # while ANY process still holds the write handle, and this hook
+            # SPAWNS a watcher that inherits it: the hook exits, the handle does
+            # not close, and the read blocks forever with no child left to see.
+            #
+            # MEASURED: a 99-minute wedge here, the hook process already gone,
+            # nothing on stdout, and a full gate run lost. Unbounded is the whole
+            # defect - a hook that never returns has to FAIL this test in seconds,
+            # not hang the suite until someone notices.
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            $budgetMs = 120000
+            if (-not $proc.WaitForExit($budgetMs)) {
+                # Only the process this helper started; its own descendants are
+                # left alone, because several suites share this machine.
+                try { $proc.Kill() } catch { Write-Verbose "hook already gone: $($_.Exception.Message)" }
+                $null = $proc.WaitForExit(5000)
+                throw "the hook entry point did not exit within $($budgetMs / 1000)s"
+            }
+            # The process is gone; a read still pending now means a leaked handle,
+            # so take what arrived rather than waiting on a writer nobody owns.
+            $out = if ($outTask.Wait(10000)) { $outTask.Result } else { '' }
+            $err = if ($errTask.Wait(10000)) { $errTask.Result } else { '' }
             $code = $proc.ExitCode
             $proc.Dispose()
             Remove-Item -LiteralPath $stdout, $stderr, $stdin -Force -ErrorAction SilentlyContinue
