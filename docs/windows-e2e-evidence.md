@@ -11439,3 +11439,106 @@ That is the intended outcome: the activity reading changed what the supervisor i
   `Get-FmRunLivenessProcessTable` reads `utime`/`stime` from `/proc` for development only; every number above is from `Win32_Process` on Windows.
 - **Pid reuse was not staged.**
   It is argued to be safe because it can only add an unrelated process and push the reading towards `advancing`, which licenses nothing; that is reasoning, not a measurement.
+
+## 65. The captain's voice switch was one forgotten argument from a test run - `PROVEN (Windows 11) FOR THE REACH INTO THE CHECKOUT'S OWN SWITCH, THE WRITER THAT COULD CREATE IT, BOTH FIXES AND A NEGATIVE CONTROL FOR EACH; NOTHING SPOKE AND NO MICROPHONE WAS OPENED`
+
+`AGENTS.md` section 9 has the voice channel off until the captain creates `config/voice`, and `docs/voice-windows.md` makes that one file the switch for BOTH halves - the speaking and the listening.
+Off by default is a promise about who may turn it ON, so the question this section answers is not "is it off" but "who can turn it on".
+Two answers were wrong.
+
+### 65.1 A voice entry point run by the suite read the checkout's own switch
+
+`Get-FmConfigPath` resolves its home from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then `Get-FmRoot` - the checkout.
+`tests/FmVoice.Tests.ps1` runs `bin/fm-say.ps1` and `bin/fm-ask.ps1` as real child processes through one fixture, `Invoke-VoiceScript`, whose `-FmHome` was `[string]$FmHome = ''`.
+Empty did not mean "no home": the fixture REMOVES `FM_HOME`, `FM_ROOT_OVERRIDE`, `FM_STATE_OVERRIDE` and `FM_CONFIG_OVERRIDE` from the child and only sets them when the argument is non-empty.
+So a call that forgot the argument gave a child that resolved its home to the checkout, and in the primary checkout that is the captain's own `config/voice`.
+
+Reproduced in a disposable worktree, with the switch seeded as `off` plus one unknown key so the reader would name the file it had read without anything being speakable:
+
+```
+<worktree>/config/voice:
+  off
+  volume=11
+
+pwsh -NoProfile -NonInteractive -File <worktree>\bin\fm-say.ps1 hello captain
+  (child started with FM_HOME, FM_ROOT_OVERRIDE, FM_STATE_OVERRIDE,
+   FM_CONFIG_OVERRIDE and FM_VOICE_OFF removed, exactly as the fixture does)
+
+exit=0
+stderr= fm-say: config/voice: line 2: unknown key 'volume' (expected voice, rate or confidence)
+        fm-say: not spoken - the voice is off (create config/voice to turn it on)
+```
+
+The warning names line 2 of the file seeded in the CHECKOUT, and that is the reach.
+Nothing was spoken because the seeded file says `off`; had it said anything else that child would have spoken out of the captain's machine, and on `fm-ask` it would have opened the microphone.
+Every call site in the file does pass `-FmHome` today - the fixture's own discipline held - but what stood between the suite and the captain's microphone was discipline.
+
+The same command started with this worker's inherited `FM_VOICE_OFF=1` refused earlier, at `Test-FmVoiceSuppressed`, with `fm-say: not spoken - the browser screen owns speaking here`.
+That is the second gate working, and it is not a substitute: it is a property of one process tree, and a suite started from a shell without it has only the switch.
+
+### 65.2 The one writer that could have created the switch
+
+`Set-FmBridgeChoice` is the only function in the module that writes a file under `config/` whose NAME is an argument.
+It creates `<home>/config/` if it is missing and writes the word it was given.
+Its two exported verbs pass literals - `listen-mode` and `bridge-voice` - and the screen reaches them over HTTP, through `/api/listen-mode` and `/api/voice`.
+That route is loopback-only, token-guarded and Origin-checked, which is not the same as being the captain: this page has been driven HEADLESS for checks before, which is the incident `Get-FmBridgeVoice` was written for, and the screen's mute WAS `config/voice` before it became `config/bridge-voice`.
+
+Measured, with the guard removed:
+
+```
+Set-FmBridgeChoice -Name 'voice' -Value 'on' -Allowed @('on','off') -HomePath <home>
+  Ok=True, <home>/config/voice created holding "on"
+```
+
+`Get-FmVoiceConfig` treats a present file as ENABLED unless its first meaningful line is exactly `off`, so `on` is a line it reports as a problem and the voice is on anyway.
+One argument, and the machine's microphone switch exists.
+
+### 65.3 Both fixes
+
+`Set-FmBridgeChoice` now refuses any name that is not one of the screen's own two, before it resolves a path or creates a directory.
+`config/voice` is named in the refusal and in the comment above the list, so the next person to add a bridge setting is told what the list is for.
+
+`Invoke-VoiceScript` takes `-FmHome` as `[Parameter(Mandatory)][ValidateNotNullOrEmpty()]`, and so do the `Invoke-Say` and `Invoke-Ask` wrappers over it.
+A forgotten argument is now a binding failure rather than a child pointed at the captain's home.
+That is on TOP of the environment pin below, not instead of it: the fixture scrubs the environment it hands the child, so a pin in the parent does not reach it.
+
+`tests/FmVoice.Tests.ps1` and `tests/FmBridge.Tests.ps1` pin `FM_HOME` to a `TestDrive` directory for the whole file and clear the three overrides, the way `tests/FmBacklog.Tests.ps1` and `tests/FmFleetSync.Tests.ps1` do, and each starts with `the home this file runs in` asserting that `Get-FmConfigPath` resolves the switch under `TestDrive`.
+That covers the shape section 62.7 left open: a suite started from a shell that already carries `FM_HOME` pointing at a live home.
+
+```
+FmVoice + FmBridge + FmSpeechInstall, fixed:   P=372 F=0, no config/ and no state/ created in the checkout
+the same three files before the change:         P=368 F=0  (the four new cases are the difference)
+
+negative control, the writer's name list removed:
+  FmBridge.Tests.ps1                            P=263 F=2 - exactly the two new refusal cases;
+                                                config/voice created in the fixture home
+
+negative control, the FM_HOME pin removed from both files:
+  FmVoice + FmBridge                            P=341 F=2 - exactly the two new checks, reporting
+                                                <checkout>\config\voice and <checkout>\config\bridge-voice
+```
+
+### 65.4 The related switches, including the two not acted on
+
+- **The screen's spoken replies (`config/bridge-voice`).** Off by default, absent means off, and `Test-FmBridgeVoiceAllowed` is the one gate in front of the browser's `speechSynthesis`. It is written only by `Set-FmBridgeVoice`, from the page. Covered by the same pin and the same name list; no product change was needed.
+- **The listening mode (`config/listen-mode`).** `push` by default, and `push` is the safe word: it holds the microphone shut until a hand is on it. Written only by `Set-FmListenMode`, from the page. Neither this nor `bridge-voice` can open a microphone on its own - both need `config/voice` - which is why the machine switch is the only one that gained a refusal.
+- **NOT ACTED ON: the captain's home already carries a `config/listen-mode` holding the default.** `C:\Users\ADMIN\firstmate-win\config\listen-mode` is five bytes, `push`, dated 2026-08-19. Recording the value that is already the default is what a write nobody asked for looks like, and the bridge writes the file on any `/api/listen-mode` POST including one that changes nothing. It is harmless - `push` is what an absent file means - and it was read, not run against, so this is an observation and not a reproduction.
+- **NOT ACTED ON: `tests/FmToolInstall.Tests.ps1` and `tests/FmSpeechInstall.Tests.ps1` write a file named `voice`, and cannot reach a real home.** Both build the path with `Join-Path` from a fixture root they own and pass it explicitly, so no environment variable redirects them. They are left unpinned because a pin would add nothing a literal path does not already give.
+
+### 65.5 A stale security claim in `bin/fm-bridge.ps1`, found on the way
+
+Its SECURITY paragraph said the per-run token is "never written to disk", and the comment beside the launch URL said it "never touches disk".
+Both are contradicted 190 lines below, where the token IS written to `Get-FmBridgeTokenPath` for the dictation hook - a separate process that cannot be handed it - and removed on exit.
+The behaviour is right and deliberate; the two sentences describing it were not.
+Both now say what the code does.
+No behaviour changed, so there is nothing to measure here.
+
+### 65.6 The full suite, twice
+
+FULL_SUITE_PLACEHOLDER
+
+### 65.7 What this section does NOT claim
+
+- **Nothing spoke and no microphone was opened at any point.** The reproduction used a switch seeded to `off`, so the reach was proven by a warning naming the file rather than by a sound, and the fixed suite mocks all four speech seams. `config/voice` was absent in this worktree before and after, and the captain's home was read once, not run against.
+- **The reach was reproduced through the FIXTURE's own path, not through a forgotten call site.** No call site in the suite omits `-FmHome` today. What was measured is what a child started the way that fixture starts one resolves, which is the same thing the fixture would have done for a call that omitted it.
+- **The name list guards the module, not the file system.** Anything that writes `<home>/config/voice` directly - a captain, an editor, a script outside this port - still creates the switch, which is the point. What is closed is this port's own ability to create it.

@@ -12,6 +12,23 @@
 # caller's default is the quiet, hands-on one: push to talk rather than an open
 # microphone, silence rather than speech. Reaching the other by way of a typo is
 # not a thing this may do.
+#
+# AND THE WRITER MAY WRITE ONLY THESE TWO FILES. Set-FmBridgeChoice is the only
+# function in this module that writes an arbitrarily NAMED file under `config/`,
+# and the screen's settings reach it over HTTP (`bin/fm-bridge.ps1` /api/voice
+# and /api/listen-mode). That route is loopback-only and token-guarded, but a
+# token-guarded route is not the captain's hand: the page has been driven
+# HEADLESS for checks before, which is the incident Get-FmBridgeVoice records.
+# The first version of the screen's mute wrote `config/voice` itself - the
+# MACHINE's switch, the one that opens a microphone - so the file that opens a
+# microphone must not be one argument away from anything the page can reach. The
+# names live in $script:FmBridgeWritableChoice below; anything else is refused.
+
+# The only two files the screen's own settings may write. `config/voice` is
+# deliberately NOT here: AGENTS.md section 9 has the machine's voice off until
+# the captain creates that file by hand, and no code path in this port creates
+# it.
+$script:FmBridgeWritableChoice = @('listen-mode', 'bridge-voice')
 
 function Get-FmBridgeChoice {
     <#
@@ -71,8 +88,14 @@ function Set-FmBridgeChoice {
         the captain with a screen that says one thing and a machine doing
         another.
 
+        AND AN UNRECOGNISED FILE NAME IS REFUSED THE SAME WAY, for the reason
+        this file's header gives: the two settings this may write are the
+        screen's own, and `config/voice` - the machine's switch, the one that
+        opens a microphone - is not reachable from here at any argument.
+
         .PARAMETER Name
-        The file under `config/`.
+        The file under `config/`. One of the screen's own settings; anything
+        else is refused unwritten.
 
         .PARAMETER Value
         The word to record.
@@ -93,6 +116,14 @@ function Set-FmBridgeChoice {
         [Parameter(Mandatory)][string[]]$Allowed,
         [string]$HomePath
     )
+
+    if ($script:FmBridgeWritableChoice -notcontains $Name) {
+        return [pscustomobject]@{
+            Ok    = $false
+            Value = ''
+            Error = ("the screen may only write $($script:FmBridgeWritableChoice -join ' and '), not config/${Name}")
+        }
+    }
 
     $want = ([string]$Value).Trim().ToLowerInvariant()
     if ($Allowed -notcontains $want) {

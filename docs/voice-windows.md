@@ -71,6 +71,38 @@ uses, for one concrete reason: a voice name contains spaces
 ("Microsoft Hazel Desktop"), so the space-separated form
 `config/secondmate-harness` uses cannot carry one.
 
+### The captain is its only author
+
+Off by default is a promise about who may turn it ON, and it is worth nothing if
+the code can do it.
+**No function in this port writes `config/voice`.**
+The installer does not, the speech-engine install does not, and the bridge does
+not - `docs/windows-install.md` and `Get-FmMachineOptionalLine` already say the
+first two, and `Set-FmBridgeChoice` is where the third is now enforced rather
+than merely intended.
+
+That writer is the only one in the module that takes the name of a file under
+`config/` as an argument, and it is reached over HTTP (`/api/voice` and
+`/api/listen-mode`).
+That route is loopback-only and token-guarded, which is not the same as being
+the captain: the page has been driven headless for checks before, which is the
+incident `Get-FmBridgeVoice` records.
+It may write `config/listen-mode` and `config/bridge-voice` and nothing else, so
+the file that opens a microphone is not one argument away from a route the
+captain never touched.
+That is not a hypothetical hazard: the screen's mute WAS `config/voice` before it
+became `config/bridge-voice`, and `Test-FmBridgeVoiceAllowed` records why it
+moved.
+
+The suite is held to the same rule by construction rather than by care.
+`tests/FmVoice.Tests.ps1` and `tests/FmBridge.Tests.ps1` pin `FM_HOME` to a
+directory they own for the whole file, and `Invoke-VoiceScript` takes the home as
+a MANDATORY parameter - it used to default to empty, which SCRUBBED `FM_HOME`
+from the child instead of setting it, so one forgotten argument gave a
+`bin/fm-say.ps1` that read the checkout's own switch.
+`docs/windows-e2e-evidence.md` section 65 has that measured, and the negative
+control for each guard.
+
 ## Prepared for speaking, not for reading
 
 Everything firstmate writes is written for a SCREEN.

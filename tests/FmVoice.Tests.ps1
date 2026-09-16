@@ -79,8 +79,20 @@ BeforeAll {
             every test that uses this must give it a home whose voice is off or
             absent. That is what keeps the CLI contract under test and the room
             quiet - and the microphone shut - at the same time.
+
+            -FmHome IS MANDATORY, AND THAT IS THE WHOLE GUARD. It used to default
+            to the empty string, which scrubbed FM_HOME out of the child instead
+            of setting it - so a single forgotten argument gave a child that
+            resolves its home to the CHECKOUT, and in the primary checkout that
+            is the captain's own `config/voice`. On a home that has turned the
+            voice on, that child speaks out loud. Discipline held at every call
+            site, but the thing standing between the suite and the captain's
+            microphone must not be discipline.
         #>
-        param([Parameter(Mandatory)][string]$Script, [string[]]$CliArgs = @(), [string]$FmHome = '')
+        param(
+            [Parameter(Mandatory)][string]$Script,
+            [string[]]$CliArgs = @(),
+            [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$FmHome)
         $psi = [System.Diagnostics.ProcessStartInfo]::new()
         $psi.FileName = $script:Pwsh
         # -NonInteractive because this child does NOT inherit its parent's: an
@@ -94,10 +106,8 @@ BeforeAll {
         foreach ($name in @('FM_HOME', 'FM_ROOT_OVERRIDE', 'FM_STATE_OVERRIDE', 'FM_CONFIG_OVERRIDE')) {
             $psi.Environment.Remove($name) | Out-Null
         }
-        if ($FmHome) {
-            $psi.Environment['FM_HOME'] = $FmHome
-            $psi.Environment['FM_ROOT_OVERRIDE'] = $FmHome
-        }
+        $psi.Environment['FM_HOME'] = $FmHome
+        $psi.Environment['FM_ROOT_OVERRIDE'] = $FmHome
         $proc = [System.Diagnostics.Process]::Start($psi)
         $out = $proc.StandardOutput.ReadToEnd()
         $err = $proc.StandardError.ReadToEnd()
@@ -108,6 +118,23 @@ BeforeAll {
     $script:Pwsh = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     $script:SayScript = Join-Path $script:RepoRoot 'bin' 'fm-say.ps1'
     $script:AskScript = Join-Path $script:RepoRoot 'bin' 'fm-ask.ps1'
+
+    # PINNED FOR THE WHOLE FILE, the way tests/FmBacklog.Tests.ps1 and
+    # tests/FmFleetSync.Tests.ps1 pin theirs and for the same reason: with
+    # nothing set, Get-FmConfigPath resolves the home to the CHECKOUT, and in
+    # the primary checkout `config/voice` is the captain's own switch. Every
+    # call in this file names a home today, so this guards the one that
+    # eventually will not - and `config/voice` is the file where the cost of
+    # that is a microphone opening in the captain's room. An inherited FM_HOME
+    # from an operator's pane reaches a live home the same way, so the
+    # overrides go too.
+    $script:SavedHomeEnv = @{}
+    foreach ($name in @('FM_HOME', 'FM_ROOT_OVERRIDE', 'FM_STATE_OVERRIDE', 'FM_CONFIG_OVERRIDE')) {
+        $script:SavedHomeEnv[$name] = [System.Environment]::GetEnvironmentVariable($name)
+        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    }
+    $env:FM_HOME = Join-Path $TestDrive 'ambient-home'
+    New-Item -ItemType Directory -Path $env:FM_HOME -Force | Out-Null
 }
 
 # Restores what the file's own BeforeAll cleared, because Pester containers share
@@ -115,6 +142,19 @@ BeforeAll {
 AfterAll {
     if ($null -eq $script:VoiceOffAtStart) { Remove-Item Env:FM_VOICE_OFF -ErrorAction SilentlyContinue }
     else { $env:FM_VOICE_OFF = $script:VoiceOffAtStart }
+    foreach ($name in $script:SavedHomeEnv.Keys) {
+        if ($null -eq $script:SavedHomeEnv[$name]) {
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -LiteralPath "Env:$name" -Value $script:SavedHomeEnv[$name]
+        }
+    }
+}
+
+Describe 'the home this file runs in' {
+    It 'resolves config/voice under TestDrive, never in the checkout' {
+        Get-FmConfigPath -Name 'voice' | Should -BeLike "$TestDrive*"
+    }
 }
 
 Describe 'the voice is off until the captain turns it on' {
@@ -454,7 +494,7 @@ Describe 'a missing or broken speech engine' {
 Describe 'bin/fm-say.ps1' {
     BeforeAll {
         function Invoke-Say {
-            param([string[]]$CliArgs = @(), [string]$FmHome = '')
+            param([string[]]$CliArgs = @(), [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$FmHome)
             return Invoke-VoiceScript -Script $script:SayScript -CliArgs $CliArgs -FmHome $FmHome
         }
     }
@@ -905,7 +945,7 @@ Describe 'a machine that cannot hear' {
 Describe 'bin/fm-ask.ps1' {
     BeforeAll {
         function Invoke-Ask {
-            param([string[]]$CliArgs = @(), [string]$FmHome = '')
+            param([string[]]$CliArgs = @(), [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$FmHome)
             return Invoke-VoiceScript -Script $script:AskScript -CliArgs $CliArgs -FmHome $FmHome
         }
     }

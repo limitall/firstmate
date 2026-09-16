@@ -40,8 +40,27 @@ BeforeAll {
     # section 56.
     $script:SavedModulePath = $env:PSModulePath
     $env:PSModulePath = "$(Join-Path $script:Root 'module')$([IO.Path]::PathSeparator)$env:PSModulePath"
-    Import-Module Firstmate -Force
+    # Through the helper rather than `Import-Module Firstmate -Force`, which
+    # resolves by NAME and leaves a copy loaded from another checkout in place.
+    # This file now has InModuleScope blocks, and those are exactly what an
+    # ambiguous module name refuses - see tests/FmModule.TestHelpers.ps1.
+    . (Join-Path $PSScriptRoot 'FmModule.TestHelpers.ps1')
+    Import-FmTestModule $PSScriptRoot
     . (Join-Path $PSScriptRoot 'FmUnstartable.TestHelpers.ps1')
+
+    # PINNED FOR THE WHOLE FILE, the way tests/FmBacklog.Tests.ps1 and
+    # tests/FmFleetSync.Tests.ps1 pin theirs. Set-FmListenMode and
+    # Set-FmBridgeVoice write `config/<name>` in the home they resolve, and with
+    # nothing set that is this CHECKOUT - the captain's own config/ in the
+    # primary one. Every call here names a home today; this is what keeps that
+    # true when one of them stops.
+    $script:SavedHomeEnv = @{}
+    foreach ($name in @('FM_HOME', 'FM_ROOT_OVERRIDE', 'FM_STATE_OVERRIDE', 'FM_CONFIG_OVERRIDE')) {
+        $script:SavedHomeEnv[$name] = [System.Environment]::GetEnvironmentVariable($name)
+        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    }
+    $env:FM_HOME = Join-Path $TestDrive 'ambient-home'
+    New-Item -ItemType Directory -Path $env:FM_HOME -Force | Out-Null
 }
 
 AfterAll {
@@ -50,6 +69,21 @@ AfterAll {
     # registered against this file's own container - appended at the end of the
     # file it does not run, and the leak survives. Measured.
     $env:PSModulePath = $script:SavedModulePath
+    foreach ($name in $script:SavedHomeEnv.Keys) {
+        if ($null -eq $script:SavedHomeEnv[$name]) {
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -LiteralPath "Env:$name" -Value $script:SavedHomeEnv[$name]
+        }
+    }
+}
+
+Describe 'the home this file runs in' {
+    It 'resolves the screen''s settings under TestDrive, never in the checkout' {
+        foreach ($name in @('bridge-voice', 'listen-mode', 'voice')) {
+            Get-FmConfigPath -Name $name | Should -BeLike "$TestDrive*"
+        }
+    }
 }
 
 Describe 'ConvertTo-FmBridgePlainText' {
@@ -1966,6 +2000,35 @@ Describe 'the bridge screen settings' {
         $verdict = Set-FmBridgeVoice -State 'maybe' -HomePath $script:SettingsHome
         $verdict.Ok | Should -BeFalse
         $verdict.State | Should -Be 'off'
+    }
+
+    # THE MACHINE'S SWITCH IS NOT THE SCREEN'S TO WRITE. The screen's settings
+    # reach this writer over HTTP from a page that has been driven headless
+    # before, and the screen's mute was once `config/voice` itself - so the one
+    # file that opens a microphone must not be one argument away from that route.
+    # AGENTS.md section 9: the captain creates it, and nothing else does.
+    It 'refuses to write the machine voice switch, whatever it is asked' {
+        InModuleScope Firstmate -Parameters @{ ConfigHome = $script:SettingsHome } {
+            param($ConfigHome)
+            foreach ($word in @('on', 'off', 'push', 'continuous')) {
+                $verdict = Set-FmBridgeChoice -Name 'voice' -Value $word `
+                    -Allowed @('on', 'off', 'push', 'continuous') -HomePath $ConfigHome
+                $verdict.Ok | Should -BeFalse
+                $verdict.Error | Should -Match 'config/voice'
+            }
+        }
+        Test-Path -LiteralPath (Join-Path $script:SettingsHome 'config/voice') | Should -BeFalse
+    }
+
+    It 'refuses every config file that is not one of the screen''s own two' {
+        InModuleScope Firstmate -Parameters @{ ConfigHome = $script:SettingsHome } {
+            param($ConfigHome)
+            foreach ($name in @('captain-name', 'telegram-token', 'identity', 'backend')) {
+                (Set-FmBridgeChoice -Name $name -Value 'on' -Allowed @('on') -HomePath $ConfigHome).Ok |
+                    Should -BeFalse -Because "config/$name is the captain's, not the screen's"
+            }
+        }
+        @(Get-ChildItem -LiteralPath (Join-Path $script:SettingsHome 'config')).Count | Should -Be 0
     }
 
     It 'reads a damaged file as the safe default, never as the other one' {

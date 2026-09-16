@@ -66,7 +66,10 @@ IS a write path now - /api/say drives a session that can change code - so it is
 guarded: a per-run token every request must carry, and an Origin check, because
 data/web-ui/report.md MEASURED that any page open in the captain's browser can
 otherwise POST at a loopback listener even though it cannot read the replies. The
-token is handed to the page through the launch URL and never written to disk.
+token is handed to the page through the launch URL, and left on disk for the one
+caller that cannot be handed it - the dictation hook is a separate process - at
+a path only this user can read, written on start and removed on exit so a stale
+key never outlives the bridge that minted it.
 
 .PARAMETER Port
 Loopback port. Default 7433.
@@ -249,8 +252,8 @@ if ($configured) {
 
 $launchUrl = "$prefix#t=$token"
 # Printed so the captain can reopen the page after closing the tab, and so a
-# test can drive the API. It is a per-run secret that never touches disk, so it
-# dies with this process.
+# test can drive the API. It is a per-run secret, minted here and gone when this
+# process ends - including the copy left below for the dictation hook.
 [Console]::Out.WriteLine("fm-bridge: open $launchUrl")
 
 # The dictation hook runs as a separate process with no way to be handed the
