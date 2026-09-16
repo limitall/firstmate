@@ -11783,12 +11783,12 @@ Putting the call in a file keeps the string off the command line, and the run co
   No reply in the corpus is newly held, but the shape is real: a gerund-subject sentence whose predicate is a status word.
   That cost is taken deliberately, on the rule this file has stated since its first line - a false rejection costs a plainer answer that is still true, a false acceptance costs the captain stopping real work for fiction, and those are not the same size.
 
-## 66. The contract asked for a PR's full URL and named no source for it - `PROVEN (Windows 11) FOR THE MISSING BINDING, THE EXTRACTOR, SEVEN NEGATIVE CONTROLS AND BOTH ENDS OF THE TEARDOWN SEAM; NOT AGAINST A REAL GITHUB PR OR A REAL WORKER PANE`
+## 70. The contract asked for a PR's full URL and named no source for it - `PROVEN (Windows 11) FOR THE MISSING BINDING, THE EXTRACTOR, SEVEN NEGATIVE CONTROLS AND BOTH ENDS OF THE TEARDOWN SEAM; NOT AGAINST A REAL GITHUB PR OR A REAL WORKER PANE`
 
 `AGENTS.md` told firstmate to give the captain a PR's complete `https://...` link and never said where that link comes from.
 Upstream found (kunchenguid/firstmate#3648) that this is the prompt shape that makes a model assemble a plausible URL from an owner, a repository and a number it half-remembers.
 
-### 66.1 Nothing in the port bound a URL to a record
+### 70.1 Nothing in the port bound a URL to a record
 
 `Invoke-FmTeardown` read `pr=` from the task meta and handed it to both the landed-work test and the backlog reminder.
 Nothing in this port ever writes `pr=`; the key is read in `Invoke-FmTeardown.ps1` and written nowhere.
@@ -11801,7 +11801,7 @@ The placeholder is honest and the branch lookup is the gap.
 Neither is where a dead link came from: no code here composed one, so the composing happened in prose, above the code.
 That is why the contract change is the fix and the extractor is what stops prose being the only available source.
 
-### 66.2 The extractor, and what it refuses
+### 70.2 The extractor, and what it refuses
 
 `Get-FmTaskDeliveredPrUrl` (`Private/FmTeardown.ps1`) is now the only answer to "what did this task deliver".
 It takes the recorded `pr=` field, failing that the LAST line of `state/<id>.status` matching `^done: PR (https?://[^\s)"']+/pull/[0-9]+)( checks green)?$`, failing both `''`.
@@ -11831,7 +11831,7 @@ done: ready in branch fm/a (supersedes https://github.test/o/r/pull/15)
 failed: https://github.test/o/r/pull/16 could not be opened
 ```
 
-### 66.3 Both ends of the teardown seam
+### 70.3 Both ends of the teardown seam
 
 Through the real `Invoke-FmTeardown`, against a real git worktree with a real bare origin, `gh` mocked:
 
@@ -11850,13 +11850,13 @@ prose mention only
 Negative control, the one wiring line in `Invoke-FmTeardown.ps1` reverted to `Get-FmMetaValue` alone: the two positive cases fail, the two refusal cases still pass.
 That split is expected - the refusals assert that nothing is scraped, which is also true when nothing scrapes at all - and it is the reason both halves are kept.
 
-### 66.4 What the contract says now
+### 70.4 What the contract says now
 
 `AGENTS.md` section 9 is the one owner: copy the URL verbatim from the worker's `done: PR <url>` line or the task's `pr=` field, never assemble one, and when no record holds it say only the identifier actually held.
 Section 7's landing paragraph points at that rule instead of restating "full URL, never a bare `#number`".
 The `bearings` skill carried that sentence three times; it now carries it once, in the chat-response contract, extended with the source and the abstain path, and its gather step names the ready line as where a URL on this port actually lives.
 
-### 66.5 Not proven here
+### 70.5 Not proven here
 
 No real GitHub PR was read and no real worker pane was typed into; `gh` is mocked in every case above.
 Nothing yet WRITES `pr=`, so the recorded-field branch is exercised only by tests.
