@@ -11119,3 +11119,32 @@ Not measured, because it would rewrite this repo's committed symlink: what the `
 That is a correct, healthy pointer-file checkout being reported as broken and unfixable.
 The leaf of `@AGENTS.md` is not `AGENTS.md`, so the placeholder test does not catch it, and the index mode is `100644`, so the declaration test does not either - by design, since `100644` is exactly how a genuinely independent second memory file is committed too.
 `docs/instruction-surface.md` carries what this means for sequencing; the short version is that T1.8 has to teach `Get-FmAgentsMirrorState` a `pointer` state, and after this change that is the only place it has to be taught.
+
+### 64.7 The gate
+
+Two full runs on the tree that merges, `4344d678`, rebased onto `a7b3c76d`.
+The instruction surface was repaired by hand before the first run, so neither run carries the 9 failures a fresh worktree's first full run normally pays.
+
+```
+run 1: exit=0 after 48 min :: passed=3088 failed=0 skipped=19
+run 2: exit=0 after 32 min :: passed=3088 failed=0 skipped=19
+FmAnalyzer.Tests.ps1 green in both, which is the repo-wide Invoke-ScriptAnalyzer
+  sweep at every severity :: 0 findings
+FmAgentsMemory.Tests.ps1 50 tests, FmContract.Tests.ps1 42 - the two files this
+  section's mechanism lives in
+```
+
+This subsection is the one thing added after the gate, because a run cannot record its own result inside the tree it ran on.
+
+### 64.8 Two harness faults found on the way, one of them fixed here
+
+Neither is this section's subject; both cost gate runs, and the second is a defect in the tree.
+
+- **A PowerShell-tool `Start-Process` launch of the keeper is reaped** when the tool call ends, leaving Pester running as an orphan - anchor gone, children alive, which is the inverse of the external-sweep signature and fails the parent-identity cases.
+  Launch it from a Bash-tool `pwsh` instead.
+  Harness-side only; nothing in the repo changed for it.
+- **`tests/FmHooks.Tests.ps1` could wedge the suite indefinitely.**
+  `Invoke-HookEntryPoint` read `StandardOutput` to the end, then `StandardError`, then waited unbounded.
+  Sequential `ReadToEnd` on two redirected pipes deadlocks once the child fills the one nobody is draining, and `ReadToEnd` does not return while ANY process holds the write handle - the Stop auto-arm SPAWNS a watcher that inherits it, so the hook exits and the read blocks forever with no child left to point at.
+  MEASURED: a 99-minute wedge with the hook already gone, 236s of CPU across 131 minutes, no descendants, nothing on stdout, and a full two-run gate lost.
+  Fixed in its own commit: both pipes drain through `ReadToEndAsync` and every wait is bounded, so a hook that does not return fails in 120s naming the budget.
