@@ -1261,7 +1261,10 @@ async function endPhrase(drop){
 
 async function applyMode(mode, save){
   const want = mode === 'continuous' ? 'continuous' : 'push';
-  const changed = want !== listenMode;
+  // What is actually STORED, kept so the fallback below is measured against the
+  // captain's own choice rather than against the mode this call has assumed.
+  const was = listenMode;
+  const changed = want !== was;
   listenMode = want;
   modePush.setAttribute('aria-checked', want === 'push' ? 'true' : 'false');
   modeCont.setAttribute('aria-checked', want === 'continuous' ? 'true' : 'false');
@@ -1281,7 +1284,15 @@ async function applyMode(mode, save){
     catch(e){
       sayTrouble('No microphone',
         'Continuous listening needs the microphone and this page was refused it. Push to talk still works.');
-      await applyMode('push', true);
+      // BACK TO WHAT WAS STORED FIRST, and save only if this call was allowed to.
+      // Both halves were wrong: the fallback saved unconditionally, so a LOAD -
+      // which passes save=false precisely so that reading a page writes nothing -
+      // wrote anyway; and it ran with listenMode already set to continuous, so a
+      // captain who was on push and asked for continuous had push written back to
+      // them as a choice they never made. A page driven headless for a check is
+      // always refused the microphone, so both landed in a real home.
+      listenMode = was;
+      await applyMode('push', save);
       return;
     }
     if(!vadRaf) vadTick();

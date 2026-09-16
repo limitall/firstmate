@@ -94,6 +94,23 @@ That is not a hypothetical hazard: the screen's mute WAS `config/voice` before i
 became `config/bridge-voice`, and `Test-FmBridgeVoiceAllowed` records why it
 moved.
 
+The screen's own two switches are the captain's in the same way, and one of them
+was not.
+`ui/bridge.html` falls back to push to talk when continuous listening is asked
+for and the browser refuses the microphone, and it used to RECORD that fallback
+whatever the caller asked - including on load, where the page passes "do not
+save" precisely because a reload is not a decision.
+A page driven headless for a check is refused the microphone every time, so
+opening one against a home that had chosen continuous wrote `config/listen-mode`
+in it.
+It also compared the fallback against the mode the call had already assumed
+rather than against the stored one, so a captain on push who asked for continuous
+and was refused had `push` written back to them as a choice they never made.
+Neither can open a microphone - both still need `config/voice` - but a per-home
+file the captain did not write is the same fault in a cheaper place.
+`docs/windows-e2e-evidence.md` section 63.5 has it, driven in the Node page
+harness.
+
 The suite is held to the same rule by construction rather than by care.
 `tests/FmVoice.Tests.ps1` and `tests/FmBridge.Tests.ps1` pin `FM_HOME` to a
 directory they own for the whole file, and `Invoke-VoiceScript` takes the home as

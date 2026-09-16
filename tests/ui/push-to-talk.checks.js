@@ -40,6 +40,38 @@ async function main(){
   chk('right Alt: release leaves nothing recording', H.server.recording, false);
   chk('right Alt: the engine is told exactly once more', H.server.toggles.join(','), 'START,stop');
 
+  // ---- a refused microphone records nothing the captain did not choose ----
+  // The page cannot listen continuously without the microphone and falls back to
+  // push, which is right. Writing that fallback into the home as the captain's
+  // choice is not: `config/listen-mode` is a per-home file, and a page driven
+  // headless for a check is refused the microphone every time.
+  await loadPage(PAGE);
+  H.micDenied = true;
+  el('modeCont').dispatch('click', {});
+  await H.clock.advance(300);
+  chk('a refused microphone falls back to push to talk',
+      el('modePush').getAttribute('aria-checked'), 'true');
+  chk('and writes no listening mode, because push is what was stored anyway',
+      H.server.calls.filter(function(p){ return p === '/api/listen-mode'; }).length, 0);
+
+  // THE SAME DEFECT ON LOAD, which is the shape that reaches a home nobody is
+  // looking at. The page applies the stored mode with save=false and says why in
+  // its own comment - "a reload is not a decision" - and the fallback used to
+  // pass `true` regardless, so a page merely OPENED against a home that had
+  // chosen continuous wrote to that home.
+  await loadPage(PAGE, function(s){ s.listenMode = 'continuous'; H.micDenied = true; });
+  chk('loading against a stored continuous mode with no microphone falls back to push',
+      el('modePush').getAttribute('aria-checked'), 'true');
+  chk('and a reload is still not a decision: nothing was written',
+      H.server.calls.filter(function(p){ return p === '/api/listen-mode'; }).length, 0);
+
+  // The captain pressing the button IS a decision, and it is still recorded.
+  await loadPage(PAGE);
+  el('modeCont').dispatch('click', {});
+  await H.clock.advance(300);
+  chk('choosing continuous with a microphone records it once',
+      H.server.calls.filter(function(p){ return p === '/api/listen-mode'; }).length, 1);
+
   // ---- AltGr is a character, not a microphone ----------------------------
   await loadPage(PAGE);
   H.win.dispatch('keydown', {code:'AltRight', ctrlKey:true, repeat:false});
@@ -258,7 +290,12 @@ async function main(){
   // detector owns when a capture starts and stops here; what is checked is that
   // its edges still pair, and that switching back to push gives the microphone
   // back.
-  await loadPage(PAGE, function(sv){ sv.listenMode = 'continuous'; });
+  // Loaded in PUSH and switched on the next line, because the quiet room below
+  // is set up after the load: starting continuous at load would arm the phrase
+  // detector in a room this block has not made quiet yet. (Until the harness
+  // served the stored mode, this passed `listenMode: 'continuous'` and nothing
+  // read it.)
+  await loadPage(PAGE);
   H.level = 2;                                    // a quiet room to start in
   H.win.applyMode('continuous', false);
   await H.clock.advance(400);

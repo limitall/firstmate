@@ -136,6 +136,11 @@ class Server {
     this.toggles = [];
     this.warm = true;
     this.handsOver = true;
+    // What this home has STORED, which bin/fm-bridge.ps1 reads out of
+    // config/listen-mode on every /api/health. Hardcoding 'push' here meant no
+    // check could open a page against a home that had chosen continuous - and
+    // that is the load where the page used to write back.
+    this.listenMode = 'push';
     this.calls = [];
     this.asked = [];
     this.listenBusy = false;
@@ -153,7 +158,7 @@ class Server {
     this.calls.push(p);
     const body = opts && opts.body ? JSON.parse(opts.body) : null;
     if (p === '/api/health'){
-      return {ok:true, configured:true, voice:false, listenMode:'push',
+      return {ok:true, configured:true, voice:false, listenMode:this.listenMode,
               speech:{installed:true, running:true, warm:this.warm, handsOver:this.handsOver, setup:''}};
     }
     if (p === '/api/listen'){

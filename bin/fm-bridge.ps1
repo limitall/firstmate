@@ -145,8 +145,9 @@ if (-not (Test-Path -LiteralPath $uiDir -PathType Container)) {
     [Console]::Error.WriteLine("error: no ui directory at $uiDir"); exit 1
 }
 
-# A fresh secret per run. It never touches disk, so nothing can leak it later,
-# and a restart invalidates every page that held the old one.
+# A fresh secret per run, so a restart invalidates every page that held the old
+# one. The only copy that outlives this line is the one left below for the
+# dictation hook, which is removed on exit.
 $token = [Convert]::ToBase64String([guid]::NewGuid().ToByteArray()).TrimEnd('=').Replace('+','-').Replace('/','_')
 
 $prefix = "http://127.0.0.1:$Port/"
@@ -340,7 +341,17 @@ try {
                         # Read from the home every time rather than captured at
                         # start: the captain can change it from the page, and a
                         # reload has to come back to what they chose.
-                        listenMode = (Get-FmListenMode)
+                        #
+                        # FROM $home_, LIKE EVERY OTHER FACT IN THIS RESPONSE.
+                        # Ambient resolution is the CHECKOUT until .fm-home is
+                        # published into the environment, and this process
+                        # publishes that at start - so a first run, which creates
+                        # the workspace while the bridge is already up, left the
+                        # screen reading its two settings from one home and
+                        # writing them to another until the bridge was restarted.
+                        # An empty $home_ is an unconfigured machine and falls
+                        # through to ambient, which is what the setters do with it.
+                        listenMode = (Get-FmListenMode -HomePath $home_)
                     }
                     continue
                 }
@@ -355,7 +366,7 @@ try {
                     try { $voiceBody = $vr.ReadToEnd() } finally { $vr.Dispose() }
                     $wantVoice = ''
                     try { $wantVoice = [string]($voiceBody | ConvertFrom-Json).state } catch { $wantVoice = '' }
-                    $setVoice = Set-FmBridgeVoice -State $wantVoice
+                    $setVoice = Set-FmBridgeVoice -State $wantVoice -HomePath $home_
                     if ($setVoice.Ok) { [Console]::Out.WriteLine("fm-bridge: the screen's voice is now $($setVoice.State)") }
                     Write-Json -Response $res -Object @{
                         ok    = $setVoice.Ok
@@ -375,7 +386,7 @@ try {
                     try { $modeBody = $mr.ReadToEnd() } finally { $mr.Dispose() }
                     $wantMode = ''
                     try { $wantMode = [string]($modeBody | ConvertFrom-Json).mode } catch { $wantMode = '' }
-                    $set = Set-FmListenMode -Mode $wantMode
+                    $set = Set-FmListenMode -Mode $wantMode -HomePath $home_
                     if ($set.Ok) { [Console]::Out.WriteLine("fm-bridge: listening mode is now $($set.Mode)") }
                     Write-Json -Response $res -Object @{
                         ok    = $set.Ok
