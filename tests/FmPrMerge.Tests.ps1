@@ -682,6 +682,33 @@ Describe 'Publish-FmPrMergeOutcome' {
         @(Get-WakePayload -State $fx.State).Count | Should -Be 2
     }
 
+    It 'reports a wake it could not queue, rather than swallowing it' {
+        # The merge HAS landed by the time this runs, so a failed notification
+        # is a warning to carry back - never a failed merge. The caller has to
+        # be able to tell "reported" from "landed but unreported".
+        $fx = New-TestFixture
+        Mock Add-FmWake { $false }
+        $notice = Publish-FmPrMergeOutcome -StateDir $fx.State -TaskId $fx.TaskId -PrUrl $script:Url `
+            -Context (Get-FmWakeContext -State $fx.State)
+        $notice.Published | Should -BeFalse
+        $notice.Reason | Should -BeLike '*could not be queued*'
+        # And nothing is marked as reported, so a retry can still report it.
+        Test-Path -LiteralPath (Get-FmPrMergeNotifyPath -StateDir $fx.State -TaskId $fx.TaskId) | Should -BeFalse
+    }
+
+    It 'still reports the merge when the marker cannot be written, and says it may repeat' {
+        # Published BEFORE the marker, deliberately: between a duplicate line
+        # and a landed merge nobody was told about, the duplicate is the one a
+        # captain can correct.
+        $fx = New-TestFixture
+        Mock Add-FmTextLineLf { throw 'disk is full' }
+        $notice = Publish-FmPrMergeOutcome -StateDir $fx.State -TaskId $fx.TaskId -PrUrl $script:Url `
+            -Context (Get-FmWakeContext -State $fx.State)
+        $notice.Published | Should -BeTrue
+        $notice.Reason | Should -BeLike '*may be reported again*'
+        @(Get-WakePayload -State $fx.State).Count | Should -Be 1
+    }
+
     It 'tags a standing authority and leaves an attended merge untagged' {
         $fx = New-TestFixture
         $context = Get-FmWakeContext -State $fx.State
@@ -863,6 +890,42 @@ Describe 'Invoke-FmPrMerge' {
             $other = New-TestFixture -TaskId 'task2'
             $null = Invoke-FmPrMerge -TaskId 'task2' -PrUrl $script:Url -Method 'rebase' -StateDir $other.State -Confirm:$false
             @($script:GhCalls | Where-Object { $_[1] -eq 'merge' })[1] | Should -Contain '--rebase'
+        }
+
+        It 'forwards the caller''s remaining arguments to gh, after the head binding' {
+            $fx = New-TestFixture
+            $null = Invoke-FmPrMerge -TaskId $fx.TaskId -PrUrl $script:Url `
+                -ExtraArgument @('--body', 'landing it') -StateDir $fx.State -Confirm:$false
+            $merge = @($script:GhCalls | Where-Object { $_[1] -eq 'merge' })[0]
+            ($merge -join ' ') | Should -BeLike '*--match-head-commit*--body landing it'
+        }
+
+        It 'runs gh in the project checkout when the task records one that exists' {
+            # A pull request is merged on GitHub, not in a working tree, but gh
+            # resolves its host and credentials from where it runs - so it runs
+            # where the project itself does whenever the task names it.
+            $fx = New-TestFixture -ExtraMeta @("project=$TestDrive")
+            $script:GhDirs = [System.Collections.Generic.List[string]]::new()
+            Mock Invoke-FmChildProcess {
+                $script:GhDirs.Add([string]$WorkingDirectory)
+                New-ChildProcessResult -StdOut $script:PlanGraph
+            } -ParameterFilter { $FilePath -eq 'gh' -and @($ArgumentList)[0] -eq 'api' }
+            $null = Invoke-FmPrMerge -TaskId $fx.TaskId -PrUrl $script:Url -StateDir $fx.State -Confirm:$false
+            @($script:GhDirs)[0] | Should -Be ([string]$TestDrive)
+        }
+
+        It 'runs gh wherever it is when the recorded checkout is gone' {
+            # A missing checkout is not a reason to refuse a merge that happens
+            # on GitHub; it just means there is no directory to prefer.
+            $fx = New-TestFixture -ExtraMeta @('project=C:\no\such\checkout')
+            $script:GhDirs = [System.Collections.Generic.List[string]]::new()
+            Mock Invoke-FmChildProcess {
+                $script:GhDirs.Add([string]$WorkingDirectory)
+                New-ChildProcessResult -StdOut $script:PlanGraph
+            } -ParameterFilter { $FilePath -eq 'gh' -and @($ArgumentList)[0] -eq 'api' }
+            (Invoke-FmPrMerge -TaskId $fx.TaskId -PrUrl $script:Url -StateDir $fx.State -Confirm:$false).Merged |
+                Should -BeTrue
+            @($script:GhDirs)[0] | Should -Be ''
         }
 
         It 'quotes the forge''s own words when gh refuses the merge' {
