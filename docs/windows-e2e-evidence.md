@@ -11861,3 +11861,64 @@ The `bearings` skill carried that sentence three times; it now carries it once, 
 No real GitHub PR was read and no real worker pane was typed into; `gh` is mocked in every case above.
 Nothing yet WRITES `pr=`, so the recorded-field branch is exercised only by tests.
 Whether a model actually stops composing links is a prompt-behaviour claim this section does not make.
+
+## 71. The installer's whole-suite confirmation, taken on a quiet machine - `PROVEN (Windows 11) FOR TWO IDENTICAL FULL RUNS THROUGH bin/fm-test-run.ps1 ON 5f21fb20, EVERY INSTALLER-AREA FILE GREEN AND UNSKIPPED IN BOTH, AND A CLEAN REPO-WIDE ANALYZER; THE CAPTAIN'S FRESH VM IS STILL THEIRS`
+
+The installer work in sections 44 and 55 landed on targeted suites alone, and the whole-suite run that should have confirmed it never completed.
+That was a stated trade, not an accident.
+This section is the run that closes it.
+
+### 71.1 The tree and the machine
+
+Run in a disposable treehouse worktree on branch `fm/suite-confirm`, reset to `main` at `5f21fb20` with no source change of any kind, on 2026-09-17.
+`AGENTS.md` had moved since the worktree's last use, so the `CLAUDE.md` mirror was stale; it was deleted, rebuilt with `bin/fm-ensure-agents-md.ps1 .` and marked skip-worktree again before either run, and the two files hashed identical.
+Every other lane had landed and stopped: before the gate there were 15.6 GB free of 31.7 GB and no other suite on the machine.
+
+### 71.2 The runs
+
+Both through `pwsh -NoProfile -NonInteractive -File .\bin\fm-test-run.ps1`, which waits on every per-file child and is therefore the anchor section 66 says it is.
+
+```
+run 1 : 55 files, 3329 tests, 3310 passed, 0 failed, 19 skipped   1794.7 s   exit 0
+run 2 : 55 files, 3329 tests, 3310 passed, 0 failed, 19 skipped   2502.8 s   exit 0
+git status after each run                                           clean
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1   0 findings (131 s)
+```
+
+The installer area, file by file, identical in both runs:
+
+```
+FmToolInstall.Tests.ps1     228 passed, 0 skipped
+FmInstall.Tests.ps1          83 passed, 0 skipped
+FmContract.Tests.ps1         42 passed, 0 skipped
+FmBootstrap.Tests.ps1        37 passed, 0 skipped
+FmSpeechInstall.Tests.ps1    31 passed, 0 skipped
+FmAnalyzer.Tests.ps1         12 passed, 0 skipped
+```
+
+All 19 skips sit outside that area, in the same eight files both times: `FmAgentsMemory` 6, `FmJobCustody` 4, `FmTeardown` 3, `FmBridgeScreen` 2, and one each in `FmBounded`, `FmClassify`, `FmFleetSync` and `FmWorktree`.
+So no installer case was skipped into a green result.
+Run 2 took 708 s longer; why was not measured, and no file changed outcome.
+
+### 71.3 Two runs that did not count, and why
+
+A first run 2 and a retry of it were both started through `Win32_Process.Create`, and both died partway - at file 33 of 55 at 01:16:47, and at file 8 at about 01:37:50 - with no test failing before either stopped.
+The retry ran a do-nothing control process launched the same way, which wrote a timestamp every five seconds and imported nothing; it stopped within ten seconds of the gate.
+The Application and System logs recorded no crash and no resource exhaustion around the first death, firstmate's home recorded no write in that window, and 15.8 GB were free.
+So those two runs were killed from outside, not failed by the tree, and they are not counted.
+
+The cause is NOT established.
+The deaths are consistent with the WMI provider host that owns such processes being torn down under the suite's own heavy `Win32_Process` querying, against its quotas of 4096 handles and 512 MB per host, but an idle 15-minute test of that shape killed nothing, so that remains a hypothesis.
+What IS measured is the practical rule: the run that completed was started with a hidden `Start-Process`, with the same control beside it surviving the whole run, so **do not launch a suite gate through `Win32_Process.Create`**.
+
+The analyzer step first queued after run 2 did not count either.
+Run 2 exited at 02:39:49, the machine went to sleep at 02:40:28 (Kernel-Power event 42) and woke at 09:50:10, so the analyzer was interrupted and was simply re-run afterwards on the same unchanged tree.
+
+### 71.4 What this section does NOT claim
+
+- **No clean machine ran `install.ps1`.**
+  The suite proves the installer's logic against its own fixtures, so sections 44.6 and 55.8 still stand and the captain's fresh VM is still theirs.
+- **The elevated runtime install is still unrun.**
+  Every case mocks `Start-FmToolElevated`, as 44.6 says, so a green suite does not exercise it.
+- **Why the two WMI-launched runs died is not known.**
+  71.3 sets out what was and was not measured.
